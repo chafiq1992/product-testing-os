@@ -1,0 +1,22 @@
+# Node
+node_modules
+.next
+.vercel
+.turbo
+pnpm-lock.yaml
+
+# Python
+.venv
+venv
+__pycache__/
+*.py[cod]
+
+# OS
+.DS_Store
+
+# Env & build
+.env
+.env.*
+dist
+build
+uploads
