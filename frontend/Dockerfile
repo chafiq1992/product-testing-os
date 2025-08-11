@@ -1,9 +1,10 @@
 # Build stage
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY frontend/package*.json ./
+# When building with context=frontend/, package files are in the context root
+COPY package*.json ./
 RUN npm ci
-COPY frontend .
+COPY . .
 RUN npm run build
 
 # Run stage
