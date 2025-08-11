@@ -22,7 +22,8 @@ RUN mkdir -p /app/uploads
 # ---------------- Frontend (Next.js) ----------------
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+# Use npm install instead of npm ci to support repos without a lockfile
+RUN npm install --no-audit --no-fund
 COPY frontend/ .
 # Allow build-time API base URL if needed
 ARG NEXT_PUBLIC_API_BASE_URL=""
