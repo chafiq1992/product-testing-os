@@ -23,6 +23,7 @@ RUN mkdir -p /app/uploads
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 COPY frontend/jsconfig.json ./
+COPY frontend/tsconfig.json ./
 # Use npm install instead of npm ci to support repos without a lockfile
 RUN npm install --no-audit --no-fund
 COPY frontend/ .
