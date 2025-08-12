@@ -22,6 +22,7 @@ RUN mkdir -p /app/uploads
 # ---------------- Frontend (Next.js) ----------------
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
+COPY frontend/jsconfig.json ./
 # Use npm install instead of npm ci to support repos without a lockfile
 RUN npm install --no-audit --no-fund
 COPY frontend/ .
