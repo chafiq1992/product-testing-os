@@ -24,13 +24,16 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 COPY frontend/jsconfig.json ./
 COPY frontend/tsconfig.json ./
-# Use npm install instead of npm ci to support repos without a lockfile
-RUN npm install --no-audit --no-fund
+# Install including devDependencies required for Next.js build (postcss/tailwind)
+RUN npm install --no-audit --no-fund --include=dev
 COPY frontend/ .
 # Allow build-time API base URL if needed
 ARG NEXT_PUBLIC_API_BASE_URL=""
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 RUN npm run build
+
+# Ensure runtime is production
+ENV NODE_ENV=production
 
 # ---------------- Nginx + Supervisor ----------------
 WORKDIR /app
