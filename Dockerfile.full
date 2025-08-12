@@ -25,7 +25,7 @@ COPY frontend/jsconfig.json ./
 COPY frontend/tsconfig.json ./
 # Ensure devDependencies are installed for build (tailwind/postcss)
 ENV NODE_ENV=development
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund && npm install -D tailwindcss postcss autoprefixer
 COPY frontend/ .
 # Allow build-time API base URL if needed
 ARG NEXT_PUBLIC_API_BASE_URL=""
