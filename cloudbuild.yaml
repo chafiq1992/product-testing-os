@@ -1,0 +1,30 @@
+substitutions:
+  _REGION: europe-west1
+  _REPO: pto-repo
+  _SERVICE: product-testing-os
+  _IMAGE_NAME: pto-full
+
+steps:
+- id: Build combined image (frontend + backend)
+  name: gcr.io/cloud-builders/docker
+  args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA','-f','Dockerfile.full','.']
+
+- id: Push image
+  name: gcr.io/cloud-builders/docker
+  args: ['push','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA']
+
+- id: Deploy to Cloud Run
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: gcloud
+  args:
+    [
+      'run','deploy','${_SERVICE}',
+      '--image','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA',
+      '--region','${_REGION}','--platform','managed','--allow-unauthenticated','--port','8080',
+      '--set-env-vars','SHOPIFY_SHOP_DOMAIN=nouralibas.myshopify.com,SHOPIFY_API_VERSION=2025-07,META_AD_ACCOUNT_ID=4098994280206482,META_PAGE_ID=100070754486984,META_API_VERSION=v23.0',
+      '--set-secrets','OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,CELERY_BROKER_URL=CELERY_BROKER_URL:latest,CELERY_RESULT_BACKEND=CELERY_RESULT_BACKEND:latest'
+    ]
+
+images:
+- ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA
+
