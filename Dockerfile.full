@@ -1,7 +1,6 @@
 FROM node:20-bullseye
 
-ENV NODE_ENV=production \
-    PORT=8080 \
+ENV PORT=8080 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -24,8 +23,9 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 COPY frontend/jsconfig.json ./
 COPY frontend/tsconfig.json ./
-# Install including devDependencies required for Next.js build (postcss/tailwind)
-RUN npm install --no-audit --no-fund --include=dev
+# Ensure devDependencies are installed for build (tailwind/postcss)
+ENV NODE_ENV=development
+RUN npm install --no-audit --no-fund
 COPY frontend/ .
 # Allow build-time API base URL if needed
 ARG NEXT_PUBLIC_API_BASE_URL=""
