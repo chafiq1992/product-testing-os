@@ -5,6 +5,11 @@ PROJECT_ID="sinuous-bedrock-347205"
 REGION="europe-west1"
 REPO="pto-repo"
 
+SERVICE="product-testing-os"
+IMAGE_NAME="pto-full"
+IMG_TAG="$(date +%Y%m%d-%H%M)"
+IMG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE_NAME}:${IMG_TAG}"
+
 CELERY_BROKER_URL="rediss://default:ASe8AAIjcDEzMDFmODQ4ODI3OGY0MWQxODU0NmYwODIzNDhiMmFkM3AxMA@secure-owl-10172.upstash.io:6379"
 CELERY_RESULT_BACKEND="$CELERY_BROKER_URL"
 
@@ -14,44 +19,24 @@ META_AD_ACCOUNT_ID="4098994280206482"
 META_PAGE_ID="100070754486984"
 META_API_VERSION="v23.0"
 
-API_SVC="pto-api"
-WORKER_SVC="pto-worker"
-FRONTEND_SVC="pto-frontend"
-
-API_IMG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${API_SVC}:$(date +%Y%m%d-%H%M)"
-WORKER_IMG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${WORKER_SVC}:$(date +%Y%m%d-%H%M)"
-FRONTEND_IMG="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${FRONTEND_SVC}:$(date +%Y%m%d-%H%M)"
-
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com cloudbuild.googleapis.com logging.googleapis.com monitoring.googleapis.com --project "$PROJECT_ID"
 
 if ! gcloud artifacts repositories describe "$REPO" --location="$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
   gcloud artifacts repositories create "$REPO" --repository-format=docker --location="$REGION" --project "$PROJECT_ID"
 fi
 
-gcloud builds submit --project "$PROJECT_ID" --region "$REGION" --tag "$API_IMG" backend
-# Build worker image using the worker Dockerfile
-gcloud builds submit \
-  --project "$PROJECT_ID" \
-  --region "$REGION" \
-  --tag "$WORKER_IMG" \
-  --file backend/Dockerfile.worker \
+# Build combined image from backend/Dockerfile (single container runs frontend+backend via supervisord+nginx)
+gcloud builds submit --project "$PROJECT_ID" --region "$REGION" \
+  --tag "$IMG" \
+  --file backend/Dockerfile \
   .
-gcloud builds submit --project "$PROJECT_ID" --region "$REGION" --tag "$FRONTEND_IMG" frontend
 
-# Secrets must exist with latest versions:
-# OPENAI_API_KEY, SHOPIFY_ACCESS_TOKEN, META_ACCESS_TOKEN
+# Deploy single Cloud Run service
+gcloud run deploy "$SERVICE" \
+  --project "$PROJECT_ID" --region "$REGION" \
+  --image "$IMG" --platform managed --allow-unauthenticated --port 8080 \
+  --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",STORE_URL="$SHOPIFY_SHOP_DOMAIN",API_KEY=unused,PASSWORD=unused,SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION" \
+  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,CELERY_BROKER_URL=CELERY_BROKER_URL:latest,CELERY_RESULT_BACKEND=CELERY_RESULT_BACKEND:latest
 
-gcloud run deploy "$API_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$API_IMG" --platform managed --allow-unauthenticated --port 8000  --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest  --min-instances=0 --max-instances=5
-
-API_URL=$(gcloud run services describe "$API_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
-echo "API deployed at: $API_URL"
-
-gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$WORKER_IMG" --platform managed --no-allow-unauthenticated --port 8080  --cpu 1 --memory 1Gi --min-instances=1 --max-instances=1  --set-env-vars CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
-
-WORKER_URL=$(gcloud run services describe "$WORKER_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
-echo "Worker deployed at: $WORKER_URL (private)"
-
-gcloud run deploy "$FRONTEND_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$FRONTEND_IMG" --platform managed --allow-unauthenticated --port 8080 --min-instances=0 --max-instances=3
-FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
-echo "Frontend deployed at: $FRONTEND_URL"
-echo "Next: set NEXT_PUBLIC_API_BASE_URL=$API_URL in frontend/.env.local and rebuild if needed."
+URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
+echo "Deployed $SERVICE at: $URL"
