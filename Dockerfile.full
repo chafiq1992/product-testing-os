@@ -30,9 +30,11 @@ COPY frontend/ .
 # Allow build-time API base URL if needed
 ARG NEXT_PUBLIC_API_BASE_URL=""
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
+# Build must run with production NODE_ENV to avoid dev runtime in server bundle
+ENV NODE_ENV=production
 RUN npm run build
 
-# Ensure runtime is production
+# Ensure runtime is production (already set above; keep explicit)
 ENV NODE_ENV=production
 
 # ---------------- Nginx + Supervisor ----------------
