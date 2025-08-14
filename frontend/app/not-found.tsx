@@ -1,5 +1,3 @@
-'use client'
-
 export default function NotFound(){
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui' }}>
