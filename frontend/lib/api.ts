@@ -1,5 +1,6 @@
 import axios from 'axios'
-const base = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
+// Use same-origin by default so Nginx proxy to /api works on Cloud Run
+const base = (process.env.NEXT_PUBLIC_API_BASE_URL || '').trim()
 export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[]}){
   const form = new FormData()
   form.append('audience', payload.audience)
