@@ -7,7 +7,7 @@ substitutions:
 steps:
 - id: Build combined image (frontend + backend)
   name: gcr.io/cloud-builders/docker
-  args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA','-f','Dockerfile.full','.']
+  args: ['build','-t','${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_IMAGE_NAME}:$SHORT_SHA','-f','backend/Dockerfile','.']
 
 - id: Push image
   name: gcr.io/cloud-builders/docker
