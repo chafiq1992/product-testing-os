@@ -4,6 +4,11 @@ substitutions:
   _REGION: europe-west1
   _REPO: pto-repo
   _APP_SVC: pto-app
+  _WORKER_SVC: pto-worker
+  _SHOPIFY_SHOP_DOMAIN: your-store.myshopify.com
+  _META_AD_ACCOUNT_ID: "1234567890"
+  _META_PAGE_ID: "1122334455667788"
+  _CELERY_URL: rediss://:<password>@<host>:<port>?ssl_cert_reqs=CERT_NONE
 steps:
 # Build combined image
 - id: Build App
@@ -15,6 +20,16 @@ steps:
   name: gcr.io/cloud-builders/docker
   args: ["push","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_APP_SVC}:$SHORT_SHA"]
 
+# Build worker image
+- id: Build Worker
+  name: gcr.io/cloud-builders/docker
+  args: ["build","-t","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA","-f","backend/Dockerfile.worker","."]
+
+# Push worker image
+- id: Push Worker
+  name: gcr.io/cloud-builders/docker
+  args: ["push","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA"]
+
 # Deploy combined service
 - id: Deploy App
   name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -23,5 +38,15 @@ steps:
     ["run","deploy","${_APP_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_APP_SVC}:$SHORT_SHA","--region","${_REGION}","--allow-unauthenticated","--port","8080",
      "--set-env-vars","SHOPIFY_SHOP_DOMAIN=${_SHOPIFY_SHOP_DOMAIN},SHOPIFY_API_VERSION=2025-07,META_AD_ACCOUNT_ID=${_META_AD_ACCOUNT_ID},META_PAGE_ID=${_META_PAGE_ID},META_API_VERSION=v23.0,CELERY_BROKER_URL=${_CELERY_URL},CELERY_RESULT_BACKEND=${_CELERY_URL}",
      "--set-secrets","OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest"]
+
+# Deploy worker service
+- id: Deploy Worker
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  entrypoint: gcloud
+  args:
+    ["run","deploy","${_WORKER_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA","--region","${_REGION}","--no-allow-unauthenticated","--port","8080","--min-instances","1","--max-instances","1",
+     "--set-env-vars","SHOPIFY_SHOP_DOMAIN=${_SHOPIFY_SHOP_DOMAIN},SHOPIFY_API_VERSION=2025-07,META_AD_ACCOUNT_ID=${_META_AD_ACCOUNT_ID},META_PAGE_ID=${_META_PAGE_ID},META_API_VERSION=v23.0,CELERY_BROKER_URL=${_CELERY_URL},CELERY_RESULT_BACKEND=${_CELERY_URL}",
+     "--set-secrets","OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest"]
 images:
 - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_APP_SVC}:$SHORT_SHA
+- ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA
