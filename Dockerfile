@@ -7,8 +7,8 @@ WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci --no-progress --silent
 COPY frontend ./
-# Generate production build – we export as *static* output to be served by FastAPI
-RUN npm run build && npm exec next export -o out
+# Generate production static build (Next.js 'output: "export"' writes to /frontend/out)
+RUN npm run build
 
 ############################
 # (2) Build backend stage  #
