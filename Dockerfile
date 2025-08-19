@@ -1,0 +1,45 @@
+############################
+# (1) Build frontend stage #
+############################
+FROM node:20-alpine AS frontend-build
+WORKDIR /frontend
+# Install deps and build the Next.js app
+COPY frontend/package*.json ./
+RUN npm ci --no-progress --silent
+COPY frontend ./
+# Generate production build – we export as *static* output to be served by FastAPI
+RUN npm run build && npm exec next export -o out
+
+############################
+# (2) Build backend stage  #
+############################
+FROM python:3.11-slim AS backend-build
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+# Copy backend source
+COPY backend/app ./app
+
+####################################
+# (3) Final runtime image (Python) #
+####################################
+FROM python:3.11-slim
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080
+
+# Install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy backend code from build stage
+COPY --from=backend-build /app/app ./app
+
+# Copy pre-built static frontend assets
+COPY --from=frontend-build /frontend/out ./static
+
+# Expose the Cloud Run port
+EXPOSE 8080
+
+# Start FastAPI with Uvicorn
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

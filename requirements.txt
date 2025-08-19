@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+pydantic==2.8.2
+requests==2.32.3
+openai>=1.40.0
+celery==5.4.0
+redis==5.0.7
+tenacity==8.4.2
+python-dotenv==1.0.1
+SQLAlchemy==2.0.32

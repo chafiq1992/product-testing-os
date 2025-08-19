@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: pto-app
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SHOPIFY_SHOP_DOMAIN=${SHOPIFY_SHOP_DOMAIN}
+      - SHOPIFY_ACCESS_TOKEN=${SHOPIFY_ACCESS_TOKEN}
+      - SHOPIFY_API_VERSION=${SHOPIFY_API_VERSION:-2025-07}
+      - META_ACCESS_TOKEN=${META_ACCESS_TOKEN}
+      - META_AD_ACCOUNT_ID=${META_AD_ACCOUNT_ID}
+      - META_PAGE_ID=${META_PAGE_ID}
+      - META_API_VERSION=${META_API_VERSION:-v23.0}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - BASE_URL=http://localhost:8080
+    depends_on: [redis]
+
+  worker:
+    build:
+      context: ./backend
+    container_name: pto-worker
+    command: ["bash", "-lc", "celery -A app.tasks worker --loglevel=info --concurrency=2"]
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SHOPIFY_SHOP_DOMAIN=${SHOPIFY_SHOP_DOMAIN}
+      - SHOPIFY_ACCESS_TOKEN=${SHOPIFY_ACCESS_TOKEN}
+      - SHOPIFY_API_VERSION=${SHOPIFY_API_VERSION:-2025-07}
+      - META_ACCESS_TOKEN=${META_ACCESS_TOKEN}
+      - META_AD_ACCOUNT_ID=${META_AD_ACCOUNT_ID}
+      - META_PAGE_ID=${META_PAGE_ID}
+      - META_API_VERSION=${META_API_VERSION:-v23.0}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - BASE_URL=http://localhost:8080
+    depends_on: [redis]
+
+  redis:
+    image: redis:7-alpine
+    container_name: pto-redis
+    ports:
+      - "6379:6379"
