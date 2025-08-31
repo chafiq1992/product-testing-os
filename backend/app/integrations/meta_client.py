@@ -52,7 +52,7 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         "objective": "OUTCOME_TRAFFIC" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OUTCOME_SALES",
         "status": "PAUSED",
         "buying_type": "AUCTION",
-        "special_ad_categories": []
+        "special_ad_categories": ["NONE"]
     }
     requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/campaigns", "payload": campaign_payload})
     camp = _post(f"act_{AD_ACCOUNT_ID}/campaigns", campaign_payload)
