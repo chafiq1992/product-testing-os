@@ -76,13 +76,22 @@ def run_pipeline_sync(test_id: str, payload: dict):
             "response": landing_copy,
         })
 
-        page = create_product_and_page(payload, angles, creatives, landing_copy)
-        trace.append({
-            "step": "shopify",
-            "provider": "shopify",
-            "request": {"endpoint": "graphql", "url": "{}/admin/api/{}/graphql.json".format(os.getenv("SHOPIFY_SHOP_DOMAIN",""), os.getenv("SHOPIFY_API_VERSION","2025-07")), "operations": ["productCreate", "pageCreate"]},
-            "response": {"page": page},
-        })
+        try:
+            page = create_product_and_page(payload, angles, creatives, landing_copy)
+            trace.append({
+                "step": "shopify",
+                "provider": "shopify",
+                "request": {"endpoint": "graphql", "url": "{}/admin/api/{}/graphql.json".format(os.getenv("SHOPIFY_SHOP_DOMAIN",""), os.getenv("SHOPIFY_API_VERSION","2025-07")), "operations": ["productCreate", "pageCreate"]},
+                "response": {"page": page},
+            })
+        except Exception as shopify_err:
+            trace.append({
+                "step": "shopify",
+                "provider": "shopify",
+                "request": {"endpoint": "graphql", "url": "{}/admin/api/{}/graphql.json".format(os.getenv("SHOPIFY_SHOP_DOMAIN",""), os.getenv("SHOPIFY_API_VERSION","2025-07")), "operations": ["productCreate", "pageCreate"]},
+                "error": {"message": str(shopify_err)},
+            })
+            raise
 
         # Step 4: Meta campaign + ads (paused)
         campaign = create_campaign_with_ads(payload, angles, creatives, page["url"])
