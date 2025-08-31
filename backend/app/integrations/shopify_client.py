@@ -5,13 +5,16 @@ load_dotenv()
 
 SHOP = os.getenv("SHOPIFY_SHOP_DOMAIN", "")  # your-store.myshopify.com
 TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+API_KEY = os.getenv("SHOPIFY_API_KEY", "")
+PASSWORD = os.getenv("SHOPIFY_PASSWORD", "")
 API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-07")
 GQL = f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json"
 
 headers = {
-    "X-Shopify-Access-Token": TOKEN,
     "Content-Type": "application/json"
 }
+if TOKEN:
+    headers["X-Shopify-Access-Token"] = TOKEN
 
 PRODUCT_CREATE = """
 mutation CreateProduct($input: ProductInput!) {
@@ -35,9 +38,14 @@ mutation CreatePage($page: PageCreateInput!) {
 def _gql(query: str, variables: dict):
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    # Choose auth: prefer Bearer token; else fallback to Basic auth with API key/password
+    auth = None
     if not TOKEN:
-        raise RuntimeError("SHOPIFY_ACCESS_TOKEN is not set. Please configure SHOPIFY_ACCESS_TOKEN env var.")
-    r = requests.post(GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60)
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = requests.post(GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60, auth=auth)
     r.raise_for_status()
     j = r.json()
     if "errors" in j:
