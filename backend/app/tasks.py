@@ -94,13 +94,22 @@ def run_pipeline_sync(test_id: str, payload: dict):
             raise
 
         # Step 4: Meta campaign + ads (paused)
-        campaign = create_campaign_with_ads(payload, angles, creatives, page["url"])
-        trace.append({
-            "step": "meta",
-            "provider": "meta",
-            "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"]},
-            "response": {"campaign_id": campaign.get("campaign_id"), "adsets": campaign.get("adsets")},
-        })
+        try:
+            campaign = create_campaign_with_ads(payload, angles, creatives, page["url"]) 
+            trace.append({
+                "step": "meta",
+                "provider": "meta",
+                "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"]},
+                "response": {"campaign_id": campaign.get("campaign_id"), "adsets": campaign.get("adsets")},
+            })
+        except Exception as meta_err:
+            trace.append({
+                "step": "meta",
+                "provider": "meta",
+                "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"]},
+                "error": {"message": str(meta_err)},
+            })
+            raise
 
         # Persist results
         db.set_test_result(test_id, page, campaign, creatives, angles=angles, trace=trace)

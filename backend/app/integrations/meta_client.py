@@ -12,9 +12,18 @@ BASE = f"https://graph.facebook.com/{API_VERSION}"
 
 def _post(path: str, payload: dict, files=None):
     payload = {**payload, "access_token": ACCESS}
-    r = requests.post(f"{BASE}/{path}", data=payload, files=files, timeout=120)
-    r.raise_for_status()
-    return r.json()
+    url = f"{BASE}/{path}"
+    try:
+        r = requests.post(url, data=payload, files=files, timeout=120)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        # Raise a more informative error including response body
+        try:
+            body = r.text
+        except Exception:
+            body = str(e)
+        raise RuntimeError(f"Meta API error {r.status_code} at {url}: {body}") from e
 
 
 def _upload_image(url: str):
@@ -25,6 +34,12 @@ def _upload_image(url: str):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landing_url: str) -> dict:
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    if not AD_ACCOUNT_ID:
+        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+    if not PAGE_ID:
+        raise RuntimeError("META_PAGE_ID is not set.")
     camp = _post(f"act_{AD_ACCOUNT_ID}/campaigns", {
         "name": f"Test {payload.get('title','Product')}",
         "objective": "OUTCOME_SALES",
