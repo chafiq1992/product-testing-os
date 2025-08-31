@@ -7,7 +7,7 @@ from uuid import uuid4
 import json, os
 from pathlib import Path
 
-from app.tasks import pipeline_launch
+from app.tasks import pipeline_launch, run_pipeline_sync
 from app.storage import save_file
 from app.config import BASE_URL
 from app import db
@@ -72,7 +72,20 @@ async def create_test(
     # Persist initial queued test
     db.create_test_row(test_id, payload)
 
-    pipeline_launch.delay(test_id, payload)
+    # Prefer Celery if broker/worker are configured; allow a sync fallback via env
+    try:
+        sync_flag = (os.getenv("SYNC_PIPELINE", "false").lower() in ("1", "true", "yes"))
+        if sync_flag:
+            # Run in a background thread to return immediately
+            import threading
+            threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
+        else:
+            pipeline_launch.delay(test_id, payload)
+    except Exception as e:
+        # If enqueue fails (e.g., no broker), fall back to sync so tests aren't stuck
+        import threading
+        threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
+
     return {"test_id": test_id, "status": "queued"}
 
 
