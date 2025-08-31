@@ -15,5 +15,5 @@ export async function launchTest(payload:{audience:string, benefits:string[], pa
 
 export async function getTest(id: string){
   const {data} = await axios.get(`${base}/api/tests/${id}`)
-  return data as { id:string, status:string, page_url?:string|null, campaign_id?:string|null, error?:any|null }
+  return data as { id:string, status:string, page_url?:string|null, campaign_id?:string|null, error?:any|null, payload?:any|null, result?:any|null }
 }

@@ -62,7 +62,7 @@ def update_test_status(test_id: str, status: str, error: Optional[Dict[str, Any]
         session.commit()
 
 
-def set_test_result(test_id: str, page: Dict[str, Any], campaign: Dict[str, Any], creatives: list):
+def set_test_result(test_id: str, page: Dict[str, Any], campaign: Dict[str, Any], creatives: list, angles: Optional[list] = None, trace: Optional[list] = None):
     with SessionLocal() as session:
         t = session.get(Test, test_id)
         if not t:
@@ -70,7 +70,12 @@ def set_test_result(test_id: str, page: Dict[str, Any], campaign: Dict[str, Any]
         t.status = "completed"
         t.page_url = page.get("url") if page else None
         t.campaign_id = (campaign or {}).get("campaign_id")
-        t.result_json = json.dumps({"page": page, "campaign": campaign, "creatives": creatives}, ensure_ascii=False)
+        result_payload: Dict[str, Any] = {"page": page, "campaign": campaign, "creatives": creatives}
+        if angles is not None:
+            result_payload["angles"] = angles
+        if trace is not None:
+            result_payload["trace"] = trace
+        t.result_json = json.dumps(result_payload, ensure_ascii=False)
         t.updated_at = _now()
         session.commit()
 

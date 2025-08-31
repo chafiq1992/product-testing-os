@@ -106,7 +106,7 @@ export default function Page(){
 
   // Internal test tracking
   const [testId,setTestId]=useState<string|undefined>(undefined)
-  const [latestStatus,setLatestStatus]=useState<{status:string,page_url?:string|null,campaign_id?:string|null,error?:any}|null>(null)
+  const [latestStatus,setLatestStatus]=useState<any>(null)
 
   const selectedNode = flow.nodes.find(n=>n.id===selected)||null
 
@@ -227,7 +227,7 @@ export default function Page(){
       // Immediately start polling and stash into bag for downstream nodes
       const info = await pollUntilDone(res.test_id)
       bag.refs.test = info
-      return { test_id: res.test_id, status: info.status }
+      return { test_id: res.test_id, status: info.status, request: { method:'POST', endpoint:'/api/tests' }, response: info }
     }
     if(type==='create_landing'){
       const info = bag.refs.test
@@ -249,6 +249,9 @@ export default function Page(){
         // opportunistically update landing/meta nodes if visible
         const landing = flow.nodes.find(n=>n.data?.type==='create_landing')
         const ads = flow.nodes.find(n=>n.data?.type==='meta_ads_launch')
+        const copy = flow.nodes.find(n=>n.data?.type==='generate_copy')
+        // update generate_copy with real angles if available
+        if(copy && (s as any).result?.angles){ updateNodeRun(copy.id, { status:'success', output:{ angles: (s as any).result.angles, creatives: (s as any).result.creatives } }) }
         if(landing && s.page_url){ updateNodeRun(landing.id, { status:'success', output:{ url: s.page_url } }) }
         if(ads && s.campaign_id){ updateNodeRun(ads.id, { status:'success', output:{ campaign_id: s.campaign_id } }) }
         if(s.status==='completed' || s.status==='failed') { final=s; break }
@@ -338,7 +341,7 @@ export default function Page(){
                 <Edge key={e.id} edge={e} nodes={flow.nodes} active={running && activeNodeId===e.from} />
               ))}
               {flow.nodes.map(n=> (
-                <NodeShell key={n.id} node={n} selected={selected===n.id} onMouseDown={onNodeMouseDown} onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))} active={running && activeNodeId===n.id} />
+                <NodeShell key={n.id} node={n} selected={selected===n.id} onMouseDown={onNodeMouseDown} onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))} active={running && activeNodeId===n.id} trace={(latestStatus as any)?.result?.trace||[]} />
               ))}
             </div>
           </div>
@@ -368,6 +371,12 @@ export default function Page(){
                   )}
                   {selectedNode.run?.error && (
                     <div className="text-rose-600">{String(selectedNode.run.error)}</div>
+                  )}
+                  {!!(latestStatus as any)?.result?.trace && (
+                    <div>
+                      <div className="text-slate-500 mb-1">Requests</div>
+                      <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(traceForNode(selectedNode, (latestStatus as any).result.trace), null, 2)}</pre>
+                    </div>
                   )}
                 </div>
               )}
@@ -448,7 +457,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[] }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -466,7 +475,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active }:{ node:Flow
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected)}
+          {renderNodeBody(node, selected, trace)}
         </div>
       </motion.div>
     </div>
@@ -478,7 +487,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[]){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
@@ -487,6 +496,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean){
       </div>
     )
   }
+  const t = traceForNode(node, trace)
   return (
     <div className="text-xs space-y-1">
       <div className="text-slate-500">{node.data.label||node.data.type}</div>
@@ -496,9 +506,24 @@ function renderNodeBody(node:FlowNode, expanded:boolean){
           <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
         </details>
       )}
+      {!!t?.length && (
+        <details className="text-xs mt-1">
+          <summary className="cursor-pointer text-slate-500">Requests</summary>
+          <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(t,null,2)}</pre>
+        </details>
+      )}
       {node.run?.error && (<div className="text-rose-600">{String(node.run.error)}</div>)}
     </div>
   )
+}
+
+function traceForNode(node:FlowNode, trace:any[]){
+  if(!trace) return []
+  const type = node.data?.type||node.type
+  if(type==='generate_copy') return trace.filter((x:any)=>x.step==='generate_copy')
+  if(type==='create_landing') return trace.filter((x:any)=>x.step==='shopify')
+  if(type==='meta_ads_launch') return trace.filter((x:any)=>x.step==='meta')
+  return []
 }
 
 function GridBackdrop(){
