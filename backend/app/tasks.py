@@ -3,19 +3,42 @@ from app.integrations.openai_client import gen_angles_and_copy, gen_images
 from app.integrations.shopify_client import create_product_and_page
 from app.integrations.meta_client import create_campaign_with_ads
 from app.config import CELERY_BROKER_URL, CELERY_RESULT_BACKEND
+from app import db
 
 celery = Celery(__name__, broker=CELERY_BROKER_URL, backend=CELERY_RESULT_BACKEND)
 
 @celery.task(name="pipeline_launch")
 def pipeline_launch(test_id: str, payload: dict):
-    angles = gen_angles_and_copy(payload)
+    # Mark running
+    db.update_test_status(test_id, "running")
 
-    creatives = []
-    for a in angles:
-        imgs = gen_images(a, payload)
-        for img in imgs[:1]:
-            creatives.append({"angle": a, "image_url": img})
+    try:
+        # Step 1: Angles & copy
+        angles = gen_angles_and_copy(payload)
 
-    page = create_product_and_page(payload, angles, creatives)
-    campaign = create_campaign_with_ads(payload, angles, creatives, page["url"])
-    return {"ok": True, "page": page, "campaign": campaign}
+        # Step 2: Build creatives. Prefer uploaded images if provided; otherwise use AI images
+        uploaded = payload.get("uploaded_images") or []
+        creatives = []
+        for idx, a in enumerate(angles):
+            image_url = None
+            if uploaded:
+                image_url = uploaded[idx % len(uploaded)]
+            else:
+                imgs = gen_images(a, payload)
+                image_url = imgs[0] if imgs else None
+            if image_url:
+                creatives.append({"angle": a, "image_url": image_url})
+
+        # Step 3: Shopify product + page
+        page = create_product_and_page(payload, angles, creatives)
+
+        # Step 4: Meta campaign + ads (paused)
+        campaign = create_campaign_with_ads(payload, angles, creatives, page["url"])
+
+        # Persist results
+        db.set_test_result(test_id, page, campaign, creatives)
+        return {"ok": True, "page": page, "campaign": campaign}
+
+    except Exception as e:
+        db.set_test_failed(test_id, {"message": str(e)})
+        raise

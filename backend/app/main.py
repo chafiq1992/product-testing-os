@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, Form
+from fastapi import FastAPI, UploadFile, Form, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -8,6 +8,9 @@ import json, os
 from pathlib import Path
 
 from app.tasks import pipeline_launch
+from app.storage import save_file
+from app.config import BASE_URL
+from app import db
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
@@ -41,7 +44,7 @@ async def create_test(
     pain_points: str = Form(...),
     base_price: Optional[float] = Form(None),
     title: Optional[str] = Form(None),
-    images: List[UploadFile] = []
+    images: List[UploadFile] = File([])
 ):
     test_id = str(uuid4())
     payload = ProductInput(
@@ -52,8 +55,33 @@ async def create_test(
         pain_points=json.loads(pain_points),
     ).model_dump()
 
+    # Save uploaded images (if any) and include absolute URLs in payload
+    uploaded_urls: List[str] = []
+    for i, f in enumerate(images or []):
+        filename = f"{test_id}_{i}_{f.filename}"
+        url_path = save_file(filename, await f.read())  # returns /uploads/...
+        # Construct absolute URL so worker/Meta can access it
+        if BASE_URL.endswith("/"):
+            uploaded_urls.append(f"{BASE_URL[:-1]}{url_path}")
+        else:
+            uploaded_urls.append(f"{BASE_URL}{url_path}")
+
+    if uploaded_urls:
+        payload["uploaded_images"] = uploaded_urls
+
+    # Persist initial queued test
+    db.create_test_row(test_id, payload)
+
     pipeline_launch.delay(test_id, payload)
     return {"test_id": test_id, "status": "queued"}
+
+
+@app.get("/api/tests/{test_id}")
+async def get_test(test_id: str):
+    t = db.get_test(test_id)
+    if not t:
+        return {"error": "not_found"}
+    return t
 
 @app.get("/health")
 async def health():

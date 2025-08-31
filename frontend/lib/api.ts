@@ -12,3 +12,8 @@ export async function launchTest(payload:{audience:string, benefits:string[], pa
   const {data} = await axios.post(`${base}/api/tests`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { test_id:string, status:string }
 }
+
+export async function getTest(id: string){
+  const {data} = await axios.get(`${base}/api/tests/${id}`)
+  return data as { id:string, status:string, page_url?:string|null, campaign_id?:string|null, error?:any|null }
+}

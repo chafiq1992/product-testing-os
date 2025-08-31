@@ -48,7 +48,7 @@ def _gql(query: str, variables: dict):
 def create_product_and_page(payload: dict, angles: list, creatives: list) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
-    desc_html = "<ul>" + "".join([f"<li>{p}</li>"]) + "</ul>" if ksp else ""
+    desc_html = "<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else ""
 
     product_in = {
         "title": title,

@@ -1,9 +1,9 @@
 import os, json
 from tenacity import retry, stop_after_attempt, wait_exponential
-import openai
+from openai import OpenAI
 
-openai.api_key = os.environ.get("OPENAI_API_KEY")
-openai.project = os.environ.get("OPENAI_PROJECT")  # Required for sk-proj keys
+# Initialize OpenAI client (reads OPENAI_API_KEY from env)
+client = OpenAI()
 
 ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 
@@ -23,7 +23,7 @@ def gen_angles_and_copy(payload: dict) -> list:
         + json.dumps(payload, ensure_ascii=False)
         + f"\nAudience: {payload.get('audience')}"
     )
-    resp = openai.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role":"user","content":msg}],
         response_format={"type":"json_object"}

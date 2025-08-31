@@ -1,9 +1,9 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest } from '@/lib/api'
+import { launchTest, getTest } from '@/lib/api'
 
 export default function Page(){
   const [audience,setAudience]=useState('Parents of toddlers in Morocco')
@@ -14,6 +14,7 @@ export default function Page(){
   const [files,setFiles]=useState<File[]>([])
   const [loading,setLoading]=useState(false)
   const [result,setResult]=useState<{test_id:string,status:string}|null>(null)
+  const [status,setStatus]=useState<{status:string,page_url?:string|null,campaign_id?:string|null,error?:any}|null>(null)
 
   async function onLaunch(){
     setLoading(true)
@@ -22,6 +23,24 @@ export default function Page(){
       setResult(res)
     }finally{ setLoading(false) }
   }
+
+  useEffect(()=>{
+    if(!result) return
+    let cancelled=false
+    const id=result.test_id
+    async function poll(){
+      try{
+        const s = await getTest(id)
+        if(!cancelled){ setStatus(s) }
+        if(s.status==='completed' || s.status==='failed'){ return }
+        setTimeout(poll, 3000)
+      }catch{
+        if(!cancelled){ setTimeout(poll, 5000) }
+      }
+    }
+    poll()
+    return ()=>{ cancelled=true }
+  },[result])
 
   return (
     <div className="container">
@@ -74,8 +93,17 @@ export default function Page(){
           </ul>
           {result && (
             <div className="mt-6 p-4 rounded-lg bg-[#0c122a] border border-slate-700">
-              <div className="text-sm text-slate-300">Queued test <span className="font-mono">{result.test_id}</span></div>
-              <div className="text-xs text-slate-400 mt-2">Pipeline will generate angles & images, create Shopify page and a paused Meta campaign.</div>
+              <div className="text-sm text-slate-300">Test <span className="font-mono">{result.test_id}</span></div>
+              <div className="text-xs text-slate-400 mt-2">Status: <span className="font-semibold">{status?.status||result.status}</span></div>
+              {status?.page_url && (
+                <div className="text-xs text-slate-400 mt-2">Page: <a className="underline" href={status.page_url} target="_blank">{status.page_url}</a></div>
+              )}
+              {status?.campaign_id && (
+                <div className="text-xs text-slate-400 mt-1">Meta campaign ID: <span className="font-mono">{status.campaign_id}</span></div>
+              )}
+              {status?.status==='failed' && (
+                <div className="text-xs text-red-400 mt-2">Failed: {String(status.error?.message||'Unknown error')}</div>
+              )}
             </div>
           )}
         </motion.div>
