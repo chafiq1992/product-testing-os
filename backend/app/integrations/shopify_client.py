@@ -3,7 +3,17 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
 
-SHOP = os.getenv("SHOPIFY_SHOP_DOMAIN", "")  # your-store.myshopify.com
+def _normalize_shop_domain(val: str) -> str:
+    v = (val or "").strip()
+    # remove protocol if provided and any stray whitespace or slashes
+    if v.lower().startswith("https://"):
+        v = v[8:]
+    elif v.lower().startswith("http://"):
+        v = v[7:]
+    v = v.strip().strip("/\t\n\r ")
+    return v
+
+SHOP = _normalize_shop_domain(os.getenv("SHOPIFY_SHOP_DOMAIN", ""))  # your-store.myshopify.com
 TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
 API_KEY = os.getenv("SHOPIFY_API_KEY", "")
 PASSWORD = os.getenv("SHOPIFY_PASSWORD", "")
