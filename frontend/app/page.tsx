@@ -341,7 +341,7 @@ export default function Page(){
                 <Edge key={e.id} edge={e} nodes={flow.nodes} active={running && activeNodeId===e.from} />
               ))}
               {flow.nodes.map(n=> (
-                <NodeShell key={n.id} node={n} selected={selected===n.id} onMouseDown={onNodeMouseDown} onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))} active={running && activeNodeId===n.id} trace={(latestStatus as any)?.result?.trace||[]} />
+                <NodeShell key={n.id} node={n} selected={selected===n.id} onMouseDown={onNodeMouseDown} onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))} active={running && activeNodeId===n.id} trace={(latestStatus as any)?.result?.trace||[]} payload={(latestStatus as any)?.payload||null} />
               ))}
             </div>
           </div>
@@ -457,7 +457,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[] }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -475,7 +475,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace }:{ no
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace)}
+          {renderNodeBody(node, selected, trace, payload)}
         </div>
       </motion.div>
     </div>
@@ -487,12 +487,18 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[]){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
         <div className="text-slate-500">{node.data.topic}</div>
         <div className="text-slate-500">Start when product input is ready.</div>
+        {payload && (
+          <details className="text-xs mt-1" open={expanded}>
+            <summary className="cursor-pointer text-slate-500">Inputs</summary>
+            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(payload,null,2)}</pre>
+          </details>
+        )}
       </div>
     )
   }
@@ -521,7 +527,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   if(!trace) return []
   const type = node.data?.type||node.type
   if(type==='generate_copy') return trace.filter((x:any)=>x.step==='generate_copy')
-  if(type==='create_landing') return trace.filter((x:any)=>x.step==='shopify')
+  if(type==='create_landing') return trace.filter((x:any)=>x.step==='landing_copy' || x.step==='shopify')
   if(type==='meta_ads_launch') return trace.filter((x:any)=>x.step==='meta')
   return []
 }

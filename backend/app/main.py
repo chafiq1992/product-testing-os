@@ -72,19 +72,18 @@ async def create_test(
     # Persist initial queued test
     db.create_test_row(test_id, payload)
 
-    # Prefer Celery if broker/worker are configured; allow a sync fallback via env
-    try:
-        sync_flag = (os.getenv("SYNC_PIPELINE", "false").lower() in ("1", "true", "yes"))
-        if sync_flag:
-            # Run in a background thread to return immediately
-            import threading
-            threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
-        else:
-            pipeline_launch.delay(test_id, payload)
-    except Exception as e:
-        # If enqueue fails (e.g., no broker), fall back to sync so tests aren't stuck
+    # Run synchronously by default unless USE_CELERY is explicitly enabled
+    use_celery = os.getenv("USE_CELERY", "false").lower() in ("1", "true", "yes")
+    if not use_celery:
         import threading
         threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
+    else:
+        try:
+            pipeline_launch.delay(test_id, payload)
+        except Exception:
+            # If enqueue fails (e.g., no broker), fall back to sync so tests aren't stuck
+            import threading
+            threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
 
     return {"test_id": test_id, "status": "queued"}
 

@@ -1,5 +1,6 @@
 from celery import Celery
-from app.integrations.openai_client import gen_angles_and_copy, gen_images, IMAGE_PROMPT
+import os
+from app.integrations.openai_client import gen_angles_and_copy, gen_images, IMAGE_PROMPT, LANDING_COPY_PROMPT, gen_landing_copy
 from app.integrations.shopify_client import create_product_and_page
 from app.integrations.meta_client import create_campaign_with_ads
 from app.config import CELERY_BROKER_URL, CELERY_RESULT_BACKEND
@@ -16,10 +17,22 @@ def run_pipeline_sync(test_id: str, payload: dict):
         trace = []
         # Step 1: Angles & copy
         angles = gen_angles_and_copy(payload)
+        # reconstruct exact prompt for trace
+        try:
+            import json as _json
+            angles_prompt = (
+                "You are a direct-response strategist. Given the PRODUCT INFO as JSON, respond with ONLY valid JSON following this exact schema: "
+                '{"angles":[{"name":str,"ksp":[str,str,str],"headlines":[str,str,str,str,str],"titles":[str,str],"primaries":[str,str]}]}.\n'
+                "Rules: headlines <= 40 chars; titles <= 30; primaries <= 120; avoid disallowed ad claims.\n"
+                + "PRODUCT INFO:\n" + _json.dumps(payload, ensure_ascii=False)
+                + f"\nAudience: {payload.get('audience')}"
+            )
+        except Exception:
+            angles_prompt = None
         trace.append({
             "step": "generate_copy",
             "provider": "openai",
-            "request": {"model": "gpt-4o-mini", "payload": payload},
+            "request": {"model": "gpt-4o-mini", "prompt": angles_prompt},
             "response": {"angles": angles},
         })
 
@@ -51,11 +64,20 @@ def run_pipeline_sync(test_id: str, payload: dict):
             })
 
         # Step 3: Shopify product + page
-        page = create_product_and_page(payload, angles, creatives)
+        # Step 2.5: Generate landing copy via OpenAI (for transparency + optional page body)
+        landing_copy = gen_landing_copy(payload, angles)
+        trace.append({
+            "step": "landing_copy",
+            "provider": "openai",
+            "request": {"model": "gpt-4o-mini", "prompt": LANDING_COPY_PROMPT, "context": {"angles": angles[:3]}},
+            "response": landing_copy,
+        })
+
+        page = create_product_and_page(payload, angles, creatives, landing_copy)
         trace.append({
             "step": "shopify",
             "provider": "shopify",
-            "request": {"endpoint": "graphql", "notes": "productCreate + pageCreate"},
+            "request": {"endpoint": "graphql", "url": "{}/admin/api/{}/graphql.json".format(os.getenv("SHOPIFY_SHOP_DOMAIN",""), os.getenv("SHOPIFY_API_VERSION","2025-07")), "operations": ["productCreate", "pageCreate"]},
             "response": {"page": page},
         })
 
@@ -64,7 +86,7 @@ def run_pipeline_sync(test_id: str, payload: dict):
         trace.append({
             "step": "meta",
             "provider": "meta",
-            "request": {"notes": "campaign/adsets/creatives/ads created"},
+            "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"]},
             "response": {"campaign_id": campaign.get("campaign_id"), "adsets": campaign.get("adsets")},
         })
 

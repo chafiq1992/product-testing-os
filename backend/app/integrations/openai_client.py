@@ -47,3 +47,30 @@ def gen_images(angle: dict, payload: dict) -> list:
         n=1
     )
     return [img.data[0].url]
+
+
+LANDING_COPY_PROMPT = (
+    "You are a CRO specialist. Given PRODUCT INFO and top angles, output ONLY valid JSON with keys: "
+    "{\"headline\": str, \"subheadline\": str, \"sections\": [{\"title\": str, \"body\": str}], \"faq\": [{\"q\": str, \"a\": str}], \"cta\": str, \"html\": str}. "
+    "The html should be a concise landing snippet with semantic tags, no external CSS, safe inline styles."
+)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def gen_landing_copy(payload: dict, angles: list) -> dict:
+    msg = (
+        LANDING_COPY_PROMPT
+        + "\nPRODUCT INFO:\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\nTOP ANGLES:\n"
+        + json.dumps(angles[:3], ensure_ascii=False)
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"user","content":msg}],
+        response_format={"type":"json_object"}
+    )
+    text = resp.choices[0].message.content
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"headline": None, "subheadline": None, "sections": [], "faq": [], "cta": None, "html": None}

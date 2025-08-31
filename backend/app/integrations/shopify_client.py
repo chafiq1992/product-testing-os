@@ -45,10 +45,10 @@ def _gql(query: str, variables: dict):
     return data
 
 
-def create_product_and_page(payload: dict, angles: list, creatives: list) -> dict:
+def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
-    desc_html = "<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else ""
+    desc_html = landing_copy.get("html") if landing_copy and landing_copy.get("html") else ("<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else "")
 
     product_in = {
         "title": title,
