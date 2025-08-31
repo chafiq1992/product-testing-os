@@ -44,7 +44,8 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         "name": f"Test {payload.get('title','Product')}",
         "objective": "OUTCOME_SALES",
         "status": "PAUSED",
-        "buying_type": "AUCTION"
+        "buying_type": "AUCTION",
+        "special_ad_categories": []
     })
 
     results = {"campaign_id": camp["id"], "adsets": []}
