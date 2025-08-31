@@ -28,6 +28,20 @@ def _post(path: str, payload: dict, files=None):
             body = str(e)
         raise RuntimeError(f"Meta API error {r.status_code} at {url}: {body}") from e
 
+def _get(path: str, params: dict | None = None):
+    params = {**(params or {}), "access_token": ACCESS}
+    url = f"{BASE}/{path}"
+    try:
+        r = requests.get(url, params=params, timeout=120)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        try:
+            body = r.text
+        except Exception:
+            body = str(e)
+        raise RuntimeError(f"Meta API GET error {r.status_code} at {url}: {body}") from e
+
 
 def _upload_image(url: str):
     res = _post(f"act_{AD_ACCOUNT_ID}/adimages", {"url": url})
@@ -47,6 +61,8 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
     requests_log = []
 
     # Campaign
+    # Preflight: verify ad account is accessible by the token
+    _get(f"act_{AD_ACCOUNT_ID}", {"fields": "id,account_status,name"})
     campaign_payload = {
         "name": f"Test {payload.get('title','Product')}",
         "objective": "OUTCOME_TRAFFIC" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OUTCOME_SALES",
