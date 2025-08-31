@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, Form, File
+from fastapi import FastAPI, UploadFile, Form, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -39,6 +39,7 @@ class ProductInput(BaseModel):
 
 @app.post("/api/tests")
 async def create_test(
+    request: Request,
     audience: str = Form(...),
     benefits: str = Form(...),
     pain_points: str = Form(...),
@@ -57,14 +58,17 @@ async def create_test(
 
     # Save uploaded images (if any) and include absolute URLs in payload
     uploaded_urls: List[str] = []
+    # Determine base URL: prefer env BASE_URL if set, otherwise derive from request
+    req_base = str(request.base_url).rstrip("/")
+    abs_base = BASE_URL or req_base
     for i, f in enumerate(images or []):
         filename = f"{test_id}_{i}_{f.filename}"
         url_path = save_file(filename, await f.read())  # returns /uploads/...
         # Construct absolute URL so worker/Meta can access it
-        if BASE_URL.endswith("/"):
-            uploaded_urls.append(f"{BASE_URL[:-1]}{url_path}")
+        if abs_base.endswith("/"):
+            uploaded_urls.append(f"{abs_base[:-1]}{url_path}")
         else:
-            uploaded_urls.append(f"{BASE_URL}{url_path}")
+            uploaded_urls.append(f"{abs_base}{url_path}")
 
     if uploaded_urls:
         payload["uploaded_images"] = uploaded_urls

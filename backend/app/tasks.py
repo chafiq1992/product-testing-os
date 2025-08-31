@@ -15,6 +15,9 @@ def run_pipeline_sync(test_id: str, payload: dict):
     db.update_test_status(test_id, "running")
     try:
         trace = []
+        angles = []
+        creatives = []
+        landing_copy = None
         # Step 1: Angles & copy
         angles = gen_angles_and_copy(payload)
         # reconstruct exact prompt for trace
@@ -94,7 +97,8 @@ def run_pipeline_sync(test_id: str, payload: dict):
         db.set_test_result(test_id, page, campaign, creatives, angles=angles, trace=trace)
         return {"ok": True, "page": page, "campaign": campaign}
     except Exception as e:
-        db.set_test_failed(test_id, {"message": str(e)})
+        # Persist partial context so UI can still show prompts/outputs of earlier steps
+        db.set_test_failed(test_id, {"message": str(e)}, trace=trace, partial={"angles": angles, "creatives": creatives, "landing_copy": landing_copy})
         raise
 
 @celery.task(name="pipeline_launch")

@@ -80,13 +80,26 @@ def set_test_result(test_id: str, page: Dict[str, Any], campaign: Dict[str, Any]
         session.commit()
 
 
-def set_test_failed(test_id: str, error: Dict[str, Any]):
+def set_test_failed(test_id: str, error: Dict[str, Any], trace: Optional[list] = None, partial: Optional[Dict[str, Any]] = None):
     with SessionLocal() as session:
         t = session.get(Test, test_id)
         if not t:
             return
         t.status = "failed"
         t.error_json = json.dumps(error, ensure_ascii=False)
+        # Preserve any partial results and trace so UI can show prompts/outputs
+        if trace is not None or partial is not None:
+            current = {}
+            if t.result_json:
+                try:
+                    current = json.loads(t.result_json)
+                except Exception:
+                    current = {}
+            if trace is not None:
+                current["trace"] = trace
+            if partial is not None:
+                current.update(partial)
+            t.result_json = json.dumps(current, ensure_ascii=False)
         t.updated_at = _now()
         session.commit()
 

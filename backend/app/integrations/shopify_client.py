@@ -33,6 +33,10 @@ mutation CreatePage($page: PageCreateInput!) {
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
 def _gql(query: str, variables: dict):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    if not TOKEN:
+        raise RuntimeError("SHOPIFY_ACCESS_TOKEN is not set. Please configure SHOPIFY_ACCESS_TOKEN env var.")
     r = requests.post(GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60)
     r.raise_for_status()
     j = r.json()
