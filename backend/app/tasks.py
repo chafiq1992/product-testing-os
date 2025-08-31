@@ -99,7 +99,7 @@ def run_pipeline_sync(test_id: str, payload: dict):
             trace.append({
                 "step": "meta",
                 "provider": "meta",
-                "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"]},
+                "request": {"endpoints": ["campaigns","adsets","adcreatives","ads"], "payloads": campaign.get("requests")},
                 "response": {"campaign_id": campaign.get("campaign_id"), "adsets": campaign.get("adsets")},
             })
         except Exception as meta_err:
