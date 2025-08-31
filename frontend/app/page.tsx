@@ -75,9 +75,26 @@ export default function Page(){
   const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(defaultFlow())
   const [selected,setSelected]=useState<string|null>(null)
   const [zoom,setZoom]=useState(1)
+  const [pan,setPan]=useState<{x:number,y:number}>({x:0,y:0})
   const [running,setRunning]=useState(false)
   const [activeNodeId,setActiveNodeId]=useState<string|null>(null)
   const [runLog,setRunLog]=useState<{time:string,level:'info'|'error',msg:string,nodeId?:string}[]>([])
+  const canvasRef = useRef<HTMLDivElement|null>(null)
+  const flowRef = useRef(flow)
+  useEffect(()=>{ flowRef.current = flow },[flow])
+
+  // Run history
+  type RunHistoryEntry = {
+    id:string,
+    time:string,
+    inputs:{ audience:string, title:string, price:number|'', benefits:string[], pains:string[], files:string[] },
+    nodes:Array<{ id:string, type:NodeType, data:any, run:RunState }>,
+    edges:FlowEdge[],
+    log:{time:string,level:'info'|'error',msg:string,nodeId?:string}[]
+  }
+  const [history,setHistory]=useState<RunHistoryEntry[]>([])
+  useEffect(()=>{ try{ const raw=localStorage.getItem('flow_history'); if(raw){ setHistory(JSON.parse(raw)) } }catch{} },[])
+  function saveHistory(entry:RunHistoryEntry){ const next=[entry, ...history].slice(0,20); setHistory(next); try{ localStorage.setItem('flow_history', JSON.stringify(next)) }catch{} }
 
   // Product inputs (left panel) — mapped to existing backend
   const [audience,setAudience]=useState('Parents of toddlers in Morocco')
@@ -110,8 +127,26 @@ export default function Page(){
     dragRef.current = { id: node.id, offsetX: e.clientX-rect.left, offsetY: e.clientY-rect.top }
     setSelected(node.id)
   }
-  function onMouseMove(e:React.MouseEvent<HTMLDivElement>){ const d=dragRef.current; if(!d.id) return; setFlow(f=>({...f, nodes:f.nodes.map(n=> n.id===d.id? {...n, x:(e.clientX-d.offsetX-280)/zoom, y:(e.clientY-d.offsetY-80)/zoom } : n)})) }
-  function onMouseUp(){ dragRef.current = { id:null, offsetX:0, offsetY:0 } }
+  const panRef = useRef<{active:boolean,startX:number,startY:number,origX:number,origY:number}>({active:false,startX:0,startY:0,origX:0,origY:0})
+  function onCanvasMouseDown(e:React.MouseEvent<HTMLDivElement>){
+    if(e.button===1 || e.button===2){
+      e.preventDefault();
+      panRef.current = { active:true, startX:e.clientX, startY:e.clientY, origX:pan.x, origY:pan.y }
+    }
+  }
+  function onMouseMove(e:React.MouseEvent<HTMLDivElement>){
+    if(panRef.current.active){
+      const dx = (e.clientX - panRef.current.startX)/zoom
+      const dy = (e.clientY - panRef.current.startY)/zoom
+      setPan({ x: panRef.current.origX + dx, y: panRef.current.origY + dy })
+      return
+    }
+    const d=dragRef.current; if(!d.id) return; const rect = canvasRef.current?.getBoundingClientRect(); if(!rect) return;
+    const newX = (e.clientX - rect.left - d.offsetX)/zoom - pan.x
+    const newY = (e.clientY - rect.top - d.offsetY)/zoom - pan.y
+    setFlow(f=>({...f, nodes:f.nodes.map(n=> n.id===d.id? {...n, x:newX, y:newY } : n)}))
+  }
+  function onMouseUp(){ dragRef.current = { id:null, offsetX:0, offsetY:0 }; panRef.current.active=false }
 
   async function simulate(){
     if(running) return
@@ -126,6 +161,17 @@ export default function Page(){
     if(!start){ setRunning(false); return }
     await visit(start.id, { refs:{} })
     setRunning(false)
+    // Save run history snapshot
+    const snap = flowRef.current
+    const entry:RunHistoryEntry = {
+      id: `r${Date.now()}`,
+      time: now(),
+      inputs: { audience, title, price, benefits, pains, files: files.map(f=>f.name) },
+      nodes: snap.nodes.map(n=> ({ id:n.id, type:n.type, data:n.data, run:n.run })),
+      edges: snap.edges,
+      log: runLog,
+    }
+    saveHistory(entry)
   }
 
   async function visit(nodeId:string, bag:any){
@@ -285,9 +331,9 @@ export default function Page(){
           </div>
           <Separator className="mb-2"/>
 
-          <div className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
+          <div ref={canvasRef} className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseDown={onCanvasMouseDown} onContextMenu={(e)=>e.preventDefault()}>
             <GridBackdrop/>
-            <div className="absolute left-0 top-0 origin-top-left" style={{transform:`scale(${zoom})`, transformOrigin:'0 0'}}>
+            <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0'}}>
               {flow.edges.map(e=> (
                 <Edge key={e.id} edge={e} nodes={flow.nodes} active={running && activeNodeId===e.from} />
               ))}
@@ -359,6 +405,24 @@ export default function Page(){
               {!latestStatus && <div className="text-xs text-slate-500">Ready.</div>}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">History</CardTitle></CardHeader>
+            <CardContent className="space-y-2 max-h-[240px] overflow-y-auto">
+              {history.length===0 && (<div className="text-xs text-slate-500">No runs yet.</div>)}
+              {history.map(h=> (
+                <details key={h.id} className="border rounded-lg p-2">
+                  <summary className="text-xs cursor-pointer text-slate-600">{new Date(h.time).toLocaleString()}</summary>
+                  <div className="mt-2 space-y-2 text-xs">
+                    <div className="text-slate-500">Inputs</div>
+                    <pre className="bg-slate-50 p-2 rounded overflow-x-auto">{JSON.stringify(h.inputs,null,2)}</pre>
+                    <div className="text-slate-500">Node results</div>
+                    <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[160px]">{JSON.stringify(h.nodes.map(n=>({id:n.id, type:n.type, label:n.data?.label||n.data?.type, run:n.run})),null,2)}</pre>
+                  </div>
+                </details>
+              ))}
+            </CardContent>
+          </Card>
         </aside>
       </div>
 
@@ -402,7 +466,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active }:{ node:Flow
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node)}
+          {renderNodeBody(node, selected)}
         </div>
       </motion.div>
     </div>
@@ -414,7 +478,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode){
+function renderNodeBody(node:FlowNode, expanded:boolean){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
@@ -427,7 +491,7 @@ function renderNodeBody(node:FlowNode){
     <div className="text-xs space-y-1">
       <div className="text-slate-500">{node.data.label||node.data.type}</div>
       {node.run?.output && (
-        <details className="text-xs mt-1">
+        <details className="text-xs mt-1" open={expanded}>
           <summary className="cursor-pointer text-slate-500">Results</summary>
           <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
         </details>
@@ -457,7 +521,7 @@ function Edge({ edge, nodes, active }:{ edge:FlowEdge, nodes:FlowNode[], active:
   const d = makePath(x1,y1,x2,y2)
   return (
     <svg className="absolute overflow-visible pointer-events-none" style={{left:0, top:0}}>
-      <path d={d} className={`fill-none ${active? 'stroke-blue-400':'stroke-slate-300'}`} strokeWidth={active?3:2} />
+      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} />
     </svg>
   )
 }

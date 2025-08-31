@@ -9,3 +9,8 @@ body{background:linear-gradient(180deg,#0b1020 0%,#0e1228 100%);color:#e6e8ef}
 .btn-primary{background:#3b82f6}
 .btn-ghost{background:transparent;border:1px solid #2b3350}
 .label{color:#a6b0cf;font-size:12px}
+
+/* Flow edge animation */
+.edge{stroke:#cbd5e1}
+.edge-active{stroke:#60a5fa;stroke-dasharray:8 8;animation:edge-dash 1s linear infinite}
+@keyframes edge-dash{to{stroke-dashoffset:-16}}
