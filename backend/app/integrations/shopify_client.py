@@ -67,6 +67,23 @@ def _gql(query: str, variables: dict):
     return data
 
 
+def _rest_post(path: str, payload: dict):
+    """Minimal REST helper for endpoints not covered by GraphQL (e.g., product images)."""
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = requests.post(url, headers=headers, json=payload, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
 def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
@@ -84,10 +101,21 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         "descriptionHtml": desc_html,
         "status": "ACTIVE",
     }
-    if image_urls:
-        product_in["images"] = [{"src": u} for u in image_urls]
 
     pdata = _gql(PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
+    # Attach images via REST after creation (GraphQL ProductInput does not accept images)
+    if image_urls:
+        try:
+            numeric_id = pdata["id"].split("/")[-1]
+        except Exception:
+            numeric_id = None
+        if numeric_id:
+            for u in image_urls:
+                try:
+                    _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": u}})
+                except Exception:
+                    # Continue on best-effort basis; image attachment failures should not block page creation
+                    pass
 
     # Build landing page body with sections matched to images (by index)
     sections = (landing_copy or {}).get("sections") or []
