@@ -96,7 +96,7 @@ export async function shopifyUploadProductImages(payload:{
   landing_copy?: any
 }){
   const {data} = await axios.post(`${base}/api/shopify/upload_images`, payload)
-  return data as { urls: string[] }
+  return data as { urls: string[], images?: any[] }
 }
 
 export async function shopifyCreateProductFromTitleDesc(payload:{
