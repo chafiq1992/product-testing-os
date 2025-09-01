@@ -18,9 +18,10 @@ BASE_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_angles_and_copy(payload: dict, model: str | None = None) -> list:
+def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override: str | None = None) -> list:
+    base = (prompt_override or BASE_PROMPT)
     msg = (
-        BASE_PROMPT
+        base
         + "PRODUCT INFO:\n"
         + json.dumps(payload, ensure_ascii=False)
         + f"\nAudience: {payload.get('audience')}"
@@ -59,9 +60,10 @@ LANDING_COPY_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_landing_copy(payload: dict, angles: list, model: str | None = None, image_urls: list[str] | None = None) -> dict:
+def gen_landing_copy(payload: dict, angles: list, model: str | None = None, image_urls: list[str] | None = None, prompt_override: str | None = None) -> dict:
+    base = (prompt_override or LANDING_COPY_PROMPT)
     msg = (
-        LANDING_COPY_PROMPT
+        base
         + "\nPRODUCT INFO:\n"
         + json.dumps(payload, ensure_ascii=False)
         + "\nTOP ANGLES:\n"

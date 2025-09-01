@@ -148,10 +148,11 @@ class AnglesRequest(BaseModel):
     product: ProductInput
     num_angles: Optional[int] = 2
     model: Optional[str] = None
+    prompt: Optional[str] = None
 
 @app.post("/api/llm/angles")
 async def api_llm_angles(req: AnglesRequest):
-    angles = gen_angles_and_copy(req.product.model_dump(), model=req.model)
+    angles = gen_angles_and_copy(req.product.model_dump(), model=req.model, prompt_override=req.prompt)
     k = max(1, min(5, req.num_angles or 2))
     return {"angles": angles[:k]}
 
@@ -181,6 +182,7 @@ class LandingCopyRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     model: Optional[str] = None
+    prompt: Optional[str] = None
     image_urls: Optional[List[str]] = None
 
 @app.post("/api/llm/landing_copy")
@@ -192,7 +194,7 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
     if req.description:
         payload["description"] = req.description
     angles = [req.angle] if req.angle else []
-    data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [])
+    data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt)
     return data
 
 

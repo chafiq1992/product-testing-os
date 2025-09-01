@@ -98,6 +98,11 @@ export default function Page(){
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   const [model,setModel]=useState<string>('gpt-4o-mini')
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
+  // Prompt templates (editable in Prompts tab)
+  const [anglesPrompt,setAnglesPrompt]=useState<string>("You are a direct-response strategist. Generate 2-5 angle objects with name, ksp, headlines, titles, primaries for the PRODUCT INFO.")
+  const [titleDescPrompt,setTitleDescPrompt]=useState<string>("Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.")
+  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>("You are a CRO specialist. Create landing copy JSON with headline, subheadline, sections (title, body, image_url), faq, cta, and html. If IMAGES are provided, map them to the most relevant sections.")
+  const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
   // Targeting controls (Meta)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string[]>([])
@@ -152,7 +157,7 @@ export default function Page(){
   // Angle: generate title & description via LLM
   async function angleGenerate(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
-    const prompt = String(n.data?.prompt||'Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.')
+    const prompt = String(n.data?.prompt||titleDescPrompt)
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
       let urls = uploadedUrls
@@ -232,7 +237,7 @@ export default function Page(){
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
       // 3) Generate landing copy with images for section mapping
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls })
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls, prompt: landingCopyPrompt })
 
       // 4) Create landing page using the copy (no new product)
       let landingNodeId:string|undefined
@@ -329,7 +334,7 @@ export default function Page(){
     const type = node.data.type
     await wait(300+Math.random()*300)
     if(type==='generate_angles'){
-      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2), model })
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2), model, prompt: anglesPrompt })
       setFlow(f=>{
         // remove existing children of this generator
         const existingChildIds = f.nodes
@@ -428,6 +433,15 @@ export default function Page(){
         <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
           <Card>
             <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='inputs'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('inputs')}>Inputs</button>
+                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='prompts'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('prompts')}>Prompts</button>
+              </div>
+            </CardHeader>
+          </Card>
+          {activeLeftTab==='inputs' && (
+          <Card>
+            <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2"><ImageIcon className="w-4 h-4"/>Product inputs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -473,6 +487,31 @@ export default function Page(){
               </div>
             </CardContent>
           </Card>
+          )}
+          {activeLeftTab==='prompts' && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Prompts</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
+                <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Title & Description prompt</div>
+                <Textarea rows={4} value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Used when generating title and description.</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Landing copy prompt</div>
+                <Textarea rows={5} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Images (Shopify CDN URLs) are also sent to map section.image_url.</div>
+              </div>
+            </CardContent>
+          </Card>
+          )}
 
           <Card>
             <CardHeader className="pb-2">

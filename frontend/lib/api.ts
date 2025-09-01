@@ -31,7 +31,8 @@ export async function fetchSavedAudiences(){
 export async function llmGenerateAngles(payload:{
   product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
   num_angles:number,
-  model?:string
+  model?:string,
+  prompt?:string
 }){
   const {data} = await axios.post(`${base}/api/llm/angles`, payload)
   return data as { angles: any[] }
@@ -54,7 +55,8 @@ export async function llmLandingCopy(payload:{
   title?:string,
   description?:string,
   model?:string,
-  image_urls?: string[]
+  image_urls?: string[],
+  prompt?:string
 }){
   const {data} = await axios.post(`${base}/api/llm/landing_copy`, payload)
   return data as { headline?:string, subheadline?:string, sections?:any[], faq?:any[], cta?:string, html?:string }
