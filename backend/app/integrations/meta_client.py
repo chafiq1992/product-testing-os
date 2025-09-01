@@ -44,10 +44,18 @@ def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeErro
             )
             return RuntimeError(hint)
 
-        # Generic structured error
-        # Keep short, don't include entire JSON to avoid accidental leakage
-        summary = err_msg or (payload if isinstance(payload, str) else "")
-        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {summary}")
+        # Generic structured error with helpful fields when available
+        user_msg = err.get("error_user_msg")
+        subcode = err.get("error_subcode")
+        error_data = err.get("error_data")
+        parts = [p for p in [err_msg, user_msg] if p]
+        suffix = f" (subcode {subcode})" if subcode else ""
+        if error_data and isinstance(error_data, dict):
+            blame = error_data.get("blame_field") or error_data.get("blame_field_specs")
+            if blame:
+                parts.append(f"Field: {blame}")
+        summary = "; ".join(parts) or (payload if isinstance(payload, str) else "")
+        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {summary}{suffix}")
     except Exception:
         try:
             body_text = r.text
@@ -141,8 +149,8 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         if OBJECTIVE in ("CONVERSIONS", "SALES"):
             if not PIXEL_ID:
                 raise RuntimeError("META_PIXEL_ID is required for conversions objective.")
-            # JSON-encode promoted_object as required by the API
-            adset_payload["promoted_object"] = json.dumps({"pixel_id": PIXEL_ID})
+            # JSON-encode promoted_object including a conversion event for SALES/CONVERSIONS
+            adset_payload["promoted_object"] = json.dumps({"pixel_id": PIXEL_ID, "custom_event_type": "PURCHASE"})
         requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adsets", "payload": adset_payload})
         adset = _post(f"act_{AD_ACCOUNT_ID}/adsets", adset_payload)
         requests_log[-1]["response"] = adset
