@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.shopify_client import create_product_and_page, upload_images_to_product
+from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
@@ -181,6 +181,7 @@ class LandingCopyRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     model: Optional[str] = None
+    image_urls: Optional[List[str]] = None
 
 @app.post("/api/llm/landing_copy")
 async def api_llm_landing_copy(req: LandingCopyRequest):
@@ -191,7 +192,7 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
     if req.description:
         payload["description"] = req.description
     angles = [req.angle] if req.angle else []
-    data = gen_landing_copy(payload, angles, model=req.model)
+    data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [])
     return data
 
 
@@ -219,6 +220,25 @@ async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
     db.create_test_row(test_id, payload)
     db.set_test_result(test_id, page, None, creatives, angles=angles, trace=[{"step":"shopify","response":{"page":page}}])
     return {"page_url": page.get("url") if isinstance(page, dict) else None, "test_id": test_id}
+
+
+# Create product immediately after title/description approval
+class ShopifyProductCreateRequest(BaseModel):
+    product: ProductInput
+    angle: Optional[dict] = None
+    title: str
+    description: Optional[str] = None
+
+
+@app.post("/api/shopify/product_create_from_title_desc")
+async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRequest):
+    payload = req.product.model_dump()
+    if req.description:
+        payload["description"] = req.description
+    # Simple description HTML for the product page (separate from landing page)
+    desc_html = f"<p>{(req.description or '').strip()}</p>" if req.description else ""
+    product = create_product_only(req.title, desc_html)
+    return {"product_gid": product.get("id"), "handle": product.get("handle")}
 
 
 # Dedicated endpoint to upload images to a Shopify product and return Shopify CDN URLs

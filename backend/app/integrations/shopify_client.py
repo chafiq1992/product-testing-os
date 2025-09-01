@@ -118,6 +118,18 @@ def upload_images_to_product(product_gid: str, image_srcs: list[str], alt_texts:
     return cdn_urls
 
 
+def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE") -> dict:
+    inp = {
+        "title": title or "Offer",
+        "status": status,
+    }
+    if description_html:
+        inp["descriptionHtml"] = description_html
+    data = _gql(PRODUCT_CREATE, {"input": inp})
+    prod = data["productCreate"]["product"]
+    return prod
+
+
 def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
@@ -164,13 +176,15 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         for idx, sec in enumerate(sections):
             sec_title = sec.get("title") or ""
             sec_body = sec.get("body") or ""
-            img_tag = ""
-            # Prefer Shopify-hosted image URLs if available
+            # Allow LLM to specify an image per section; else fall back by index
+            specified_img = (sec.get("image_url") or "").strip()
             effective_images = shopify_image_urls or requested_images
-            if effective_images:
-                img_url = effective_images[idx % len(effective_images)]
-                alt = alt_texts[idx % len(alt_texts)] if alt_texts else title
-                img_tag = f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
+            img_url = specified_img or (effective_images[idx % len(effective_images)] if effective_images else "")
+            alt = alt_texts[idx % len(alt_texts)] if alt_texts else title
+            img_tag = (
+                f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
+                if img_url else ""
+            )
             body_parts.append(
                 "<section style=\"padding:16px 0;\">"
                 + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")

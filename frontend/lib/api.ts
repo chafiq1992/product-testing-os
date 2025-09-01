@@ -53,7 +53,8 @@ export async function llmLandingCopy(payload:{
   angle?:any,
   title?:string,
   description?:string,
-  model?:string
+  model?:string,
+  image_urls?: string[]
 }){
   const {data} = await axios.post(`${base}/api/llm/landing_copy`, payload)
   return data as { headline?:string, subheadline?:string, sections?:any[], faq?:any[], cta?:string, html?:string }
@@ -96,4 +97,14 @@ export async function shopifyUploadProductImages(payload:{
 }){
   const {data} = await axios.post(`${base}/api/shopify/upload_images`, payload)
   return data as { urls: string[] }
+}
+
+export async function shopifyCreateProductFromTitleDesc(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  angle?: any,
+  title: string,
+  description?: string
+}){
+  const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, payload)
+  return data as { product_gid?: string, handle?: string }
 }

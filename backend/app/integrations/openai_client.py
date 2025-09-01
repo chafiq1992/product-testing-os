@@ -52,13 +52,14 @@ def gen_images(angle: dict, payload: dict) -> list:
 
 
 LANDING_COPY_PROMPT = (
-    "You are a CRO specialist. Given PRODUCT INFO and top angles, output ONLY valid JSON with keys: "
-    "{\"headline\": str, \"subheadline\": str, \"sections\": [{\"title\": str, \"body\": str}], \"faq\": [{\"q\": str, \"a\": str}], \"cta\": str, \"html\": str}. "
-    "The html should be a concise landing snippet with semantic tags, no external CSS, safe inline styles."
+    "You are a CRO specialist. Given PRODUCT INFO, top angles, and optional reference IMAGES, output ONLY valid JSON with keys: "
+    "{\"headline\": str, \"subheadline\": str, \"sections\": [{\"title\": str, \"body\": str, \"image_url\": str|null}], \"faq\": [{\"q\": str, \"a\": str}], \"cta\": str, \"html\": str}. "
+    "If images are provided, assign the most relevant image_url to each section based on content (or null if none). "
+    "In the html, embed the chosen image URLs near their matching section content. Use semantic tags, no external CSS, safe inline styles."
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_landing_copy(payload: dict, angles: list, model: str | None = None) -> dict:
+def gen_landing_copy(payload: dict, angles: list, model: str | None = None, image_urls: list[str] | None = None) -> dict:
     msg = (
         LANDING_COPY_PROMPT
         + "\nPRODUCT INFO:\n"
@@ -66,9 +67,20 @@ def gen_landing_copy(payload: dict, angles: list, model: str | None = None) -> d
         + "\nTOP ANGLES:\n"
         + json.dumps(angles[:3], ensure_ascii=False)
     )
+    # Prepare multimodal content if images are provided; limit to a few to avoid timeouts
+    images = list(image_urls or [])
+    if len(images) > 4:
+        images = images[:4]
+    if images:
+        content = [{"type":"text","text": msg}] + [
+            {"type":"image_url","image_url":{"url": u}} for u in images
+        ]
+        messages = [{"role":"user","content": content}]
+    else:
+        messages = [{"role":"user","content": msg}]
     resp = client.chat.completions.create(
         model=(model or DEFAULT_LLM_MODEL),
-        messages=[{"role":"user","content":msg}],
+        messages=messages,
         response_format={"type":"json_object"}
     )
     text = resp.choices[0].message.content
