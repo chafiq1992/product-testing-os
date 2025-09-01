@@ -13,6 +13,48 @@ API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 BASE = f"https://graph.facebook.com/{API_VERSION}"
 
 
+def _redact_url(url: str) -> str:
+    """Remove query parameters to avoid leaking tokens in logs."""
+    try:
+        return url.split("?", 1)[0]
+    except Exception:
+        return url
+
+def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeError:
+    """Create a user-friendly error while avoiding leaking sensitive data."""
+    safe_url = _redact_url(url)
+    # Default fallback body
+    body_text = None
+    try:
+        payload = r.json()
+        err = payload.get("error") or {}
+        err_msg = err.get("message") or ""
+        err_type = err.get("type") or ""
+        err_code = err.get("code")
+
+        # Special-case common permission error from Marketing API
+        if r.status_code == 403 and err_code == 200:
+            hint = (
+                "Meta permissions error: The ad account owner must grant 'ads_management' or 'ads_read' "
+                f"to the app/user for ad account act_{AD_ACCOUNT_ID}. Ensure: "
+                "1) The access token belongs to a user or system user with access to the ad account; "
+                "2) The app is in Live mode (or using a system user token); "
+                "3) The app has the Marketing API permissions approved or you're using a Business System User token "
+                "assigned to the ad account."
+            )
+            return RuntimeError(hint)
+
+        # Generic structured error
+        # Keep short, don't include entire JSON to avoid accidental leakage
+        summary = err_msg or (payload if isinstance(payload, str) else "")
+        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {summary}")
+    except Exception:
+        try:
+            body_text = r.text
+        except Exception:
+            body_text = "<no body>"
+        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {body_text}")
+
 def _post(path: str, payload: dict, files=None):
     payload = {**payload, "access_token": ACCESS}
     url = f"{BASE}/{path}"
@@ -21,12 +63,7 @@ def _post(path: str, payload: dict, files=None):
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        # Raise a more informative error including response body
-        try:
-            body = r.text
-        except Exception:
-            body = str(e)
-        raise RuntimeError(f"Meta API error {r.status_code} at {url}: {body}") from e
+        raise _format_meta_error(r, url, "POST") from e
 
 def _get(path: str, params: dict | None = None):
     params = {**(params or {}), "access_token": ACCESS}
@@ -36,11 +73,7 @@ def _get(path: str, params: dict | None = None):
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        try:
-            body = r.text
-        except Exception:
-            body = str(e)
-        raise RuntimeError(f"Meta API GET error {r.status_code} at {url}: {body}") from e
+        raise _format_meta_error(r, url, "GET") from e
 
 
 def _upload_image(url: str):
@@ -85,13 +118,16 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
             "daily_budget": daily_budget_minor,
             "status": "PAUSED",
             "billing_event": "IMPRESSIONS",
-            "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OUTCOME_SALES",
-            "targeting": {"geo_locations": {"countries": COUNTRIES}}
+            # For conversions/sales, use a valid optimization goal for pixel conversions
+            "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OFFSITE_CONVERSIONS",
+            # Meta Marketing API expects JSON-encoded targeting for form-encoded posts
+            "targeting": json.dumps({"geo_locations": {"countries": COUNTRIES}})
         }
         if OBJECTIVE in ("CONVERSIONS", "SALES"):
             if not PIXEL_ID:
                 raise RuntimeError("META_PIXEL_ID is required for conversions objective.")
-            adset_payload["promoted_object"] = {"pixel_id": PIXEL_ID}
+            # JSON-encode promoted_object as required by the API
+            adset_payload["promoted_object"] = json.dumps({"pixel_id": PIXEL_ID})
         requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adsets", "payload": adset_payload})
         adset = _post(f"act_{AD_ACCOUNT_ID}/adsets", adset_payload)
         requests_log[-1]["response"] = adset
