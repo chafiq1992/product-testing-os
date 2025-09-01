@@ -291,8 +291,8 @@ export default function Page(){
       })
       // create new angle variant nodes
       setFlow(f=>{
-        let nodes = f.nodes
-        let edges = f.edges
+        let nodes = f.nodes;
+        let edges = f.edges;
         (res.angles||[]).forEach((a:any, i:number)=>{
           const child = makeNode('action', node.x+300, node.y + i*160, { label:`Angle ${i+1}`, type:'angle_variant', angle:a, prompt:"Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle." })
           nodes = [...nodes, child]
