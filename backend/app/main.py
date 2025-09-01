@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only
+from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
@@ -239,6 +239,27 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
     desc_html = f"<p>{(req.description or '').strip()}</p>" if req.description else ""
     product = create_product_only(req.title, desc_html)
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
+
+
+class ShopifyCreatePageFromCopyRequest(BaseModel):
+    title: str
+    landing_copy: dict
+    image_urls: Optional[List[str]] = None
+
+
+@app.post("/api/shopify/create_page_from_copy")
+async def api_shopify_create_page_from_copy(req: ShopifyCreatePageFromCopyRequest):
+    # Build simple alt texts if image URLs are provided
+    sections = (req.landing_copy or {}).get("sections") or []
+    base_title = req.title or "Product"
+    alt_texts: List[str] = []
+    for idx, _ in enumerate(req.image_urls or []):
+        sec = sections[idx] if idx < len(sections) else {}
+        sec_title = sec.get("title") or "Product image"
+        sec_body = sec.get("body") or ""
+        alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
+    page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts)
+    return {"page_url": page.get("url")}
 
 
 # Dedicated endpoint to upload images to a Shopify product and return Shopify CDN URLs

@@ -215,3 +215,56 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     page_url = f"https://{SHOP}/pages/{page['handle']}"
 
     return {"product_gid": pdata["id"], "page_gid": page["id"], "url": page_url}
+
+
+def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:
+    sections = (landing_copy or {}).get("sections") or []
+    headline = (landing_copy or {}).get("headline") or title
+    subheadline = (landing_copy or {}).get("subheadline") or ""
+    body_parts = [
+        f"<section style=\"text-align:center;padding:16px 0;\"><h2 style=\"margin:0 0 8px;\">{headline}</h2>"
+        + (f"<p style=\"margin:0;color:#555;\">{subheadline}</p>" if subheadline else "")
+        + "</section>"
+    ]
+    if sections:
+        for idx, sec in enumerate(sections):
+            sec_title = sec.get("title") or ""
+            sec_body = sec.get("body") or ""
+            specified_img = (sec.get("image_url") or "").strip()
+            effective_images = requested_images or []
+            img_url = specified_img or (effective_images[idx % len(effective_images)] if effective_images else "")
+            alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
+            img_tag = (
+                f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
+                if img_url else ""
+            )
+            body_parts.append(
+                "<section style=\"padding:16px 0;\">"
+                + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")
+                + (img_tag or "")
+                + (f"<p style=\"margin:8px 0 0;line-height:1.5;color:#333;\">{sec_body}</p>" if sec_body else "")
+                + "</section>"
+            )
+    else:
+        desc_html = (landing_copy or {}).get("html") or ""
+        body_parts.append(desc_html)
+        effective_images = requested_images or []
+        if effective_images:
+            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in effective_images])
+            body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
+    return "".join(body_parts)
+
+
+def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] | None = None, alt_texts: list[str] | None = None) -> dict:
+    body_html = _build_page_body_html(title, landing_copy, image_urls or [], alt_texts or [])
+    handle = f"offer-{abs(hash(title)) % 10_000_000}"
+    page_in = {
+        "title": f"{title} – Offer",
+        "handle": handle,
+        "templateSuffix": "product_test",
+        "isPublished": True,
+        "body": body_html,
+    }
+    page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    page_url = f"https://{SHOP}/pages/{page['handle']}"
+    return {"page_gid": page["id"], "url": page_url}

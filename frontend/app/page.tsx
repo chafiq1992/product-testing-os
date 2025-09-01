@@ -19,7 +19,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, shopifyCreateFromCopy, metaLaunchFromPage, uploadImages } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyUploadProductImages, shopifyCreatePageFromCopy } from '@/lib/api'
 
 // ----------------------------- Tiny UI primitives (tailwind-only) -----------------------------
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -184,35 +184,59 @@ export default function Page(){
     })
   }
 
-  // Continue from Title/Description: landing copy -> shopify -> meta
+  // Continue from Title/Description:
+  // 1) Create product on Shopify
+  // 2) Upload images to product, capture Shopify CDN URLs
+  // 3) Generate landing copy with images
+  // 4) Create landing page
+  // 5) Optionally prepare Meta
   async function titleContinue(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const v = n.data?.value||{}
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model })
-      // Images & Shopify node
+      // Ensure app-hosted URLs for the uploaded files
+      let appUrls = uploadedUrls
+      if((files||[]).length>0 && !appUrls){
+        const res = await uploadImages(files)
+        appUrls = res.urls||[]
+        setUploadedUrls(appUrls)
+      }
+      // 1) Create product
+      let productNodeId:string|undefined
+      setFlow(f=>{
+        const pn = makeNode('action', n.x+300, n.y, { label:'Create Product', type:'create_product' })
+        const edges = [...f.edges, makeEdge(nodeId, 'out', pn.id, 'in')]
+        const next = { nodes:[...f.nodes, pn], edges }
+        flowRef.current = next
+        productNodeId = pn.id
+        return next
+      })
+      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description })
+      const product_gid = productRes.product_gid
+      if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
+
+      // 2) Upload images to product
       let imagesNodeId:string|undefined
       setFlow(f=>{
-        const im = makeNode('action', n.x+300, n.y, { label:'Images + Shopify', type:'images_shopify' })
-        const edges = [...f.edges, makeEdge(nodeId, 'out', im.id, 'in')]
+        const im = makeNode('action', (n.x+300), n.y+140, { label:'Upload Images to Product', type:'upload_images' })
+        const edges = [...f.edges, makeEdge(productNodeId!, 'out', im.id, 'in')]
         const next = { nodes:[...f.nodes, im], edges }
         flowRef.current = next
         imagesNodeId = im.id
         return next
       })
-      // Upload images (if any) and show them
-      let urls = uploadedUrls
-      if((files||[]).length>0 && !urls){
-        const res = await uploadImages(files)
-        urls = res.urls||[]
-        setUploadedUrls(urls)
+      let shopifyCdnUrls:string[] = []
+      if((appUrls||[]).length>0 && product_gid){
+        const up = await shopifyUploadProductImages({ product_gid, image_urls: appUrls||[], title: v.title, description: v.description })
+        shopifyCdnUrls = up.urls||[]
       }
-      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'running', output:{ images: urls||[] } }) }
-      // Create on Shopify using image URLs and landing copy
-      const shop = await shopifyCreateFromCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description, landing_copy: lc, image_urls: urls||[] })
-      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images: urls||[], page_url: shop.page_url||null } }) }
-      // Create landing node (represents the page URL)
+      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_app: appUrls||[], images_shopify: shopifyCdnUrls } }) }
+
+      // 3) Generate landing copy with images for section mapping
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls })
+
+      // 4) Create landing page using the copy (no new product)
       let landingNodeId:string|undefined
       setFlow(f=>{
         const ln = makeNode('action', (n.x+300)+300, n.y, { label:'Create Landing', type:'create_landing' })
@@ -222,7 +246,8 @@ export default function Page(){
         landingNodeId = ln.id
         return next
       })
-      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: shop.page_url||null } }) }
+      const page = await shopifyCreatePageFromCopy({ title: v.title, landing_copy: lc, image_urls: shopifyCdnUrls })
+      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: page.page_url||null } }) }
       // Create meta node
       let metaNodeId:string|undefined
       setFlow(f=>{
@@ -233,8 +258,8 @@ export default function Page(){
         metaNodeId = mn.id
         return next
       })
-      if(shop.page_url){
-        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, page_url: shop.page_url, creatives: [] })
+      if(page.page_url){
+        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, page_url: page.page_url, creatives: [] })
         if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
       }
       updateNodeRun(nodeId, { status:'success', output:{ landing_copy: lc } })

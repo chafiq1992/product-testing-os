@@ -108,3 +108,12 @@ export async function shopifyCreateProductFromTitleDesc(payload:{
   const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, payload)
   return data as { product_gid?: string, handle?: string }
 }
+
+export async function shopifyCreatePageFromCopy(payload:{
+  title: string,
+  landing_copy: any,
+  image_urls?: string[]
+}){
+  const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, payload)
+  return data as { page_url?: string }
+}
