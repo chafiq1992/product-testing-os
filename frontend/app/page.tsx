@@ -19,7 +19,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences } from '@/lib/api'
 
 // ----------------------------- Tiny UI primitives (tailwind-only) -----------------------------
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -103,6 +103,12 @@ export default function Page(){
   const [benefits,setBenefits]=useState<string[]>(['Comfy all-day wear'])
   const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
   const [files,setFiles]=useState<File[]>([])
+  // Targeting controls (Meta)
+  const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
+  const [countries,setCountries]=useState<string[]>([])
+  const [savedAudiences,setSavedAudiences]=useState<{id:string,name:string}[]>([])
+  const [selectedSavedAudience,setSelectedSavedAudience]=useState<string>('')
+  useEffect(()=>{ (async()=>{ try{ const res=await fetchSavedAudiences(); if((res as any)?.data){ setSavedAudiences((res as any).data) } }catch{} })() },[])
 
   // Internal test tracking
   const [testId,setTestId]=useState<string|undefined>(undefined)
@@ -214,6 +220,12 @@ export default function Page(){
       return { title: bestTitle, description }
     }
     if(type==='launch_test'){
+      // Build optional targeting: when Advantage+ is off, include saved audience or countries
+      let targeting: any = undefined
+      if(!advantagePlus){
+        if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
+        else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
+      }
       const res = await launchTest({
         audience,
         benefits,
@@ -221,6 +233,8 @@ export default function Page(){
         base_price: price===''?undefined:Number(price),
         title: title||undefined,
         images: files,
+        targeting,
+        advantage_plus: advantagePlus,
       })
       setTestId(res.test_id)
       log('info', `Launched test ${res.test_id}`, node.id)
@@ -311,6 +325,34 @@ export default function Page(){
                 <div className="text-xs text-slate-500 mb-1">Images (optional)</div>
                 <Dropzone files={files} onFiles={setFiles} />
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Megaphone className="w-4 h-4"/>Meta targeting</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={advantagePlus} onChange={e=>setAdvantagePlus(e.target.checked)} />
+                <span>Advantage+ audience (let Meta expand targeting)</span>
+              </label>
+              {!advantagePlus && (
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">Saved audience</div>
+                    <select value={selectedSavedAudience} onChange={e=>setSelectedSavedAudience(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                      <option value="">None</option>
+                      {savedAudiences.map(a=> (<option key={a.id} value={a.id}>{a.name}</option>))}
+                    </select>
+                  </div>
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">Countries (ISO codes, e.g., US, MA)</div>
+                    <TagsInput value={countries} onChange={setCountries} placeholder="Add country & Enter" />
+                  </div>
+                </div>
+              )}
+              <div className="text-[11px] text-slate-500">If both saved audience and countries are provided, the saved audience takes precedence.</div>
             </CardContent>
           </Card>
 

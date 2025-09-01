@@ -8,6 +8,7 @@ import json, os
 from pathlib import Path
 
 from app.tasks import pipeline_launch, run_pipeline_sync
+from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
 from app.config import BASE_URL
 from app import db
@@ -36,6 +37,8 @@ class ProductInput(BaseModel):
     benefits: List[str]
     pain_points: List[str]
     niche: Optional[str] = None
+    targeting: Optional[dict] = None
+    advantage_plus: Optional[bool] = True
 
 @app.post("/api/tests")
 async def create_test(
@@ -45,7 +48,9 @@ async def create_test(
     pain_points: str = Form(...),
     base_price: Optional[float] = Form(None),
     title: Optional[str] = Form(None),
-    images: List[UploadFile] = File([])
+    images: List[UploadFile] = File([]),
+    targeting: Optional[str] = Form(None),
+    advantage_plus: Optional[bool] = Form(True),
 ):
     test_id = str(uuid4())
     payload = ProductInput(
@@ -55,6 +60,15 @@ async def create_test(
         benefits=json.loads(benefits),
         pain_points=json.loads(pain_points),
     ).model_dump()
+    # Optional targeting controls for Meta
+    if targeting:
+        try:
+            payload["targeting"] = json.loads(targeting)
+        except Exception:
+            # If invalid JSON, ignore and keep default backend targeting
+            pass
+    if advantage_plus is not None:
+        payload["advantage_plus"] = bool(advantage_plus)
 
     # Save uploaded images (if any) and include absolute URLs in payload
     uploaded_urls: List[str] = []
@@ -98,6 +112,15 @@ async def get_test(test_id: str):
     if not t:
         return {"error": "not_found"}
     return t
+
+
+@app.get("/api/meta/audiences")
+async def get_saved_audiences():
+    try:
+        items = list_saved_audiences()
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
 
 @app.get("/health")
 async def health():

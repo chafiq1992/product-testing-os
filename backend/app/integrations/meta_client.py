@@ -76,6 +76,15 @@ def _get(path: str, params: dict | None = None):
         raise _format_meta_error(r, url, "GET") from e
 
 
+def list_saved_audiences() -> list[dict]:
+    """Return saved audiences for the configured ad account (id, name)."""
+    res = _get(f"act_{AD_ACCOUNT_ID}/saved_audiences", {"fields": "id,name,description"})
+    data = res.get("data") if isinstance(res, dict) else None
+    if isinstance(data, list):
+        return [{"id": x.get("id"), "name": x.get("name"), "description": x.get("description")} for x in data]
+    return []
+
+
 def _upload_image(url: str):
     res = _post(f"act_{AD_ACCOUNT_ID}/adimages", {"url": url})
     images = res.get("images", {})
@@ -112,6 +121,12 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
     daily_budget_minor = 2000
 
     for a in angles:
+        # Allow per-test targeting override via payload["targeting"]
+        targeting_spec = payload.get("targeting") if isinstance(payload, dict) else None
+        if not targeting_spec:
+            targeting_spec = {"geo_locations": {"countries": COUNTRIES}}
+        # Ensure it is JSON-encoded for the API
+        targeting_json = json.dumps(targeting_spec) if not isinstance(targeting_spec, str) else targeting_spec
         adset_payload = {
             "name": f"{a['name']} AdSet",
             "campaign_id": camp["id"],
@@ -121,7 +136,7 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
             # For conversions/sales, use a valid optimization goal for pixel conversions
             "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OFFSITE_CONVERSIONS",
             # Meta Marketing API expects JSON-encoded targeting for form-encoded posts
-            "targeting": json.dumps({"geo_locations": {"countries": COUNTRIES}})
+            "targeting": targeting_json
         }
         if OBJECTIVE in ("CONVERSIONS", "SALES"):
             if not PIXEL_ID:
