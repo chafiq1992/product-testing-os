@@ -117,3 +117,20 @@ export async function shopifyCreatePageFromCopy(payload:{
   const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, payload)
   return data as { page_url?: string }
 }
+
+export async function shopifyUploadProductFiles(payload:{
+  product_gid: string,
+  files: File[],
+  title?: string,
+  description?: string,
+  landing_copy?: any
+}){
+  const form = new FormData()
+  form.append('product_gid', payload.product_gid)
+  if(payload.title) form.append('title', payload.title)
+  if(payload.description) form.append('description', payload.description)
+  if(payload.landing_copy) form.append('landing_copy', JSON.stringify(payload.landing_copy))
+  for(const f of (payload.files||[])) form.append('files', f)
+  const {data} = await axios.post(`${base}/api/shopify/upload_files`, form, { headers:{'Content-Type':'multipart/form-data'} })
+  return data as { urls: string[], images?: any[], per_image?: any[] }
+}

@@ -19,7 +19,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyUploadProductImages, shopifyCreatePageFromCopy } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyUploadProductImages, shopifyCreatePageFromCopy, shopifyUploadProductFiles } from '@/lib/api'
 
 // ----------------------------- Tiny UI primitives (tailwind-only) -----------------------------
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -195,13 +195,7 @@ export default function Page(){
     const v = n.data?.value||{}
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
-      // Ensure app-hosted URLs for the uploaded files
-      let appUrls = uploadedUrls
-      if((files||[]).length>0 && !appUrls){
-        const res = await uploadImages(files)
-        appUrls = res.urls||[]
-        setUploadedUrls(appUrls)
-      }
+      // Direct upload local files to Shopify (no app URLs)
       // 1) Create product
       let productNodeId:string|undefined
       setFlow(f=>{
@@ -229,13 +223,13 @@ export default function Page(){
       let shopifyCdnUrls:string[] = []
       let shopifyImages:any[]|undefined
       let perImage:any[]|undefined
-      if((appUrls||[]).length>0 && product_gid){
-        const up = await shopifyUploadProductImages({ product_gid, image_urls: appUrls||[], title: v.title, description: v.description })
+      if((files||[]).length>0 && product_gid){
+        const up = await shopifyUploadProductFiles({ product_gid, files, title: v.title, description: v.description })
         shopifyCdnUrls = up.urls||[]
         shopifyImages = up.images
-        perImage = (up as any).per_image
+        perImage = up.per_image
       }
-      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_app: appUrls||[], images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
+      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
       // 3) Generate landing copy with images for section mapping
       const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls })

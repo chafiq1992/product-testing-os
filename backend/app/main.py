@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose
+from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
@@ -290,6 +290,53 @@ async def api_shopify_upload_images(req: ShopifyUploadImagesRequest):
         import time
         for _ in range(6):  # ~6 seconds total
             images = list_product_images(req.product_gid)
+            if images:
+                break
+            time.sleep(1)
+    except Exception:
+        pass
+    return {"urls": verbose.get("cdn_urls", []), "images": images, "per_image": verbose.get("per_image", [])}
+
+
+# Upload local files directly to Shopify via base64 attachments
+@app.post("/api/shopify/upload_files")
+async def api_shopify_upload_files(
+    request: Request,
+    product_gid: str = Form(...),
+    files: List[UploadFile] = File(...),
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    landing_copy: Optional[str] = Form(None),  # JSON string (optional)
+):
+    sections = []
+    try:
+        if landing_copy:
+            import json as _json
+            sections = (_json.loads(landing_copy) or {}).get("sections") or []
+    except Exception:
+        sections = []
+    base_title = title or "Product"
+    base_desc = description or ""
+    alt_texts: List[str] = []
+    for idx, _ in enumerate(files or []):
+        sec = (sections[idx] if (sections and idx < len(sections)) else {}) or {}
+        sec_title = sec.get("title") or "Product image"
+        sec_body = sec.get("body") or base_desc
+        alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
+
+    # Read all file bytes
+    blobs: List[tuple[str, bytes]] = []
+    for f in (files or []):
+        blobs.append((f.filename, await f.read()))
+
+    verbose = upload_image_attachments_to_product(product_gid, blobs, alt_texts)
+
+    # Poll for images
+    images = []
+    try:
+        import time
+        for _ in range(8):  # ~8s
+            images = list_product_images(product_gid)
             if images:
                 break
             time.sleep(1)

@@ -1,4 +1,4 @@
-import os, requests
+import os, requests, base64
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
@@ -151,6 +151,32 @@ def upload_images_to_product_verbose(product_gid: str, image_srcs: list[str], al
             results.append({"src": src, "ok": True, "cdn": cdn, "resp_keys": list((resp or {}).keys())})
         except Exception as e:
             results.append({"src": src, "ok": False, "error": str(e)})
+            continue
+    return {"cdn_urls": cdn_urls, "per_image": results}
+
+
+def upload_image_attachments_to_product(product_gid: str, files: list[tuple[str, bytes]], alt_texts: list[str] | None = None) -> dict:
+    """Upload local files as base64 attachments to a Shopify product. Returns cdn_urls and per-image outcomes.
+
+    files: list of (filename, bytes)
+    """
+    results: list[dict] = []
+    cdn_urls: list[str] = []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not (numeric_id and files):
+        return {"cdn_urls": [], "per_image": results}
+    for idx, (filename, blob) in enumerate(files):
+        try:
+            b64 = base64.b64encode(blob).decode("ascii")
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            payload = {"image": {"attachment": b64, "filename": filename, "alt": alt}}
+            resp = _rest_post(f"/products/{numeric_id}/images.json", payload)
+            cdn = (resp or {}).get("image", {}).get("src")
+            if cdn:
+                cdn_urls.append(cdn)
+            results.append({"filename": filename, "ok": True, "cdn": cdn, "resp_keys": list((resp or {}).keys())})
+        except Exception as e:
+            results.append({"filename": filename, "ok": False, "error": str(e)})
             continue
     return {"cdn_urls": cdn_urls, "per_image": results}
 
