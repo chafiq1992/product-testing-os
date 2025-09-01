@@ -70,15 +70,57 @@ def _gql(query: str, variables: dict):
 def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
-    desc_html = landing_copy.get("html") if landing_copy and landing_copy.get("html") else ("<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else "")
+    # Prefer structured landing HTML if provided; otherwise derive a short feature list
+    structured_html = (landing_copy or {}).get("html") if landing_copy else None
+    desc_html = structured_html or ("<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else "")
+
+    # Collate image URLs: prefer uploaded images from payload; otherwise fall back to creatives
+    uploaded_images = payload.get("uploaded_images") or []
+    creative_image_urls = [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
+    image_urls = uploaded_images or creative_image_urls
 
     product_in = {
         "title": title,
         "descriptionHtml": desc_html,
         "status": "ACTIVE",
     }
+    if image_urls:
+        product_in["images"] = [{"src": u} for u in image_urls]
 
     pdata = _gql(PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
+
+    # Build landing page body with sections matched to images (by index)
+    sections = (landing_copy or {}).get("sections") or []
+    headline = (landing_copy or {}).get("headline") or title
+    subheadline = (landing_copy or {}).get("subheadline") or ""
+    body_parts = [
+        f"<section style=\"text-align:center;padding:16px 0;\"><h2 style=\"margin:0 0 8px;\">{headline}</h2>"
+        + (f"<p style=\"margin:0;color:#555;\">{subheadline}</p>" if subheadline else "")
+        + "</section>"
+    ]
+    if sections:
+        for idx, sec in enumerate(sections):
+            sec_title = sec.get("title") or ""
+            sec_body = sec.get("body") or ""
+            img_tag = ""
+            if image_urls:
+                img_url = image_urls[idx % len(image_urls)]
+                img_tag = f"<img src=\"{img_url}\" alt=\"{title}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
+            body_parts.append(
+                "<section style=\"padding:16px 0;\">"
+                + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")
+                + (img_tag or "")
+                + (f"<p style=\"margin:8px 0 0;line-height:1.5;color:#333;\">{sec_body}</p>" if sec_body else "")
+                + "</section>"
+            )
+    else:
+        # Fallback: description HTML followed by a simple gallery
+        body_parts.append(desc_html)
+        if image_urls:
+            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in image_urls])
+            body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
+
+    page_body_html = "".join(body_parts)
 
     handle = f"offer-{pdata['id'].split('/')[-1]}"
     page_in = {
@@ -86,7 +128,7 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         "handle": handle,
         "templateSuffix": "product_test",
         "isPublished": True,
-        "body": f"<h2>{title}</h2>{desc_html}"
+        "body": page_body_html
     }
 
     page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
