@@ -56,6 +56,7 @@ async def create_test(
     targeting: Optional[str] = Form(None),
     advantage_plus: Optional[bool] = Form(True),
     adset_budget: Optional[float] = Form(9.0),
+    model: Optional[str] = Form(None),
 ):
     test_id = str(uuid4())
     payload = ProductInput(
@@ -66,6 +67,8 @@ async def create_test(
         pain_points=json.loads(pain_points),
         adset_budget=adset_budget,
     ).model_dump()
+    if model:
+        payload["model"] = model
     # Optional targeting controls for Meta
     if targeting:
         try:
@@ -133,10 +136,11 @@ async def get_saved_audiences():
 class AnglesRequest(BaseModel):
     product: ProductInput
     num_angles: Optional[int] = 2
+    model: Optional[str] = None
 
 @app.post("/api/llm/angles")
 async def api_llm_angles(req: AnglesRequest):
-    angles = gen_angles_and_copy(req.product.model_dump())
+    angles = gen_angles_and_copy(req.product.model_dump(), model=req.model)
     k = max(1, min(5, req.num_angles or 2))
     return {"angles": angles[:k]}
 
@@ -145,10 +149,18 @@ class TitleDescRequest(BaseModel):
     product: ProductInput
     angle: dict
     prompt: Optional[str] = None
+    model: Optional[str] = None
+    image_urls: Optional[List[str]] = None
 
 @app.post("/api/llm/title_desc")
 async def api_llm_title_desc(req: TitleDescRequest):
-    data = gen_title_and_description(req.product.model_dump(), req.angle, req.prompt)
+    data = gen_title_and_description(
+        req.product.model_dump(),
+        req.angle,
+        req.prompt,
+        model=req.model,
+        image_urls=req.image_urls or []
+    )
     return data
 
 
@@ -157,6 +169,7 @@ class LandingCopyRequest(BaseModel):
     angle: Optional[dict] = None
     title: Optional[str] = None
     description: Optional[str] = None
+    model: Optional[str] = None
 
 @app.post("/api/llm/landing_copy")
 async def api_llm_landing_copy(req: LandingCopyRequest):
@@ -167,7 +180,7 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
     if req.description:
         payload["description"] = req.description
     angles = [req.angle] if req.angle else []
-    data = gen_landing_copy(payload, angles)
+    data = gen_landing_copy(payload, angles, model=req.model)
     return data
 
 
@@ -177,10 +190,13 @@ class ShopifyCreateRequest(BaseModel):
     title: str
     description: str
     landing_copy: dict
+    image_urls: Optional[List[str]] = None
 
 @app.post("/api/shopify/create_from_copy")
 async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
     payload = req.product.model_dump()
+    if req.image_urls:
+        payload["uploaded_images"] = req.image_urls
     angles = [req.angle] if req.angle else []
     creatives = []
     page = create_product_and_page(payload, angles, creatives, req.landing_copy)
@@ -189,6 +205,23 @@ async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
     db.create_test_row(test_id, payload)
     db.set_test_result(test_id, page, None, creatives, angles=angles, trace=[{"step":"shopify","response":{"page":page}}])
     return {"page_url": page.get("url") if isinstance(page, dict) else None, "test_id": test_id}
+
+
+# Simple uploads endpoint to store images and return absolute URLs for multimodal prompts or Shopify
+@app.post("/api/uploads")
+async def api_uploads(request: Request, files: List[UploadFile] = File(...)):
+    upload_id = str(uuid4())
+    req_base = str(request.base_url).rstrip("/")
+    abs_base = BASE_URL or req_base
+    urls: List[str] = []
+    for i, f in enumerate(files or []):
+        filename = f"{upload_id}_{i}_{f.filename}"
+        url_path = save_file(filename, await f.read())
+        if abs_base.endswith("/"):
+            urls.append(f"{abs_base[:-1]}{url_path}")
+        else:
+            urls.append(f"{abs_base}{url_path}")
+    return {"urls": urls}
 
 
 class MetaLaunchRequest(BaseModel):

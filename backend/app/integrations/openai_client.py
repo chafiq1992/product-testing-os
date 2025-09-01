@@ -1,9 +1,11 @@
 import os, json
 from tenacity import retry, stop_after_attempt, wait_exponential
 from openai import OpenAI
+import os
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from env)
 client = OpenAI()
+DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 
@@ -16,7 +18,7 @@ BASE_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_angles_and_copy(payload: dict) -> list:
+def gen_angles_and_copy(payload: dict, model: str | None = None) -> list:
     msg = (
         BASE_PROMPT
         + "PRODUCT INFO:\n"
@@ -24,7 +26,7 @@ def gen_angles_and_copy(payload: dict) -> list:
         + f"\nAudience: {payload.get('audience')}"
     )
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=(model or DEFAULT_LLM_MODEL),
         messages=[{"role":"user","content":msg}],
         response_format={"type":"json_object"}
     )
@@ -56,7 +58,7 @@ LANDING_COPY_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_landing_copy(payload: dict, angles: list) -> dict:
+def gen_landing_copy(payload: dict, angles: list, model: str | None = None) -> dict:
     msg = (
         LANDING_COPY_PROMPT
         + "\nPRODUCT INFO:\n"
@@ -65,7 +67,7 @@ def gen_landing_copy(payload: dict, angles: list) -> dict:
         + json.dumps(angles[:3], ensure_ascii=False)
     )
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=(model or DEFAULT_LLM_MODEL),
         messages=[{"role":"user","content":msg}],
         response_format={"type":"json_object"}
     )
@@ -84,7 +86,7 @@ TITLE_DESC_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_title_and_description(payload: dict, angle: dict, prompt_override: str | None = None) -> dict:
+def gen_title_and_description(payload: dict, angle: dict, prompt_override: str | None = None, model: str | None = None, image_urls: list[str] | None = None) -> dict:
     # Ensure the message explicitly mentions json to comply with response_format=json_object
     json_rule = (
         "Respond ONLY with a json object having keys 'title' and 'description'. "
@@ -94,16 +96,24 @@ def gen_title_and_description(payload: dict, angle: dict, prompt_override: str |
         base = prompt_override.strip() + "\n" + json_rule
     else:
         base = TITLE_DESC_PROMPT + "\n" + json_rule
-    msg = (
+    msg_text = (
         base
         + "\nPRODUCT INFO:\n"
         + json.dumps(payload, ensure_ascii=False)
         + "\nANGLE:\n"
         + json.dumps(angle, ensure_ascii=False)
     )
+    # If images provided, send a multimodal message
+    if image_urls:
+        content = [{"type":"text","text": msg_text}] + [
+            {"type":"image_url","image_url":{"url": u}} for u in image_urls
+        ]
+        messages = [{"role":"user","content": content}]
+    else:
+        messages = [{"role":"user","content": msg_text}]
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"user","content":msg}],
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
         response_format={"type":"json_object"}
     )
     text = resp.choices[0].message.content

@@ -19,7 +19,8 @@ def run_pipeline_sync(test_id: str, payload: dict):
         creatives = []
         landing_copy = None
         # Step 1: Angles & copy
-        angles = gen_angles_and_copy(payload)
+        model = payload.get("model")
+        angles = gen_angles_and_copy(payload, model=model)
         # reconstruct exact prompt for trace
         try:
             import json as _json
@@ -35,7 +36,7 @@ def run_pipeline_sync(test_id: str, payload: dict):
         trace.append({
             "step": "generate_copy",
             "provider": "openai",
-            "request": {"model": "gpt-4o-mini", "prompt": angles_prompt},
+            "request": {"model": model or "gpt-4o-mini", "prompt": angles_prompt},
             "response": {"angles": angles},
         })
 
@@ -68,11 +69,11 @@ def run_pipeline_sync(test_id: str, payload: dict):
 
         # Step 3: Shopify product + page
         # Step 2.5: Generate landing copy via OpenAI (for transparency + optional page body)
-        landing_copy = gen_landing_copy(payload, angles)
+        landing_copy = gen_landing_copy(payload, angles, model=model)
         trace.append({
             "step": "landing_copy",
             "provider": "openai",
-            "request": {"model": "gpt-4o-mini", "prompt": LANDING_COPY_PROMPT, "context": {"angles": angles[:3]}},
+            "request": {"model": model or "gpt-4o-mini", "prompt": LANDING_COPY_PROMPT, "context": {"angles": angles[:3]}},
             "response": landing_copy,
         })
 

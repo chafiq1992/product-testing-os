@@ -19,7 +19,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, shopifyCreateFromCopy, metaLaunchFromPage } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, shopifyCreateFromCopy, metaLaunchFromPage, uploadImages } from '@/lib/api'
 
 // ----------------------------- Tiny UI primitives (tailwind-only) -----------------------------
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -96,6 +96,8 @@ export default function Page(){
   const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
   const [files,setFiles]=useState<File[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
+  const [model,setModel]=useState<string>('gpt-4o-mini')
+  const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
   // Targeting controls (Meta)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string[]>([])
@@ -153,7 +155,13 @@ export default function Page(){
     const prompt = String(n.data?.prompt||'Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.')
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
-      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt })
+      let urls = uploadedUrls
+      if((files||[]).length>0 && !urls){
+        const res = await uploadImages(files)
+        urls = res.urls||[]
+        setUploadedUrls(urls)
+      }
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt, model, image_urls: urls||[] })
       updateNodeRun(nodeId, { status:'success', output: out })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
@@ -182,24 +190,43 @@ export default function Page(){
     const v = n.data?.value||{}
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description })
-      // Create landing node
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model })
+      // Images & Shopify node
+      let imagesNodeId:string|undefined
+      setFlow(f=>{
+        const im = makeNode('action', n.x+300, n.y, { label:'Images + Shopify', type:'images_shopify' })
+        const edges = [...f.edges, makeEdge(nodeId, 'out', im.id, 'in')]
+        const next = { nodes:[...f.nodes, im], edges }
+        flowRef.current = next
+        imagesNodeId = im.id
+        return next
+      })
+      // Upload images (if any) and show them
+      let urls = uploadedUrls
+      if((files||[]).length>0 && !urls){
+        const res = await uploadImages(files)
+        urls = res.urls||[]
+        setUploadedUrls(urls)
+      }
+      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'running', output:{ images: urls||[] } }) }
+      // Create on Shopify using image URLs and landing copy
+      const shop = await shopifyCreateFromCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description, landing_copy: lc, image_urls: urls||[] })
+      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images: urls||[], page_url: shop.page_url||null } }) }
+      // Create landing node (represents the page URL)
       let landingNodeId:string|undefined
       setFlow(f=>{
-        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing' })
-        const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
+        const ln = makeNode('action', (n.x+300)+300, n.y, { label:'Create Landing', type:'create_landing' })
+        const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', ln.id, 'in')]
         const next = { nodes:[...f.nodes, ln], edges }
         flowRef.current = next
         landingNodeId = ln.id
         return next
       })
-      // Create on Shopify
-      const shop = await shopifyCreateFromCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description, landing_copy: lc })
       if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: shop.page_url||null } }) }
       // Create meta node
       let metaNodeId:string|undefined
       setFlow(f=>{
-        const mn = makeNode('action', (n.x+300)+300, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
+        const mn = makeNode('action', ((n.x+300)+300)+300, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
         const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
         const next = { nodes:[...f.nodes, mn], edges }
         flowRef.current = next
@@ -279,21 +306,16 @@ export default function Page(){
     const type = node.data.type
     await wait(300+Math.random()*300)
     if(type==='generate_angles'){
-      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2) })
-      // clear existing angle variants from this generator
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2), model })
       setFlow(f=>{
-        const childIds = f.nodes.filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id)).map(n=>n.id)
-        const nodes = f.nodes.filter(n=> !childIds.includes(n.id))
-        const edges = f.edges.filter(e=> e.from!==node.id && !childIds.includes(e.to))
-        const next = { nodes, edges }
-        flowRef.current = next
-        return next
-      })
-      // create new angle variant nodes
-      setFlow(f=>{
-        let nodes = f.nodes;
-        let edges = f.edges;
-        (res.angles||[]).forEach((a:any, i:number)=>{
+        // remove existing children of this generator
+        const existingChildIds = f.nodes
+          .filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id))
+          .map(n=>n.id)
+        let nodes = f.nodes.filter(n=> !existingChildIds.includes(n.id))
+        let edges = f.edges.filter(e=> e.from!==node.id && !existingChildIds.includes(e.to))
+        // add new children in one atomic update
+        ;(res.angles||[]).forEach((a:any, i:number)=>{
           const child = makeNode('action', node.x+300, node.y + i*160, { label:`Angle ${i+1}`, type:'angle_variant', angle:a, prompt:"Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle." })
           nodes = [...nodes, child]
           edges = [...edges, makeEdge(node.id, 'out', child.id, 'in')]
@@ -321,6 +343,7 @@ export default function Page(){
         targeting,
         advantage_plus: advantagePlus,
         adset_budget: adsetBudget===''? undefined : Number(adsetBudget),
+        model,
       })
       setTestId(res.test_id)
       log('info', `Launched test ${res.test_id}`, node.id)
@@ -416,6 +439,14 @@ export default function Page(){
               <div>
                 <div className="text-xs text-slate-500 mb-1">Images (optional)</div>
                 <Dropzone files={files} onFiles={setFiles} />
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">LLM model</div>
+                <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-5">gpt-5</option>
+                </select>
               </div>
             </CardContent>
           </Card>
@@ -715,6 +746,27 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
         <div className="flex justify-end">
           <Button size="sm" onClick={()=> onTitleContinue(node.id)}>Continue</Button>
         </div>
+      </div>
+    )
+  }
+  if(node.data?.type==='images_shopify'){
+    const imgs = node.run?.output?.images||[]
+    const pageUrl = node.run?.output?.page_url||''
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">Images + Shopify</div>
+        {imgs.length>0 ? (
+          <div className="grid grid-cols-3 gap-1">
+            {imgs.map((u:string,i:number)=> (
+              <img key={i} src={u} alt={`img-${i}`} className="w-full h-16 object-cover rounded"/>
+            ))}
+          </div>
+        ) : (
+          <div className="text-slate-500">No images</div>
+        )}
+        {pageUrl && (
+          <div className="text-[11px]"><a className="underline" href={pageUrl} target="_blank">View landing page</a></div>
+        )}
       </div>
     )
   }
