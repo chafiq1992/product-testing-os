@@ -74,3 +74,33 @@ def gen_landing_copy(payload: dict, angles: list) -> dict:
         return json.loads(text)
     except Exception:
         return {"headline": None, "subheadline": None, "sections": [], "faq": [], "cta": None, "html": None}
+
+
+# ---------------- Title & Description generation ----------------
+TITLE_DESC_PROMPT = (
+    "You are an ecommerce copywriter. Given PRODUCT INFO and a selected ANGLE, output ONLY valid JSON: "
+    '{"title": str, "description": str}. '
+    "Title <= 30 chars, compelling, brand-safe. Description 1-2 short sentences, no claims; focus on benefits."
+)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def gen_title_and_description(payload: dict, angle: dict, prompt_override: str | None = None) -> dict:
+    base = prompt_override or TITLE_DESC_PROMPT
+    msg = (
+        base
+        + "\nPRODUCT INFO:\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\nANGLE:\n"
+        + json.dumps(angle, ensure_ascii=False)
+    )
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role":"user","content":msg}],
+        response_format={"type":"json_object"}
+    )
+    text = resp.choices[0].message.content
+    try:
+        data = json.loads(text)
+        return {"title": data.get("title"), "description": data.get("description")}
+    except Exception:
+        return {"title": None, "description": None}

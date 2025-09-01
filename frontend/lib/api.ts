@@ -25,3 +25,51 @@ export async function fetchSavedAudiences(){
   const {data} = await axios.get(`${base}/api/meta/audiences`)
   return data as { data: Array<{id:string,name:string,description?:string}>, error?:string }
 }
+
+// LLM interactive endpoints
+export async function llmGenerateAngles(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  num_angles:number
+}){
+  const {data} = await axios.post(`${base}/api/llm/angles`, payload)
+  return data as { angles: any[] }
+}
+
+export async function llmTitleDescription(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  angle:any,
+  prompt?:string
+}){
+  const {data} = await axios.post(`${base}/api/llm/title_desc`, payload)
+  return data as { title:string, description:string }
+}
+
+export async function llmLandingCopy(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  angle?:any,
+  title?:string,
+  description?:string
+}){
+  const {data} = await axios.post(`${base}/api/llm/landing_copy`, payload)
+  return data as { headline?:string, subheadline?:string, sections?:any[], faq?:any[], cta?:string, html?:string }
+}
+
+export async function shopifyCreateFromCopy(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  angle?:any,
+  title:string,
+  description:string,
+  landing_copy:any
+}){
+  const {data} = await axios.post(`${base}/api/shopify/create_from_copy`, payload)
+  return data as { page_url?:string|null, test_id?:string }
+}
+
+export async function metaLaunchFromPage(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  page_url:string,
+  creatives?:any[]
+}){
+  const {data} = await axios.post(`${base}/api/meta/launch_from_page`, payload)
+  return data as { campaign_id?:string|null, error?:string }
+}

@@ -19,7 +19,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, shopifyCreateFromCopy, metaLaunchFromPage } from '@/lib/api'
 
 // ----------------------------- Tiny UI primitives (tailwind-only) -----------------------------
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -57,17 +57,9 @@ function makeEdge(from:string, fromPort:Port|string, to:string, toPort:Port|stri
 
 function defaultFlow(){
   const t = makeNode('trigger', 120, 140, { name:'New Product', topic:'new_product' })
-  const a1 = makeNode('action', 420, 120, { label:'Generate Copy', type:'generate_copy' })
-  const a2 = makeNode('action', 720, 120, { label:'Launch Test', type:'launch_test' })
-  const a3 = makeNode('action', 1020, 120, { label:'Create Landing', type:'create_landing' })
-  const a4 = makeNode('action', 1320, 120, { label:'Meta Ads', type:'meta_ads_launch' })
-  const edges = [
-    makeEdge(t.id, 'out', a1.id, 'in'),
-    makeEdge(a1.id, 'out', a2.id, 'in'),
-    makeEdge(a2.id, 'out', a3.id, 'in'),
-    makeEdge(a3.id, 'out', a4.id, 'in'),
-  ]
-  return { nodes:[t,a1,a2,a3,a4], edges }
+  const gen = makeNode('action', 420, 120, { label:'Generate Angles', type:'generate_angles', numAngles:2 })
+  const edges = [ makeEdge(t.id, 'out', gen.id, 'in') ]
+  return { nodes:[t,gen], edges }
 }
 
 export default function Page(){
@@ -155,6 +147,75 @@ export default function Page(){
   }
   function onMouseUp(){ dragRef.current = { id:null, offsetX:0, offsetY:0 }; panRef.current.active=false }
 
+  // Angle: generate title & description via LLM
+  async function angleGenerate(nodeId:string){
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const prompt = String(n.data?.prompt||'Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.')
+    updateNodeRun(nodeId, { status:'running', startedAt: now() })
+    try{
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt })
+      updateNodeRun(nodeId, { status:'success', output: out })
+    }catch(err:any){
+      updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
+    }
+  }
+
+  // Approve angle: create Title/Description node
+  function angleApprove(nodeId:string){
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const out = n.run?.output
+    if(!out?.title){ return }
+    setFlow(f=>{
+      const nodes = f.nodes.map(x=> x.id===nodeId? ({...x, data:{...x.data, approved:true}}) : x)
+      const base = nodes.find(x=> x.id===nodeId)!
+      const td = makeNode('action', base.x+300, base.y, { label:'Title & Description', type:'title_desc', value:{ title: out.title, description: out.description }, landingPrompt:'Generate a concise landing page section (headline, subheadline, 2-3 bullets) based on the title and description.' })
+      const edges = [...f.edges, makeEdge(nodeId, 'out', td.id, 'in')]
+      const next = { nodes:[...nodes, td], edges }
+      flowRef.current = next
+      return next
+    })
+  }
+
+  // Continue from Title/Description: landing copy -> shopify -> meta
+  async function titleContinue(nodeId:string){
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const v = n.data?.value||{}
+    updateNodeRun(nodeId, { status:'running', startedAt: now() })
+    try{
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description })
+      // Create landing node
+      let landingNodeId:string|undefined
+      setFlow(f=>{
+        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing' })
+        const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
+        const next = { nodes:[...f.nodes, ln], edges }
+        flowRef.current = next
+        landingNodeId = ln.id
+        return next
+      })
+      // Create on Shopify
+      const shop = await shopifyCreateFromCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description, landing_copy: lc })
+      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: shop.page_url||null } }) }
+      // Create meta node
+      let metaNodeId:string|undefined
+      setFlow(f=>{
+        const mn = makeNode('action', (n.x+300)+300, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
+        const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
+        const next = { nodes:[...f.nodes, mn], edges }
+        flowRef.current = next
+        metaNodeId = mn.id
+        return next
+      })
+      if(shop.page_url){
+        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, page_url: shop.page_url, creatives: [] })
+        if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
+      }
+      updateNodeRun(nodeId, { status:'success', output:{ landing_copy: lc } })
+    }catch(err:any){
+      updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
+    }
+  }
+
   async function simulate(){
     if(running) return
     setRunLog([])
@@ -191,6 +252,12 @@ export default function Page(){
         const result = await executeAction(node, bag)
         updateNodeRun(nodeId, { status:'success', output: result })
         log('info', `✓ ${node.data.label||node.data.type} → done`, nodeId)
+        if(node.data?.type==='generate_angles'){
+          // pause for user to review/approve
+          log('info', 'Waiting for angle approval…', nodeId)
+          setRunning(false)
+          return
+        }
       }else if(node.type==='trigger'){
         log('info', `▶ trigger: ${node.data.topic||'start'}`, nodeId)
       }else if(node.type==='delay'){
@@ -211,14 +278,31 @@ export default function Page(){
   async function executeAction(node:FlowNode, bag:any){
     const type = node.data.type
     await wait(300+Math.random()*300)
-    if(type==='generate_copy'){
-      const bestTitle = (title||'Untitled Product') + (price!==''?` — ${price} MAD`: '')
-      const description = [
-        `Audience: ${audience}`,
-        benefits.length?`Benefits: ${benefits.slice(0,3).join(' • ')}`:'',
-        pains.length?`Pain points: ${pains.slice(0,2).join(' • ')}`:'',
-      ].filter(Boolean).join('\n')
-      return { title: bestTitle, description }
+    if(type==='generate_angles'){
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2) })
+      // clear existing angle variants from this generator
+      setFlow(f=>{
+        const childIds = f.nodes.filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id)).map(n=>n.id)
+        const nodes = f.nodes.filter(n=> !childIds.includes(n.id))
+        const edges = f.edges.filter(e=> e.from!==node.id && !childIds.includes(e.to))
+        const next = { nodes, edges }
+        flowRef.current = next
+        return next
+      })
+      // create new angle variant nodes
+      setFlow(f=>{
+        let nodes = f.nodes
+        let edges = f.edges
+        (res.angles||[]).forEach((a:any, i:number)=>{
+          const child = makeNode('action', node.x+300, node.y + i*160, { label:`Angle ${i+1}`, type:'angle_variant', angle:a, prompt:"Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle." })
+          nodes = [...nodes, child]
+          edges = [...edges, makeEdge(node.id, 'out', child.id, 'in')]
+        })
+        const next = { nodes, edges }
+        flowRef.current = next
+        return next
+      })
+      return { count: (res.angles||[]).length }
     }
     if(type==='launch_test'){
       // Build optional targeting: when Advantage+ is off, include saved audience or countries
@@ -391,7 +475,20 @@ export default function Page(){
                 <Edge key={e.id} edge={e} nodes={flow.nodes} active={running && activeNodeId===e.from} />
               ))}
               {flow.nodes.map(n=> (
-                <NodeShell key={n.id} node={n} selected={selected===n.id} onMouseDown={onNodeMouseDown} onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))} active={running && activeNodeId===n.id} trace={(latestStatus as any)?.result?.trace||[]} payload={(latestStatus as any)?.payload||null} />
+                <NodeShell
+                  key={n.id}
+                  node={n}
+                  selected={selected===n.id}
+                  onMouseDown={onNodeMouseDown}
+                  onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))}
+                  active={running && activeNodeId===n.id}
+                  trace={(latestStatus as any)?.result?.trace||[]}
+                  payload={(latestStatus as any)?.payload||null}
+                  onUpdateNode={(patch)=> setFlow(f=>({...f, nodes:f.nodes.map(x=> x.id===n.id? ({...x, data:{...x.data, ...patch}}) : x)}))}
+                  onAngleGenerate={(id)=> angleGenerate(id)}
+                  onAngleApprove={(id)=> angleApprove(id)}
+                  onTitleContinue={(id)=> titleContinue(id)}
+                />
               ))}
             </div>
           </div>
@@ -507,7 +604,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -525,7 +622,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload)}
+          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue)}
         </div>
       </motion.div>
     </div>
@@ -537,7 +634,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
@@ -553,6 +650,74 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
     )
   }
   const t = traceForNode(node, trace)
+  if(node.data?.type==='generate_angles'){
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label}</div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Angles to generate</div>
+          <Input type="number" min={1} max={5} value={String(node.data.numAngles||2)} onChange={e=> onUpdateNode({numAngles: Math.max(1, Math.min(5, Number(e.target.value)||2))})} />
+        </div>
+        {node.run?.output && (
+          <details className="text-xs mt-1" open={expanded}>
+            <summary className="cursor-pointer text-slate-500">Results</summary>
+            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
+          </details>
+        )}
+      </div>
+    )
+  }
+  if(node.data?.type==='angle_variant'){
+    const a = node.data?.angle
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label}</div>
+        <details className="text-xs" open={expanded}>
+          <summary className="cursor-pointer text-slate-500">Angle</summary>
+          <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(a,null,2)}</pre>
+        </details>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Prompt for title + description</div>
+          <Textarea rows={3} value={node.data?.prompt||''} onChange={e=> onUpdateNode({prompt: e.target.value})} />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)}>Generate</Button>
+          <Button size="sm" variant={node.data?.approved? 'outline':'default'} disabled={!node.run?.output || !!node.data?.approved} onClick={()=> onAngleApprove(node.id)}>
+            {node.data?.approved? 'Approved' : 'Approve'}
+          </Button>
+        </div>
+        {node.run?.output && (
+          <details className="text-xs mt-1" open={expanded}>
+            <summary className="cursor-pointer text-slate-500">Title & description</summary>
+            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
+          </details>
+        )}
+      </div>
+    )
+  }
+  if(node.data?.type==='title_desc'){
+    const v = node.data?.value||{}
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label||'Title & Description'}</div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Title</div>
+          <div className="font-medium text-slate-800">{v.title||'-'}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Description</div>
+          <div className="text-slate-700">{v.description||'-'}</div>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Prompt for landing page</div>
+          <Textarea rows={4} value={node.data?.landingPrompt||''} onChange={e=> onUpdateNode({landingPrompt:e.target.value})} />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" onClick={()=> onTitleContinue(node.id)}>Continue</Button>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="text-xs space-y-1">
       <div className="text-slate-500">{node.data.label||node.data.type}</div>

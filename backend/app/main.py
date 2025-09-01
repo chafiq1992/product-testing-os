@@ -8,6 +8,9 @@ import json, os
 from pathlib import Path
 
 from app.tasks import pipeline_launch, run_pipeline_sync
+from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
+from app.integrations.shopify_client import create_product_and_page
+from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
 from app.config import BASE_URL
@@ -124,6 +127,83 @@ async def get_saved_audiences():
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
+
+
+# ---------------- LLM step endpoints (interactive flow) ----------------
+class AnglesRequest(BaseModel):
+    product: ProductInput
+    num_angles: Optional[int] = 2
+
+@app.post("/api/llm/angles")
+async def api_llm_angles(req: AnglesRequest):
+    angles = gen_angles_and_copy(req.product.model_dump())
+    k = max(1, min(5, req.num_angles or 2))
+    return {"angles": angles[:k]}
+
+
+class TitleDescRequest(BaseModel):
+    product: ProductInput
+    angle: dict
+    prompt: Optional[str] = None
+
+@app.post("/api/llm/title_desc")
+async def api_llm_title_desc(req: TitleDescRequest):
+    data = gen_title_and_description(req.product.model_dump(), req.angle, req.prompt)
+    return data
+
+
+class LandingCopyRequest(BaseModel):
+    product: ProductInput
+    angle: Optional[dict] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+@app.post("/api/llm/landing_copy")
+async def api_llm_landing_copy(req: LandingCopyRequest):
+    payload = req.product.model_dump()
+    # include title/description in payload if provided to inform landing copy
+    if req.title:
+        payload["title"] = req.title
+    if req.description:
+        payload["description"] = req.description
+    angles = [req.angle] if req.angle else []
+    data = gen_landing_copy(payload, angles)
+    return data
+
+
+class ShopifyCreateRequest(BaseModel):
+    product: ProductInput
+    angle: Optional[dict] = None
+    title: str
+    description: str
+    landing_copy: dict
+
+@app.post("/api/shopify/create_from_copy")
+async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
+    payload = req.product.model_dump()
+    angles = [req.angle] if req.angle else []
+    creatives = []
+    page = create_product_and_page(payload, angles, creatives, req.landing_copy)
+    # persist minimal row for convenience
+    test_id = str(uuid4())
+    db.create_test_row(test_id, payload)
+    db.set_test_result(test_id, page, None, creatives, angles=angles, trace=[{"step":"shopify","response":{"page":page}}])
+    return {"page_url": page.get("url") if isinstance(page, dict) else None, "test_id": test_id}
+
+
+class MetaLaunchRequest(BaseModel):
+    product: ProductInput
+    page_url: str
+    creatives: Optional[list] = None
+
+@app.post("/api/meta/launch_from_page")
+async def api_meta_launch_from_page(req: MetaLaunchRequest):
+    # For now delegate to existing helper
+    try:
+        campaign = create_campaign_with_ads({"page_url": req.page_url, **req.product.model_dump()}, req.creatives or [])
+        return {"campaign_id": campaign.get("id") if isinstance(campaign, dict) else None}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/health")
 async def health():
