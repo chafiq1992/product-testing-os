@@ -161,7 +161,7 @@ export default function Page(){
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt, model, image_urls: urls||[] })
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
       updateNodeRun(nodeId, { status:'success', output: out })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })

@@ -1,6 +1,6 @@
 import os, json
 from tenacity import retry, stop_after_attempt, wait_exponential
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 import os
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from env)
@@ -103,19 +103,33 @@ def gen_title_and_description(payload: dict, angle: dict, prompt_override: str |
         + "\nANGLE:\n"
         + json.dumps(angle, ensure_ascii=False)
     )
-    # If images provided, send a multimodal message
-    if image_urls:
-        content = [{"type":"text","text": msg_text}] + [
-            {"type":"image_url","image_url":{"url": u}} for u in image_urls
-        ]
-        messages = [{"role":"user","content": content}]
-    else:
-        messages = [{"role":"user","content": msg_text}]
-    resp = client.chat.completions.create(
-        model=(model or DEFAULT_LLM_MODEL),
-        messages=messages,
-        response_format={"type":"json_object"}
-    )
+    def _call(messages: list[dict]):
+        return client.chat.completions.create(
+            model=(model or DEFAULT_LLM_MODEL),
+            messages=messages,
+            response_format={"type":"json_object"}
+        )
+
+    # Limit images to at most 1 to avoid remote fetch timeouts; fallback without images on failure
+    images = list(image_urls or [])
+    if len(images) > 1:
+        images = images[:1]
+
+    try:
+        if images:
+            content = [{"type":"text","text": msg_text}] + [
+                {"type":"image_url","image_url":{"url": u}} for u in images
+            ]
+            messages = [{"role":"user","content": content}]
+        else:
+            messages = [{"role":"user","content": msg_text}]
+        resp = _call(messages)
+    except BadRequestError as e:
+        # If image fetch failed on OpenAI side, retry once without images as a graceful fallback
+        if images:
+            resp = _call([{ "role":"user", "content": msg_text }])
+        else:
+            raise
     text = resp.choices[0].message.content
     try:
         data = json.loads(text)
