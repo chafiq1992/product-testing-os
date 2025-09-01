@@ -6,6 +6,7 @@ from typing import List, Optional
 from uuid import uuid4
 import json, os
 from pathlib import Path
+from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
@@ -82,8 +83,13 @@ async def create_test(
     # Save uploaded images (if any) and include absolute URLs in payload
     uploaded_urls: List[str] = []
     # Determine base URL: prefer env BASE_URL if set, otherwise derive from request
-    req_base = str(request.base_url).rstrip("/")
-    # Prefer explicit BASE_URL only if it's not localhost; otherwise use request base
+    # Build absolute base from forwarded headers to preserve https scheme on Cloud Run
+    f_proto = request.headers.get("x-forwarded-proto")
+    f_host = request.headers.get("x-forwarded-host")
+    host = f_host or request.headers.get("host")
+    scheme = f_proto or request.url.scheme
+    req_base = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
+    # Prefer explicit BASE_URL only if it's non-local; otherwise use computed base
     if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
         abs_base = BASE_URL.rstrip("/")
     else:
@@ -91,11 +97,12 @@ async def create_test(
     for i, f in enumerate(images or []):
         filename = f"{test_id}_{i}_{f.filename}"
         url_path = save_file(filename, await f.read())  # returns /uploads/...
-        # Construct absolute URL so worker/Meta can access it
+        # Construct absolute, URL-encoded URL so external services can fetch it directly (no redirects)
+        encoded_path = quote(url_path, safe="/:")
         if abs_base.endswith("/"):
-            uploaded_urls.append(f"{abs_base[:-1]}{url_path}")
+            uploaded_urls.append(f"{abs_base[:-1]}{encoded_path}")
         else:
-            uploaded_urls.append(f"{abs_base}{url_path}")
+            uploaded_urls.append(f"{abs_base}{encoded_path}")
 
     if uploaded_urls:
         payload["uploaded_images"] = uploaded_urls
@@ -215,7 +222,11 @@ async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
 @app.post("/api/uploads")
 async def api_uploads(request: Request, files: List[UploadFile] = File(...)):
     upload_id = str(uuid4())
-    req_base = str(request.base_url).rstrip("/")
+    f_proto = request.headers.get("x-forwarded-proto")
+    f_host = request.headers.get("x-forwarded-host")
+    host = f_host or request.headers.get("host")
+    scheme = f_proto or request.url.scheme
+    req_base = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
     if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
         abs_base = BASE_URL.rstrip("/")
     else:
@@ -224,10 +235,11 @@ async def api_uploads(request: Request, files: List[UploadFile] = File(...)):
     for i, f in enumerate(files or []):
         filename = f"{upload_id}_{i}_{f.filename}"
         url_path = save_file(filename, await f.read())
+        encoded_path = quote(url_path, safe="/:")
         if abs_base.endswith("/"):
-            urls.append(f"{abs_base[:-1]}{url_path}")
+            urls.append(f"{abs_base[:-1]}{encoded_path}")
         else:
-            urls.append(f"{abs_base}{url_path}")
+            urls.append(f"{abs_base}{encoded_path}")
     return {"urls": urls}
 
 
