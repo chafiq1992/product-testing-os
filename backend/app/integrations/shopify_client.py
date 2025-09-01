@@ -91,10 +91,8 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     structured_html = (landing_copy or {}).get("html") if landing_copy else None
     desc_html = structured_html or ("<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else "")
 
-    # Collate image URLs: prefer uploaded images from payload; otherwise fall back to creatives
-    uploaded_images = payload.get("uploaded_images") or []
-    creative_image_urls = [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
-    image_urls = uploaded_images or creative_image_urls
+    # Collate image URLs requested for upload: prefer uploaded images from payload; otherwise fall back to creatives
+    requested_images = (payload.get("uploaded_images") or []) or [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
 
     product_in = {
         "title": title,
@@ -103,16 +101,34 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     }
 
     pdata = _gql(PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
-    # Attach images via REST after creation (GraphQL ProductInput does not accept images)
-    if image_urls:
+    # Attach images via REST after creation and capture Shopify CDN URLs
+    shopify_image_urls: list[str] = []
+    alt_texts: list[str] = []
+    if requested_images:
         try:
             numeric_id = pdata["id"].split("/")[-1]
         except Exception:
             numeric_id = None
+        # Prepare alt texts from landing copy sections or description/title
+        sections = (landing_copy or {}).get("sections") or []
+        base_title = title
+        base_desc = (payload.get("description") or "")
+        for idx, _ in enumerate(requested_images):
+            sec = sections[idx] if idx < len(sections) else {}
+            sec_title = sec.get("title") or "Product image"
+            sec_body = sec.get("body") or base_desc
+            alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
         if numeric_id:
-            for u in image_urls:
+            for idx, u in enumerate(requested_images):
                 try:
-                    _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": u}})
+                    alt = alt_texts[idx] if idx < len(alt_texts) else title
+                    resp = _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": u, "alt": alt}})
+                    try:
+                        cdn = (resp or {}).get("image", {}).get("src")
+                        if cdn:
+                            shopify_image_urls.append(cdn)
+                    except Exception:
+                        pass
                 except Exception:
                     # Continue on best-effort basis; image attachment failures should not block page creation
                     pass
@@ -131,9 +147,12 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
             sec_title = sec.get("title") or ""
             sec_body = sec.get("body") or ""
             img_tag = ""
-            if image_urls:
-                img_url = image_urls[idx % len(image_urls)]
-                img_tag = f"<img src=\"{img_url}\" alt=\"{title}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
+            # Prefer Shopify-hosted image URLs if available
+            effective_images = shopify_image_urls or requested_images
+            if effective_images:
+                img_url = effective_images[idx % len(effective_images)]
+                alt = alt_texts[idx % len(alt_texts)] if alt_texts else title
+                img_tag = f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
             body_parts.append(
                 "<section style=\"padding:16px 0;\">"
                 + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")
@@ -144,8 +163,9 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     else:
         # Fallback: description HTML followed by a simple gallery
         body_parts.append(desc_html)
-        if image_urls:
-            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in image_urls])
+        effective_images = shopify_image_urls or requested_images
+        if effective_images:
+            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in effective_images])
             body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
 
     page_body_html = "".join(body_parts)

@@ -206,6 +206,9 @@ class ShopifyCreateRequest(BaseModel):
 @app.post("/api/shopify/create_from_copy")
 async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
     payload = req.product.model_dump()
+    # include description for image alt text generation on Shopify
+    if req.description:
+        payload["description"] = req.description
     if req.image_urls:
         payload["uploaded_images"] = req.image_urls
     angles = [req.angle] if req.angle else []
