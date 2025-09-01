@@ -86,3 +86,14 @@ export async function uploadImages(files: File[]){
   const {data} = await axios.post(`${base}/api/uploads`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { urls: string[] }
 }
+
+export async function shopifyUploadProductImages(payload:{
+  product_gid: string,
+  image_urls: string[],
+  title?: string,
+  description?: string,
+  landing_copy?: any
+}){
+  const {data} = await axios.post(`${base}/api/shopify/upload_images`, payload)
+  return data as { urls: string[] }
+}

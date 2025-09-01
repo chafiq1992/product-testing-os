@@ -84,6 +84,40 @@ def _rest_post(path: str, payload: dict):
     return r.json() if r.content else {}
 
 
+def _extract_numeric_id_from_gid(gid: str) -> str | None:
+    try:
+        return (gid or "").split("/")[-1] or None
+    except Exception:
+        return None
+
+
+def upload_images_to_product(product_gid: str, image_srcs: list[str], alt_texts: list[str] | None = None) -> list[str]:
+    """Attach remote images to a Shopify product and return Shopify CDN URLs.
+
+    Best-effort: continues on individual failures and returns all successful CDN URLs.
+    """
+    if not image_srcs:
+        return []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not numeric_id:
+        return []
+    cdn_urls: list[str] = []
+    for idx, src in enumerate(image_srcs):
+        try:
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            resp = _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": src, "alt": alt}})
+            try:
+                cdn = (resp or {}).get("image", {}).get("src")
+                if cdn:
+                    cdn_urls.append(cdn)
+            except Exception:
+                pass
+        except Exception:
+            # Ignore per-image failures to avoid blocking the flow
+            continue
+    return cdn_urls
+
+
 def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
     title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
     ksp = (angles[0].get("ksp") if angles else [])[:3]
@@ -105,10 +139,6 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     shopify_image_urls: list[str] = []
     alt_texts: list[str] = []
     if requested_images:
-        try:
-            numeric_id = pdata["id"].split("/")[-1]
-        except Exception:
-            numeric_id = None
         # Prepare alt texts from landing copy sections or description/title
         sections = (landing_copy or {}).get("sections") or []
         base_title = title
@@ -118,20 +148,8 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
             sec_title = sec.get("title") or "Product image"
             sec_body = sec.get("body") or base_desc
             alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
-        if numeric_id:
-            for idx, u in enumerate(requested_images):
-                try:
-                    alt = alt_texts[idx] if idx < len(alt_texts) else title
-                    resp = _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": u, "alt": alt}})
-                    try:
-                        cdn = (resp or {}).get("image", {}).get("src")
-                        if cdn:
-                            shopify_image_urls.append(cdn)
-                    except Exception:
-                        pass
-                except Exception:
-                    # Continue on best-effort basis; image attachment failures should not block page creation
-                    pass
+        # Perform upload step and prefer returned Shopify CDN URLs
+        shopify_image_urls = upload_images_to_product(pdata["id"], requested_images, alt_texts)
 
     # Build landing page body with sections matched to images (by index)
     sections = (landing_copy or {}).get("sections") or []
