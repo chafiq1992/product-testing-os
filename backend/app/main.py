@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy
+from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
@@ -284,7 +284,9 @@ async def api_shopify_upload_images(req: ShopifyUploadImagesRequest):
         sec_body = sec.get("body") or base_desc
         alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
     urls = upload_images_to_product(req.product_gid, req.image_urls or [], alt_texts)
-    return {"urls": urls}
+    # Fetch images from Shopify to verify what exists now
+    images = list_product_images(req.product_gid)
+    return {"urls": urls, "images": images}
 
 
 # Simple uploads endpoint to store images and return absolute URLs for multimodal prompts or Shopify

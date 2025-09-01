@@ -84,6 +84,22 @@ def _rest_post(path: str, payload: dict):
     return r.json() if r.content else {}
 
 
+def _rest_get(path: str):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = requests.get(url, headers=headers, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
 def _extract_numeric_id_from_gid(gid: str) -> str | None:
     try:
         return (gid or "").split("/")[-1] or None
@@ -116,6 +132,17 @@ def upload_images_to_product(product_gid: str, image_srcs: list[str], alt_texts:
             # Ignore per-image failures to avoid blocking the flow
             continue
     return cdn_urls
+
+
+def list_product_images(product_gid: str) -> list[dict]:
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not numeric_id:
+        return []
+    try:
+        data = _rest_get(f"/products/{numeric_id}/images.json")
+        return (data or {}).get("images", []) or []
+    except Exception:
+        return []
 
 
 def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE") -> dict:
