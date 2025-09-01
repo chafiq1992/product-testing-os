@@ -83,7 +83,11 @@ async def create_test(
     uploaded_urls: List[str] = []
     # Determine base URL: prefer env BASE_URL if set, otherwise derive from request
     req_base = str(request.base_url).rstrip("/")
-    abs_base = BASE_URL or req_base
+    # Prefer explicit BASE_URL only if it's not localhost; otherwise use request base
+    if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
+        abs_base = BASE_URL.rstrip("/")
+    else:
+        abs_base = req_base
     for i, f in enumerate(images or []):
         filename = f"{test_id}_{i}_{f.filename}"
         url_path = save_file(filename, await f.read())  # returns /uploads/...
@@ -212,7 +216,10 @@ async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
 async def api_uploads(request: Request, files: List[UploadFile] = File(...)):
     upload_id = str(uuid4())
     req_base = str(request.base_url).rstrip("/")
-    abs_base = BASE_URL or req_base
+    if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
+        abs_base = BASE_URL.rstrip("/")
+    else:
+        abs_base = req_base
     urls: List[str] = []
     for i, f in enumerate(files or []):
         filename = f"{upload_id}_{i}_{f.filename}"

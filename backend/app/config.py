@@ -21,4 +21,4 @@ def _fix_rediss(url: str) -> str:
 CELERY_BROKER_URL = _fix_rediss(os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0"))
 CELERY_RESULT_BACKEND = _fix_rediss(os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/0"))
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BASE_URL", "")
