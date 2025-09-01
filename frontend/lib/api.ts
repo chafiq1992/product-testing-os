@@ -1,7 +1,7 @@
 import axios from 'axios'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean}){
+export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number}){
   const form = new FormData()
   form.append('audience', payload.audience)
   form.append('benefits', JSON.stringify(payload.benefits))
@@ -10,6 +10,7 @@ export async function launchTest(payload:{audience:string, benefits:string[], pa
   if(payload.title) form.append('title', payload.title)
   if(payload.targeting) form.append('targeting', typeof payload.targeting==='string'? payload.targeting : JSON.stringify(payload.targeting))
   if(typeof payload.advantage_plus==='boolean') form.append('advantage_plus', String(payload.advantage_plus))
+  if(typeof payload.adset_budget==='number') form.append('adset_budget', String(payload.adset_budget))
   for(const f of (payload.images||[])) form.append('images', f)
   const {data} = await axios.post(`${base}/api/tests`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { test_id:string, status:string }

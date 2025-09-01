@@ -103,6 +103,7 @@ export default function Page(){
   const [benefits,setBenefits]=useState<string[]>(['Comfy all-day wear'])
   const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
   const [files,setFiles]=useState<File[]>([])
+  const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   // Targeting controls (Meta)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string[]>([])
@@ -235,6 +236,7 @@ export default function Page(){
         images: files,
         targeting,
         advantage_plus: advantagePlus,
+        adset_budget: adsetBudget===''? undefined : Number(adsetBudget),
       })
       setTestId(res.test_id)
       log('info', `Launched test ${res.test_id}`, node.id)
@@ -311,6 +313,12 @@ export default function Page(){
                 <div>
                   <div className="text-xs text-slate-500 mb-1">Base price (MAD)</div>
                   <Input type="number" value={price} onChange={e=> setPrice(e.target.value===''? '': Number(e.target.value))} placeholder="189" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">Ad set daily budget (USD)</div>
+                  <Input type="number" min={1} value={adsetBudget} onChange={e=> setAdsetBudget(e.target.value===''? '': Number(e.target.value))} placeholder="9" />
                 </div>
               </div>
               <div>

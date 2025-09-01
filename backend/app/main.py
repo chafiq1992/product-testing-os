@@ -39,6 +39,7 @@ class ProductInput(BaseModel):
     niche: Optional[str] = None
     targeting: Optional[dict] = None
     advantage_plus: Optional[bool] = True
+    adset_budget: Optional[float] = None
 
 @app.post("/api/tests")
 async def create_test(
@@ -51,6 +52,7 @@ async def create_test(
     images: List[UploadFile] = File([]),
     targeting: Optional[str] = Form(None),
     advantage_plus: Optional[bool] = Form(True),
+    adset_budget: Optional[float] = Form(9.0),
 ):
     test_id = str(uuid4())
     payload = ProductInput(
@@ -59,6 +61,7 @@ async def create_test(
         audience=audience,
         benefits=json.loads(benefits),
         pain_points=json.loads(pain_points),
+        adset_budget=adset_budget,
     ).model_dump()
     # Optional targeting controls for Meta
     if targeting:

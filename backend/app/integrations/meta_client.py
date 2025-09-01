@@ -126,7 +126,12 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
 
     results = {"campaign_id": camp["id"], "adsets": [], "requests": requests_log}
 
-    daily_budget_minor = 2000
+    # Determine daily budget (minor units). Default to $9.00 if not provided.
+    try:
+        budget_major = float(payload.get("adset_budget", 9)) if isinstance(payload, dict) else 9.0
+    except Exception:
+        budget_major = 9.0
+    daily_budget_minor = max(100, int(round(budget_major * 100)))
 
     for a in angles:
         # Allow per-test targeting override via payload["targeting"]
@@ -141,6 +146,7 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
             "daily_budget": daily_budget_minor,
             "status": "PAUSED",
             "billing_event": "IMPRESSIONS",
+            "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
             # For conversions/sales, use a valid optimization goal for pixel conversions
             "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OFFSITE_CONVERSIONS",
             # Meta Marketing API expects JSON-encoded targeting for form-encoded posts
