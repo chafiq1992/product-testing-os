@@ -85,7 +85,15 @@ TITLE_DESC_PROMPT = (
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
 def gen_title_and_description(payload: dict, angle: dict, prompt_override: str | None = None) -> dict:
-    base = prompt_override or TITLE_DESC_PROMPT
+    # Ensure the message explicitly mentions json to comply with response_format=json_object
+    json_rule = (
+        "Respond ONLY with a json object having keys 'title' and 'description'. "
+        "No prose, no markdown, just json."
+    )
+    if prompt_override:
+        base = prompt_override.strip() + "\n" + json_rule
+    else:
+        base = TITLE_DESC_PROMPT + "\n" + json_rule
     msg = (
         base
         + "\nPRODUCT INFO:\n"
