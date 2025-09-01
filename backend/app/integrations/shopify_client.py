@@ -134,6 +134,27 @@ def upload_images_to_product(product_gid: str, image_srcs: list[str], alt_texts:
     return cdn_urls
 
 
+def upload_images_to_product_verbose(product_gid: str, image_srcs: list[str], alt_texts: list[str] | None = None) -> dict:
+    """Upload images and return detailed per-image outcomes plus collected CDN URLs."""
+    results: list[dict] = []
+    cdn_urls: list[str] = []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not (numeric_id and image_srcs):
+        return {"cdn_urls": [], "per_image": results}
+    for idx, src in enumerate(image_srcs):
+        try:
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            resp = _rest_post(f"/products/{numeric_id}/images.json", {"image": {"src": src, "alt": alt}})
+            cdn = (resp or {}).get("image", {}).get("src")
+            if cdn:
+                cdn_urls.append(cdn)
+            results.append({"src": src, "ok": True, "cdn": cdn, "resp_keys": list((resp or {}).keys())})
+        except Exception as e:
+            results.append({"src": src, "ok": False, "error": str(e)})
+            continue
+    return {"cdn_urls": cdn_urls, "per_image": results}
+
+
 def list_product_images(product_gid: str) -> list[dict]:
     numeric_id = _extract_numeric_id_from_gid(product_gid)
     if not numeric_id:

@@ -228,12 +228,14 @@ export default function Page(){
       })
       let shopifyCdnUrls:string[] = []
       let shopifyImages:any[]|undefined
+      let perImage:any[]|undefined
       if((appUrls||[]).length>0 && product_gid){
         const up = await shopifyUploadProductImages({ product_gid, image_urls: appUrls||[], title: v.title, description: v.description })
         shopifyCdnUrls = up.urls||[]
         shopifyImages = up.images
+        perImage = (up as any).per_image
       }
-      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_app: appUrls||[], images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[] } }) }
+      if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_app: appUrls||[], images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
       // 3) Generate landing copy with images for section mapping
       const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls })
