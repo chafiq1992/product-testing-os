@@ -223,9 +223,9 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     # Collate image URLs requested for upload: prefer uploaded images from payload; otherwise fall back to creatives
     requested_images = (payload.get("uploaded_images") or []) or [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
 
+    # Do not set description at product creation time
     product_in = {
         "title": title,
-        "descriptionHtml": desc_html,
         "status": "ACTIVE",
     }
 
@@ -297,6 +297,14 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
     page_url = f"https://{SHOP}/pages/{page['handle']}"
 
+    # After landing page is generated, update product description HTML to match the provided/generated content
+    try:
+        final_desc = structured_html or page_body_html or ""
+        if final_desc:
+            update_product_description(pdata["id"], final_desc)
+    except Exception:
+        pass
+
     # Include Shopify CDN image URLs used/attached so the UI can display them later
     return {
         "product_gid": pdata["id"],
@@ -307,6 +315,10 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
 
 
 def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:
+    # If a full HTML body is provided, use it verbatim for the page body
+    html_override = (landing_copy or {}).get("html") if landing_copy else None
+    if html_override:
+        return str(html_override)
     sections = (landing_copy or {}).get("sections") or []
     headline = (landing_copy or {}).get("headline") or title
     subheadline = (landing_copy or {}).get("subheadline") or ""

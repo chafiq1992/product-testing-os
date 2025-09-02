@@ -286,9 +286,8 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
     payload = req.product.model_dump()
     if req.description:
         payload["description"] = req.description
-    # Simple description HTML for the product page (separate from landing page)
-    desc_html = f"<p>{(req.description or '').strip()}</p>" if req.description else ""
-    product = create_product_only(req.title, desc_html)
+    # Do not set any description at product creation time
+    product = create_product_only(req.title)
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
 
 
