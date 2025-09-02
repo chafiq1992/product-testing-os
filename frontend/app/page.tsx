@@ -123,8 +123,54 @@ export default function Page(){
     + "- Be concrete and benefit-led. Avoid vague hype.\n\n"
     + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
   )
-  const [titleDescPrompt,setTitleDescPrompt]=useState<string>("Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.")
-  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>("You are a CRO specialist. Create landing copy JSON with headline, subheadline, sections (title, body, image_url), faq, cta, and html. If IMAGES are provided, map them to the most relevant sections.")
+  const [titleDescPrompt,setTitleDescPrompt]=useState<string>(
+    "You are a CRO copywriter. From the given angle, write 5 HIGH-CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra-short option ≤30 characters. Include the primary keyword, 1 concrete benefit/outcome, and a unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
+    + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand-safe, concrete, and benefit-led."
+  )
+  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(
+    "You are a CRO specialist and landing-page copy engineer.\n"
+    + "Goal: Produce a single json object with high-converting landing copy and a complete HTML page (inline styles) that embeds only the image URLs provided by the user.\n\n"
+    + "Output Contract\n"
+    + "Return one valid json object (no markdown, no prose) with these keys:\n"
+    + "- headline (string)\n"
+    + "- subheadline (string)\n"
+    + "- sections (array of { id, title, body, image_url|null, image_alt })\n"
+    + "  Recommended IDs: \"hero\",\"highlights\",\"colors\",\"feature_gallery\",\"quick_specs\",\"trust_badges\",\"reviews\",\"cta_block\"\n"
+    + "- faq (array of { q, a })\n"
+    + "- cta ({ primary_label, primary_url, secondary_label, secondary_url })\n"
+    + "- html (string) — a complete, self-contained page using inline CSS, mobile-first\n"
+    + "- assets_used (object) mapping provided images actually used\n\n"
+    + "Image Mapping Rules\n"
+    + "- Use only provided image URLs; never invent URLs.\n"
+    + "- Prefer an image labeled \"hero\" for the hero section; else first wide image.\n"
+    + "- Map remaining images to \"feature_gallery\" (≤10) and \"reviews\" if labels include \"review\".\n"
+    + "- If input includes \"colors\", render a \"colors\" section with pills (no images).\n"
+    + "- Always set meaningful image_alt; if no suitable image for a section, image_url = null.\n\n"
+    + "Copy Guidelines\n"
+    + "- Follow audience & tone from input; default to parents in Morocco (warm, trustworthy).\n"
+    + "- Focus on benefits, differentiation, clear outcomes; short paragraphs; bullets where helpful.\n"
+    + "- If region is \"MA\", include trust signals: Cash on Delivery, fast city delivery, easy returns, WhatsApp support.\n"
+    + "- Match requested language (\"ar\" for Fus’ha, \"fr\", or \"en\").\n\n"
+    + "Layout Spec for html\n"
+    + "1) Hero (gradient, big headline, subhead, primary CTA, optional hero image)\n"
+    + "2) Highlights (4–6 bullet benefits)\n"
+    + "3) Color Options (if provided)\n"
+    + "4) Feature Gallery (up to 10 cards with image + short copy)\n"
+    + "5) Quick Specs (compact two-column list/table)\n"
+    + "6) Trust Badges (styled text badges, no external icons)\n"
+    + "7) Reviews (2–3 short testimonials; generic labels if names missing)\n"
+    + "8) CTA Block (bold final CTA + optional secondary CTA)\n"
+    + "9) Footer (small print, contact)\n\n"
+    + "Styling constraints (inline CSS only):\n"
+    + "- Use brand primary (fallback #004AAD); rounded cards, soft shadows, generous spacing, system fonts.\n"
+    + "- Buttons large & mobile-first; accessible contrast.\n"
+    + "- All images: loading=\"lazy\", width:100%, height:auto, border-radius:12px.\n\n"
+    + "Validation:\n"
+    + "- html must be valid and self-contained (no external CSS/JS).\n"
+    + "- Use only provided image URLs.\n"
+    + "- Ensure all CTAs use provided URLs; if missing, use \"#\".\n"
+    + "- CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
+  )
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
   // Targeting controls (Meta)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
