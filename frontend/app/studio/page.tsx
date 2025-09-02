@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -257,6 +257,25 @@ function StudioPage(){
     }
   }
 
+  async function onSaveDraft(){
+    try{
+      let urls = uploadedUrls
+      if((files||[]).length>0 && !urls){
+        const res = await uploadImages(files)
+        urls = res.urls||[]
+        setUploadedUrls(urls)
+      }
+      const res = await saveDraft({
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined },
+        image_urls: urls||[]
+      })
+      setTestId(res.id)
+      alert('Saved draft')
+    }catch(e:any){
+      alert('Failed to save draft: '+ String(e?.message||e))
+    }
+  }
+
   function angleApprove(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const out = n.run?.output
@@ -491,7 +510,7 @@ function StudioPage(){
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run flow</Button>
-          <Button variant="outline" size="sm" onClick={()=>alert('Saved draft (wire to API)')}><Save className="w-4 h-4 mr-1"/>Save draft</Button>
+          <Button variant="outline" size="sm" onClick={onSaveDraft}><Save className="w-4 h-4 mr-1"/>Save draft</Button>
           <Button size="sm" onClick={()=>alert('Published (wire CI/CD)')}><CirclePlay className="w-4 h-4 mr-1"/>Publish</Button>
         </div>
       </header>
@@ -745,7 +764,7 @@ function StudioPage(){
           <StatusBadge nodes={flow.nodes} />
           <Separator className="mx-1 w-px h-5"/>
           <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run</Button>
-          <Button variant="outline" size="sm" onClick={()=>alert('Saved!')}><Save className="w-4 h-4 mr-1"/>Save</Button>
+          <Button variant="outline" size="sm" onClick={onSaveDraft}><Save className="w-4 h-4 mr-1"/>Save</Button>
           <Button size="sm" onClick={()=>alert('Published!')}><CirclePlay className="w-4 h-4 mr-1"/>Publish</Button>
         </div>
       </footer>

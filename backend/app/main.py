@@ -166,6 +166,14 @@ async def list_tests(limit: int | None = None):
                         image = (creatives[0] or {}).get("image_url")
                 except Exception:
                     image = None
+            if not image:
+                try:
+                    payload = it.get("payload") or {}
+                    uploaded = (payload.get("uploaded_images") or [])
+                    if uploaded:
+                        image = uploaded[0]
+                except Exception:
+                    image = None
             it["card_image"] = image
         return {"data": items}
     except Exception as e:
@@ -245,6 +253,21 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
             product_url = None
     data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt, product_url=product_url)
     return data
+# ---------------- Flows/Drafts ----------------
+class DraftSaveRequest(BaseModel):
+    product: ProductInput
+    image_urls: Optional[List[str]] = None
+
+
+@app.post("/api/flows/draft")
+async def api_save_draft(req: DraftSaveRequest):
+    from uuid import uuid4 as _uuid4
+    test_id = str(_uuid4())
+    payload = req.product.model_dump()
+    if req.image_urls:
+        payload["uploaded_images"] = req.image_urls
+    db.create_test_row(test_id, payload, status="draft")
+    return {"id": test_id, "status": "draft"}
 
 
 class ShopifyCreateRequest(BaseModel):

@@ -31,6 +31,14 @@ export async function listTests(limit?: number){
   return data as { data: Array<{ id:string, status:string, page_url?:string|null, payload?:any|null, result?:any|null, created_at?:string, card_image?:string }>, error?:string }
 }
 
+export async function saveDraft(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  image_urls?: string[]
+}){
+  const {data} = await axios.post(`${base}/api/flows/draft`, payload)
+  return data as { id:string, status:string }
+}
+
 export async function fetchSavedAudiences(){
   const {data} = await axios.get(`${base}/api/meta/audiences`)
   return data as { data: Array<{id:string,name:string,description?:string}>, error?:string }

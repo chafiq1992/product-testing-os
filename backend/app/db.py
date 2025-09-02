@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -6,12 +7,16 @@ from typing import Optional, Dict, Any
 from sqlalchemy import create_engine, Column, String, DateTime, Text, desc
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Ensure data directory exists (works in both containers)
-DATA_DIR = Path("/app/data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# Simple SQLite persistence for MVP
-engine = create_engine("sqlite:////app/data/app.db", future=True)
+# Support external database via DATABASE_URL (e.g., Supabase Postgres). Fallback to SQLite.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+else:
+    # Ensure data directory exists (works in both containers)
+    DATA_DIR = Path("/app/data")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Simple SQLite persistence for MVP
+    engine = create_engine("sqlite:////app/data/app.db", future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 Base = declarative_base()
 
@@ -37,11 +42,11 @@ def _now() -> datetime:
     return datetime.utcnow()
 
 
-def create_test_row(test_id: str, payload: Dict[str, Any]):
+def create_test_row(test_id: str, payload: Dict[str, Any], status: str = "queued"):
     with SessionLocal() as session:
         t = Test(
             id=test_id,
-            status="queued",
+            status=status,
             payload_json=json.dumps(payload, ensure_ascii=False),
             created_at=_now(),
             updated_at=_now(),
