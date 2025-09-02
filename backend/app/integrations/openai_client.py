@@ -12,10 +12,28 @@ ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 # We build the prompt with an f-string so that only the payload vars are substituted and
 # the JSON braces inside the schema remain intact (no KeyError from str.format).
 BASE_PROMPT = (
-    "You are a direct-response strategist. Given the PRODUCT INFO as json, respond with ONLY valid json following this exact schema: "
-    "{\"angles\":[{\"name\":str,\"ksp\":[str,str,str],\"headlines\":[str,str,str,str,str],\"titles\":[str,str],\"primaries\":[str,str]}]}.\n"
-    "Respond ONLY with a json object. No prose, no markdown.\n"
-    "Rules: headlines <= 40 chars; titles <= 30; primaries <= 120; avoid disallowed ad claims.\n"
+    "You are a senior CRO & direct-response strategist.\n"
+    "Task: From the provided PRODUCT_INFO (and optional IMAGES), identify the dominant buying driver and primary friction, then generate 2–5 distinct ad angles that are most likely to convert. Prioritize angles with clear proof, risk reversal, and a concrete, specific promise. Use only facts present in PRODUCT_INFO; if you must infer, mark it [ASSUMPTION].\n\n"
+    "Method:\n"
+    "1) Diagnose Fit (audience, pains, outcomes, offer, price, guarantees, constraints/region/language).\n"
+    "2) Choose 2–5 angle patterns (PAS, Social Proof, Risk Reversal, Speed/Convenience, Value, Emotional/Why-Now).\n"
+    "3) Map proof to each claim (reviews, numbers, materials, policies).\n"
+    "4) Pre-empt 2–3 objections per angle.\n"
+    "5) If IMAGES provided, map them to angle/hooks by URL (never invent URLs).\n\n"
+    "Output:\n"
+    "Return ONE valid json object with:\n"
+    "- diagnosis { dominant_driver, primary_friction, why_these_angles }\n"
+    "- angles[] each with:\n"
+    "  name, big_idea, promise, ksp[3-5], headlines[5-8], titles[3-5],\n"
+    "  primaries { short, medium, long }, objections[{q,rebuttal}],\n"
+    "  proof[], cta{label,url}, image_map{used[],notes}, lp_snippet{hero_headline,subheadline,bullets[]}\n"
+    "- scores per angle: relevance, desire_intensity, differentiation, proof_strength, objection_coverage, clarity, visual_fit, total\n"
+    "- recommendation { best_angle, why, first_test_assets[], next_tests[] }\n\n"
+    "Style & Localization:\n"
+    "- Match language in PRODUCT_INFO (\"ar\" Fus’ha, \"fr\", or \"en\").\n"
+    "- If region == \"MA\", add Morocco trust signals (Cash on Delivery, fast city delivery, easy returns, WhatsApp support).\n"
+    "- Be concrete and benefit-led. Avoid vague hype.\n\n"
+    "CRITICAL: Output must be a single valid json object only (no markdown, no explanations).\n"
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))

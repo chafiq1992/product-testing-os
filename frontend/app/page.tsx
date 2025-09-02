@@ -99,7 +99,30 @@ export default function Page(){
   const [model,setModel]=useState<string>('gpt-4o-mini')
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
   // Prompt templates (editable in Prompts tab)
-  const [anglesPrompt,setAnglesPrompt]=useState<string>("You are a direct-response strategist. Generate 2-5 angle objects with name, ksp, headlines, titles, primaries for the PRODUCT INFO.")
+  const [anglesPrompt,setAnglesPrompt]=useState<string>(
+    "You are a senior CRO & direct-response strategist.\n"
+    + "Task: From the provided PRODUCT_INFO (and optional IMAGES), identify the dominant buying driver and primary friction, then generate 2–5 distinct ad angles that are most likely to convert. Prioritize angles with clear proof, risk reversal, and a concrete, specific promise. Use only facts present in PRODUCT_INFO; if you must infer, mark it [ASSUMPTION].\n\n"
+    + "Method:\n"
+    + "1) Diagnose Fit (audience, pains, outcomes, offer, price, guarantees, constraints/region/language).\n"
+    + "2) Choose 2–5 angle patterns (PAS, Social Proof, Risk Reversal, Speed/Convenience, Value, Emotional/Why-Now).\n"
+    + "3) Map proof to each claim (reviews, numbers, materials, policies).\n"
+    + "4) Pre-empt 2–3 objections per angle.\n"
+    + "5) If IMAGES provided, map them to angle/hooks by URL (never invent URLs).\n\n"
+    + "Output:\n"
+    + "Return ONE valid json object with:\n"
+    + "- diagnosis { dominant_driver, primary_friction, why_these_angles }\n"
+    + "- angles[] each with:\n"
+    + "  name, big_idea, promise, ksp[3-5], headlines[5-8], titles[3-5],\n"
+    + "  primaries { short, medium, long }, objections[{q,rebuttal}],\n"
+    + "  proof[], cta{label,url}, image_map{used[],notes}, lp_snippet{hero_headline,subheadline,bullets[]}\n"
+    + "- scores per angle: relevance, desire_intensity, differentiation, proof_strength, objection_coverage, clarity, visual_fit, total\n"
+    + "- recommendation { best_angle, why, first_test_assets[], next_tests[] }\n\n"
+    + "Style & Localization:\n"
+    + "- Match language in PRODUCT_INFO (\"ar\" Fus’ha, \"fr\", or \"en\").\n"
+    + "- If region == \"MA\", add Morocco trust signals (Cash on Delivery, fast city delivery, easy returns, WhatsApp support).\n"
+    + "- Be concrete and benefit-led. Avoid vague hype.\n\n"
+    + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
+  )
   const [titleDescPrompt,setTitleDescPrompt]=useState<string>("Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle.")
   const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>("You are a CRO specialist. Create landing copy JSON with headline, subheadline, sections (title, body, image_url), faq, cta, and html. If IMAGES are provided, map them to the most relevant sections.")
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
