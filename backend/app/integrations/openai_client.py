@@ -12,8 +12,9 @@ ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 # We build the prompt with an f-string so that only the payload vars are substituted and
 # the JSON braces inside the schema remain intact (no KeyError from str.format).
 BASE_PROMPT = (
-    "You are a direct-response strategist. Given the PRODUCT INFO as JSON, respond with ONLY valid JSON following this exact schema: "
+    "You are a direct-response strategist. Given the PRODUCT INFO as json, respond with ONLY valid json following this exact schema: "
     "{\"angles\":[{\"name\":str,\"ksp\":[str,str,str],\"headlines\":[str,str,str,str,str],\"titles\":[str,str],\"primaries\":[str,str]}]}.\n"
+    "Respond ONLY with a json object. No prose, no markdown.\n"
     "Rules: headlines <= 40 chars; titles <= 30; primaries <= 120; avoid disallowed ad claims.\n"
 )
 
@@ -26,9 +27,13 @@ def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override
         + json.dumps(payload, ensure_ascii=False)
         + f"\nAudience: {payload.get('audience')}"
     )
+    messages = [
+        {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+        {"role": "user", "content": msg},
+    ]
     resp = client.chat.completions.create(
         model=(model or DEFAULT_LLM_MODEL),
-        messages=[{"role":"user","content":msg}],
+        messages=messages,
         response_format={"type":"json_object"}
     )
     text = resp.choices[0].message.content
@@ -53,14 +58,30 @@ def gen_images(angle: dict, payload: dict) -> list:
 
 
 LANDING_COPY_PROMPT = (
-    "You are a CRO specialist. Given PRODUCT INFO, top angles, and optional reference IMAGES, output ONLY valid JSON with keys: "
-    "{\"headline\": str, \"subheadline\": str, \"sections\": [{\"title\": str, \"body\": str, \"image_url\": str|null}], \"faq\": [{\"q\": str, \"a\": str}], \"cta\": str, \"html\": str}. "
-    "If images are provided, assign the most relevant image_url to each section based on content (or null if none). "
-    "In the html, embed the chosen image URLs near their matching section content. Use semantic tags, no external CSS, safe inline styles."
+    "You are a CRO specialist and landing-page copy engineer.\n"
+    "Goal: Produce a single json object with high-converting landing copy and a complete HTML page (inline styles) that embeds only the image URLs provided by the user.\n\n"
+    "Output Contract\n\n"
+    "Return one json object (no markdown, no prose) with these keys:\n\n"
+    "headline: string\n\n"
+    "subheadline: string\n\n"
+    "sections: array of objects\n\n"
+    "Each section: { \"id\": string, \"title\": string, \"body\": string, \"image_url\": string|null, \"image_alt\": string }\n\n"
+    "Recommended IDs (use any that apply): \"hero\", \"highlights\", \"colors\", \"feature_gallery\", \"quick_specs\", \"trust_badges\", \"reviews\", \"cta_block\"\n\n"
+    "faq: array of { \"q\": string, \"a\": string } (3–6 items)\n\n"
+    "cta: { \"primary_label\": string, \"primary_url\": string, \"secondary_label\": string, \"secondary_url\": string }\n\n"
+    "html: string — a complete, self-contained landing page using inline CSS (no external assets), mobile-first, and following the layout spec below\n\n"
+    "assets_used: object listing which provided images you actually used.\n\n"
+    "Image Mapping Rules\n\n"
+    "Use only the image URLs provided in input. Never invent URLs. Prefer a \"hero\"-labeled image for hero; else first wide image. Map remaining images to feature_gallery (up to 10), colors (if provided), reviews (optional). Always set meaningful image_alt. If no suitable image for a section, set image_url: null.\n\n"
+    "Copy Guidelines\n\n"
+    "Follow audience/tone. Emphasize benefits and outcomes. Short paragraphs. Bullets when helpful. Morocco trust signals if region is MA: Cash on Delivery, fast delivery to big cities, easy returns, WhatsApp support. Language per input.\n\n"
+    "Layout Spec for html\n\n"
+    "Build one responsive page using inline CSS and this structure: Hero, Highlights, Color Options (optional), Feature Gallery (≤10), Quick Specs, Trust Badges (Morocco), Reviews, CTA Block, Footer. Styling: primary color from brand (fallback #004AAD); rounded cards, soft shadows, generous spacing, readable system fonts; buttons large and full-width on mobile; images loading=\"lazy\", width:100%, height:auto, border-radius:12px.\n\n"
+    "Validation: html must be valid and self-contained. Use only provided image URLs. Ensure all CTAs use URLs provided in input (or product_url if provided); if missing, use \"#\". Return only the json object.\n"
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_landing_copy(payload: dict, angles: list, model: str | None = None, image_urls: list[str] | None = None, prompt_override: str | None = None) -> dict:
+def gen_landing_copy(payload: dict, angles: list, model: str | None = None, image_urls: list[str] | None = None, prompt_override: str | None = None, product_url: str | None = None) -> dict:
     base = (prompt_override or LANDING_COPY_PROMPT)
     msg = (
         base
@@ -68,6 +89,7 @@ def gen_landing_copy(payload: dict, angles: list, model: str | None = None, imag
         + json.dumps(payload, ensure_ascii=False)
         + "\nTOP ANGLES:\n"
         + json.dumps(angles[:3], ensure_ascii=False)
+        + (f"\nPRODUCT_URL: {product_url}" if product_url else "")
     )
     # Prepare multimodal content if images are provided; limit to a few to avoid timeouts
     images = list(image_urls or [])
@@ -77,9 +99,15 @@ def gen_landing_copy(payload: dict, angles: list, model: str | None = None, imag
         content = [{"type":"text","text": msg}] + [
             {"type":"image_url","image_url":{"url": u}} for u in images
         ]
-        messages = [{"role":"user","content": content}]
+        messages = [
+            {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+            {"role":"user","content": content}
+        ]
     else:
-        messages = [{"role":"user","content": msg}]
+        messages = [
+            {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+            {"role":"user","content": msg}
+        ]
     resp = client.chat.completions.create(
         model=(model or DEFAULT_LLM_MODEL),
         messages=messages,
@@ -134,14 +162,23 @@ def gen_title_and_description(payload: dict, angle: dict, prompt_override: str |
             content = [{"type":"text","text": msg_text}] + [
                 {"type":"image_url","image_url":{"url": u}} for u in images
             ]
-            messages = [{"role":"user","content": content}]
+            messages = [
+                {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+                {"role":"user","content": content}
+            ]
         else:
-            messages = [{"role":"user","content": msg_text}]
+            messages = [
+                {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+                {"role":"user","content": msg_text}
+            ]
         resp = _call(messages)
     except BadRequestError as e:
         # If image fetch failed on OpenAI side, retry once without images as a graceful fallback
         if images:
-            resp = _call([{ "role":"user", "content": msg_text }])
+            resp = _call([
+                {"role": "system", "content": "Respond ONLY with a json object. No prose, no markdown."},
+                { "role":"user", "content": msg_text }
+            ])
         else:
             raise
     text = resp.choices[0].message.content

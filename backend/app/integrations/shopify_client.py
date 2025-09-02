@@ -44,6 +44,15 @@ mutation CreatePage($page: PageCreateInput!) {
 }
 """
 
+PRODUCT_UPDATE = """
+mutation UpdateProduct($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product { id handle onlineStoreUrl title status }
+    userErrors { field message }
+  }
+}
+"""
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
 def _gql(query: str, variables: dict):
     if not SHOP:
@@ -342,3 +351,14 @@ def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] 
     page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
     page_url = f"https://{SHOP}/pages/{page['handle']}"
     return {"page_gid": page["id"], "url": page_url}
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_description(product_gid: str, description_html: str) -> dict:
+    inp = {
+        "id": product_gid,
+        "descriptionHtml": description_html or ""
+    }
+    data = _gql(PRODUCT_UPDATE, {"input": inp})
+    prod = data["productUpdate"]["product"]
+    return prod

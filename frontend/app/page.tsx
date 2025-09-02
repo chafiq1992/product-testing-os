@@ -213,6 +213,7 @@ export default function Page(){
       })
       const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description })
       const product_gid = productRes.product_gid
+      const product_handle = productRes.handle
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
 
       // 2) Upload images to product
@@ -237,7 +238,11 @@ export default function Page(){
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
       // 3) Generate landing copy with images for section mapping
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls, prompt: landingCopyPrompt })
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls, prompt: landingCopyPrompt, product_handle })
+      // Update Shopify product description with the generated landing HTML
+      if(product_gid && lc?.html){
+        await shopifyUpdateDescription({ product_gid, description_html: lc.html })
+      }
 
       // 4) Create landing page using the copy (no new product)
       let landingNodeId:string|undefined
@@ -372,6 +377,9 @@ export default function Page(){
         advantage_plus: advantagePlus,
         adset_budget: adsetBudget===''? undefined : Number(adsetBudget),
         model,
+        angles_prompt: anglesPrompt,
+        title_desc_prompt: titleDescPrompt,
+        landing_copy_prompt: landingCopyPrompt,
       })
       setTestId(res.test_id)
       log('info', `Launched test ${res.test_id}`, node.id)

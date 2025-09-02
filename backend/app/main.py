@@ -11,6 +11,7 @@ from urllib.parse import quote
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
+from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
@@ -58,6 +59,9 @@ async def create_test(
     advantage_plus: Optional[bool] = Form(True),
     adset_budget: Optional[float] = Form(9.0),
     model: Optional[str] = Form(None),
+    angles_prompt: Optional[str] = Form(None),
+    title_desc_prompt: Optional[str] = Form(None),
+    landing_copy_prompt: Optional[str] = Form(None),
 ):
     test_id = str(uuid4())
     payload = ProductInput(
@@ -70,6 +74,13 @@ async def create_test(
     ).model_dump()
     if model:
         payload["model"] = model
+    # Optional prompt overrides from UI "Prompts" tab
+    if angles_prompt:
+        payload["angles_prompt"] = angles_prompt
+    if title_desc_prompt:
+        payload["title_desc_prompt"] = title_desc_prompt
+    if landing_copy_prompt:
+        payload["landing_copy_prompt"] = landing_copy_prompt
     # Optional targeting controls for Meta
     if targeting:
         try:
@@ -184,6 +195,8 @@ class LandingCopyRequest(BaseModel):
     model: Optional[str] = None
     prompt: Optional[str] = None
     image_urls: Optional[List[str]] = None
+    product_url: Optional[str] = None
+    product_handle: Optional[str] = None
 
 @app.post("/api/llm/landing_copy")
 async def api_llm_landing_copy(req: LandingCopyRequest):
@@ -194,7 +207,16 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
     if req.description:
         payload["description"] = req.description
     angles = [req.angle] if req.angle else []
-    data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt)
+    # Build product URL if provided via handle and we know the shop domain
+    product_url = req.product_url
+    if not product_url and req.product_handle:
+        try:
+            from app.integrations.shopify_client import SHOP
+            if SHOP and req.product_handle:
+                product_url = f"https://{SHOP}/products/{req.product_handle}"
+        except Exception:
+            product_url = None
+    data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt, product_url=product_url)
     return data
 
 
@@ -241,6 +263,17 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
     desc_html = f"<p>{(req.description or '').strip()}</p>" if req.description else ""
     product = create_product_only(req.title, desc_html)
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
+
+
+class ShopifyUpdateDescriptionRequest(BaseModel):
+    product_gid: str
+    description_html: str
+
+
+@app.post("/api/shopify/update_description")
+async def api_shopify_update_description(req: ShopifyUpdateDescriptionRequest):
+    prod = update_product_description(req.product_gid, req.description_html)
+    return {"product_gid": prod.get("id"), "handle": prod.get("handle")}
 
 
 class ShopifyCreatePageFromCopyRequest(BaseModel):

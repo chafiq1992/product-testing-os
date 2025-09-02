@@ -20,7 +20,8 @@ def run_pipeline_sync(test_id: str, payload: dict):
         landing_copy = None
         # Step 1: Angles & copy
         model = payload.get("model")
-        angles = gen_angles_and_copy(payload, model=model)
+        angles_prompt = (payload or {}).get("angles_prompt")
+        angles = gen_angles_and_copy(payload, model=model, prompt_override=angles_prompt)
         # reconstruct exact prompt for trace
         try:
             import json as _json
@@ -69,7 +70,8 @@ def run_pipeline_sync(test_id: str, payload: dict):
 
         # Step 3: Shopify product + page
         # Step 2.5: Generate landing copy via OpenAI (for transparency + optional page body)
-        landing_copy = gen_landing_copy(payload, angles, model=model)
+        landing_prompt = (payload or {}).get("landing_copy_prompt")
+        landing_copy = gen_landing_copy(payload, angles, model=model, prompt_override=landing_prompt)
         trace.append({
             "step": "landing_copy",
             "provider": "openai",

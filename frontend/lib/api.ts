@@ -1,7 +1,7 @@
 import axios from 'axios'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string}){
+export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string}){
   const form = new FormData()
   form.append('audience', payload.audience)
   form.append('benefits', JSON.stringify(payload.benefits))
@@ -12,6 +12,9 @@ export async function launchTest(payload:{audience:string, benefits:string[], pa
   if(typeof payload.advantage_plus==='boolean') form.append('advantage_plus', String(payload.advantage_plus))
   if(typeof payload.adset_budget==='number') form.append('adset_budget', String(payload.adset_budget))
   if(payload.model) form.append('model', payload.model)
+  if(payload.angles_prompt) form.append('angles_prompt', payload.angles_prompt)
+  if(payload.title_desc_prompt) form.append('title_desc_prompt', payload.title_desc_prompt)
+  if(payload.landing_copy_prompt) form.append('landing_copy_prompt', payload.landing_copy_prompt)
   for(const f of (payload.images||[])) form.append('images', f)
   const {data} = await axios.post(`${base}/api/tests`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { test_id:string, status:string }
@@ -56,7 +59,9 @@ export async function llmLandingCopy(payload:{
   description?:string,
   model?:string,
   image_urls?: string[],
-  prompt?:string
+  prompt?:string,
+  product_url?: string,
+  product_handle?: string,
 }){
   const {data} = await axios.post(`${base}/api/llm/landing_copy`, payload)
   return data as { headline?:string, subheadline?:string, sections?:any[], faq?:any[], cta?:string, html?:string }
@@ -108,6 +113,11 @@ export async function shopifyCreateProductFromTitleDesc(payload:{
   description?: string
 }){
   const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, payload)
+  return data as { product_gid?: string, handle?: string }
+}
+
+export async function shopifyUpdateDescription(payload:{ product_gid:string, description_html:string }){
+  const {data} = await axios.post(`${base}/api/shopify/update_description`, payload)
   return data as { product_gid?: string, handle?: string }
 }
 
