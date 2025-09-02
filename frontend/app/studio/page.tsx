@@ -415,19 +415,25 @@ function StudioPage(){
             geminiNodeId = gn.id
             return next
           })
-          if(geminiNodeId){
-            updateNodeRun(geminiNodeId, { status:'running', startedAt: now() })
-            try{
-              const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
-              updateNodeRun(geminiNodeId, { status:'success', output: resp })
-            }catch(e:any){
-              updateNodeRun(geminiNodeId, { status:'error', error: String(e?.message||e) })
-            }
-          }
+          // Do not auto-run; user can click Generate on the node
         }
       }catch{}
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
+    }
+  }
+
+  async function geminiGenerate(nodeId:string){
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const sourceUrl = n.data?.source_image_url
+    const adPrompt = String(n.data?.prompt||'Create a high-quality ad image from this product photo.')
+    if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
+    updateNodeRun(nodeId, { status:'running', startedAt: now() })
+    try{
+      const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
+      updateNodeRun(nodeId, { status:'success', output: resp })
+    }catch(e:any){
+      updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
   }
 
@@ -732,6 +738,7 @@ function StudioPage(){
                   onAngleGenerate={(id)=> angleGenerate(id)}
                   onAngleApprove={(id)=> angleApprove(id)}
                   onTitleContinue={(id)=> titleContinue(id)}
+                  onGeminiGenerate={(id)=> geminiGenerate(id)}
                 />
               ))}
             </div>
@@ -846,7 +853,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -864,7 +871,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue)}
+          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate)}
         </div>
       </motion.div>
     </div>
@@ -876,7 +883,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
@@ -966,6 +973,10 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
     return (
       <div className="text-xs space-y-2">
         <div className="text-slate-500">{node.data.label||'Gemini Ad Images'}</div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
         <div>
           <div className="text-[11px] text-slate-500 mb-1">Source image</div>
           <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
