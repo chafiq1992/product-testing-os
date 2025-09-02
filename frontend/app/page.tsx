@@ -13,6 +13,7 @@ export default function HomePage(){
   const [items,setItems]=useState<Array<any>>([])
   const [loading,setLoading]=useState(true)
   useEffect(()=>{ (async()=>{ try{ const res=await listTests(); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
+  const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
@@ -21,7 +22,7 @@ export default function HomePage(){
           <h1 className="font-semibold text-lg">Product Testing OS — Flows</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/studio" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
+          <Link href={studioBase? studioBase : "/studio"} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
           </Link>
         </div>
@@ -33,7 +34,7 @@ export default function HomePage(){
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {items.map(it=> (
-            <Link href={`/studio?id=${it.id}`} key={it.id} className="block">
+            <Link href={studioBase? `${studioBase}?id=${it.id}` : `/studio?id=${it.id}`} key={it.id} className="block">
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center justify-between">
