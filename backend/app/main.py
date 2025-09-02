@@ -145,6 +145,33 @@ async def get_test(test_id: str):
     return t
 
 
+@app.get("/api/tests")
+async def list_tests(limit: int | None = None):
+    try:
+        items = db.list_tests(limit=limit)
+        # For brevity, surface a top-level image for cards: prefer Shopify page image_urls, else first creative
+        for it in items:
+            image = None
+            try:
+                page = (it.get("result") or {}).get("page") or {}
+                imgs = (page.get("image_urls") or []) if isinstance(page, dict) else []
+                if imgs:
+                    image = imgs[0]
+            except Exception:
+                image = None
+            if not image:
+                try:
+                    creatives = (it.get("result") or {}).get("creatives") or []
+                    if creatives:
+                        image = (creatives[0] or {}).get("image_url")
+                except Exception:
+                    image = None
+            it["card_image"] = image
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
 @app.get("/api/meta/audiences")
 async def get_saved_audiences():
     try:

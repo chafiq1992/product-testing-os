@@ -297,7 +297,13 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
     page_url = f"https://{SHOP}/pages/{page['handle']}"
 
-    return {"product_gid": pdata["id"], "page_gid": page["id"], "url": page_url}
+    # Include Shopify CDN image URLs used/attached so the UI can display them later
+    return {
+        "product_gid": pdata["id"],
+        "page_gid": page["id"],
+        "url": page_url,
+        "image_urls": shopify_image_urls or requested_images or [],
+    }
 
 
 def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:

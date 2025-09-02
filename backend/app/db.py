@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from sqlalchemy import create_engine, Column, String, DateTime, Text
+from sqlalchemy import create_engine, Column, String, DateTime, Text, desc
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Ensure data directory exists (works in both containers)
@@ -120,3 +120,25 @@ def get_test(test_id: str) -> Optional[Dict[str, Any]]:
             "created_at": t.created_at.isoformat() + "Z",
             "updated_at": t.updated_at.isoformat() + "Z",
         }
+
+
+def list_tests(limit: int | None = None) -> list[Dict[str, Any]]:
+    with SessionLocal() as session:
+        q = session.query(Test).order_by(desc(Test.created_at))
+        if limit:
+            q = q.limit(limit)
+        items = q.all()
+        out: list[Dict[str, Any]] = []
+        for t in items:
+            out.append({
+                "id": t.id,
+                "status": t.status,
+                "page_url": t.page_url,
+                "campaign_id": t.campaign_id,
+                "payload": json.loads(t.payload_json) if t.payload_json else None,
+                "result": json.loads(t.result_json) if t.result_json else None,
+                "error": json.loads(t.error_json) if t.error_json else None,
+                "created_at": t.created_at.isoformat() + "Z",
+                "updated_at": t.updated_at.isoformat() + "Z",
+            })
+        return out

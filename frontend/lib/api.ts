@@ -25,6 +25,12 @@ export async function getTest(id: string){
   return data as { id:string, status:string, page_url?:string|null, campaign_id?:string|null, error?:any|null, payload?:any|null, result?:any|null }
 }
 
+export async function listTests(limit?: number){
+  const q = typeof limit==='number'? `?limit=${limit}` : ''
+  const {data} = await axios.get(`${base}/api/tests${q}`)
+  return data as { data: Array<{ id:string, status:string, page_url?:string|null, payload?:any|null, result?:any|null, created_at?:string, card_image?:string }>, error?:string }
+}
+
 export async function fetchSavedAudiences(){
   const {data} = await axios.get(`${base}/api/meta/audiences`)
   return data as { data: Array<{id:string,name:string,description?:string}>, error?:string }
