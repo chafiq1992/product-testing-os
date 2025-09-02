@@ -33,9 +33,25 @@ export async function listTests(limit?: number){
 
 export async function saveDraft(payload:{
   product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
-  image_urls?: string[]
+  image_urls?: string[],
+  flow?: any,
+  ui?: any,
+  prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
+  settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string }
 }){
   const {data} = await axios.post(`${base}/api/flows/draft`, payload)
+  return data as { id:string, status:string }
+}
+
+export async function updateDraft(id: string, payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  image_urls?: string[],
+  flow?: any,
+  ui?: any,
+  prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
+  settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string }
+}){
+  const {data} = await axios.put(`${base}/api/flows/draft/${id}`, payload)
   return data as { id:string, status:string }
 }
 
@@ -159,4 +175,10 @@ export async function shopifyUploadProductFiles(payload:{
   for(const f of (payload.files||[])) form.append('files', f)
   const {data} = await axios.post(`${base}/api/shopify/upload_files`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { urls: string[], images?: any[], per_image?: any[] }
+}
+
+// Gemini image generation (ad image from source image + prompt)
+export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:string, num_images?:number }){
+  const {data} = await axios.post(`${base}/api/gemini/ad_image`, payload)
+  return data as { images: string[], prompt: string, input_image_url: string, error?: string }
 }

@@ -147,3 +147,14 @@ def list_tests(limit: int | None = None) -> list[Dict[str, Any]]:
                 "updated_at": t.updated_at.isoformat() + "Z",
             })
         return out
+
+
+def update_test_payload(test_id: str, payload: Dict[str, Any]) -> bool:
+    with SessionLocal() as session:
+        t = session.get(Test, test_id)
+        if not t:
+            return False
+        t.payload_json = json.dumps(payload, ensure_ascii=False)
+        t.updated_at = _now()
+        session.commit()
+        return True

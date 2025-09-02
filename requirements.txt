@@ -10,3 +10,4 @@ tenacity==8.4.2
 python-dotenv==1.0.1
 SQLAlchemy==2.0.32
 psycopg2-binary==2.9.9
+google-generativeai>=0.7.0

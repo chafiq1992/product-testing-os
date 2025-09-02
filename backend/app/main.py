@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
+from app.integrations.gemini_client import gen_ad_images_from_image
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
@@ -253,10 +254,30 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
             product_url = None
     data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt, product_url=product_url)
     return data
+ 
+# ---------------- Gemini image generation ----------------
+class GeminiAdImageRequest(BaseModel):
+    image_url: str
+    prompt: str
+    num_images: Optional[int] = 1
+
+
+@app.post("/api/gemini/ad_image")
+async def api_gemini_ad_image(req: GeminiAdImageRequest):
+    try:
+        imgs = gen_ad_images_from_image(req.image_url, req.prompt, req.num_images or 1)
+        return {"images": imgs, "prompt": req.prompt, "input_image_url": req.image_url}
+    except Exception as e:
+        # Graceful error with empty images
+        return {"images": [], "error": str(e), "prompt": req.prompt, "input_image_url": req.image_url}
 # ---------------- Flows/Drafts ----------------
 class DraftSaveRequest(BaseModel):
     product: ProductInput
     image_urls: Optional[List[str]] = None
+    flow: Optional[dict] = None  # { nodes:[], edges:[] }
+    ui: Optional[dict] = None    # { pan, zoom, selected }
+    prompts: Optional[dict] = None  # { angles_prompt, title_desc_prompt, landing_copy_prompt }
+    settings: Optional[dict] = None  # { model, advantage_plus, adset_budget, targeting, countries, saved_audience_id }
 
 
 @app.post("/api/flows/draft")
@@ -266,7 +287,36 @@ async def api_save_draft(req: DraftSaveRequest):
     payload = req.product.model_dump()
     if req.image_urls:
         payload["uploaded_images"] = req.image_urls
+    # Attach optional extras so the UI can restore a full snapshot
+    if req.flow is not None:
+        payload["flow"] = req.flow
+    if req.ui is not None:
+        payload["ui"] = req.ui
+    if req.prompts is not None:
+        payload["prompts"] = req.prompts
+    if req.settings is not None:
+        payload["settings"] = req.settings
     db.create_test_row(test_id, payload, status="draft")
+    return {"id": test_id, "status": "draft"}
+
+
+@app.put("/api/flows/draft/{test_id}")
+async def api_update_draft(test_id: str, req: DraftSaveRequest):
+    # Build new payload from request (full snapshot)
+    payload = req.product.model_dump()
+    if req.image_urls:
+        payload["uploaded_images"] = req.image_urls
+    if req.flow is not None:
+        payload["flow"] = req.flow
+    if req.ui is not None:
+        payload["ui"] = req.ui
+    if req.prompts is not None:
+        payload["prompts"] = req.prompts
+    if req.settings is not None:
+        payload["settings"] = req.settings
+    ok = db.update_test_payload(test_id, payload)
+    if not ok:
+        return {"error": "not_found"}
     return {"id": test_id, "status": "draft"}
 
 

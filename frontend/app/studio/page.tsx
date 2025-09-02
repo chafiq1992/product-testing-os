@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -93,6 +93,32 @@ function StudioPage(){
         if(p?.base_price!=null) setPrice(Number(p.base_price))
         if(Array.isArray(p?.benefits)) setBenefits(p.benefits)
         if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
+        if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
+        // Restore flow snapshot if present
+        if(p?.flow && Array.isArray(p.flow.nodes) && Array.isArray(p.flow.edges)){
+          setFlow({ nodes: p.flow.nodes, edges: p.flow.edges })
+        }
+        // Restore UI state
+        if(p?.ui){
+          if(typeof p.ui.zoom==='number') setZoom(p.ui.zoom)
+          if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
+          if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
+        }
+        // Restore prompts
+        if(p?.prompts){
+          if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
+          if(typeof p.prompts.title_desc_prompt==='string') setTitleDescPrompt(p.prompts.title_desc_prompt)
+          if(typeof p.prompts.landing_copy_prompt==='string') setLandingCopyPrompt(p.prompts.landing_copy_prompt)
+        }
+        // Restore settings
+        if(p?.settings){
+          if(typeof p.settings.model==='string') setModel(p.settings.model)
+          if(typeof p.settings.advantage_plus==='boolean') setAdvantagePlus(p.settings.advantage_plus)
+          if(typeof p.settings.adset_budget==='number') setAdsetBudget(p.settings.adset_budget)
+          if(Array.isArray(p.settings.countries)) setCountries(p.settings.countries)
+          if(typeof p.settings.saved_audience_id==='string') setSelectedSavedAudience(p.settings.saved_audience_id)
+        }
+        setTestId((t as any)?.id)
       }catch{}
     })()
   },[testParam])
@@ -265,10 +291,24 @@ function StudioPage(){
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const res = await saveDraft({
+      const flowSnap = { nodes: flowRef.current.nodes, edges: flowRef.current.edges }
+      const uiSnap = { pan, zoom, selected }
+      let targeting: any = undefined
+      if(!advantagePlus){
+        if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
+        else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
+      }
+      const payload = {
         product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined },
-        image_urls: urls||[]
-      })
+        image_urls: urls||[],
+        flow: flowSnap,
+        ui: uiSnap,
+        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt },
+        settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined }
+      }
+      let res
+      if(testId){ res = await updateDraft(testId, payload as any) }
+      else { res = await saveDraft(payload as any) }
       setTestId(res.id)
       alert('Saved draft')
     }catch(e:any){
@@ -360,6 +400,32 @@ function StudioPage(){
         if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
       }
       updateNodeRun(nodeId, { status:'success', output:{ landing_copy: lc } })
+
+      // In parallel: spawn a Gemini ad-image generation node directly below the images node
+      try{
+        const sourceUrl = (shopifyCdnUrls||[])[0]
+        if(sourceUrl){
+          const adPrompt = `Create a high‑quality, very attractive ecommerce ad image from this product photo. Keep the product realistic, enhance lighting/background for social feeds, and make it pop without adding text or logos.`
+          let geminiNodeId:string|undefined
+          setFlow(f=>{
+            const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
+            const gn = makeNode('action', imgNode.x, (imgNode.y+140), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl })
+            const next = { nodes:[...f.nodes, gn], edges: f.edges }
+            flowRef.current = next
+            geminiNodeId = gn.id
+            return next
+          })
+          if(geminiNodeId){
+            updateNodeRun(geminiNodeId, { status:'running', startedAt: now() })
+            try{
+              const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
+              updateNodeRun(geminiNodeId, { status:'success', output: resp })
+            }catch(e:any){
+              updateNodeRun(geminiNodeId, { status:'error', error: String(e?.message||e) })
+            }
+          }
+        }
+      }catch{}
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
     }
@@ -891,6 +957,34 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
         <div className="flex justify-end">
           <Button size="sm" onClick={()=> onTitleContinue(node.id)}>Continue</Button>
         </div>
+      </div>
+    )
+  }
+  if(node.data?.type==='gemini_ad_images'){
+    const out = node.run?.output||{}
+    const imgs: string[] = Array.isArray(out?.images)? out.images : []
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label||'Gemini Ad Images'}</div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
+          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Prompt</div>
+          <div className="text-slate-700 whitespace-pre-wrap">{node.data?.prompt||'-'}</div>
+        </div>
+        {imgs.length>0 && (
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Results</div>
+            <div className="grid grid-cols-2 gap-2">
+              {imgs.map((u,i)=> (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={i} src={u} alt={`gemini-${i}`} className="w-full h-24 object-cover rounded border"/>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     )
   }
