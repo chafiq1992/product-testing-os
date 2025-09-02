@@ -37,7 +37,7 @@ images: ['$_IMG']
 substitutions:
   _IMG: REPLACE_ME
 YAML
-gcloud builds submit --project "$PROJECT_ID" --region "$REGION" --tag "$FRONTEND_IMG" frontend
+# Frontend image will be built after API is deployed so we can inject NEXT_PUBLIC_API_BASE_URL
 
 # Secrets must exist with latest versions:
 # OPENAI_API_KEY, SHOPIFY_ACCESS_TOKEN, META_ACCESS_TOKEN
@@ -51,6 +51,14 @@ gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --ima
 
 WORKER_URL=$(gcloud run services describe "$WORKER_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "Worker deployed at: $WORKER_URL (private)"
+
+# Build frontend with API URL baked in
+gcloud builds submit --project "$PROJECT_ID" --region "$REGION" --config=- <<YAML
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build','-t','${FRONTEND_IMG}','-f','frontend/Dockerfile','--build-arg','NEXT_PUBLIC_API_BASE_URL=${API_URL}','--build-arg','NEXT_PUBLIC_STUDIO_URL=/studio','.']
+images: ['${FRONTEND_IMG}']
+YAML
 
 gcloud run deploy "$FRONTEND_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$FRONTEND_IMG" --platform managed --allow-unauthenticated --port 8080 --min-instances=0 --max-instances=3
 FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
