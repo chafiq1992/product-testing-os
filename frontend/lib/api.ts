@@ -182,3 +182,13 @@ export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:
   const {data} = await axios.post(`${base}/api/gemini/ad_image`, payload)
   return data as { images: string[], prompt: string, input_image_url: string, error?: string }
 }
+
+export async function geminiGeneratePromotionalSet(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string },
+  angles: any[],
+  image_url: string,
+  count?: number
+}){
+  const {data} = await axios.post(`${base}/api/gemini/promotional_set`, payload)
+  return data as { items: { prompt:string, image:string }[], model: string, input_image_url: string, error?: string }
+}
