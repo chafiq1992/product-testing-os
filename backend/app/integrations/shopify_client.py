@@ -318,7 +318,22 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
     # If a full HTML body is provided, use it verbatim for the page body
     html_override = (landing_copy or {}).get("html") if landing_copy else None
     if html_override:
-        return str(html_override)
+        body = str(html_override)
+        # Ensure at least some product images are visible: append a small gallery
+        # using up to two provided image URLs (prefer Shopify CDN URLs when supplied).
+        req = requested_images or []
+        if req:
+            selected = req[:2]
+            alts = alt_texts or []
+            imgs = []
+            for idx, url in enumerate(selected):
+                alt = (alts[idx] if (alts and idx < len(alts)) else title)
+                imgs.append(
+                    f"<img src=\"{url}\" alt=\"{alt}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>"
+                )
+            if imgs:
+                body += "<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">" + "".join(imgs) + "</div>"
+        return body
     sections = (landing_copy or {}).get("sections") or []
     headline = (landing_copy or {}).get("headline") or title
     subheadline = (landing_copy or {}).get("subheadline") or ""
