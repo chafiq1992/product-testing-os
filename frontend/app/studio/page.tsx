@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, Suspense } from 'react'
 import { motion } from 'framer-motion'
 import {
   Rocket,
@@ -59,6 +59,14 @@ function defaultFlow(){
 }
 
 export default function Page(){
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-slate-500">Loading…</div>}>
+      <StudioPage/>
+    </Suspense>
+  )
+}
+
+function StudioPage(){
   const params = useSearchParams()
   const testParam = params.get('id')
 
