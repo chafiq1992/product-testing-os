@@ -22,3 +22,7 @@ CELERY_BROKER_URL = _fix_rediss(os.getenv("CELERY_BROKER_URL", "redis://redis:63
 CELERY_RESULT_BACKEND = _fix_rediss(os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/0"))
 
 BASE_URL = os.getenv("BASE_URL", "")
+
+# Unified uploads directory used by both the static file mount and storage writes
+# Default to "/app/uploads" inside the container; allow override via UPLOADS_DIR
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", "/app/uploads")

@@ -373,6 +373,7 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
 
 def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] | None = None, alt_texts: list[str] | None = None) -> dict:
     body_html = _build_page_body_html(title, landing_copy, image_urls or [], alt_texts or [])
+    # Generate a deterministic-ish base handle from title, and on collision retry with a short suffix
     handle = f"offer-{abs(hash(title)) % 10_000_000}"
     page_in = {
         "title": f"{title} – Offer",
@@ -381,7 +382,16 @@ def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] 
         "isPublished": True,
         "body": body_html,
     }
-    page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    try:
+        page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    except RuntimeError as e:
+        # Handle collision: 'Handle has already been taken' → append a short random suffix and retry once
+        if "Handle has already been taken" in str(e):
+            from uuid import uuid4
+            page_in["handle"] = f"{handle}-{uuid4().hex[:6]}"
+            page = _gql(PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+        else:
+            raise
     page_url = f"https://{SHOP}/pages/{page['handle']}"
     return {"page_gid": page["id"], "url": page_url}
 

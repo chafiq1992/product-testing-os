@@ -16,7 +16,7 @@ from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.storage import save_file
-from app.config import BASE_URL
+from app.config import BASE_URL, UPLOADS_DIR
 from app import db
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
@@ -29,9 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Determine uploads directory – default /app/uploads (inside container) but for local dev use project_root/uploads.
-UPLOADS_DIR = os.getenv("UPLOADS_DIR") or str(Path(__file__).resolve().parents[1] / "uploads")
-# ensure uploads dir exists
+# Mount static uploads directory. Use the unified path from config.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
