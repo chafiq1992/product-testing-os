@@ -233,3 +233,215 @@ def gen_promotional_images_from_angles(
         return [{"prompt": p, "image": image_url} for p in prompts]
 
 
+
+# ---------------- Variant extraction + per-variant product images ----------------
+def _parse_json_safely(text: str) -> dict | list | None:
+    try:
+        import json as _json
+        # Try to extract the first JSON object/array if extra text is around
+        s = text.strip()
+        # Find first JSON bracket
+        start = min([p for p in [s.find("{"), s.find("[")] if p != -1]) if any(p != -1 for p in [s.find("{"), s.find("[")]) else -1
+        if start > 0:
+            s = s[start:]
+        # Trim trailing non-JSON
+        # naive approach: ensure balanced braces/brackets
+        def _trim_balanced(val: str) -> str:
+            stack = []
+            end_idx = len(val)
+            for i, ch in enumerate(val):
+                if ch in "[{":
+                    stack.append(ch)
+                elif ch in "]}":
+                    if stack:
+                        stack.pop()
+                        if not stack:
+                            end_idx = i + 1
+                            break
+            return val[:end_idx]
+        s = _trim_balanced(s)
+        return _json.loads(s)
+    except Exception:
+        return None
+
+
+def analyze_variants_from_image(image_url: str, max_variants: int | None = None) -> list[dict]:
+    """Analyze a source image and return a list of distinct product variants.
+
+    Each variant is a dict: { "name": str, "description": str, "attributes": { ... } }
+    Fallback: returns up to 4 generic variants if analysis is unavailable.
+    """
+    genai = _try_import_genai()
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    fetched = _fetch_image_bytes(image_url)
+    k = max(1, min(6, int(max_variants) if isinstance(max_variants, int) else 5))
+    if not (genai and api_key and fetched):
+        return [
+            {"name": f"Variant {i+1}", "description": "Distinct product variant detected in the image.", "attributes": {}}
+            for i in range(min(4, k))
+        ]
+    mime, blob = fetched
+    try:
+        genai.configure(api_key=api_key)
+        # Use a multimodal text model for analysis
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = (
+            "Analyze this photo. List each distinct shoe variant present (colorway/material/style differences). "
+            "Respond with ONLY strict JSON: {\n  \"variants\": [ { \"name\": string, \"description\": string, \"attributes\": object } ]\n}. "
+            "Keep names short and human-friendly. Limit to 5 variants."
+        )
+        out = model.generate_content([
+            {"mime_type": mime, "data": blob},
+            prompt,
+        ])
+        text = getattr(out, "text", None) or getattr(out, "candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text") if isinstance(getattr(out, "candidates", None), list) else None
+        data = _parse_json_safely(text or "") if isinstance(text, str) else None
+        variants = []
+        if isinstance(data, dict):
+            variants = data.get("variants") or []
+        elif isinstance(data, list):
+            variants = data
+        # Normalize
+        norm = []
+        for i, v in enumerate(variants[:k] if variants else []):
+            name = (v or {}).get("name") or f"Variant {i+1}"
+            desc = (v or {}).get("description") or "Distinct product variant detected in the image."
+            attrs = (v or {}).get("attributes") or {}
+            norm.append({"name": name, "description": desc, "attributes": attrs})
+        if norm:
+            return norm
+        # Fallback generic if parsing failed
+        return [
+            {"name": f"Variant {i+1}", "description": "Distinct product variant detected in the image.", "attributes": {}}
+            for i in range(min(4, k))
+        ]
+    except Exception:
+        return [
+            {"name": f"Variant {i+1}", "description": "Distinct product variant detected in the image.", "attributes": {}}
+            for i in range(min(4, k))
+        ]
+
+
+def gen_variant_images_from_image(
+    image_url: str,
+    style_prompt: str | None = None,
+    max_variants: int | None = None,
+) -> list[dict]:
+    """Generate per-variant product images plus a composite image.
+
+    Returns list of items:
+      - { kind: "variant", name, description, image, prompt }
+      - { kind: "composite", image, prompt }
+    """
+    # First analyze variants
+    variants = analyze_variants_from_image(image_url, max_variants=max_variants)
+    if not variants:
+        variants = [{"name": "Variant", "description": "Product variant", "attributes": {}}]
+
+    genai = _try_import_genai()
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    fetched = _fetch_image_bytes(image_url)
+    if not (genai and api_key and fetched):
+        # Fallback to returning the original image as all outputs
+        items = []
+        for v in variants:
+            items.append({
+                "kind": "variant",
+                "name": v.get("name"),
+                "description": v.get("description"),
+                "image": image_url,
+                "prompt": "fallback",
+            })
+        items.append({"kind": "composite", "image": image_url, "prompt": "fallback"})
+        return items
+
+    mime, blob = fetched
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
+        base_style = (
+            "Professional ecommerce product photo, clean neutral background, soft studio lighting, crisp focus, "
+            "subtle ground shadow, premium look, 45-degree camera angle, 4:5 crop."
+        )
+        items: list[dict] = []
+
+        # Generate one product image per variant
+        for v in variants:
+            name = v.get("name") or "Variant"
+            desc = v.get("description") or ""
+            style = f"{base_style} " + (style_prompt or "")
+            prompt = (
+                f"Create a clean standalone product image isolating the '{name}' shoe variant from the reference photo. "
+                f"Use the visual characteristics described: {desc}. {style}"
+            )
+            try:
+                out = model.generate_content([
+                    {"mime_type": mime, "data": blob},
+                    prompt,
+                ])
+                pairs = _extract_inline_images(out)
+                if pairs:
+                    mm, bb = pairs[0]
+                    items.append({
+                        "kind": "variant",
+                        "name": name,
+                        "description": desc,
+                        "image": _to_data_url(mm or "image/png", bb),
+                        "prompt": prompt,
+                    })
+                else:
+                    items.append({
+                        "kind": "variant",
+                        "name": name,
+                        "description": desc,
+                        "image": image_url,
+                        "prompt": prompt,
+                    })
+            except Exception:
+                items.append({
+                    "kind": "variant",
+                    "name": name,
+                    "description": desc,
+                    "image": image_url,
+                    "prompt": prompt,
+                })
+
+        # Generate a composite group shot of all variants together
+        names = ", ".join([v.get("name") or "Variant" for v in variants])
+        style = f"{base_style} " + (style_prompt or "")
+        comp_prompt = (
+            f"Create a single hero product image showing all distinct shoe variants together: {names}. "
+            f"Arrange them in a balanced composition, visually appealing and well-posed. {style}"
+        )
+        try:
+            out = model.generate_content([
+                {"mime_type": mime, "data": blob},
+                comp_prompt,
+            ])
+            pairs = _extract_inline_images(out)
+            if pairs:
+                mm, bb = pairs[0]
+                items.append({
+                    "kind": "composite",
+                    "image": _to_data_url(mm or "image/png", bb),
+                    "prompt": comp_prompt,
+                })
+            else:
+                items.append({"kind": "composite", "image": image_url, "prompt": comp_prompt})
+        except Exception:
+            items.append({"kind": "composite", "image": image_url, "prompt": comp_prompt})
+
+        return items
+    except Exception:
+        # On failure return fallbacks
+        items = []
+        for v in variants:
+            items.append({
+                "kind": "variant",
+                "name": v.get("name"),
+                "description": v.get("description"),
+                "image": image_url,
+                "prompt": "fallback",
+            })
+        items.append({"kind": "composite", "image": image_url, "prompt": "fallback"})
+        return items

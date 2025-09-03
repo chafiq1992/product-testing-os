@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -364,7 +364,9 @@ function StudioPage(){
       let perImage:any[]|undefined
       if((files||[]).length>0 && product_gid){
         const up = await shopifyUploadProductFiles({ product_gid, files, title: v.title, description: v.description })
-        shopifyCdnUrls = up.urls||[]
+        const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
+        const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
+        shopifyCdnUrls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
         shopifyImages = up.images
         perImage = up.per_image
       }
@@ -416,6 +418,14 @@ function StudioPage(){
             return next
           })
           // Do not auto-run; user can click Generate on the node
+          // Also add a Variant Set node just below
+          setFlow(f=>{
+            const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
+            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: 'Professional, clean background, soft studio lighting, crisp focus, 45° angle', max_variants: 5 })
+            const next = { nodes:[...f.nodes, vs], edges: f.edges }
+            flowRef.current = next
+            return next
+          })
         }
       }catch{}
     }catch(err:any){
@@ -426,12 +436,19 @@ function StudioPage(){
   async function geminiGenerate(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const sourceUrl = n.data?.source_image_url
-    const adPrompt = String(n.data?.prompt||'Create a high-quality ad image from this product photo.')
     if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
-      const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
-      updateNodeRun(nodeId, { status:'success', output: resp })
+      if(n.data?.type==='gemini_variant_set'){
+        const stylePrompt = String(n.data?.style_prompt||'')
+        const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
+        const resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
+        updateNodeRun(nodeId, { status:'success', output: resp })
+      }else{
+        const adPrompt = String(n.data?.prompt||'Create a high-quality ad image from this product photo.')
+        const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
+        updateNodeRun(nodeId, { status:'success', output: resp })
+      }
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
@@ -992,6 +1009,41 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
               {imgs.map((u,i)=> (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img key={i} src={u} alt={`gemini-${i}`} className="w-full h-24 object-cover rounded border"/>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+  if(node.data?.type==='gemini_variant_set'){
+    const out = node.run?.output||{}
+    const items: Array<{kind:'variant'|'composite',name?:string,description?:string,image:string,prompt:string}> = Array.isArray(out?.items)? out.items : []
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label||'Gemini Variant Set'}</div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
+          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Style prompt</div>
+          <Textarea rows={2} value={String(node.data?.style_prompt||'')} onChange={e=> onUpdateNode({style_prompt: e.target.value})} />
+        </div>
+        {items.length>0 && (
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Results</div>
+            <div className="grid grid-cols-2 gap-2">
+              {items.map((it,i)=> (
+                <div key={i} className="border rounded p-1">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={it.image} alt={it.kind} className="w-full h-24 object-cover rounded"/>
+                  <div className="text-[10px] mt-1 text-slate-600 truncate">{it.kind==='variant'? (it.name||'Variant') : 'Composite'}</div>
+                </div>
               ))}
             </div>
           </div>

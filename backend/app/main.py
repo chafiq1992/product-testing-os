@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles
+from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
@@ -283,6 +283,21 @@ class GeminiPromoSetRequest(BaseModel):
 async def api_gemini_promotional_set(req: GeminiPromoSetRequest):
     try:
         items = gen_promotional_images_from_angles(req.image_url, req.product.model_dump(), req.angles or [], count=req.count or 4)
+        return {"items": items, "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
+    except Exception as e:
+        return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
+    
+# Variant set (per-variant product images + composite)
+class GeminiVariantSetRequest(BaseModel):
+    image_url: str
+    style_prompt: str | None = None
+    max_variants: int | None = None
+
+
+@app.post("/api/gemini/variant_set")
+async def api_gemini_variant_set(req: GeminiVariantSetRequest):
+    try:
+        items = gen_variant_images_from_image(req.image_url, style_prompt=req.style_prompt, max_variants=req.max_variants)
         return {"items": items, "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
     except Exception as e:
         return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}

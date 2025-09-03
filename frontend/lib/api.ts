@@ -192,3 +192,9 @@ export async function geminiGeneratePromotionalSet(payload:{
   const {data} = await axios.post(`${base}/api/gemini/promotional_set`, payload)
   return data as { items: { prompt:string, image:string }[], model: string, input_image_url: string, error?: string }
 }
+
+// Gemini variant-set generation (per-variant images + composite)
+export async function geminiGenerateVariantSet(payload:{ image_url:string, style_prompt?:string, max_variants?:number }){
+  const {data} = await axios.post(`${base}/api/gemini/variant_set`, payload)
+  return data as { items: Array<{ kind:'variant'|'composite', name?:string, description?:string, image:string, prompt:string }>, model: string, input_image_url: string, error?: string }
+}
