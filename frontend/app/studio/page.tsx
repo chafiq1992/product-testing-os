@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -109,6 +109,8 @@ function StudioPage(){
           if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
           if(typeof p.prompts.title_desc_prompt==='string') setTitleDescPrompt(p.prompts.title_desc_prompt)
           if(typeof p.prompts.landing_copy_prompt==='string') setLandingCopyPrompt(p.prompts.landing_copy_prompt)
+          if(typeof (p.prompts as any).gemini_ad_prompt==='string') setGeminiAdPrompt((p.prompts as any).gemini_ad_prompt)
+          if(typeof (p.prompts as any).gemini_variant_style_prompt==='string') setGeminiVariantStylePrompt((p.prompts as any).gemini_variant_style_prompt)
         }
         // Restore settings
         if(p?.settings){
@@ -216,6 +218,12 @@ function StudioPage(){
     + "- Ensure all CTAs use provided URLs; if missing, use \"#\".\n"
     + "- CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
   )
+  const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>(
+    "Create a high‑quality, very attractive ecommerce ad image from this product photo. Keep the product realistic, enhance lighting/background for social feeds, and make it pop without adding text or logos."
+  )
+  const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
+    'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
+  )
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string[]>([])
@@ -223,10 +231,28 @@ function StudioPage(){
   const [selectedSavedAudience,setSelectedSavedAudience]=useState<string>('')
   useEffect(()=>{ (async()=>{ try{ const res=await fetchSavedAudiences(); if((res as any)?.data){ setSavedAudiences((res as any).data) } }catch{} })() },[])
 
+  // Load persisted default prompts from localStorage on first mount
+  useEffect(()=>{
+    try{
+      const a = localStorage.getItem('ptos_prompts_angles'); if(a) setAnglesPrompt(a)
+      const t = localStorage.getItem('ptos_prompts_title_desc'); if(t) setTitleDescPrompt(t)
+      const l = localStorage.getItem('ptos_prompts_landing_copy'); if(l) setLandingCopyPrompt(l)
+      const gA = localStorage.getItem('ptos_prompts_gemini_ad'); if(gA) setGeminiAdPrompt(gA)
+      const gV = localStorage.getItem('ptos_prompts_gemini_variant_style'); if(gV) setGeminiVariantStylePrompt(gV)
+    }catch{}
+  },[])
+  // Persist prompts to localStorage when changed
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} },[anglesPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} },[titleDescPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} },[landingCopyPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} },[geminiAdPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} },[geminiVariantStylePrompt])
+
   const [testId,setTestId]=useState<string|undefined>(undefined)
   const [latestStatus,setLatestStatus]=useState<any>(null)
 
   const selectedNode = flow.nodes.find(n=>n.id===selected)||null
+  const [previewImage,setPreviewImage]=useState<string|null>(null)
 
   function log(level:'info'|'error', msg:string, nodeId?:string){ setRunLog(l=>[...l,{time:now(),level,msg,nodeId}]) }
 
@@ -303,7 +329,7 @@ function StudioPage(){
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
-        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt },
+        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
         settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined }
       }
       let res
@@ -407,7 +433,7 @@ function StudioPage(){
       try{
         const sourceUrl = (shopifyCdnUrls||[])[0]
         if(sourceUrl){
-          const adPrompt = `Create a high‑quality, very attractive ecommerce ad image from this product photo. Keep the product realistic, enhance lighting/background for social feeds, and make it pop without adding text or logos.`
+          const adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
           let geminiNodeId:string|undefined
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
@@ -421,7 +447,7 @@ function StudioPage(){
           // Also add a Variant Set node just below
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
-            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: 'Professional, clean background, soft studio lighting, crisp focus, 45° angle', max_variants: 5 })
+            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5 })
             const next = { nodes:[...f.nodes, vs], edges: f.edges }
             flowRef.current = next
             return next
@@ -440,12 +466,12 @@ function StudioPage(){
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
       if(n.data?.type==='gemini_variant_set'){
-        const stylePrompt = String(n.data?.style_prompt||'')
+        const stylePrompt = String(n.data?.style_prompt||geminiVariantStylePrompt||'')
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
         const resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else{
-        const adPrompt = String(n.data?.prompt||'Create a high-quality ad image from this product photo.')
+        const adPrompt = String(n.data?.prompt||geminiAdPrompt||'Create a high-quality ad image from this product photo.')
         const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
         updateNodeRun(nodeId, { status:'success', output: resp })
       }
@@ -684,6 +710,17 @@ function StudioPage(){
                 <Textarea rows={5} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Images (Shopify CDN URLs) are also sent to map section.image_url.</div>
               </div>
+              <Separator/>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
+                <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Gemini ad images.</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Gemini variant style prompt</div>
+                <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
+              </div>
             </CardContent>
           </Card>
           )}
@@ -775,24 +812,7 @@ function StudioPage(){
             <CardContent>
               {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
               {selectedNode && (
-                <div className="text-xs space-y-2">
-                  <div className="text-slate-500">{selectedNode.data.label||selectedNode.data.type||selectedNode.type}</div>
-                  {selectedNode.run?.output && (
-                    <div>
-                      <div className="text-slate-500 mb-1">Results</div>
-                      <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(selectedNode.run.output,null,2)}</pre>
-                    </div>
-                  )}
-                  {selectedNode.run?.error && (
-                    <div className="text-rose-600">{String(selectedNode.run.error)}</div>
-                  )}
-                  {!!(latestStatus as any)?.result?.trace && (
-                    <div>
-                      <div className="text-slate-500 mb-1">Requests</div>
-                      <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(traceForNode(selectedNode, (latestStatus as any).result.trace), null, 2)}</pre>
-                    </div>
-                  )}
-                </div>
+                <InspectorContent node={selectedNode} latestTrace={(latestStatus as any)?.result?.trace||[]} onPreview={(url)=> setPreviewImage(url)} />
               )}
             </CardContent>
           </Card>
@@ -848,6 +868,15 @@ function StudioPage(){
           </Card>
         </aside>
       </div>
+
+      {previewImage && (
+        <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center" onClick={()=> setPreviewImage(null)}>
+          <div className="max-w-5xl max-h-[90vh] p-2" onClick={(e)=> e.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={previewImage} alt="preview" className="max-w-full max-h-[85vh] rounded shadow-lg" />
+          </div>
+        </div>
+      )}
 
       <footer className="fixed bottom-3 left-0 right-0 flex justify-center">
         <div className="flex items-center gap-2 bg-white/80 backdrop-blur rounded-full shadow px-3 py-2 border">
@@ -1078,6 +1107,118 @@ function traceForNode(node:FlowNode, trace:any[]){
   if(type==='create_landing') return trace.filter((x:any)=>x.step==='landing_copy' || x.step==='shopify')
   if(type==='meta_ads_launch') return trace.filter((x:any)=>x.step==='meta')
   return []
+}
+
+function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void }){
+  const [productGid,setProductGid]=useState<string>('')
+  const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
+  const out = node.run?.output||{}
+  const t = traceForNode(node, latestTrace)
+  let images:string[] = []
+  if(node.data?.type==='gemini_ad_images'){
+    images = Array.isArray(out?.images)? out.images : []
+  }else if(node.data?.type==='gemini_variant_set'){
+    try{ images = (Array.isArray(out?.items)? out.items : []).map((it:any)=> it?.image).filter(Boolean) }catch{ images=[] }
+  }
+
+  async function onUploadSelected(){
+    try{
+      const chosen = images.filter(u=> selectedUrls[u])
+      if(chosen.length===0){ alert('Select image(s) to upload.'); return }
+      if(!productGid){ alert('Enter Shopify product GID.'); return }
+      const dataUrls = chosen.filter(u=> u.startsWith('data:'))
+      const httpUrls = chosen.filter(u=> !u.startsWith('data:'))
+      let uploaded:string[] = []
+      if(dataUrls.length>0){
+        const files = dataUrls.map((u,i)=> dataUrlToFile(u, `gemini-${i+1}.png`))
+        const up = await uploadImages(files)
+        uploaded = Array.isArray(up?.urls)? up.urls : []
+      }
+      const finalUrls = [...httpUrls, ...uploaded]
+      if(finalUrls.length===0){ alert('No usable URLs to upload.'); return }
+      const res = await shopifyUploadProductImages({ product_gid: productGid, image_urls: finalUrls })
+      alert(`Uploaded ${res.urls?.length||0} image(s) to Shopify.`)
+    }catch(e:any){
+      alert('Upload failed: '+ String(e?.message||e))
+    }
+  }
+
+  function toggleSelect(u:string){ setSelectedUrls(s=> ({...s, [u]: !s[u]})) }
+
+  function dataUrlToFile(dataUrl:string, filename:string): File{
+    const parts = dataUrl.split(',')
+    const mime = (parts[0].match(/:(.*?);/)||[])[1] || 'image/png'
+    const bstr = atob(parts[1]||'')
+    let n = bstr.length
+    const u8 = new Uint8Array(n)
+    while(n--){ u8[n] = bstr.charCodeAt(n) }
+    return new File([u8], filename, { type: mime })
+  }
+
+  return (
+    <div className="text-xs space-y-3">
+      <div className="text-slate-500">{node.data.label||node.data.type||node.type}</div>
+      <div>
+        <div className="text-slate-500 mb-1">Inputs</div>
+        {node.data?.type==='gemini_ad_images' && (
+          <div className="space-y-1">
+            <div className="break-all"><span className="text-slate-500">source_image_url:</span> {String(node.data?.source_image_url||'-')}</div>
+            <div className="whitespace-pre-wrap"><span className="text-slate-500">prompt:</span> {String(node.data?.prompt||'-')}</div>
+          </div>
+        )}
+        {node.data?.type==='gemini_variant_set' && (
+          <div className="space-y-1">
+            <div className="break-all"><span className="text-slate-500">source_image_url:</span> {String(node.data?.source_image_url||'-')}</div>
+            <div className="whitespace-pre-wrap"><span className="text-slate-500">style_prompt:</span> {String(node.data?.style_prompt||'')}</div>
+          </div>
+        )}
+        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set') && (
+          <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
+        )}
+      </div>
+
+      {images.length>0 ? (
+        <div>
+          <div className="text-slate-500 mb-1">Output images</div>
+          <div className="grid grid-cols-2 gap-2">
+            {images.map((u,i)=> (
+              <div key={i} className={`relative border rounded p-1 ${selectedUrls[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
+                  <input type="checkbox" checked={!!selectedUrls[u]} onChange={()=> toggleSelect(u)} />
+                </label>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 space-y-1">
+            <div className="text-[11px] text-slate-500">Shopify product GID</div>
+            <input className="w-full rounded-xl border px-3 py-2" placeholder="gid://shopify/Product/1234567890" value={productGid} onChange={e=>setProductGid(e.target.value)} />
+            <div className="flex justify-end">
+              <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white disabled:opacity-60" onClick={onUploadSelected} disabled={!productGid || !Object.values(selectedUrls).some(Boolean)}>Upload selected to Shopify</button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        node.run?.output && (
+          <div>
+            <div className="text-slate-500 mb-1">Results</div>
+            <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.run.output,null,2)}</pre>
+          </div>
+        )
+      )}
+
+      {t && t.length>0 && (
+        <div>
+          <div className="text-slate-500 mb-1">Requests</div>
+          <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(t,null,2)}</pre>
+        </div>
+      )}
+      {node.run?.error && (
+        <div className="text-rose-600">{String(node.run.error)}</div>
+      )}
+    </div>
+  )
 }
 
 function GridBackdrop(){
