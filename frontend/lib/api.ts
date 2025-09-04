@@ -1,13 +1,15 @@
 import axios from 'axios'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string}){
+export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string, sizes?:string[], colors?:string[] }){
   const form = new FormData()
   form.append('audience', payload.audience)
   form.append('benefits', JSON.stringify(payload.benefits))
   form.append('pain_points', JSON.stringify(payload.pain_points))
   if(payload.base_price!=null) form.append('base_price', String(payload.base_price))
   if(payload.title) form.append('title', payload.title)
+  if(Array.isArray(payload.sizes)) form.append('sizes', JSON.stringify(payload.sizes))
+  if(Array.isArray(payload.colors)) form.append('colors', JSON.stringify(payload.colors))
   if(payload.targeting) form.append('targeting', typeof payload.targeting==='string'? payload.targeting : JSON.stringify(payload.targeting))
   if(typeof payload.advantage_plus==='boolean') form.append('advantage_plus', String(payload.advantage_plus))
   if(typeof payload.adset_budget==='number') form.append('adset_budget', String(payload.adset_budget))

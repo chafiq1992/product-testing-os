@@ -409,7 +409,21 @@ function StudioPage(){
       try{
         const sourceUrl = (shopifyCdnUrls||[])[0]
         if(sourceUrl){
-          const adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
+          // Include midpoint size if sizes contain numeric range
+          let adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
+          try{
+            const nums:number[] = []
+            for(const s of (sizes||[])){
+              const m = String(s||'').match(/[-+]?[0-9]*\.?[0-9]+/g)
+              if(m){ m.forEach(x=>{ const v = Number(x); if(!Number.isNaN(v)) nums.push(v) }) }
+            }
+            if(nums.length>0){
+              const lo = Math.min(...nums), hi = Math.max(...nums)
+              const mid = lo===hi? lo : (lo+hi)/2
+              const midStr = Math.abs(mid-Math.round(mid))<1e-6? String(Math.round(mid)) : String(Number(mid.toFixed(1)))
+              adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
+            }
+          }catch{}
           let geminiNodeId:string|undefined
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
@@ -493,7 +507,20 @@ function StudioPage(){
         })
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else{
-        const adPrompt = String(n.data?.prompt||geminiAdPrompt||'Create a high-quality ad image from this product photo.')
+        let adPrompt = String(n.data?.prompt||geminiAdPrompt||'Create a high-quality ad image from this product photo.')
+        try{
+          const nums:number[] = []
+          for(const s of (sizes||[])){
+            const m = String(s||'').match(/[-+]?[0-9]*\.?[0-9]+/g)
+            if(m){ m.forEach(x=>{ const v = Number(x); if(!Number.isNaN(v)) nums.push(v) }) }
+          }
+          if(nums.length>0){
+            const lo = Math.min(...nums), hi = Math.max(...nums)
+            const mid = lo===hi? lo : (lo+hi)/2
+            const midStr = Math.abs(mid-Math.round(mid))<1e-6? String(Math.round(mid)) : String(Number(mid.toFixed(1)))
+            adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
+          }
+        }catch{}
         const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4 })
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
@@ -704,6 +731,8 @@ function StudioPage(){
         angles_prompt: anglesPrompt,
         title_desc_prompt: titleDescPrompt,
         landing_copy_prompt: landingCopyPrompt,
+        sizes,
+        colors,
       })
       setTestId(res.test_id)
       log('info', `Launched test ${res.test_id}`, node.id)

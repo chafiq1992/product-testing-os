@@ -57,6 +57,8 @@ async def create_test(
     base_price: Optional[float] = Form(None),
     title: Optional[str] = Form(None),
     images: List[UploadFile] = File([]),
+    sizes: Optional[str] = Form(None),
+    colors: Optional[str] = Form(None),
     targeting: Optional[str] = Form(None),
     advantage_plus: Optional[bool] = Form(True),
     adset_budget: Optional[float] = Form(9.0),
@@ -74,6 +76,17 @@ async def create_test(
         pain_points=json.loads(pain_points),
         adset_budget=adset_budget,
     ).model_dump()
+    # Optional variants (sizes/colors) if provided
+    try:
+        if sizes:
+            payload["sizes"] = [s for s in (json.loads(sizes) or []) if isinstance(s, str) and s.strip()]
+    except Exception:
+        pass
+    try:
+        if colors:
+            payload["colors"] = [c for c in (json.loads(colors) or []) if isinstance(c, str) and c.strip()]
+    except Exception:
+        pass
     if model:
         payload["model"] = model
     # Optional prompt overrides from UI "Prompts" tab
