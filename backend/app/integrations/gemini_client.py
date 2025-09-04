@@ -265,9 +265,10 @@ def build_feature_benefit_prompts(product: Dict[str, Any], count: int = 6) -> Li
         ]
 
     base_style = (
-        "Ecommerce-ready macro product photography. Extreme close-up, shallow depth of field, "
-        "soft studio lighting, neutral clean backdrop, tack-sharp focus on the feature. "
-        "Show real materials and textures. No text, no logos, 4:5 crop."
+        "Ecommerce macro photo from the REFERENCE IMAGE ONLY (no invention). Extreme close-up, "
+        "shallow depth of field, soft studio lighting, neutral clean backdrop. Keep product identity, "
+        "exact materials, stitching, textures, colors, proportions, and any marks identical to the reference. "
+        "ACT ONLY AS A CROP/ENHANCEMENT of the reference, do not change or add parts, no text, no logos. 4:5 crop."
     )
 
     prompts: List[str] = []
@@ -275,8 +276,10 @@ def build_feature_benefit_prompts(product: Dict[str, Any], count: int = 6) -> Li
     for i in range(k):
         benefit = raw_benefits[i % len(raw_benefits)]
         p = (
-            f"Close-up detail image of {title} demonstrating: {benefit}. "
-            f"Highlight the specific part that communicates this benefit. Audience: {audience}. {base_style}"
+            f"Create a MACRO CLOSE-UP derived strictly from the provided reference photo of {title}. "
+            f"Focus on the exact area that demonstrates: {benefit}. "
+            f"Use ONLY the reference as source (no re-drawing). If unsure, choose the most visually clear area from the reference. "
+            f"Do not change color/material/shape/branding. {base_style} Audience: {audience}."
         )
         prompts.append(p)
     return prompts
@@ -304,6 +307,7 @@ def gen_feature_benefit_images(
         model = gen.GenerativeModel("gemini-2.5-flash-image-preview")
         results: List[Dict[str, str]] = []
         for p in prompts:
+            success = False
             try:
                 out = model.generate_content([
                     {"mime_type": mime, "data": blob},
@@ -313,10 +317,41 @@ def gen_feature_benefit_images(
                 if pairs:
                     mm, bb = pairs[0]
                     results.append({"prompt": p, "image": _to_data_url(mm or "image/png", bb)})
-                else:
-                    results.append({"prompt": p, "image": image_url})
+                    success = True
             except Exception:
-                results.append({"prompt": p, "image": image_url})
+                success = False
+
+            # Fallback to Imagen edit (acts more like an edit of the source image)
+            if not success:
+                try:
+                    im = gen.GenerativeModel("imagen-3.0-edit-001")
+                    out2 = im.edit_image(
+                        prompt=(
+                            p + "\nSTRICT: Preserve the product exactly. Perform a close crop and lighting enhancement only."
+                        ),
+                        image={"mime_type": mime, "data": blob},
+                        number_of_images=1,
+                    )
+                    candidates = getattr(out2, "images", None) or getattr(out2, "candidates", None) or []
+                    added = False
+                    for c in candidates:
+                        if isinstance(c, (bytes, bytearray)):
+                            results.append({"prompt": p, "image": _to_data_url(mime, bytes(c))})
+                            added = True
+                            break
+                        else:
+                            try:
+                                data = c.get("image", {}).get("data")
+                                if isinstance(data, (bytes, bytearray)):
+                                    results.append({"prompt": p, "image": _to_data_url(mime, bytes(data))})
+                                    added = True
+                                    break
+                            except Exception:
+                                pass
+                    if not added:
+                        results.append({"prompt": p, "image": image_url})
+                except Exception:
+                    results.append({"prompt": p, "image": image_url})
         return results
     except Exception:
         return [{"prompt": p, "image": image_url} for p in prompts]

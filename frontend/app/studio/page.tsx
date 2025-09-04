@@ -219,7 +219,10 @@ function StudioPage(){
     + "- CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
   )
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>(
-    "Create a high‑quality, very attractive ecommerce ad image from this product photo. Keep the product realistic, enhance lighting/background for social feeds, and make it pop without adding text or logos."
+    "Ultra eye‑catching ecommerce ad image derived ONLY from the provided product photo.\n"
+    + "Rules: Do NOT change product identity (colors/materials/shape/branding). No text or logos.\n"
+    + "Look: premium, high-contrast hero lighting, subtle rim light, soft gradient background, tasteful glow,\n"
+    + "clean reflections/shadow, product-first composition (rule of thirds/center), social-feed ready."
   )
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
@@ -486,7 +489,7 @@ function StudioPage(){
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else{
         const adPrompt = String(n.data?.prompt||geminiAdPrompt||'Create a high-quality ad image from this product photo.')
-        const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
+        const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4 })
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
         try{
