@@ -32,7 +32,7 @@ export default function HomePage(){
         {!loading && items.length===0 && (
           <div className="text-sm text-slate-500">No flows yet. Click <span className="font-medium">New flow</span> to start.</div>
         )}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {items.map(it=> (
             <Link href={studioBase? `${studioBase}?id=${it.id}` : `/studio/?id=${it.id}`} key={it.id} className="block">
               <Card>
@@ -43,7 +43,7 @@ export default function HomePage(){
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  <div className="aspect-[3/2] md:aspect-[4/3] w-full bg-slate-100 rounded-lg overflow-hidden border h-36 md:h-44">
+                  <div className="aspect-[16/9] w-full bg-slate-100 rounded-lg overflow-hidden border h-28 md:h-32">
                     {it.card_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={it.card_image} alt="cover" className="w-full h-full object-cover"/>
