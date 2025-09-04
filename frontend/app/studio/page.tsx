@@ -398,6 +398,31 @@ function StudioPage(){
       }
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
+      // Immediately spawn Gemini image-generation nodes below the images node so they appear instantly
+      try{
+        const sourceUrl = (shopifyCdnUrls||[])[0]
+        if(sourceUrl){
+          const adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
+          let geminiNodeId:string|undefined
+          setFlow(f=>{
+            const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
+            const gn = makeNode('action', imgNode.x, (imgNode.y+140), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl })
+            const next = { nodes:[...f.nodes, gn], edges: f.edges }
+            flowRef.current = next
+            geminiNodeId = gn.id
+            return next
+          })
+          // Also add a Variant Set node just below
+          setFlow(f=>{
+            const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
+            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5 })
+            const next = { nodes:[...f.nodes, vs], edges: f.edges }
+            flowRef.current = next
+            return next
+          })
+        }
+      }catch{}
+
       const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls, prompt: landingCopyPrompt, product_handle })
       if(product_gid && lc?.html){
         await shopifyUpdateDescription({ product_gid, description_html: lc.html })
@@ -428,32 +453,6 @@ function StudioPage(){
         if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
       }
       updateNodeRun(nodeId, { status:'success', output:{ landing_copy: lc } })
-
-      // In parallel: spawn a Gemini ad-image generation node directly below the images node
-      try{
-        const sourceUrl = (shopifyCdnUrls||[])[0]
-        if(sourceUrl){
-          const adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
-          let geminiNodeId:string|undefined
-          setFlow(f=>{
-            const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-            const gn = makeNode('action', imgNode.x, (imgNode.y+140), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl })
-            const next = { nodes:[...f.nodes, gn], edges: f.edges }
-            flowRef.current = next
-            geminiNodeId = gn.id
-            return next
-          })
-          // Do not auto-run; user can click Generate on the node
-          // Also add a Variant Set node just below
-          setFlow(f=>{
-            const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
-            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5 })
-            const next = { nodes:[...f.nodes, vs], edges: f.edges }
-            flowRef.current = next
-            return next
-          })
-        }
-      }catch{}
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
     }
