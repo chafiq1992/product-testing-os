@@ -191,6 +191,7 @@ async def list_tests(limit: int | None = None):
                 return None
             return None
 
+        slim: list[dict] = []
         for it in items:
             image = None
             try:
@@ -217,8 +218,18 @@ async def list_tests(limit: int | None = None):
                         image = pick_shopify(uploaded)
                 except Exception:
                     image = None
-            it["card_image"] = image
-        return {"data": items}
+            # Build slim item to keep response small for homepage
+            p = (it.get("payload") or {})
+            slim.append({
+                "id": it.get("id"),
+                "status": it.get("status"),
+                "page_url": it.get("page_url"),
+                "created_at": it.get("created_at"),
+                # Only include the title to avoid shipping huge payloads
+                "payload": {"title": p.get("title")} if isinstance(p, dict) else None,
+                "card_image": image,
+            })
+        return {"data": slim}
     except Exception as e:
         return {"error": str(e), "data": []}
 
