@@ -158,6 +158,39 @@ async def list_tests(limit: int | None = None):
                 return None
             return None
 
+        def pick_from_flow(payload: dict | None) -> str | None:
+            try:
+                flow = (payload or {}).get("flow") or {}
+                nodes = (flow or {}).get("nodes") or []
+                for n in nodes:
+                    try:
+                        data = (n or {}).get("data") or {}
+                        if (data.get("type") or "").strip() != "upload_images":
+                            continue
+                        run = (n or {}).get("run") or {}
+                        out = (run or {}).get("output") or {}
+                        # Prefer explicit Shopify URLs
+                        image = pick_shopify(out.get("images_shopify") or [])
+                        if image:
+                            return image
+                        # Fallback to objects list with src
+                        shop_imgs = out.get("shopify_images") or []
+                        if isinstance(shop_imgs, list):
+                            for si in shop_imgs:
+                                src = (si or {}).get("src")
+                                if isinstance(src, str) and "cdn.shopify.com" in src:
+                                    return src
+                        # Another possible key shape
+                        cdn = out.get("cdn_urls") or []
+                        image = pick_shopify(cdn)
+                        if image:
+                            return image
+                    except Exception:
+                        continue
+            except Exception:
+                return None
+            return None
+
         for it in items:
             image = None
             try:
@@ -177,8 +210,11 @@ async def list_tests(limit: int | None = None):
             if not image:
                 try:
                     payload = it.get("payload") or {}
+                    # Try to extract from saved flow run outputs (Upload Images to Product)
+                    image = pick_from_flow(payload) or image
                     uploaded = (payload.get("uploaded_images") or [])
-                    image = pick_shopify(uploaded)
+                    if not image:
+                        image = pick_shopify(uploaded)
                 except Exception:
                     image = None
             it["card_image"] = image
