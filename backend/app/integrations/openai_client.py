@@ -63,9 +63,49 @@ IMAGE_PROMPT = (
     "Clean, product-first, bright neutral backdrop, subtle shadow, crisp edges, retail-ready, 4:5 safe crop."
 )
 
+def _compute_midpoint_size_from_payload(payload: dict) -> str | None:
+    try:
+        sizes = payload.get("sizes") or []
+        numeric_values: list[float] = []
+        for s in sizes:
+            if not isinstance(s, str):
+                continue
+            import re
+            nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", s)
+            for n in nums:
+                try:
+                    numeric_values.append(float(n))
+                except Exception:
+                    continue
+        if not numeric_values:
+            return None
+        lo = min(numeric_values)
+        hi = max(numeric_values)
+        if lo == hi:
+            mid = lo
+        else:
+            mid = (lo + hi) / 2.0
+        # format: integer if whole number else keep up to one decimal (e.g., 35 or 35.5)
+        if abs(mid - round(mid)) < 1e-6:
+            return str(int(round(mid)))
+        return f"{mid:.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        return None
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
 def gen_images(angle: dict, payload: dict) -> list:
-    prompt = IMAGE_PROMPT.format(title=payload.get("title") or "product", angle=angle.get("name"))
+    base = IMAGE_PROMPT.format(title=payload.get("title") or "product", angle=angle.get("name"))
+    # Enforce background replacement and inject midpoint size guidance when available
+    background_rule = (
+        " Always replace the original background with a new clean neutral studio backdrop. "
+        "Never reuse the background from any provided or source images."
+    )
+    size_rule = ""
+    mid = _compute_midpoint_size_from_payload(payload or {})
+    if mid:
+        size_rule = f" Ensure the product shown is size {mid} (use the midpoint of the provided size range)."
+    prompt = base + background_rule + size_rule
     img = client.images.generate(
         model="gpt-image-1",
         prompt=prompt,

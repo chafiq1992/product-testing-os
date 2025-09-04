@@ -12,6 +12,7 @@ from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
+from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
@@ -320,11 +321,17 @@ class GeminiAdImageRequest(BaseModel):
 @app.post("/api/gemini/ad_image")
 async def api_gemini_ad_image(req: GeminiAdImageRequest):
     try:
-        imgs = gen_ad_images_from_image(req.image_url, req.prompt, req.num_images or 1)
-        return {"images": imgs, "prompt": req.prompt, "input_image_url": req.image_url}
+        # Enforce background replacement policy on all ad-image prompts
+        bg_rule = (
+            " Always replace the original background with a new clean neutral studio backdrop. "
+            "Never reuse the background from any provided or source images."
+        )
+        prompt = (req.prompt or "").strip() + bg_rule
+        imgs = gen_ad_images_from_image(req.image_url, prompt, req.num_images or 1)
+        return {"images": imgs, "prompt": prompt, "input_image_url": req.image_url}
     except Exception as e:
         # Graceful error with empty images
-        return {"images": [], "error": str(e), "prompt": req.prompt, "input_image_url": req.image_url}
+        return {"images": [], "error": str(e), "prompt": (req.prompt or ""), "input_image_url": req.image_url}
 
 
 class GeminiPromoSetRequest(BaseModel):
@@ -647,3 +654,17 @@ if Path(STATIC_DIR).exists():
 else:
     # Skip mounting when directory not found (e.g., during backend-only local dev)
     print(f"[WARN] Static directory '{STATIC_DIR}' not found. Frontend assets will not be served.")
+
+
+# Utility endpoint to (re)configure Shopify product variants and inventory
+class ShopifyConfigureVariantsRequest(BaseModel):
+    product_gid: str
+    base_price: Optional[float] = None
+    sizes: Optional[List[str]] = None
+    colors: Optional[List[str]] = None
+
+
+@app.post("/api/shopify/configure_variants")
+async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
+    res = configure_variants_for_product(req.product_gid, req.base_price, req.sizes, req.colors)
+    return res

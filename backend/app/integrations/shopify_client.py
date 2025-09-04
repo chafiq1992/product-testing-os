@@ -390,6 +390,18 @@ def _configure_variants_for_product(product_gid: str, base_price: float | None, 
                 pass
 
 
+def configure_variants_for_product(product_gid: str, base_price: float | None, sizes: list[str] | None, colors: list[str] | None) -> dict:
+    """Public wrapper to configure options/variants/pricing/inventory for a product.
+
+    Returns a small summary describing what was attempted.
+    """
+    try:
+        _configure_variants_for_product(product_gid, base_price, sizes, colors)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE", price: float | None = None, sizes: list[str] | None = None, colors: list[str] | None = None) -> dict:
     inp: dict = {
         "title": title or "Offer",

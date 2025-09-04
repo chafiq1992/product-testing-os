@@ -162,6 +162,32 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
         return [image_url]
 
 
+def _compute_midpoint_size_from_product(product: Dict[str, Any]) -> str | None:
+    try:
+        sizes = (product or {}).get("sizes") or []
+        values: List[float] = []
+        import re
+        for s in sizes:
+            if not isinstance(s, str):
+                continue
+            nums = re.findall(r"[-+]?[0-9]*\.?[0-9]+", s)
+            for n in nums:
+                try:
+                    values.append(float(n))
+                except Exception:
+                    continue
+        if not values:
+            return None
+        lo = min(values)
+        hi = max(values)
+        mid = (lo + hi) / 2.0 if lo != hi else lo
+        if abs(mid - round(mid)) < 1e-6:
+            return str(int(round(mid)))
+        return f"{mid:.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        return None
+
+
 def build_promotional_prompts(product: Dict[str, Any], angles: List[Dict[str, Any]], count: int = 4) -> List[str]:
     """Create a list of concise, high-converting ad prompts derived from provided angles.
 
@@ -173,7 +199,8 @@ def build_promotional_prompts(product: Dict[str, Any], angles: List[Dict[str, An
     currency = (product or {}).get("currency") or "MAD"
     base_style = (
         "High-converting ecommerce promo photo, product-first, bright neutral backdrop, soft studio light, "
-        "crisp edges, subtle shadow, retail-ready, safe 4:5 crop."
+        "crisp edges, subtle shadow, retail-ready, safe 4:5 crop. "
+        "CRITICAL: Replace the original background with a new clean neutral studio backdrop; DO NOT reuse the source background."
     )
     prompts: List[str] = []
     angles = angles or []
@@ -183,9 +210,11 @@ def build_promotional_prompts(product: Dict[str, Any], angles: List[Dict[str, An
         promise = (a or {}).get("promise") or ""
         ksp = ", ".join(((a or {}).get("ksp") or [])[:3])
         price_str = f" — Price {price} {currency}" if isinstance(price, (int, float)) else ""
+        mid = _compute_midpoint_size_from_product(product)
+        size_text = f" Ensure the product shown is size {mid} (midpoint of provided range)." if mid else ""
         p = (
             f"Promotional image for {title}. Angle: {name}. {promise} {price_str}. "
-            f"Key points: {ksp}. Target: {audience}. {base_style}"
+            f"Key points: {ksp}. Target: {audience}. {base_style}{size_text}"
         )
         prompts.append(p)
     return prompts
@@ -268,6 +297,7 @@ def build_feature_benefit_prompts(product: Dict[str, Any], count: int = 6) -> Li
         "Ecommerce macro photo from the REFERENCE IMAGE ONLY (no invention). Extreme close-up, "
         "shallow depth of field, soft studio lighting, neutral clean backdrop. Keep product identity, "
         "exact materials, stitching, textures, colors, proportions, and any marks identical to the reference. "
+        "Replace any visible original background with a clean neutral studio backdrop; DO NOT reuse the source background. "
         "ACT ONLY AS A CROP/ENHANCEMENT of the reference, do not change or add parts, no text, no logos. 4:5 crop."
     )
 
@@ -275,11 +305,13 @@ def build_feature_benefit_prompts(product: Dict[str, Any], count: int = 6) -> Li
     k = max(1, int(count))
     for i in range(k):
         benefit = raw_benefits[i % len(raw_benefits)]
+        mid = _compute_midpoint_size_from_product(product)
+        size_text = f" Ensure the product shown is size {mid} (midpoint of provided range)." if mid else ""
         p = (
             f"Create a MACRO CLOSE-UP derived strictly from the provided reference photo of {title}. "
             f"Focus on the exact area that demonstrates: {benefit}. "
             f"Use ONLY the reference as source (no re-drawing). If unsure, choose the most visually clear area from the reference. "
-            f"Do not change color/material/shape/branding. {base_style} Audience: {audience}."
+            f"Do not change color/material/shape/branding. {base_style} Audience: {audience}.{size_text}"
         )
         prompts.append(p)
     return prompts
@@ -483,7 +515,8 @@ def gen_variant_images_from_image(
         model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
         base_style = (
             "Professional ecommerce product photo, clean neutral background, soft studio lighting, crisp focus, "
-            "subtle ground shadow, premium look, 45-degree camera angle, 4:5 crop."
+            "subtle ground shadow, premium look, 45-degree camera angle, 4:5 crop. "
+            "CRITICAL: Replace the original background with a new clean neutral studio backdrop; DO NOT reuse the source background."
         )
         items: list[dict] = []
 
