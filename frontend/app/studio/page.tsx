@@ -434,39 +434,40 @@ function StudioPage(){
         }
       }catch{}
 
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: undefined, title: v.title, description: v.description, model, image_urls: shopifyCdnUrls, prompt: landingCopyPrompt, product_handle })
-      if(product_gid && lc?.html){
-        await shopifyUpdateDescription({ product_gid, description_html: lc.html })
-      }
+      // Create Image Gallery node to collect images and gate landing page generation until approval
+      let galleryNodeId:string|undefined
+      setFlow(f=>{
+        // Position gallery below the last Gemini node if present, else below images
+        const gemNodes = f.nodes.filter(x=> x.data?.type && String(x.data.type).startsWith('gemini_'))
+        const base = gemNodes[gemNodes.length-1] || f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
+        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle, title: v.title, description: v.description, landing_prompt: landingCopyPrompt, selected:{} })
+        let edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gal.id, 'in')]
+        // Connect all existing Gemini nodes to gallery for visual path
+        gemNodes.forEach(gn=> { edges = [...edges, makeEdge(gn.id, 'out', gal.id, 'in')] })
+        const next = { nodes:[...f.nodes, gal], edges }
+        flowRef.current = next
+        galleryNodeId = gal.id
+        return next
+      })
+      // Initialize gallery with any Shopify CDN URLs we already have
+      if(galleryNodeId){ updateNodeRun(galleryNodeId, { status:'idle', output:{ images: shopifyCdnUrls||[] } }) }
 
-      let landingNodeId:string|undefined
-      setFlow(f=>{
-        const ln = makeNode('action', (n.x+300)+300, n.y, { label:'Create Landing', type:'create_landing' })
-        const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', ln.id, 'in')]
-        const next = { nodes:[...f.nodes, ln], edges }
-        flowRef.current = next
-        landingNodeId = ln.id
-        return next
-      })
-      const page = await shopifyCreatePageFromCopy({ title: v.title, landing_copy: lc, image_urls: shopifyCdnUrls })
-      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: page.page_url||null } }) }
-      let metaNodeId:string|undefined
-      setFlow(f=>{
-        const mn = makeNode('action', ((n.x+300)+300)+300, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
-        const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
-        const next = { nodes:[...f.nodes, mn], edges }
-        flowRef.current = next
-        metaNodeId = mn.id
-        return next
-      })
-      if(page.page_url){
-        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, page_url: page.page_url, creatives: [] })
-        if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
-      }
-      updateNodeRun(nodeId, { status:'success', output:{ landing_copy: lc } })
+      updateNodeRun(nodeId, { status:'success', output:{ message: 'Product created. Select images in gallery to generate landing.' } })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
     }
+  }
+
+  async function appendImagesToGallery(galleryNodeId:string, newImages:string[]){
+    try{
+      if(!newImages || newImages.length===0) return
+      const snap = flowRef.current
+      const g = snap.nodes.find(n=> n.id===galleryNodeId)
+      if(!g) return
+      const cur: string[] = Array.isArray(g.run?.output?.images)? g.run.output.images : []
+      const nextImgs = Array.from(new Set([...(cur||[]), ...newImages]))
+      setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===galleryNodeId? ({...n, run:{...n.run, output:{ ...(n.run?.output||{}), images: nextImgs }}}) : n)}))
+    }catch{}
   }
 
   async function geminiGenerate(nodeId:string){
@@ -499,9 +500,106 @@ function StudioPage(){
           }
         }catch{}
       }
+      // After any Gemini generation, append images to the gallery node if present
+      try{
+        const snap = flowRef.current
+        const gallery = snap.nodes.find(x=> x.data?.type==='image_gallery')
+        if(gallery){
+          let newImgs: string[] = []
+          if(n.data?.type==='gemini_variant_set' || n.data?.type==='gemini_feature_benefit_set'){
+            const items = Array.isArray((snap.nodes.find(x=>x.id===nodeId)?.run?.output as any)?.items)? (snap.nodes.find(x=>x.id===nodeId)?.run?.output as any).items : []
+            newImgs = items.map((it:any)=> it?.image).filter(Boolean)
+          }else{
+            const images = Array.isArray((snap.nodes.find(x=>x.id===nodeId)?.run?.output as any)?.images)? (snap.nodes.find(x=>x.id===nodeId)?.run?.output as any).images : []
+            newImgs = images
+          }
+          await appendImagesToGallery(gallery.id, newImgs)
+        }
+      }catch{}
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
+  }
+
+  async function galleryApprove(nodeId:string){
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const product_gid: string|undefined = n.data?.product_gid
+    const product_handle: string|undefined = n.data?.product_handle
+    const vTitle: string = n.data?.title||title
+    const vDesc: string = n.data?.description||''
+    const sel: Record<string,boolean> = n.data?.selected||{}
+    const allImages: string[] = Array.isArray(n.run?.output?.images)? n.run.output.images : []
+    const chosen = allImages.filter(u=> sel[u])
+    if(chosen.length===0){ updateNodeRun(nodeId, { status:'error', error:'Select at least one image.' }); return }
+    if(!product_gid){ updateNodeRun(nodeId, { status:'error', error:'Missing product GID.' }); return }
+    updateNodeRun(nodeId, { status:'running', startedAt: now() })
+    try{
+      // Separate data URLs and http URLs
+      const dataUrls = chosen.filter(u=> u.startsWith('data:'))
+      const httpUrls = chosen.filter(u=> !u.startsWith('data:'))
+      let cdnUrls: string[] = []
+      // Upload data URLs as files directly to Shopify for CDN
+      if(dataUrls.length>0){
+        const filesToUpload = dataUrls.map((u,i)=> dataUrlToFile(u, `gallery-${i+1}.png`))
+        const up = await shopifyUploadProductFiles({ product_gid, files: filesToUpload, title: vTitle, description: vDesc })
+        const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
+        const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
+        cdnUrls = [...cdnUrls, ...(urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)]
+      }
+      // Ensure any non-Shopify http URLs are attached to product to get CDN URLs
+      if(httpUrls.length>0){
+        const up2 = await shopifyUploadProductImages({ product_gid, image_urls: httpUrls, title: vTitle, description: vDesc })
+        const urls2 = Array.isArray(up2?.urls)? up2.urls : []
+        const urlsFromImages2 = Array.isArray(up2?.images)? (up2.images.map((it:any)=> it?.src).filter(Boolean)) : []
+        cdnUrls = [...cdnUrls, ...(urls2.length>0? urls2 : urlsFromImages2)]
+      }
+      // Deduplicate
+      cdnUrls = Array.from(new Set(cdnUrls))
+      // Generate landing copy with selected images
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
+      if(product_gid && lc?.html){
+        await shopifyUpdateDescription({ product_gid, description_html: lc.html })
+      }
+      // Create landing page
+      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: cdnUrls })
+      // Append Create Landing and Meta nodes to show path
+      let landingNodeId:string|undefined
+      setFlow(f=>{
+        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing' })
+        const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
+        const next = { nodes:[...f.nodes, ln], edges }
+        flowRef.current = next
+        landingNodeId = ln.id
+        return next
+      })
+      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: page.page_url||null } }) }
+      let metaNodeId:string|undefined
+      setFlow(f=>{
+        const mn = makeNode('action', n.x+600, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
+        const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
+        const next = { nodes:[...f.nodes, mn], edges }
+        flowRef.current = next
+        metaNodeId = mn.id
+        return next
+      })
+      if(page.page_url){
+        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle }, page_url: page.page_url, creatives: [] })
+        if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
+      }
+      updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, page_url: page.page_url||null } })
+    }catch(e:any){
+      updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
+    }
+  }
+
+  function dataUrlToFile(dataUrl:string, filename:string): File{
+    const parts = dataUrl.split(',')
+    const mime = (parts[0].match(/:(.*?);/)||[])[1] || 'image/png'
+    const bstr = atob(parts[1]||'')
+    let n = bstr.length
+    const u8 = new Uint8Array(n)
+    while(n--){ u8[n] = bstr.charCodeAt(n) }
+    return new File([u8], filename, { type: mime })
   }
 
   async function simulate(){
@@ -817,6 +915,7 @@ function StudioPage(){
                   onAngleApprove={(id)=> angleApprove(id)}
                   onTitleContinue={(id)=> titleContinue(id)}
                   onGeminiGenerate={(id)=> geminiGenerate(id)}
+                  onGalleryApprove={(id)=> galleryApprove(id)}
                 />
               ))}
             </div>
@@ -923,7 +1022,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -941,7 +1040,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate)}
+          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove)}
         </div>
       </motion.div>
     </div>
@@ -953,7 +1052,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void){
   if(node.type==='trigger'){
     return (
       <div className="space-y-1 text-xs">
@@ -1128,6 +1227,37 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
               ))}
             </div>
           </div>
+        )}
+      </div>
+    )
+  }
+  if(node.data?.type==='image_gallery'){
+    const out = node.run?.output||{}
+    const imgs: string[] = Array.isArray(out?.images)? out.images : []
+    const selected: Record<string,boolean> = node.data?.selected||{}
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label||'Select Images for Landing'}</div>
+        {imgs.length>0 ? (
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Choose images to include</div>
+            <div className="grid grid-cols-2 gap-2">
+              {imgs.map((u,i)=> (
+                <div key={i} className={`relative border rounded p-1 ${selected[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                  <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
+                    <input type="checkbox" checked={!!selected[u]} onChange={()=> onUpdateNode({ selected: { ...(node.data?.selected||{}), [u]: !selected[u] } })} />
+                  </label>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={u} alt={`gal-${i}`} className="w-full h-24 object-cover rounded" />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-2">
+              <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(selected||{}).some(Boolean)}>Approve</Button>
+            </div>
+          </div>
+        ): (
+          <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div>
         )}
       </div>
     )
