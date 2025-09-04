@@ -148,29 +148,37 @@ async def get_test(test_id: str):
 async def list_tests(limit: int | None = None):
     try:
         items = db.list_tests(limit=limit)
-        # For brevity, surface a top-level image for cards: prefer Shopify page image_urls, else first creative
+        # For cards, only surface Shopify-hosted images to ensure consistency
+        def pick_shopify(urls: list[str] | None) -> str | None:
+            try:
+                for u in (urls or []):
+                    if isinstance(u, str) and "cdn.shopify.com" in u:
+                        return u
+            except Exception:
+                return None
+            return None
+
         for it in items:
             image = None
             try:
                 page = (it.get("result") or {}).get("page") or {}
+                # page.image_urls is populated with Shopify CDN URLs after product/page creation
                 imgs = (page.get("image_urls") or []) if isinstance(page, dict) else []
-                if imgs:
-                    image = imgs[0]
+                image = pick_shopify(imgs)
             except Exception:
                 image = None
             if not image:
                 try:
                     creatives = (it.get("result") or {}).get("creatives") or []
-                    if creatives:
-                        image = (creatives[0] or {}).get("image_url")
+                    creative_urls = [(c or {}).get("image_url") for c in creatives if (c or {}).get("image_url")]
+                    image = pick_shopify(creative_urls)
                 except Exception:
                     image = None
             if not image:
                 try:
                     payload = it.get("payload") or {}
                     uploaded = (payload.get("uploaded_images") or [])
-                    if uploaded:
-                        image = uploaded[0]
+                    image = pick_shopify(uploaded)
                 except Exception:
                     image = None
             it["card_image"] = image

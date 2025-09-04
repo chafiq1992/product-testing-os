@@ -43,7 +43,7 @@ export default function HomePage(){
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  <div className="aspect-[4/3] w-full bg-slate-100 rounded-lg overflow-hidden border">
+                  <div className="aspect-[3/2] md:aspect-[4/3] w-full bg-slate-100 rounded-lg overflow-hidden border h-36 md:h-44">
                     {it.card_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={it.card_image} alt="cover" className="w-full h-full object-cover"/>
