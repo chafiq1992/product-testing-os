@@ -198,3 +198,13 @@ export async function geminiGenerateVariantSet(payload:{ image_url:string, style
   const {data} = await axios.post(`${base}/api/gemini/variant_set`, payload)
   return data as { items: Array<{ kind:'variant'|'composite', name?:string, description?:string, image:string, prompt:string }>, model: string, input_image_url: string, error?: string }
 }
+
+// Gemini feature/benefit close-up set
+export async function geminiGenerateFeatureBenefitSet(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string },
+  image_url: string,
+  count?: number
+}){
+  const {data} = await axios.post(`${base}/api/gemini/feature_benefit_set`, payload)
+  return data as { items: { prompt:string, image:string }[], model: string, input_image_url: string, error?: string }
+}

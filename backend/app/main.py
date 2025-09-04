@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
-from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image
+from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
@@ -285,6 +285,21 @@ async def api_gemini_promotional_set(req: GeminiPromoSetRequest):
     except Exception as e:
         return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
     
+# Feature/Benefit close-up set
+class GeminiFeatureBenefitRequest(BaseModel):
+    product: ProductInput
+    image_url: str
+    count: Optional[int] = 6
+
+
+@app.post("/api/gemini/feature_benefit_set")
+async def api_gemini_feature_benefit_set(req: GeminiFeatureBenefitRequest):
+    try:
+        items = gen_feature_benefit_images(req.image_url, req.product.model_dump(), count=req.count or 6)
+        return {"items": items, "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
+    except Exception as e:
+        return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
+
 # Variant set (per-variant product images + composite)
 class GeminiVariantSetRequest(BaseModel):
     image_url: str

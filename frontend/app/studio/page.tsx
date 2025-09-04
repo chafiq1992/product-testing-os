@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -412,10 +412,18 @@ function StudioPage(){
             geminiNodeId = gn.id
             return next
           })
+          // Add a Feature/Benefit Close-ups node below the Ad Images node
+          setFlow(f=>{
+            const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
+            const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Feature/Benefit Close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 6 })
+            const next = { nodes:[...f.nodes, fb], edges: f.edges }
+            flowRef.current = next
+            return next
+          })
           // Also add a Variant Set node just below
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
-            const vs = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5 })
+            const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5 })
             const next = { nodes:[...f.nodes, vs], edges: f.edges }
             flowRef.current = next
             return next
@@ -469,10 +477,24 @@ function StudioPage(){
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
         const resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
         updateNodeRun(nodeId, { status:'success', output: resp })
+      }else if(n.data?.type==='gemini_feature_benefit_set'){
+        const resp = await geminiGenerateFeatureBenefitSet({
+          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined },
+          image_url: sourceUrl,
+          count: typeof n.data?.count==='number'? n.data.count : 6
+        })
+        updateNodeRun(nodeId, { status:'success', output: resp })
       }else{
         const adPrompt = String(n.data?.prompt||geminiAdPrompt||'Create a high-quality ad image from this product photo.')
         const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 2 })
         updateNodeRun(nodeId, { status:'success', output: resp })
+        // Auto-run the Feature/Benefit node if present
+        try{
+          const fbNode = flowRef.current.nodes.find(x=> x.data?.type==='gemini_feature_benefit_set' && x.data?.source_image_url===sourceUrl)
+          if(fbNode && fbNode.run?.status==='idle'){
+            await geminiGenerate(fbNode.id)
+          }
+        }catch{}
       }
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
@@ -1044,6 +1066,34 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       </div>
     )
   }
+  if(node.data?.type==='gemini_feature_benefit_set'){
+    const out = node.run?.output||{}
+    const items: Array<{prompt:string,image:string}> = Array.isArray(out?.items)? out.items : []
+    return (
+      <div className="text-xs space-y-2">
+        <div className="text-slate-500">{node.data.label||'Gemini Feature/Benefit Close-ups'}</div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
+        <div>
+          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
+          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
+        </div>
+        {items.length>0 && (
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Results</div>
+            <div className="grid grid-cols-2 gap-2">
+              {items.map((it,i)=> (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={i} src={it.image} alt={`fb-${i}`} className="w-full h-24 object-cover rounded border"/>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
   if(node.data?.type==='gemini_variant_set'){
     const out = node.run?.output||{}
     const items: Array<{kind:'variant'|'composite',name?:string,description?:string,image:string,prompt:string}> = Array.isArray(out?.items)? out.items : []
@@ -1117,6 +1167,8 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
   if(node.data?.type==='gemini_ad_images'){
     images = Array.isArray(out?.images)? out.images : []
   }else if(node.data?.type==='gemini_variant_set'){
+    try{ images = (Array.isArray(out?.items)? out.items : []).map((it:any)=> it?.image).filter(Boolean) }catch{ images=[] }
+  }else if(node.data?.type==='gemini_feature_benefit_set'){
     try{ images = (Array.isArray(out?.items)? out.items : []).map((it:any)=> it?.image).filter(Boolean) }catch{ images=[] }
   }
 

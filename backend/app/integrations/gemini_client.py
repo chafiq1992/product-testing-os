@@ -234,6 +234,93 @@ def gen_promotional_images_from_angles(
 
 
 
+# ---------------- Feature/Benefit close-up set ----------------
+def build_feature_benefit_prompts(product: Dict[str, Any], count: int = 6) -> List[str]:
+    """Create prompts focusing on specific features/benefits and macro close-ups.
+
+    Prioritizes close-up shots that highlight materials, stitching, seams, grip, ports, and any
+    product parts that visually communicate the listed benefits.
+    """
+    title = (product or {}).get("title") or "product"
+    audience = (product or {}).get("audience") or "shoppers"
+    benefits = [(product or {}).get("benefits") or []]
+    # Normalize benefits list of strings
+    raw_benefits: List[str] = []
+    try:
+        for b in (product or {}).get("benefits") or []:
+            if isinstance(b, str) and b.strip():
+                raw_benefits.append(b.strip())
+    except Exception:
+        raw_benefits = []
+
+    # If no explicit benefits, use generic feature areas
+    if not raw_benefits:
+        raw_benefits = [
+            "Premium stitching and seams",
+            "Material texture and quality",
+            "Sole/Grip details",
+            "Cushioning and comfort zones",
+            "Breathability/vents",
+            "Durability reinforcements",
+        ]
+
+    base_style = (
+        "Ecommerce-ready macro product photography. Extreme close-up, shallow depth of field, "
+        "soft studio lighting, neutral clean backdrop, tack-sharp focus on the feature. "
+        "Show real materials and textures. No text, no logos, 4:5 crop."
+    )
+
+    prompts: List[str] = []
+    k = max(1, int(count))
+    for i in range(k):
+        benefit = raw_benefits[i % len(raw_benefits)]
+        p = (
+            f"Close-up detail image of {title} demonstrating: {benefit}. "
+            f"Highlight the specific part that communicates this benefit. Audience: {audience}. {base_style}"
+        )
+        prompts.append(p)
+    return prompts
+
+
+def gen_feature_benefit_images(
+    image_url: str,
+    product: Dict[str, Any],
+    count: int = 6,
+) -> List[Dict[str, str]]:
+    """Generate a set of close-up images that showcase features/benefits.
+
+    Returns: [{"prompt": str, "image": data_url}]
+    Falls back to returning the source image if generation isn't available.
+    """
+    prompts = build_feature_benefit_prompts(product, count=count)
+    gen = _try_import_genai()
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    fetched = _fetch_image_bytes(image_url)
+    if not (gen and api_key and fetched):
+        return [{"prompt": p, "image": image_url} for p in prompts]
+    mime, blob = fetched
+    try:
+        gen.configure(api_key=api_key)
+        model = gen.GenerativeModel("gemini-2.5-flash-image-preview")
+        results: List[Dict[str, str]] = []
+        for p in prompts:
+            try:
+                out = model.generate_content([
+                    {"mime_type": mime, "data": blob},
+                    p,
+                ])
+                pairs = _extract_inline_images(out)
+                if pairs:
+                    mm, bb = pairs[0]
+                    results.append({"prompt": p, "image": _to_data_url(mm or "image/png", bb)})
+                else:
+                    results.append({"prompt": p, "image": image_url})
+            except Exception:
+                results.append({"prompt": p, "image": image_url})
+        return results
+    except Exception:
+        return [{"prompt": p, "image": image_url} for p in prompts]
+
 # ---------------- Variant extraction + per-variant product images ----------------
 def _parse_json_safely(text: str) -> dict | list | None:
     try:
