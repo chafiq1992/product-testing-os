@@ -135,6 +135,22 @@ def _rest_put(path: str, payload: dict):
     return r.json() if r.content else {}
 
 
+def _rest_delete(path: str):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = requests.delete(url, headers=headers, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
 def _extract_numeric_id_from_gid(gid: str) -> str | None:
     try:
         return (gid or "").split("/")[-1] or None
@@ -265,65 +281,127 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
         pass
 
 
+def _numeric_product_id_from_gid(product_gid: str) -> str | None:
+    try:
+        return (product_gid or "").split("/")[-1] or None
+    except Exception:
+        return None
+
+
+def _update_product_options(numeric_product_id: str, sizes: list[str] | None, colors: list[str] | None) -> None:
+    try:
+        options = []
+        if sizes:
+            options.append({"name": "Size", "values": sizes})
+        if colors:
+            options.append({"name": "Color", "values": colors})
+        if not options:
+            return
+        _rest_put(f"/products/{numeric_product_id}.json", {"product": {"id": int(numeric_product_id), "options": options}})
+    except Exception:
+        pass
+
+
+def _create_variant(numeric_product_id: str, option1: str | None, option2: str | None, price: float | None) -> dict | None:
+    try:
+        variant: dict = {}
+        if option1 is not None:
+            variant["option1"] = option1
+        if option2 is not None:
+            variant["option2"] = option2
+        if price is not None:
+            variant["price"] = str(price)
+        resp = _rest_post(f"/products/{numeric_product_id}/variants.json", {"variant": variant})
+        return (resp or {}).get("variant")
+    except Exception:
+        return None
+
+
+def _list_variants(numeric_product_id: str) -> list[dict]:
+    try:
+        resp = _rest_get(f"/products/{numeric_product_id}/variants.json")
+        return (resp or {}).get("variants", []) or []
+    except Exception:
+        return []
+
+
+def _update_variant_price(variant_id: str, price: float) -> None:
+    try:
+        _rest_put(f"/variants/{variant_id}.json", {"variant": {"id": int(variant_id), "price": str(price)}})
+    except Exception:
+        pass
+
+
+def _configure_variants_for_product(product_gid: str, base_price: float | None, sizes: list[str] | None, colors: list[str] | None) -> None:
+    numeric_id = _numeric_product_id_from_gid(product_gid)
+    if not numeric_id:
+        return
+    values_size = [s.strip() for s in (sizes or []) if isinstance(s, str) and s.strip()]
+    values_color = [c.strip() for c in (colors or []) if isinstance(c, str) and c.strip()]
+    if values_size or values_color:
+        # Update product options and create variants for all combinations
+        _update_product_options(numeric_id, values_size or None, values_color or None)
+        created_variants: list[dict] = []
+        if values_size and values_color:
+            for sv in values_size:
+                for cv in values_color:
+                    v = _create_variant(numeric_id, sv, cv, base_price)
+                    if v:
+                        created_variants.append(v)
+        elif values_size:
+            for sv in values_size:
+                v = _create_variant(numeric_id, sv, None, base_price)
+                if v:
+                    created_variants.append(v)
+        elif values_color:
+            for cv in values_color:
+                v = _create_variant(numeric_id, None, cv, base_price)
+                if v:
+                    created_variants.append(v)
+        # Enable inventory and set stock 2 for each
+        loc_id = _get_primary_location_id()
+        if loc_id:
+            for v in created_variants:
+                try:
+                    inv_item_id = str((v or {}).get("inventory_item_id"))
+                    if inv_item_id and inv_item_id != "None":
+                        _set_inventory_tracked(inv_item_id, True)
+                        _set_inventory_level(loc_id, inv_item_id, 2)
+                except Exception:
+                    continue
+    else:
+        # Single default variant: update price and inventory
+        variants = _list_variants(numeric_id)
+        if variants:
+            first = variants[0]
+            try:
+                var_id = str(first.get("id"))
+                if base_price is not None and var_id:
+                    _update_variant_price(var_id, base_price)
+            except Exception:
+                pass
+            try:
+                loc_id = _get_primary_location_id()
+                inv_item_id = str(first.get("inventory_item_id"))
+                if loc_id and inv_item_id and inv_item_id != "None":
+                    _set_inventory_tracked(inv_item_id, True)
+                    _set_inventory_level(loc_id, inv_item_id, 2)
+            except Exception:
+                pass
+
+
 def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE", price: float | None = None, sizes: list[str] | None = None, colors: list[str] | None = None) -> dict:
     inp: dict = {
         "title": title or "Offer",
         "status": status,
     }
-    # Build product options and variants if provided
-    option_names: list[str] = []
-    values_size = [s for s in (sizes or []) if isinstance(s, str) and s.strip()]
-    values_color = [c for c in (colors or []) if isinstance(c, str) and c.strip()]
-    if values_size:
-        option_names.append("Size")
-    if values_color:
-        option_names.append("Color")
-    if option_names:
-        inp["options"] = option_names
-        # Cartesian product of options
-        size_vals = values_size or ["Default"]
-        color_vals = values_color or ["Default"]
-        combos: list[list[str]] = []
-        if values_size and values_color:
-            for sv in size_vals:
-                for cv in color_vals:
-                    combos.append([sv, cv])
-        elif values_size:
-            for sv in size_vals:
-                combos.append([sv])
-        elif values_color:
-            for cv in color_vals:
-                combos.append([cv])
-        variants: list[dict] = []
-        for opts in combos:
-            v: dict = {"options": opts}
-            if price is not None:
-                # GraphQL expects a decimal string for price
-                v["price"] = str(price)
-            variants.append(v)
-        if variants:
-            inp["variants"] = variants
-    else:
-        # Single variant price if provided
-        if price is not None:
-            inp["variants"] = [{"price": str(price)}]
     if description_html:
         inp["descriptionHtml"] = description_html
     data = _gql(PRODUCT_CREATE, {"input": inp})
     prod = data["productCreate"]["product"]
-    # Best-effort inventory tracking and quantity set to 2 for each variant
+    # Configure variants and inventory via REST
     try:
-        location_id = _get_primary_location_id()
-        if location_id:
-            nodes = (((prod or {}).get("variants") or {}).get("nodes") or [])
-            for n in nodes:
-                try:
-                    inv_item_id = (((n or {}).get("inventoryItem") or {}).get("id") or "").split("/")[-1]
-                    if inv_item_id:
-                        _set_inventory_tracked(inv_item_id, True)
-                        _set_inventory_level(location_id, inv_item_id, 2)
-                except Exception:
-                    continue
+        _configure_variants_for_product(prod["id"], price, sizes, colors)
     except Exception:
         pass
     return prod
@@ -339,48 +417,11 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     # Collate image URLs requested for upload: prefer uploaded images from payload; otherwise fall back to creatives
     requested_images = (payload.get("uploaded_images") or []) or [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
 
-    # Do not set description at product creation time. Include variants/options/pricing if provided.
+    # Do not set description at product creation time.
     product_in: dict = {
         "title": title,
         "status": "ACTIVE",
     }
-    try:
-        base_price = payload.get("base_price")
-        sizes = [s for s in (payload.get("sizes") or []) if isinstance(s, str) and s.strip()]
-        colors = [c for c in (payload.get("colors") or []) if isinstance(c, str) and c.strip()]
-        option_names: list[str] = []
-        if sizes:
-            option_names.append("Size")
-        if colors:
-            option_names.append("Color")
-        if option_names:
-            product_in["options"] = option_names
-            size_vals = sizes or ["Default"]
-            color_vals = colors or ["Default"]
-            combos: list[list[str]] = []
-            if sizes and colors:
-                for sv in size_vals:
-                    for cv in color_vals:
-                        combos.append([sv, cv])
-            elif sizes:
-                for sv in size_vals:
-                    combos.append([sv])
-            elif colors:
-                for cv in color_vals:
-                    combos.append([cv])
-            variants: list[dict] = []
-            for opts in combos:
-                v: dict = {"options": opts}
-                if base_price is not None:
-                    v["price"] = str(base_price)
-                variants.append(v)
-            if variants:
-                product_in["variants"] = variants
-        else:
-            if base_price is not None:
-                product_in["variants"] = [{"price": str(base_price)}]
-    except Exception:
-        pass
 
     pdata = _gql(PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
     # Attach images via REST after creation and capture Shopify CDN URLs
@@ -458,19 +499,12 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     except Exception:
         pass
 
-    # Best-effort: enable tracking and set inventory to 2 for each variant
+    # Configure pricing/variants/inventory via REST after product creation
     try:
-        location_id = _get_primary_location_id()
-        if location_id:
-            nodes = (((pdata or {}).get("variants") or {}).get("nodes") or [])
-            for n in nodes:
-                try:
-                    inv_item_id = (((n or {}).get("inventoryItem") or {}).get("id") or "").split("/")[-1]
-                    if inv_item_id:
-                        _set_inventory_tracked(inv_item_id, True)
-                        _set_inventory_level(location_id, inv_item_id, 2)
-                except Exception:
-                    continue
+        base_price = payload.get("base_price")
+        sizes = payload.get("sizes")
+        colors = payload.get("colors")
+        _configure_variants_for_product(pdata["id"], base_price, sizes, colors)
     except Exception:
         pass
 
