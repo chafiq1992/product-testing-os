@@ -32,7 +32,7 @@ export async function listTests(limit?: number){
 }
 
 export async function saveDraft(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   image_urls?: string[],
   flow?: any,
   ui?: any,
@@ -44,7 +44,7 @@ export async function saveDraft(payload:{
 }
 
 export async function updateDraft(id: string, payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   image_urls?: string[],
   flow?: any,
   ui?: any,
@@ -62,7 +62,7 @@ export async function fetchSavedAudiences(){
 
 // LLM interactive endpoints
 export async function llmGenerateAngles(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   num_angles:number,
   model?:string,
   prompt?:string
@@ -72,7 +72,7 @@ export async function llmGenerateAngles(payload:{
 }
 
 export async function llmTitleDescription(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   angle:any,
   prompt?:string,
   model?:string,
@@ -83,7 +83,7 @@ export async function llmTitleDescription(payload:{
 }
 
 export async function llmLandingCopy(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   angle?:any,
   title?:string,
   description?:string,
@@ -98,7 +98,7 @@ export async function llmLandingCopy(payload:{
 }
 
 export async function shopifyCreateFromCopy(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   angle?:any,
   title:string,
   description:string,
@@ -110,7 +110,7 @@ export async function shopifyCreateFromCopy(payload:{
 }
 
 export async function metaLaunchFromPage(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   page_url:string,
   creatives?:any[]
 }){
@@ -137,7 +137,7 @@ export async function shopifyUploadProductImages(payload:{
 }
 
 export async function shopifyCreateProductFromTitleDesc(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
   angle?: any,
   title: string,
   description?: string
@@ -184,7 +184,7 @@ export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:
 }
 
 export async function geminiGeneratePromotionalSet(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string, sizes?:string[], colors?:string[] },
   angles: any[],
   image_url: string,
   count?: number
@@ -201,7 +201,7 @@ export async function geminiGenerateVariantSet(payload:{ image_url:string, style
 
 // Gemini feature/benefit close-up set
 export async function geminiGenerateFeatureBenefitSet(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string, sizes?:string[], colors?:string[] },
   image_url: string,
   count?: number
 }){

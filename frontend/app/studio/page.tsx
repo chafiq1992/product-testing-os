@@ -91,6 +91,8 @@ function StudioPage(){
         if(p?.audience) setAudience(p.audience)
         if(p?.title) setTitle(p.title)
         if(p?.base_price!=null) setPrice(Number(p.base_price))
+        if(Array.isArray((p as any)?.sizes)) setSizes((p as any).sizes)
+        if(Array.isArray((p as any)?.colors)) setColors((p as any).colors)
         if(Array.isArray(p?.benefits)) setBenefits(p.benefits)
         if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
         if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
@@ -142,6 +144,8 @@ function StudioPage(){
   const [price,setPrice]=useState<number|''>('')
   const [benefits,setBenefits]=useState<string[]>(['Comfy all-day wear'])
   const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
+  const [sizes,setSizes]=useState<string[]>([])
+  const [colors,setColors]=useState<string[]>([])
   const [files,setFiles]=useState<File[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   const [model,setModel]=useState<string>('gpt-4o-mini')
@@ -305,7 +309,7 @@ function StudioPage(){
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
       updateNodeRun(nodeId, { status:'success', output: out })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
@@ -328,7 +332,7 @@ function StudioPage(){
         else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
       }
       const payload = {
-        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined },
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
@@ -374,7 +378,7 @@ function StudioPage(){
         productNodeId = pn.id
         return next
       })
-      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title }, angle: undefined, title: v.title, description: v.description })
+      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors }, angle: undefined, title: v.title, description: v.description })
       const product_gid = productRes.product_gid
       const product_handle = productRes.handle
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
@@ -483,7 +487,7 @@ function StudioPage(){
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
         const resp = await geminiGenerateFeatureBenefitSet({
-          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined },
+          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
           image_url: sourceUrl,
           count: typeof n.data?.count==='number'? n.data.count : 6
         })
@@ -556,7 +560,7 @@ function StudioPage(){
       // Deduplicate
       cdnUrls = Array.from(new Set(cdnUrls))
       // Generate landing copy with selected images
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
+      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
       if(product_gid && lc?.html){
         await shopifyUpdateDescription({ product_gid, description_html: lc.html })
       }
@@ -583,7 +587,7 @@ function StudioPage(){
         return next
       })
       if(page.page_url){
-        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle }, page_url: page.page_url, creatives: [] })
+        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors }, page_url: page.page_url, creatives: [] })
         if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
       }
       updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, page_url: page.page_url||null } })
@@ -662,7 +666,7 @@ function StudioPage(){
     const type = node.data.type
     await wait(300+Math.random()*300)
     if(type==='generate_angles'){
-      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined }, num_angles: Number(node.data.numAngles||2), model, prompt: anglesPrompt })
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, num_angles: Number(node.data.numAngles||2), model, prompt: anglesPrompt })
       setFlow(f=>{
         const existingChildIds = f.nodes
           .filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id))
@@ -786,6 +790,16 @@ function StudioPage(){
                 <div>
                   <div className="text-xs text-slate-500 mb-1">Ad set daily budget (USD)</div>
                   <Input type="number" min={1} value={adsetBudget} onChange={e=> setAdsetBudget(e.target.value===''? '': Number(e.target.value))} placeholder="9" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">Sizes (variants)</div>
+                  <TagsInput value={sizes} onChange={setSizes} placeholder="Add size & Enter (e.g., S, M, L)" />
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">Colors (variants)</div>
+                  <TagsInput value={colors} onChange={setColors} placeholder="Add color & Enter (e.g., Red, Blue)" />
                 </div>
               </div>
               <div>

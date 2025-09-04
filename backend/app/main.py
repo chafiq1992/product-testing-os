@@ -40,6 +40,8 @@ class ProductInput(BaseModel):
     audience: str
     benefits: List[str]
     pain_points: List[str]
+    sizes: Optional[List[str]] = None
+    colors: Optional[List[str]] = None
     niche: Optional[str] = None
     targeting: Optional[dict] = None
     advantage_plus: Optional[bool] = True
@@ -458,8 +460,15 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
     payload = req.product.model_dump()
     if req.description:
         payload["description"] = req.description
-    # Do not set any description at product creation time
-    product = create_product_only(req.title)
+    # Create product with variants/options/pricing when provided. Description is set later via update.
+    product = create_product_only(
+        req.title,
+        description_html=None,
+        status="ACTIVE",
+        price=payload.get("base_price"),
+        sizes=payload.get("sizes") or None,
+        colors=payload.get("colors") or None,
+    )
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
 
 
