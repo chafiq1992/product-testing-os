@@ -563,7 +563,13 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
             sec_body = sec.get("body") or ""
             specified_img = (sec.get("image_url") or "").strip()
             effective_images = requested_images or []
-            img_url = specified_img or (effective_images[idx % len(effective_images)] if effective_images else "")
+            # Prefer Shopify CDN URLs over any non-Shopify URLs specified by the model
+            if specified_img and ("cdn.shopify.com" in specified_img):
+                img_url = specified_img
+            elif effective_images:
+                img_url = effective_images[idx % len(effective_images)]
+            else:
+                img_url = specified_img
             alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
             img_tag = (
                 f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
