@@ -279,11 +279,13 @@ function StudioPage(){
   }
   const panRef = useRef<{active:boolean,startX:number,startY:number,origX:number,origY:number}>({active:false,startX:0,startY:0,origX:0,origY:0})
   function onCanvasMouseDown(e:React.MouseEvent<HTMLDivElement>){
-    if(e.button===1 || e.button===2){
+    if(e.button===0 || e.button===1 || e.button===2){
       e.preventDefault();
       panRef.current = { active:true, startX:e.clientX, startY:e.clientY, origX:pan.x, origY:pan.y }
     }
   }
+  const rafRef = useRef<number|null>(null)
+  const pendingPosRef = useRef<{id:string,x:number,y:number}|null>(null)
   function onMouseMove(e:React.MouseEvent<HTMLDivElement>){
     if(panRef.current.active){
       const dx = (e.clientX - panRef.current.startX)/zoom
@@ -294,9 +296,22 @@ function StudioPage(){
     const d=dragRef.current; if(!d.id) return; const rect = canvasRef.current?.getBoundingClientRect(); if(!rect) return;
     const newX = (e.clientX - rect.left - d.offsetX)/zoom - pan.x
     const newY = (e.clientY - rect.top - d.offsetY)/zoom - pan.y
-    setFlow(f=>({...f, nodes:f.nodes.map(n=> n.id===d.id? {...n, x:newX, y:newY } : n)}))
+    pendingPosRef.current = { id: d.id, x: newX, y: newY }
+    if(rafRef.current==null){
+      rafRef.current = requestAnimationFrame(()=>{
+        const pending = pendingPosRef.current
+        rafRef.current = null
+        if(!pending) return
+        setFlow(f=>({...f, nodes:f.nodes.map(n=> n.id===pending.id? {...n, x:pending.x, y:pending.y } : n)}))
+      })
+    }
   }
-  function onMouseUp(){ dragRef.current = { id:null, offsetX:0, offsetY:0 }; panRef.current.active=false }
+  function onMouseUp(){
+    dragRef.current = { id:null, offsetX:0, offsetY:0 };
+    panRef.current.active=false;
+    if(rafRef.current){ cancelAnimationFrame(rafRef.current); rafRef.current = null }
+    pendingPosRef.current = null
+  }
 
   async function angleGenerate(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
@@ -572,7 +587,7 @@ function StudioPage(){
       let cdnUrls: string[] = []
       // Upload data URLs as files directly to Shopify for CDN
       if(dataUrls.length>0){
-        const filesToUpload = dataUrls.map((u,i)=> dataUrlToFile(u, `gallery-${i+1}.png`))
+        const filesToUpload = await Promise.all(dataUrls.map((u,i)=> dataUrlToFile(u, `gallery-${i+1}.png`)))
         const up = await shopifyUploadProductFiles({ product_gid, files: filesToUpload, title: vTitle, description: vDesc })
         const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
         const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
@@ -634,14 +649,11 @@ function StudioPage(){
     }
   }
 
-  function dataUrlToFile(dataUrl:string, filename:string): File{
-    const parts = dataUrl.split(',')
-    const mime = (parts[0].match(/:(.*?);/)||[])[1] || 'image/png'
-    const bstr = atob(parts[1]||'')
-    let n = bstr.length
-    const u8 = new Uint8Array(n)
-    while(n--){ u8[n] = bstr.charCodeAt(n) }
-    return new File([u8], filename, { type: mime })
+  async function dataUrlToFile(dataUrl:string, filename:string): Promise<File>{
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    const type = blob.type || 'image/png'
+    return new File([blob], filename, { type })
   }
 
   async function simulate(){
@@ -1081,7 +1093,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
   return (
-    <div className="absolute select-none" style={style} onMouseDown={(e)=>onMouseDown(e,node)}>
+    <div className="absolute select-none" style={style} onMouseDown={(e)=>{ e.stopPropagation(); onMouseDown(e,node) }}>
       <motion.div layout className={`rounded-2xl bg-white border ${ring} shadow ${glow} w-[260px]`}>
         <div className="px-3 py-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -1368,7 +1380,7 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
       const httpUrls = chosen.filter(u=> !u.startsWith('data:'))
       let uploaded:string[] = []
       if(dataUrls.length>0){
-        const files = dataUrls.map((u,i)=> dataUrlToFile(u, `gemini-${i+1}.png`))
+        const files = await Promise.all(dataUrls.map((u,i)=> dataUrlToFile(u, `gemini-${i+1}.png`)))
         const up = await uploadImages(files)
         uploaded = Array.isArray(up?.urls)? up.urls : []
       }
@@ -1383,14 +1395,11 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
 
   function toggleSelect(u:string){ setSelectedUrls(s=> ({...s, [u]: !s[u]})) }
 
-  function dataUrlToFile(dataUrl:string, filename:string): File{
-    const parts = dataUrl.split(',')
-    const mime = (parts[0].match(/:(.*?);/)||[])[1] || 'image/png'
-    const bstr = atob(parts[1]||'')
-    let n = bstr.length
-    const u8 = new Uint8Array(n)
-    while(n--){ u8[n] = bstr.charCodeAt(n) }
-    return new File([u8], filename, { type: mime })
+  async function dataUrlToFile(dataUrl:string, filename:string): Promise<File>{
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    const type = blob.type || 'image/png'
+    return new File([blob], filename, { type })
   }
 
   return (
