@@ -496,7 +496,6 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         "title": f"{title} – Offer",
         "handle": handle,
         "templateSuffix": "product_test",
-        "isPublished": True,
         "body": page_body_html
     }
 
@@ -599,9 +598,8 @@ def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] 
     page_in = {
         "title": f"{title} – Offer",
         "handle": handle,
-        # GraphQL PageCreateInput uses 'published' (not 'isPublished').
-        # Set template via admin after creation if needed.
-        "published": True,
+        # PageCreateInput (Admin API 2025-07+) no longer supports a 'published' flag.
+        # Pages are created without an explicit publish toggle here.
         "body": body_html,
     }
     try:
