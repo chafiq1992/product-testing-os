@@ -494,13 +494,14 @@ function StudioPage(){
     if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
+      let resp: any = null
       if(n.data?.type==='gemini_variant_set'){
         const stylePrompt = String(n.data?.style_prompt||geminiVariantStylePrompt||'')
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
-        const resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
+        resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
-        const resp = await geminiGenerateFeatureBenefitSet({
+        resp = await geminiGenerateFeatureBenefitSet({
           product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
           image_url: sourceUrl,
           count: typeof n.data?.count==='number'? n.data.count : 6
@@ -521,7 +522,7 @@ function StudioPage(){
             adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
           }
         }catch{}
-        const resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4 })
+        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4 })
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
         try{
@@ -538,10 +539,10 @@ function StudioPage(){
         if(gallery){
           let newImgs: string[] = []
           if(n.data?.type==='gemini_variant_set' || n.data?.type==='gemini_feature_benefit_set'){
-            const items = Array.isArray((snap.nodes.find(x=>x.id===nodeId)?.run?.output as any)?.items)? (snap.nodes.find(x=>x.id===nodeId)?.run?.output as any).items : []
+            const items = Array.isArray((resp||{}).items)? (resp as any).items : []
             newImgs = items.map((it:any)=> it?.image).filter(Boolean)
           }else{
-            const images = Array.isArray((snap.nodes.find(x=>x.id===nodeId)?.run?.output as any)?.images)? (snap.nodes.find(x=>x.id===nodeId)?.run?.output as any).images : []
+            const images = Array.isArray((resp||{}).images)? (resp as any).images : []
             newImgs = images
           }
           await appendImagesToGallery(gallery.id, newImgs)
