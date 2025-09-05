@@ -597,14 +597,24 @@ function StudioPage(){
       // Append Create Landing and Meta nodes to show path
       let landingNodeId:string|undefined
       setFlow(f=>{
-        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing' })
+        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing', prompt: n.data?.landing_prompt||landingCopyPrompt, image_urls: cdnUrls })
         const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
         const next = { nodes:[...f.nodes, ln], edges }
         flowRef.current = next
         landingNodeId = ln.id
         return next
       })
-      if(landingNodeId){ updateNodeRun(landingNodeId, { status:'success', output:{ url: page.page_url||null } }) }
+      if(landingNodeId){
+        updateNodeRun(landingNodeId, {
+          status:'success',
+          output:{
+            url: page.page_url||null,
+            prompt: n.data?.landing_prompt||landingCopyPrompt,
+            image_urls: cdnUrls,
+            landing_copy: lc,
+          }
+        })
+      }
       let metaNodeId:string|undefined
       setFlow(f=>{
         const mn = makeNode('action', n.x+600, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
@@ -618,7 +628,7 @@ function StudioPage(){
         const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors }, page_url: page.page_url, creatives: [] })
         if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
       }
-      updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, page_url: page.page_url||null } })
+      updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
