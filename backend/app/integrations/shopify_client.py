@@ -1,5 +1,5 @@
 import os, requests, base64
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -63,7 +63,7 @@ mutation UpdateProduct($input: ProductInput!) {
 }
 """
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _gql(query: str, variables: dict):
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
@@ -78,11 +78,11 @@ def _gql(query: str, variables: dict):
     r.raise_for_status()
     j = r.json()
     if "errors" in j:
-        raise RuntimeError(j["errors"])
+        raise RuntimeError(f"GraphQL errors: {j['errors']}")
     data = j.get("data")
     ue = (data or {}).get("productCreate", {}).get("userErrors") or (data or {}).get("pageCreate", {}).get("userErrors")
     if ue:
-        raise RuntimeError(ue)
+        raise RuntimeError(f"GraphQL userErrors: {ue}")
     return data
 
 
@@ -599,8 +599,9 @@ def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] 
     page_in = {
         "title": f"{title} – Offer",
         "handle": handle,
-        "templateSuffix": "product_test",
-        "isPublished": True,
+        # GraphQL PageCreateInput uses 'published' (not 'isPublished').
+        # Set template via admin after creation if needed.
+        "published": True,
         "body": body_html,
     }
     try:
