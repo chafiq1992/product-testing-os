@@ -685,7 +685,7 @@ function StudioPage(){
         await wait(600)
         updateNodeRun(nodeId, { status:'success', output:{ waited_minutes: mins } })
       }
-      const outs = flow.edges.filter(e=>e.from===nodeId)
+      const outs = (flowRef.current.edges||[]).filter(e=>e.from===nodeId)
       for(const edge of outs){ await visit(edge.to, bag) }
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error: String(err?.message||err) })
@@ -715,6 +715,36 @@ function StudioPage(){
         return next
       })
       return { count: (res.angles||[]).length }
+    }
+    if(type==='angle_variant'){
+      // Auto-generate title & description and auto-approve by creating the next node
+      let urls = uploadedUrls
+      try{
+        if((files||[]).length>0 && !urls){
+          const up = await uploadImages(files)
+          urls = up.urls||[]
+          setUploadedUrls(urls)
+        }
+      }catch{}
+      const prompt = String(node.data?.prompt||titleDescPrompt)
+      const out = await llmTitleDescription({
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
+        angle: node.data?.angle,
+        prompt,
+        model,
+        image_urls: (urls||[]).slice(0,1)
+      })
+      // Auto-approve and create Title & Description node
+      setFlow(f=>{
+        const nodes = f.nodes.map(x=> x.id===node.id? ({...x, data:{...x.data, approved:true}}) : x)
+        const base = nodes.find(x=> x.id===node.id)!
+        const td = makeNode('action', base.x+300, base.y, { label:'Title & Description', type:'title_desc', value:{ title: out.title, description: out.description }, landingPrompt:'Generate a concise landing page section (headline, subheadline, 2-3 bullets) based on the title and description.' })
+        const edges = [...f.edges, makeEdge(node.id, 'out', td.id, 'in')]
+        const next = { nodes:[...nodes, td], edges }
+        flowRef.current = next
+        return next
+      })
+      return out
     }
     if(type==='launch_test'){
       let targeting: any = undefined
