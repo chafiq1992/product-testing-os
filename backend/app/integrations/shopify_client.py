@@ -529,25 +529,13 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
 
 
 def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:
-    # If a full HTML body is provided, use it verbatim for the page body
-    html_override = (landing_copy or {}).get("html") if landing_copy else None
-    if html_override:
-        body = str(html_override)
-        # Ensure at least some product images are visible: append a small gallery
-        # using up to two provided image URLs (prefer Shopify CDN URLs when supplied).
-        req = requested_images or []
-        if req:
-            selected = req[:2]
-            alts = alt_texts or []
-            imgs = []
-            for idx, url in enumerate(selected):
-                alt = (alts[idx] if (alts and idx < len(alts)) else title)
-                imgs.append(
-                    f"<img src=\"{url}\" alt=\"{alt}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>"
-                )
-            if imgs:
-                body += "<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">" + "".join(imgs) + "</div>"
-        return body
+    """Build final page HTML ensuring that only provided images are embedded.
+
+    Preference order:
+    1) If structured sections are provided, render them and map images from requested_images by index.
+    2) Otherwise, if model provided an HTML blob, strip any <img> tags and append a gallery of provided images (up to 10).
+    3) Fallback to a simple gallery if nothing else is available.
+    """
     sections = (landing_copy or {}).get("sections") or []
     headline = (landing_copy or {}).get("headline") or title
     subheadline = (landing_copy or {}).get("subheadline") or ""
@@ -568,7 +556,7 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
             elif effective_images:
                 img_url = effective_images[idx % len(effective_images)]
             else:
-                img_url = specified_img
+                img_url = ""
             alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
             img_tag = (
                 f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
@@ -582,11 +570,19 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
                 + "</section>"
             )
     else:
-        desc_html = (landing_copy or {}).get("html") or ""
-        body_parts.append(desc_html)
-        effective_images = requested_images or []
+        # No sections structured. Use model HTML if provided, but strip any <img ...> tags
+        html_override = (landing_copy or {}).get("html") if landing_copy else None
+        if html_override:
+            import re
+            # Remove all image tags to avoid leaking non-provided URLs
+            desc_html = re.sub(r"<img\b[^>]*>", "", str(html_override), flags=re.IGNORECASE)
+            body_parts.append(desc_html)
+        effective_images = (requested_images or [])[:10]
         if effective_images:
-            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in effective_images])
+            gallery = "".join([
+                f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>"
+                for u in effective_images
+            ])
             body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
     return "".join(body_parts)
 

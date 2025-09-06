@@ -593,9 +593,29 @@ function StudioPage(){
       // Deduplicate
       cdnUrls = Array.from(new Set(cdnUrls))
       // Generate landing copy with selected images
-      const lc = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
-      if(product_gid && lc?.html){
-        await shopifyUpdateDescription({ product_gid, description_html: lc.html })
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
+      // Sanitize landing copy to ensure only provided CDN URLs are referenced
+      const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
+        const imgs = (urls||[]).filter(Boolean).slice(0,10)
+        const sections = Array.isArray(base?.sections)? base.sections : []
+        const outSections = sections.map((sec:any, idx:number)=> ({
+          ...sec,
+          image_url: imgs[idx % Math.max(imgs.length,1)] || null,
+          image_alt: sec?.image_alt || titleText
+        }))
+        const hasHeroIdx = outSections.findIndex((s:any)=> s?.id==='hero')
+        if(hasHeroIdx>=0){ outSections[hasHeroIdx].image_url = imgs[0] || null }
+        return {
+          ...base,
+          sections: outSections,
+          assets_used: { ...(base?.assets_used||{}), hero: imgs[0]||null, feature_gallery: imgs }
+        }
+      }
+      const lc = sanitizeLandingCopy(lcRaw, cdnUrls, vTitle)
+      // Update product description with a compact gallery of selected images only
+      if(product_gid){
+        const desc = cdnUrls.map(u=> `<img src="${u}" loading="lazy" style="width:100%;max-width:320px;margin:8px;border-radius:8px;"/>`).join('')
+        await shopifyUpdateDescription({ product_gid, description_html: desc })
       }
       // Create landing page
       const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: cdnUrls })
@@ -1327,12 +1347,15 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
   const out = node.run?.output||{}
   const t = traceForNode(node, latestTrace)
   let images:string[] = []
+  const isGallery = node.data?.type==='image_gallery'
   if(node.data?.type==='gemini_ad_images'){
     images = Array.isArray(out?.images)? out.images : []
   }else if(node.data?.type==='gemini_variant_set'){
     try{ images = (Array.isArray(out?.items)? out.items : []).map((it:any)=> it?.image).filter(Boolean) }catch{ images=[] }
   }else if(node.data?.type==='gemini_feature_benefit_set'){
     try{ images = (Array.isArray(out?.items)? out.items : []).map((it:any)=> it?.image).filter(Boolean) }catch{ images=[] }
+  }else if(isGallery){
+    try{ images = (Array.isArray(out?.images)? out.images : []).filter(Boolean) }catch{ images=[] }
   }
 
   async function onUploadSelected(){
@@ -1393,29 +1416,35 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
           <div className="text-slate-500 mb-1">Output images</div>
           <div className="grid grid-cols-2 gap-2">
             {images.map((u,i)=> (
-              <div key={i} className={`relative border rounded p-1 ${selectedUrls[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
-                <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
-                  <input type="checkbox" checked={!!selectedUrls[u]} onChange={()=> toggleSelect(u)} />
-                </label>
+              <div key={i} className={`relative border rounded p-1 ${(!isGallery && selectedUrls[u])? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                {!isGallery && (
+                  <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
+                    <input type="checkbox" checked={!!selectedUrls[u]} onChange={()=> toggleSelect(u)} />
+                  </label>
+                )}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
               </div>
             ))}
           </div>
-          <div className="mt-2 space-y-1">
-            <div className="text-[11px] text-slate-500">Shopify product GID</div>
-            <input className="w-full rounded-xl border px-3 py-2" placeholder="gid://shopify/Product/1234567890" value={productGid} onChange={e=>setProductGid(e.target.value)} />
-            <div className="flex justify-end">
-              <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white disabled:opacity-60" onClick={onUploadSelected} disabled={!productGid || !Object.values(selectedUrls).some(Boolean)}>Upload selected to Shopify</button>
+          {!isGallery && (
+            <div className="mt-2 space-y-1">
+              <div className="text-[11px] text-slate-500">Shopify product GID</div>
+              <input className="w-full rounded-xl border px-3 py-2" placeholder="gid://shopify/Product/1234567890" value={productGid} onChange={e=>setProductGid(e.target.value)} />
+              <div className="flex justify-end">
+                <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white disabled:opacity-60" onClick={onUploadSelected} disabled={!productGid || !Object.values(selectedUrls).some(Boolean)}>Upload selected to Shopify</button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : (
-        node.run?.output && (
+        (node.run?.output && !isGallery) ? (
           <div>
             <div className="text-slate-500 mb-1">Results</div>
             <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.run.output,null,2)}</pre>
           </div>
+        ) : (
+          isGallery ? <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div> : null
         )
       )}
 
