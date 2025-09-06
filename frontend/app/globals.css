@@ -12,5 +12,5 @@ body{background:linear-gradient(180deg,#0b1020 0%,#0e1228 100%);color:#e6e8ef}
 
 /* Flow edge animation */
 .edge{stroke:#cbd5e1}
-.edge-active{stroke:#60a5fa;stroke-dasharray:8 8;animation:edge-dash 1s linear infinite}
+.edge-active{stroke:#3b82f6;stroke-dasharray:10 10;animation:edge-dash 0.8s linear infinite;filter:drop-shadow(0 0 2px rgba(59,130,246,0.5))}
 @keyframes edge-dash{to{stroke-dashoffset:-16}}

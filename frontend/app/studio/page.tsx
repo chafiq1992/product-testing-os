@@ -127,17 +127,7 @@ function StudioPage(){
     })()
   },[testParam])
 
-  type RunHistoryEntry = {
-    id:string,
-    time:string,
-    inputs:{ audience:string, title:string, price:number|'', benefits:string[], pains:string[], files:string[] },
-    nodes:Array<{ id:string, type:NodeType, data:any, run:RunState }>,
-    edges:FlowEdge[],
-    log:{time:string,level:'info'|'error',msg:string,nodeId?:string}[]
-  }
-  const [history,setHistory]=useState<RunHistoryEntry[]>([])
-  useEffect(()=>{ try{ const raw=localStorage.getItem('flow_history'); if(raw){ setHistory(JSON.parse(raw)) } }catch{} },[])
-  function saveHistory(entry:RunHistoryEntry){ const next=[entry, ...history].slice(0,20); setHistory(next); try{ localStorage.setItem('flow_history', JSON.stringify(next)) }catch{} }
+  // History removed for performance and simplicity
 
   const [audience,setAudience]=useState('Parents of toddlers in Morocco')
   const [title,setTitle]=useState('')
@@ -669,15 +659,7 @@ function StudioPage(){
     await visit(start.id, { refs:{} })
     setRunning(false)
     const snap = flowRef.current
-    const entry:RunHistoryEntry = {
-      id: `r${Date.now()}`,
-      time: now(),
-      inputs: { audience, title, price, benefits, pains, files: files.map(f=>f.name) },
-      nodes: snap.nodes.map(n=> ({ id:n.id, type:n.type, data:n.data, run:n.run })),
-      edges: snap.edges,
-      log: runLog,
-    }
-    saveHistory(entry)
+    // history disabled
   }
 
   async function visit(nodeId:string, bag:any){
@@ -962,7 +944,7 @@ function StudioPage(){
 
           <div ref={canvasRef} className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseDown={onCanvasMouseDown} onContextMenu={(e)=>e.preventDefault()}>
             <GridBackdrop/>
-            <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0'}}>
+            <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0', willChange:'transform'}}>
               {flow.edges.map(e=> (
                 <Edge key={e.id} edge={e} nodes={flow.nodes} active={running && activeNodeId===e.from} />
               ))}
@@ -1006,55 +988,7 @@ function StudioPage(){
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Run log</CardTitle></CardHeader>
-            <CardContent className="space-y-2 max-h-[280px] overflow-y-auto">
-              {runLog.length===0 && <div className="text-xs text-slate-500">No logs yet. Click <span className="font-medium">Run flow</span>.</div>}
-              {runLog.map((l,i)=> (
-                <div key={i} className="text-xs flex items-start gap-2">
-                  <span className={`mt-0.5 w-1.5 h-1.5 rounded-full ${l.level==='error'?'bg-rose-500':'bg-emerald-500'}`} />
-                  <div>
-                    <div className="text-slate-500">{new Date(l.time).toLocaleTimeString()} • <span className="font-mono">{l.nodeId}</span></div>
-                    <div className={l.level==='error'? 'text-rose-600':'text-slate-700'}>{l.msg}</div>
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Status</CardTitle></CardHeader>
-            <CardContent className="text-sm">
-              {testId && <div className="text-slate-600">Test <span className="font-mono">{testId}</span></div>}
-              {latestStatus && (
-                <div className="text-xs text-slate-500 mt-2 space-y-1">
-                  <div>Status: <span className="font-semibold">{latestStatus.status}</span></div>
-                  {latestStatus.page_url && (<div>Page: <a className="underline" href={latestStatus.page_url} target="_blank">{latestStatus.page_url}</a></div>)}
-                  {latestStatus.campaign_id && (<div>Meta campaign: <span className="font-mono">{latestStatus.campaign_id}</span></div>)}
-                  {latestStatus.status==='failed' && (<div className="text-rose-600">Failed: {String(latestStatus.error?.message||'Unknown error')}</div>)}
-                </div>
-              )}
-              {!latestStatus && <div className="text-xs text-slate-500">Ready.</div>}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">History</CardTitle></CardHeader>
-            <CardContent className="space-y-2 max-h-[240px] overflow-y-auto">
-              {history.length===0 && (<div className="text-xs text-slate-500">No runs yet.</div>)}
-              {history.map(h=> (
-                <details key={h.id} className="border rounded-lg p-2">
-                  <summary className="text-xs cursor-pointer text-slate-600">{new Date(h.time).toLocaleString()}</summary>
-                  <div className="mt-2 space-y-2 text-xs">
-                    <div className="text-slate-500">Inputs</div>
-                    <pre className="bg-slate-50 p-2 rounded overflow-x-auto">{JSON.stringify(h.inputs,null,2)}</pre>
-                    <div className="text-slate-500">Node results</div>
-                    <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[160px]">{JSON.stringify(h.nodes.map(n=>({id:n.id, type:n.type, label:n.data?.label||n.data?.type, run:n.run})),null,2)}</pre>
-                  </div>
-                </details>
-              ))}
-            </CardContent>
-          </Card>
+          {/* Simplified right sidebar: only Inspector remains */}
         </aside>
       </div>
 
@@ -1094,7 +1028,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
   return (
     <div className="absolute select-none" style={style} onMouseDown={(e)=>{ e.stopPropagation(); onMouseDown(e,node) }}>
-      <motion.div layout className={`rounded-2xl bg-white border ${ring} shadow ${glow} w-[260px]`}>
+      <motion.div className={`rounded-2xl bg-white border ${ring} shadow ${glow} w-[260px]`}>
         <div className="px-3 py-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Badge className="border border-blue-200 text-blue-700 bg-blue-50">{node.type==='trigger'?'Trigger':'Action'}</Badge>
@@ -1226,7 +1160,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
             <div className="grid grid-cols-2 gap-2">
               {imgs.map((u,i)=> (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img key={i} src={u} alt={`gemini-${i}`} className="w-full h-24 object-cover rounded border"/>
+                <img key={i} src={u} alt={`gemini-${i}`} className="w-full h-24 object-cover rounded border" loading="lazy"/>
               ))}
             </div>
           </div>
@@ -1287,7 +1221,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
               {items.map((it,i)=> (
                 <div key={i} className="border rounded p-1">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={it.image} alt={it.kind} className="w-full h-24 object-cover rounded"/>
+                  <img src={it.image} alt={it.kind} className="w-full h-24 object-cover rounded" loading="lazy"/>
                   <div className="text-[10px] mt-1 text-slate-600 truncate">{it.kind==='variant'? (it.name||'Variant') : 'Composite'}</div>
                 </div>
               ))}
@@ -1314,7 +1248,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
                     <input type="checkbox" checked={!!selected[u]} onChange={()=> onUpdateNode({ selected: { ...(node.data?.selected||{}), [u]: !selected[u] } })} />
                   </label>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={u} alt={`gal-${i}`} className="w-full h-24 object-cover rounded" />
+                  <img src={u} alt={`gal-${i}`} className="w-full h-24 object-cover rounded" loading="lazy" />
                 </div>
               ))}
             </div>
@@ -1419,7 +1353,7 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
             <div className="whitespace-pre-wrap"><span className="text-slate-500">style_prompt:</span> {String(node.data?.style_prompt||'')}</div>
           </div>
         )}
-        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set') && (
+        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery') && (
           <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
         )}
       </div>
@@ -1455,12 +1389,7 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
         )
       )}
 
-      {t && t.length>0 && (
-        <div>
-          <div className="text-slate-500 mb-1">Requests</div>
-          <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(t,null,2)}</pre>
-        </div>
-      )}
+      {/* Requests view removed to keep sidebar minimal and responsive */}
       {node.run?.error && (
         <div className="text-rose-600">{String(node.run.error)}</div>
       )}
@@ -1488,7 +1417,7 @@ function Edge({ edge, nodes, active }:{ edge:FlowEdge, nodes:FlowNode[], active:
   const d = makePath(x1,y1,x2,y2)
   return (
     <svg className="absolute overflow-visible pointer-events-none" style={{left:0, top:0}}>
-      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} />
+      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
   )
 }
