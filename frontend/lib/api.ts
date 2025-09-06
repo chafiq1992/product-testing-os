@@ -120,6 +120,26 @@ export async function metaLaunchFromPage(payload:{
   return data as { campaign_id?:string|null, error?:string }
 }
 
+export async function metaDraftImageCampaign(payload:{
+  headline: string,
+  primary_text: string,
+  description?: string,
+  image_url: string,
+  landing_url: string,
+  call_to_action?: string,
+  adset_budget?: number,
+  targeting?: any,
+  saved_audience_id?: string,
+  campaign_name?: string,
+  adset_name?: string,
+  ad_name?: string,
+  creative_name?: string,
+  title?: string
+}){
+  const {data} = await axios.post(`${base}/api/meta/draft_image_campaign`, payload)
+  return data as { campaign_id?: string, adsets?: { adset_id: string, ad_id: string, creative_id: string }[], requests?: any[], error?: string }
+}
+
 export async function uploadImages(files: File[]){
   const form = new FormData()
   for(const f of (files||[])) form.append('files', f)

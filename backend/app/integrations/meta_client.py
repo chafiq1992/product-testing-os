@@ -204,3 +204,121 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         })
 
     return results
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def create_draft_image_campaign(ad: dict) -> dict:
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    if not AD_ACCOUNT_ID:
+        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+    if not PAGE_ID:
+        raise RuntimeError("META_PAGE_ID is not set.")
+
+    requests_log = []
+
+    # Preflight: verify ad account is accessible by the token
+    _get(f"act_{AD_ACCOUNT_ID}", {"fields": "id,account_status,name"})
+
+    campaign_payload = {
+        "name": ad.get("campaign_name") or f"Test {ad.get('title','Product')}",
+        "objective": "OUTCOME_TRAFFIC" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OUTCOME_SALES",
+        "status": "PAUSED",
+        "buying_type": "AUCTION",
+        "special_ad_categories": ["NONE"],
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/campaigns", "payload": campaign_payload})
+    camp = _post(f"act_{AD_ACCOUNT_ID}/campaigns", campaign_payload)
+    requests_log[-1]["response"] = camp
+
+    results = {"campaign_id": camp["id"], "adsets": [], "requests": requests_log}
+
+    # Budget
+    try:
+        budget_major = float(ad.get("adset_budget", 9))
+    except Exception:
+        budget_major = 9.0
+    daily_budget_minor = max(100, int(round(budget_major * 100)))
+
+    # Targeting: allow saved audience or explicit geo
+    targeting_spec = ad.get("targeting")
+    saved_audience_id = ad.get("saved_audience_id")
+    if saved_audience_id and not targeting_spec:
+        targeting_spec = {"saved_audience_id": saved_audience_id}
+    if not targeting_spec:
+        targeting_spec = {"geo_locations": {"countries": COUNTRIES}}
+    targeting_json = json.dumps(targeting_spec) if not isinstance(targeting_spec, str) else targeting_spec
+
+    adset_payload = {
+        "name": ad.get("adset_name") or "Image AdSet",
+        "campaign_id": camp["id"],
+        "daily_budget": daily_budget_minor,
+        "status": "PAUSED",
+        "billing_event": "IMPRESSIONS",
+        "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OFFSITE_CONVERSIONS",
+        "targeting": targeting_json,
+    }
+    if OBJECTIVE in ("CONVERSIONS", "SALES"):
+        if not PIXEL_ID:
+            raise RuntimeError("META_PIXEL_ID is required for conversions objective.")
+        adset_payload["promoted_object"] = json.dumps({"pixel_id": PIXEL_ID, "custom_event_type": "PURCHASE"})
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adsets", "payload": adset_payload})
+    adset = _post(f"act_{AD_ACCOUNT_ID}/adsets", adset_payload)
+    requests_log[-1]["response"] = adset
+
+    image_url = ad.get("image_url")
+    if not image_url:
+        raise RuntimeError("image_url is required for image ad.")
+    landing_url = ad.get("landing_url")
+    if not landing_url:
+        raise RuntimeError("landing_url is required.")
+
+    image_hash = _upload_image(image_url)
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adimages", "payload": {"url": image_url}, "response": {"image_hash": image_hash}})
+
+    cta = (ad.get("call_to_action") or "SHOP_NOW").upper()
+    primary_text = ad.get("primary_text") or ad.get("text") or ""
+    headline = ad.get("headline") or ""
+    description = ad.get("description") or ""
+
+    story_spec = {
+        "page_id": PAGE_ID,
+        "link_data": {
+            "image_hash": image_hash,
+            "link": landing_url,
+            "message": primary_text,
+            "name": headline,
+            "description": description,
+            "call_to_action": {
+                "type": cta,
+                "value": {"link": landing_url},
+            },
+        },
+    }
+
+    creative_payload = {
+        "name": ad.get("creative_name") or "Image Ad Creative",
+        "object_story_spec": json.dumps(story_spec),
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adcreatives", "payload": creative_payload})
+    creative = _post(f"act_{AD_ACCOUNT_ID}/adcreatives", creative_payload)
+    requests_log[-1]["response"] = creative
+
+    ad_payload = {
+        "name": ad.get("ad_name") or "Image Ad",
+        "adset_id": adset["id"],
+        "creative": json.dumps({"creative_id": creative["id"]}),
+        "status": "PAUSED",
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/ads", "payload": ad_payload})
+    ad_obj = _post(f"act_{AD_ACCOUNT_ID}/ads", ad_payload)
+    requests_log[-1]["response"] = ad_obj
+
+    results["adsets"].append({
+        "adset_id": adset["id"],
+        "ad_id": ad_obj["id"],
+        "creative_id": creative["id"],
+    })
+    results["requests"] = requests_log
+    return results

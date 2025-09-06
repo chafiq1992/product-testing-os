@@ -16,6 +16,7 @@ from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
+from app.integrations.meta_client import create_draft_image_campaign
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR
 from app import db
@@ -641,8 +642,39 @@ class MetaLaunchRequest(BaseModel):
 async def api_meta_launch_from_page(req: MetaLaunchRequest):
     # For now delegate to existing helper
     try:
-        campaign = create_campaign_with_ads({"page_url": req.page_url, **req.product.model_dump()}, req.creatives or [])
-        return {"campaign_id": campaign.get("id") if isinstance(campaign, dict) else None}
+        # legacy path: no angles/creatives provided; we still create a paused campaign with no ads
+        campaign = create_campaign_with_ads({"page_url": req.page_url, **req.product.model_dump()}, [], req.creatives or [], req.page_url)
+        return {"campaign_id": (campaign or {}).get("campaign_id")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class MetaDraftImageCampaignRequest(BaseModel):
+    headline: str
+    primary_text: str
+    description: Optional[str] = None
+    image_url: str
+    landing_url: str
+    call_to_action: Optional[str] = "SHOP_NOW"
+    adset_budget: Optional[float] = 9.0
+    targeting: Optional[dict] = None
+    saved_audience_id: Optional[str] = None
+    campaign_name: Optional[str] = None
+    adset_name: Optional[str] = None
+    ad_name: Optional[str] = None
+    creative_name: Optional[str] = None
+    title: Optional[str] = None
+
+
+@app.post("/api/meta/draft_image_campaign")
+async def api_meta_draft_image_campaign(req: MetaDraftImageCampaignRequest):
+    try:
+        res = create_draft_image_campaign(req.model_dump())
+        return {
+            "campaign_id": res.get("campaign_id"),
+            "adsets": res.get("adsets"),
+            "requests": res.get("requests"),
+        }
     except Exception as e:
         return {"error": str(e)}
 

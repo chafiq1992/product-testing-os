@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaLaunchFromPage, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet } from '@/lib/api'
+import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -642,17 +642,28 @@ function StudioPage(){
       }
       let metaNodeId:string|undefined
       setFlow(f=>{
-        const mn = makeNode('action', n.x+600, n.y, { label:'Meta Ads', type:'meta_ads_launch' })
+        const defaults = {
+          label:'Meta Ads',
+          type:'meta_ads_launch',
+          headline: vTitle,
+          primary_text: vDesc || '',
+          description: '',
+          call_to_action: 'SHOP_NOW',
+          landing_url: page.page_url||'',
+          image_url: (cdnUrls||[])[0]||'',
+          candidate_images: cdnUrls||[],
+          adset_budget: adsetBudget===''? 9 : Number(adsetBudget),
+          advantage_plus: advantagePlus,
+          saved_audience_id: selectedSavedAudience||'',
+          countries: countries||[],
+        }
+        const mn = makeNode('action', n.x+600, n.y, defaults)
         const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
         const next = { nodes:[...f.nodes, mn], edges }
         flowRef.current = next
         metaNodeId = mn.id
         return next
       })
-      if(page.page_url){
-        const meta = await metaLaunchFromPage({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors }, page_url: page.page_url, creatives: [] })
-        if(metaNodeId){ updateNodeRun(metaNodeId, { status:'success', output:{ campaign_id: meta.campaign_id||null } }) }
-      }
       updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
@@ -870,12 +881,7 @@ function StudioPage(){
                   <Input type="number" value={price} onChange={e=> setPrice(e.target.value===''? '': Number(e.target.value))} placeholder="189" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <div className="text-xs text-slate-500 mb-1">Ad set daily budget (USD)</div>
-                  <Input type="number" min={1} value={adsetBudget} onChange={e=> setAdsetBudget(e.target.value===''? '': Number(e.target.value))} placeholder="9" />
-                </div>
-              </div>
+              {/* Budget moved to Meta Ads card */}
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <div className="text-xs text-slate-500 mb-1">Sizes (variants)</div>
@@ -945,33 +951,7 @@ function StudioPage(){
           </Card>
           )}
 
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base flex items-center gap-2"><Megaphone className="w-4 h-4"/>Meta targeting</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={advantagePlus} onChange={e=>setAdvantagePlus(e.target.checked)} />
-                <span>Advantage+ audience (let Meta expand targeting)</span>
-              </label>
-              {!advantagePlus && (
-                <div className="space-y-3">
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Saved audience</div>
-                    <select value={selectedSavedAudience} onChange={e=>setSelectedSavedAudience(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
-                      <option value="">None</option>
-                      {savedAudiences.map(a=> (<option key={a.id} value={a.id}>{a.name}</option>))}
-                    </select>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Countries (ISO codes, e.g., US, MA)</div>
-                    <TagsInput value={countries} onChange={setCountries} placeholder="Add country & Enter" />
-                  </div>
-                </div>
-              )}
-              <div className="text-[11px] text-slate-500">If both saved audience and countries are provided, the saved audience takes precedence.</div>
-            </CardContent>
-          </Card>
+          {/* Meta targeting moved to Meta Ads card */}
 
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">Flow settings</CardTitle></CardHeader>
@@ -1033,7 +1013,14 @@ function StudioPage(){
             <CardContent>
               {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
               {selectedNode && (
-                <InspectorContent node={selectedNode} latestTrace={(latestStatus as any)?.result?.trace||[]} onPreview={(url)=> setPreviewImage(url)} />
+                <InspectorContent
+                  node={selectedNode}
+                  latestTrace={(latestStatus as any)?.result?.trace||[]}
+                  onPreview={(url)=> setPreviewImage(url)}
+                  onUpdateNodeData={(id,patch)=> setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===id? ({...n, data:{...n.data, ...patch}}) : n)}))}
+                  onUpdateRun={(id,patch)=> updateNodeRun(id, patch)}
+                  savedAudiences={savedAudiences}
+                />
               )}
             </CardContent>
           </Card>
@@ -1341,7 +1328,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[] }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const out = node.run?.output||{}
@@ -1389,6 +1376,35 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
     return new File([blob], filename, { type })
   }
 
+  async function approveMetaCampaign(){
+    try{
+      onUpdateRun(node.id, { status:'running', startedAt: now() })
+      const payload:any = {
+        headline: String(node.data?.headline||''),
+        primary_text: String(node.data?.primary_text||''),
+        description: String(node.data?.description||''),
+        image_url: String(node.data?.image_url||''),
+        landing_url: String(node.data?.landing_url||''),
+        call_to_action: (String(node.data?.call_to_action||'SHOP_NOW')||'SHOP_NOW').toUpperCase(),
+        adset_budget: typeof node.data?.adset_budget==='number'? node.data.adset_budget : Number(node.data?.adset_budget||9),
+        title: String((node.data?.headline||'')||''),
+      }
+      // Targeting controls
+      const adv = !!node.data?.advantage_plus
+      const savedId = String(node.data?.saved_audience_id||'')
+      const countries = Array.isArray(node.data?.countries)? node.data.countries : []
+      if(!adv){
+        if(savedId){ payload.saved_audience_id = savedId }
+        else if(countries.length>0){ payload.targeting = { geo_locations: { countries: countries.map((c:string)=> String(c||'').toUpperCase()) } } }
+      }
+      const res = await metaDraftImageCampaign(payload)
+      if((res as any)?.error){ throw new Error((res as any).error) }
+      onUpdateRun(node.id, { status:'success', output:{ campaign_id: res.campaign_id||null, adsets: res.adsets||[], requests: res.requests||[] }, finishedAt: now(), ms: 1 })
+    }catch(e:any){
+      onUpdateRun(node.id, { status:'error', error: String(e?.message||e), finishedAt: now(), ms: 1 })
+    }
+  }
+
   return (
     <div className="text-xs space-y-3">
       <div className="text-slate-500">{node.data.label||node.data.type||node.type}</div>
@@ -1406,7 +1422,70 @@ function InspectorContent({ node, latestTrace, onPreview }:{ node:FlowNode, late
             <div className="whitespace-pre-wrap"><span className="text-slate-500">style_prompt:</span> {String(node.data?.style_prompt||'')}</div>
           </div>
         )}
-        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery') && (
+        {node.data?.type==='meta_ads_launch' && (
+          <div className="space-y-2">
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Primary text</div>
+              <Textarea rows={3} value={String(node.data?.primary_text||'')} onChange={e=> onUpdateNodeData(node.id,{ primary_text: e.target.value })} />
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Headline</div>
+              <Input value={String(node.data?.headline||'')} onChange={e=> onUpdateNodeData(node.id,{ headline: e.target.value })} />
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Description (optional)</div>
+              <Textarea rows={2} value={String(node.data?.description||'')} onChange={e=> onUpdateNodeData(node.id,{ description: e.target.value })} />
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Landing URL</div>
+              <Input value={String(node.data?.landing_url||'')} onChange={e=> onUpdateNodeData(node.id,{ landing_url: e.target.value })} />
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">CTA</div>
+              <select value={String(node.data?.call_to_action||'SHOP_NOW')} onChange={e=> onUpdateNodeData(node.id,{ call_to_action: e.target.value })} className="w-full rounded-xl border px-3 py-2">
+                {['SHOP_NOW','LEARN_MORE','SIGN_UP','SUBSCRIBE','GET_OFFER','BUY_NOW','CONTACT_US'].map(x=> (<option key={x} value={x}>{x.replaceAll('_',' ')}</option>))}
+              </select>
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Ad image</div>
+              <select value={String(node.data?.image_url||'')} onChange={e=> onUpdateNodeData(node.id,{ image_url: e.target.value })} className="w-full rounded-xl border px-3 py-2">
+                <option value="">Select image…</option>
+                {(Array.isArray(node.data?.candidate_images)? node.data.candidate_images : []).map((u:string,i:number)=> (<option key={i} value={u}>{u}</option>))}
+              </select>
+            </div>
+            <Separator/>
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Ad set daily budget (USD)</div>
+              <Input type="number" min={1} value={String(node.data?.adset_budget||9)} onChange={e=> onUpdateNodeData(node.id,{ adset_budget: (e.target.value===''? 9 : Number(e.target.value)) })} placeholder="9" />
+            </div>
+            <div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={!!node.data?.advantage_plus} onChange={e=> onUpdateNodeData(node.id,{ advantage_plus: e.target.checked })} />
+                <span>Advantage+ audience (let Meta expand targeting)</span>
+              </label>
+            </div>
+            {!node.data?.advantage_plus && (
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Saved audience</div>
+                  <select value={String(node.data?.saved_audience_id||'')} onChange={e=> onUpdateNodeData(node.id,{ saved_audience_id: e.target.value })} className="w-full rounded-xl border px-3 py-2">
+                    <option value="">None</option>
+                    {savedAudiences.map(a=> (<option key={a.id} value={a.id}>{a.name}</option>))}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Countries (ISO codes, e.g., US, MA)</div>
+                  <TagsInput value={Array.isArray(node.data?.countries)? node.data.countries : []} onChange={(vals)=> onUpdateNodeData(node.id,{ countries: vals })} placeholder="Add country & Enter" />
+                </div>
+                <div className="text-[11px] text-slate-500">If both saved audience and countries are provided, the saved audience takes precedence.</div>
+              </div>
+            )}
+            <div className="flex justify-end">
+              <Button size="sm" onClick={approveMetaCampaign} disabled={node.run?.status==='running'}>Approve & Create Draft</Button>
+            </div>
+          </div>
+        )}
+        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch') && (
           <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
         )}
       </div>
