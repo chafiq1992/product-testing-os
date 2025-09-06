@@ -690,8 +690,8 @@ function StudioPage(){
         const result = await executeAction(node, bag)
         updateNodeRun(nodeId, { status:'success', output: result })
         log('info', `✓ ${node.data.label||node.data.type} → done`, nodeId)
-        if(node.data?.type==='generate_angles'){
-          log('info', 'Waiting for angle approval…', nodeId)
+        if(node.data?.type==='image_gallery'){
+          log('info', 'Waiting for image selection…', nodeId)
           setRunning(false)
           return
         }
