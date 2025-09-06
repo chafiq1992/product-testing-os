@@ -330,17 +330,21 @@ class GeminiAdImageRequest(BaseModel):
     image_url: str
     prompt: str
     num_images: Optional[int] = 1
+    # When true (default), enforce a clean neutral studio background. When false, allow natural scenes.
+    neutral_background: Optional[bool] = True
 
 
 @app.post("/api/gemini/ad_image")
 async def api_gemini_ad_image(req: GeminiAdImageRequest):
     try:
-        # Enforce background replacement policy on all ad-image prompts
-        bg_rule = (
-            " Always replace the original background with a new clean neutral studio backdrop. "
-            "Never reuse the background from any provided or source images."
-        )
-        prompt = (req.prompt or "").strip() + bg_rule
+        # Optionally enforce background replacement policy on ad-image prompts
+        prompt = (req.prompt or "").strip()
+        if req.neutral_background is None or bool(req.neutral_background):
+            bg_rule = (
+                " Always replace the original background with a new clean neutral studio backdrop. "
+                "Never reuse the background from any provided or source images."
+            )
+            prompt = prompt + bg_rule
         imgs = gen_ad_images_from_image(req.image_url, prompt, req.num_images or 1)
         return {"images": imgs, "prompt": prompt, "input_image_url": req.image_url}
     except Exception as e:

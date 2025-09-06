@@ -432,10 +432,27 @@ function StudioPage(){
           let geminiNodeId:string|undefined
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-            const gn = makeNode('action', imgNode.x, (imgNode.y+140), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl })
+            const gn = makeNode('action', imgNode.x, (imgNode.y+140), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl, neutral_background: true })
             const next = { nodes:[...f.nodes, gn], edges: f.edges }
             flowRef.current = next
             geminiNodeId = gn.id
+            return next
+          })
+          // Add a second Ad Images node with a specialized natural/street scene prompt appealing to parents
+          setFlow(f=>{
+            const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
+            const promptStreet = (
+              "Create a hyper‑realistic, attention‑grabbing ecommerce ad image derived ONLY from the provided product photo.\n"
+              + "Subject: a stylish teenage boy in an elegant pose, wearing these shoes.\n"
+              + "Environment: natural, outdoors on a suburban sidewalk or city street; believable daylight or golden hour.\n"
+              + "Composition: keep strong focus on the shoes; showcase their elegance and attractiveness; subtle depth of field; dynamic but tasteful framing.\n"
+              + "Appeal: designed to attract parents while remaining authentic for teens.\n"
+              + "Constraints: do NOT change product identity (materials, colors, shape, branding); no added text or logos; no extra props; photorealistic lighting and skin tones."
+            )
+            const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false })
+            const next = { nodes:[...f.nodes, gn2], edges: f.edges }
+            flowRef.current = next
+            geminiNodeId = gn2.id
             return next
           })
           // Add a Feature/Benefit Close-ups node below the Ad Images node
@@ -527,7 +544,7 @@ function StudioPage(){
             adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
           }
         }catch{}
-        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4 })
+        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4, neutral_background: (n.data?.neutral_background===false? false : true) })
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
         try{
