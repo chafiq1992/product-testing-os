@@ -329,7 +329,17 @@ function StudioPage(){
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const flowSnap = { nodes: flowRef.current.nodes, edges: flowRef.current.edges }
+      // Compact flow snapshot to avoid oversized payloads (413)
+      const slimNodes = flowRef.current.nodes.map(n=> ({
+        id: n.id,
+        type: n.type,
+        x: n.x,
+        y: n.y,
+        data: n.data,
+        // reset run to a lightweight default; outputs can be regenerated
+        run: { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
+      }))
+      const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
       const uiSnap = { pan, zoom, selected }
       let targeting: any = undefined
       if(!advantagePlus){
