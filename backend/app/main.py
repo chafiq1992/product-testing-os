@@ -22,6 +22,7 @@ from app.integrations.meta_client import create_draft_image_campaign
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR
 from app import db
+import re
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
@@ -157,130 +158,70 @@ async def create_test(
 
 
 @app.get("/api/tests/{test_id}")
-async def get_test(test_id: str):
+async def get_test(test_id: str, slim: bool | None = False):
     t = db.get_test(test_id)
     if not t:
         return {"error": "not_found"}
+    if slim:
+        # Return only minimal fields needed for Studio hydration
+        return {
+            "id": t.get("id"),
+            "status": t.get("status"),
+            "page_url": t.get("page_url"),
+            "created_at": t.get("created_at"),
+            "payload": t.get("payload"),
+        }
     return t
 
 
 @app.get("/api/tests")
 async def list_tests(limit: int | None = None):
     try:
-        items = db.list_tests(limit=limit)
-        # For cards, only surface Shopify-hosted images to ensure consistency
-        def pick_shopify(urls: list[str] | None) -> str | None:
-            try:
-                for u in (urls or []):
-                    if isinstance(u, str) and "cdn.shopify.com" in u:
-                        return u
-            except Exception:
-                return None
-            return None
+        # Cap and default limit to keep payload small and fast
+        eff_limit = min(max(limit or 48, 1), 100)
+        items = db.list_tests_light(limit=eff_limit)
 
-        def pick_any(urls: list[str] | None) -> str | None:
-            try:
-                for u in (urls or []):
-                    # Accept regular http(s) URLs and data URLs (Gemini inline)
-                    if isinstance(u, str) and (u.startswith("http") or u.startswith("data:")):
-                        return u
-            except Exception:
-                return None
-            return None
-
-        def pick_from_flow(payload: dict | None) -> str | None:
-            try:
-                flow = (payload or {}).get("flow") or {}
-                nodes = (flow or {}).get("nodes") or []
-                for n in nodes:
-                    try:
-                        data = (n or {}).get("data") or {}
-                        run = (n or {}).get("run") or {}
-                        out = (run or {}).get("output") or {}
-
-                        # Upload Images node → prefer Shopify CDN
-                        if (data.get("type") or "").strip() == "upload_images":
-                            image = pick_shopify(out.get("images_shopify") or [])
-                            if image:
-                                return image
-                            shop_imgs = out.get("shopify_images") or []
-                            if isinstance(shop_imgs, list):
-                                for si in shop_imgs:
-                                    src = (si or {}).get("src")
-                                    if isinstance(src, str) and "cdn.shopify.com" in src:
-                                        return src
-                            cdn = out.get("cdn_urls") or []
-                            image = pick_shopify(cdn) or pick_any(cdn)
-                            if image:
-                                return image
-                            generic = out.get("images") or out.get("urls") or []
-                            image = pick_shopify(generic) or pick_any(generic)
-                            if image:
-                                return image
-
-                        # Image gallery → any images (allow data:)
-                        if (data.get("type") or "").strip() == "image_gallery":
-                            generic = out.get("images") or []
-                            image = pick_shopify(generic) or pick_any(generic)
-                            if image:
-                                return image
-
-                        # Gemini nodes → allow data: images
-                        dtype = (data.get("type") or "").strip()
-                        if dtype == "gemini_ad_images":
-                            generic = out.get("images") or []
-                            image = pick_shopify(generic) or pick_any(generic)
-                            if image:
-                                return image
-                        if dtype in ("gemini_variant_set", "gemini_feature_benefit_set"):
-                            items = out.get("items") or []
-                            if isinstance(items, list):
-                                for it in items:
-                                    u = (it or {}).get("image")
-                                    if isinstance(u, str) and ("cdn.shopify.com" in u or u.startswith("http") or u.startswith("data:")):
-                                        return u
-                    except Exception:
-                        continue
-            except Exception:
-                return None
-            return None
+        # Quick regex to find first Shopify CDN image URL without parsing large JSON
+        shopify_re = re.compile(r"https://cdn\\.shopify\\.com[^\s\"']+", re.IGNORECASE)
 
         slim: list[dict] = []
         for it in items:
-            image = None
+            image: str | None = None
             try:
-                page = (it.get("result") or {}).get("page") or {}
-                # page.image_urls is populated with Shopify CDN URLs after product/page creation
-                imgs = (page.get("image_urls") or []) if isinstance(page, dict) else []
-                image = pick_shopify(imgs)
+                rj = it.get("result_json") or ""
+                m = shopify_re.search(rj)
+                if m:
+                    image = m.group(0)
             except Exception:
                 image = None
+            # If not found in result, try payload (e.g., saved flow nodes)
             if not image:
                 try:
-                    creatives = (it.get("result") or {}).get("creatives") or []
-                    creative_urls = [(c or {}).get("image_url") for c in creatives if (c or {}).get("image_url")]
-                    image = pick_shopify(creative_urls)
+                    pj = it.get("payload_json") or ""
+                    m2 = shopify_re.search(pj)
+                    if m2:
+                        image = m2.group(0)
                 except Exception:
                     image = None
-            if not image:
-                try:
-                    payload = it.get("payload") or {}
-                    # Try to extract from saved flow run outputs (Upload Images to Product)
-                    image = pick_from_flow(payload) or image
-                    uploaded = (payload.get("uploaded_images") or [])
-                    if not image:
-                        image = pick_shopify(uploaded) or pick_any(uploaded)
-                except Exception:
-                    image = None
-            # Build slim item to keep response small for homepage
-            p = (it.get("payload") or {})
+
+            # Extract only the minimal title from payload
+            title_only = None
+            try:
+                p_raw = it.get("payload_json")
+                if p_raw:
+                    p = json.loads(p_raw)
+                    if isinstance(p, dict):
+                        title_only = {"title": p.get("title")}
+            except Exception:
+                title_only = None
+
             slim.append({
                 "id": it.get("id"),
                 "status": it.get("status"),
                 "page_url": it.get("page_url"),
                 "created_at": it.get("created_at"),
-                # Only include the title to avoid shipping huge payloads
-                "payload": {"title": p.get("title")} if isinstance(p, dict) else None,
+                "payload": title_only,
+                # Only expose Shopify-hosted images; never local uploads
                 "card_image": image,
             })
         return {"data": slim}

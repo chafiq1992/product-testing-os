@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, geminiSuggestPrompts } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, geminiSuggestPrompts } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -132,7 +132,7 @@ function StudioPage(){
           }
         }catch{}
         // 2) Fetch authoritative payload from API in background
-        const t = await getTest(testParam)
+        const t = await getTestSlim(testParam)
         const p = (t as any)?.payload||{}
         hydrateFromPayload(p)
         setTestId((t as any)?.id)

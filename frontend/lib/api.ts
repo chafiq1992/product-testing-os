@@ -27,6 +27,11 @@ export async function getTest(id: string){
   return data as { id:string, status:string, page_url?:string|null, campaign_id?:string|null, error?:any|null, payload?:any|null, result?:any|null }
 }
 
+export async function getTestSlim(id: string){
+  const {data} = await axios.get(`${base}/api/tests/${id}?slim=1`)
+  return data as { id:string, status:string, page_url?:string|null, payload?:any|null, created_at?:string }
+}
+
 export async function listTests(limit?: number){
   const q = typeof limit==='number'? `?limit=${limit}` : ''
   const {data} = await axios.get(`${base}/api/tests${q}`)

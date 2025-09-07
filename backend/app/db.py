@@ -152,6 +152,28 @@ def list_tests(limit: int | None = None) -> list[Dict[str, Any]]:
         return out
 
 
+def list_tests_light(limit: int | None = None) -> list[Dict[str, Any]]:
+    with SessionLocal() as session:
+        q = session.query(Test.id, Test.status, Test.page_url, Test.campaign_id, Test.payload_json, Test.result_json, Test.created_at, Test.updated_at).order_by(desc(Test.created_at))
+        if limit:
+            q = q.limit(limit)
+        rows = q.all()
+        out: list[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "status": r.status,
+                "page_url": r.page_url,
+                "campaign_id": r.campaign_id,
+                # Return raw JSON strings to avoid eager parsing; caller can parse minimally
+                "payload_json": r.payload_json,
+                "result_json": r.result_json,
+                "created_at": r.created_at.isoformat() + "Z",
+                "updated_at": r.updated_at.isoformat() + "Z",
+            })
+        return out
+
+
 def update_test_payload(test_id: str, payload: Dict[str, Any]) -> bool:
     with SessionLocal() as session:
         t = session.get(Test, test_id)
