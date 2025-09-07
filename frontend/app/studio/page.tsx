@@ -1139,6 +1139,13 @@ function StudioPage(){
                   onUpdateNodeData={(id,patch)=> setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===id? ({...n, data:{...n.data, ...patch}}) : n)}))}
                   onUpdateRun={(id,patch)=> updateNodeRun(id, patch)}
                   savedAudiences={savedAudiences}
+                  onAngleGenerate={(id)=> angleGenerate(id)}
+                  onAngleApprove={(id)=> angleApprove(id)}
+                  onTitleContinue={(id)=> titleContinue(id)}
+                  onGeminiGenerate={(id)=> geminiGenerate(id)}
+                  onSuggestPrompts={(id)=> suggestPrompts(id)}
+                  onApplyAdPrompt={(id)=> applyAdPromptFromSuggester(id)}
+                  onGalleryApprove={(id)=> galleryApprove(id)}
                 />
               )}
             </CardContent>
@@ -1184,7 +1191,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
   return (
     <div className="absolute select-none" style={style} onMouseDown={(e)=>{ e.stopPropagation(); onMouseDown(e,node) }}>
-      <motion.div className={`rounded-2xl bg-white border ${ring} shadow ${glow} w-[260px]`}>
+      <motion.div className={`rounded-2xl bg-white border ${ring} shadow ${glow} w-[220px]`}>
         <div className="px-3 py-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Badge className="border border-blue-200 text-blue-700 bg-blue-50">{node.type==='trigger'?'Trigger':'Action'}</Badge>
@@ -1212,279 +1219,86 @@ function statusColor(s:RunState['status']){
 }
 
 function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void){
+  // Minimal card content: headline only
   if(node.type==='trigger'){
     return (
-      <div className="space-y-1 text-xs">
-        <div className="text-slate-500">{node.data.topic}</div>
-        <div className="text-slate-500">Start when product input is ready.</div>
-        {payload && (
-          <details className="text-xs mt-1" open={expanded}>
-            <summary className="cursor-pointer text-slate-500">Inputs</summary>
-            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(payload,null,2)}</pre>
-          </details>
-        )}
+      <div className="text-xs text-slate-600">
+        {String(node.data?.topic||'start')}
       </div>
     )
   }
-  const t = traceForNode(node, trace)
-  if(node.data?.type==='generate_angles'){
+  const out = node.run?.output
+  const type = node.data?.type
+  if(type==='generate_angles'){
+    const count = typeof out?.count==='number'? out.count : undefined
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label}</div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Angles to generate</div>
-          <Input type="number" min={1} max={5} value={String(node.data.numAngles||2)} onChange={e=> onUpdateNode({numAngles: Math.max(1, Math.min(5, Number(e.target.value)||2))})} />
-        </div>
-        {node.run?.output && (
-          <details className="text-xs mt-1" open={expanded}>
-            <summary className="cursor-pointer text-slate-500">Results</summary>
-            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
-          </details>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Generate Angles'}
+        <div className="text-[11px] text-slate-500">{count!=null? `Generated: ${count}` : `To generate: ${String(node.data?.numAngles||2)}`}</div>
       </div>
     )
   }
-  if(node.data?.type==='angle_variant'){
-    const a = node.data?.angle
+  if(type==='angle_variant'){
+    const title = out?.title
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label}</div>
-        <details className="text-xs" open={expanded}>
-          <summary className="cursor-pointer text-slate-500">Angle</summary>
-          <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(a,null,2)}</pre>
-        </details>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Prompt for title + description</div>
-          <Textarea rows={3} value={node.data?.prompt||''} onChange={e=> onUpdateNode({prompt: e.target.value})} />
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)}>Generate</Button>
-          <Button size="sm" variant={node.data?.approved? 'outline':'default'} disabled={!node.run?.output || !!node.data?.approved} onClick={()=> onAngleApprove(node.id)}>
-            {node.data?.approved? 'Approved' : 'Approve'}
-          </Button>
-        </div>
-        {node.run?.output && (
-          <details className="text-xs mt-1" open={expanded}>
-            <summary className="cursor-pointer text-slate-500">Title & description</summary>
-            <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
-          </details>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Angle'}
+        <div className="text-[11px] text-slate-500 truncate">{title? String(title) : 'No title yet'}</div>
       </div>
     )
   }
-  if(node.data?.type==='title_desc'){
+  if(type==='title_desc'){
     const v = node.data?.value||{}
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Title & Description'}</div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Title</div>
-          <div className="font-medium text-slate-800">{v.title||'-'}</div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Description</div>
-          <div className="text-slate-700">{v.description||'-'}</div>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Prompt for landing page</div>
-          <Textarea rows={4} value={node.data?.landingPrompt||''} onChange={e=> onUpdateNode({landingPrompt:e.target.value})} />
-        </div>
-        <div className="flex justify-end">
-          <Button size="sm" onClick={()=> onTitleContinue(node.id)}>Continue</Button>
-        </div>
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Title & Description'}
+        <div className="text-[11px] text-slate-500 truncate">{v?.title? String(v.title) : '-'}</div>
       </div>
     )
   }
-  if(node.data?.type==='gemini_ad_images'){
-    const out = node.run?.output||{}
+  if(type==='gemini_ad_images'){
     const imgs: string[] = Array.isArray(out?.images)? out.images : []
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Gemini Ad Images'}</div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
-          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Prompt</div>
-          <div className="text-slate-700 whitespace-pre-wrap">{node.data?.prompt||'-'}</div>
-        </div>
-        {imgs.length>0 && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Results</div>
-            <div className="grid grid-cols-2 gap-2">
-              {imgs.map((u,i)=> (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img key={i} src={u} alt={`gemini-${i}`} className="w-full h-24 object-cover rounded border" loading="lazy"/>
-              ))}
-            </div>
-          </div>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Gemini Ad Images'}
+        <div className="text-[11px] text-slate-500">Images: {imgs.length||0}</div>
       </div>
     )
   }
-  if(node.data?.type==='image_prompt_suggester'){
-    const out = node.run?.output||{}
-    const vps: Array<{name:string,description?:string,prompt:string}> = Array.isArray(out?.variant_prompts)? out.variant_prompts : []
-    const fps: string[] = Array.isArray(out?.feature_prompts)? out.feature_prompts : []
+  if(type==='gemini_feature_benefit_set' || type==='gemini_variant_set'){
+    const items: any[] = Array.isArray(out?.items)? out.items : []
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Image Prompt Suggester'}</div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Input image</div>
-          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={()=> onSuggestPrompts(node.id)} disabled={node.run?.status==='running'}>Suggest prompts</Button>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
-        </div>
-        {out?.ad_prompt && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Ad image prompt (suggested)</div>
-            <Textarea rows={3} value={String(out.ad_prompt||'')} onChange={e=> onUpdateNode({})} readOnly />
-            <div className="flex justify-end mt-1">
-              <Button size="sm" onClick={()=> onApplyAdPrompt(node.id)}>Set as default Gemini ad prompt</Button>
-            </div>
-          </div>
-        )}
-        {vps.length>0 && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Variant prompts</div>
-            <div className="space-y-1 max-h-40 overflow-auto">
-              {vps.map((v,i)=> (
-                <div key={i} className="border rounded p-2">
-                  <div className="font-medium text-[11px] text-slate-700">{v.name}</div>
-                  <div className="text-[11px] text-slate-500">{v.description||''}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {fps.length>0 && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Feature/benefit close-up prompts</div>
-            <div className="space-y-1 max-h-40 overflow-auto">
-              {fps.map((p,i)=> (<div key={i} className="border rounded p-2 text-[11px] text-slate-700 whitespace-pre-wrap">{p}</div>))}
-            </div>
-          </div>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label|| (type==='gemini_variant_set'? 'Gemini Variant Set':'Gemini Feature/Benefit Set')}
+        <div className="text-[11px] text-slate-500">Items: {items.length||0}</div>
       </div>
     )
   }
-  if(node.data?.type==='gemini_feature_benefit_set'){
-    const out = node.run?.output||{}
-    const items: Array<{prompt:string,image:string}> = Array.isArray(out?.items)? out.items : []
+  if(type==='image_prompt_suggester'){
+    const vps: any[] = Array.isArray(out?.variant_prompts)? out.variant_prompts : []
+    const fps: any[] = Array.isArray(out?.feature_prompts)? out.feature_prompts : []
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Gemini Feature/Benefit Close-ups'}</div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
-          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
-        </div>
-        {items.length>0 && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Results</div>
-            <div className="grid grid-cols-2 gap-2">
-              {items.map((it,i)=> (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img key={i} src={it.image} alt={`fb-${i}`} className="w-full h-24 object-cover rounded border"/>
-              ))}
-            </div>
-          </div>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Image Prompt Suggester'}
+        <div className="text-[11px] text-slate-500">Variants: {vps.length||0} • Features: {fps.length||0}</div>
       </div>
     )
   }
-  if(node.data?.type==='gemini_variant_set'){
-    const out = node.run?.output||{}
-    const items: Array<{kind:'variant'|'composite',name?:string,description?:string,image:string,prompt:string}> = Array.isArray(out?.items)? out.items : []
-    return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Gemini Variant Set'}</div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Source image</div>
-          <a href={node.data?.source_image_url} target="_blank" className="underline text-blue-600 break-all">{node.data?.source_image_url}</a>
-        </div>
-        <div>
-          <div className="text-[11px] text-slate-500 mb-1">Style prompt</div>
-          <Textarea rows={2} value={String(node.data?.style_prompt||'')} onChange={e=> onUpdateNode({style_prompt: e.target.value})} />
-        </div>
-        {items.length>0 && (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Results</div>
-            <div className="grid grid-cols-2 gap-2">
-              {items.map((it,i)=> (
-                <div key={i} className="border rounded p-1">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={it.image} alt={it.kind} className="w-full h-24 object-cover rounded" loading="lazy"/>
-                  <div className="text-[10px] mt-1 text-slate-600 truncate">{it.kind==='variant'? (it.name||'Variant') : 'Composite'}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    )
-  }
-  if(node.data?.type==='image_gallery'){
-    const out = node.run?.output||{}
+  if(type==='image_gallery'){
     const imgs: string[] = Array.isArray(out?.images)? out.images : []
     const selected: Record<string,boolean> = node.data?.selected||{}
+    const selCount = Object.values(selected||{}).filter(Boolean).length
     return (
-      <div className="text-xs space-y-2">
-        <div className="text-slate-500">{node.data.label||'Select Images for Landing'}</div>
-        {imgs.length>0 ? (
-          <div>
-            <div className="text-[11px] text-slate-500 mb-1">Choose images to include</div>
-            <div className="grid grid-cols-2 gap-2">
-              {imgs.map((u,i)=> (
-                <div key={i} className={`relative border rounded p-1 ${selected[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
-                  <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
-                    <input type="checkbox" checked={!!selected[u]} onChange={()=> onUpdateNode({ selected: { ...(node.data?.selected||{}), [u]: !selected[u] } })} />
-                  </label>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={u} alt={`gal-${i}`} className="w-full h-24 object-cover rounded" loading="lazy" />
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-end mt-2">
-              <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(selected||{}).some(Boolean)}>Approve</Button>
-            </div>
-          </div>
-        ): (
-          <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div>
-        )}
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Select Images'}
+        <div className="text-[11px] text-slate-500">Images: {imgs.length||0} • Selected: {selCount}</div>
       </div>
     )
   }
   return (
-    <div className="text-xs space-y-1">
-      <div className="text-slate-500">{node.data.label||node.data.type}</div>
-      {node.run?.output && (
-        <details className="text-xs mt-1" open={expanded}>
-          <summary className="cursor-pointer text-slate-500">Results</summary>
-          <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(node.run.output,null,2)}</pre>
-        </details>
-      )}
-      {!!t?.length && (
-        <details className="text-xs mt-1">
-          <summary className="cursor-pointer text-slate-500">Requests</summary>
-          <pre className="bg-slate-50 p-2 rounded mt-1 overflow-x-auto max-h-[160px]">{JSON.stringify(t,null,2)}</pre>
-        </details>
-      )}
-      {node.run?.error && (<div className="text-rose-600">{String(node.run.error)}</div>)}
+    <div className="text-xs text-slate-700">
+      {node.data?.label||node.data?.type||node.type}
+      {out? (<div className="text-[11px] text-slate-500">Done</div>) : null}
     </div>
   )
 }
@@ -1498,7 +1312,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[] }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const out = node.run?.output||{}
@@ -1660,23 +1474,137 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         )}
       </div>
 
-      {images.length>0 ? (
+      {/* Angle variant controls */}
+      {node.data?.type==='angle_variant' && (
+        <div className="space-y-2">
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Prompt for title + description</div>
+            <Textarea rows={4} value={String(node.data?.prompt||'')} onChange={e=> onUpdateNodeData(node.id,{ prompt: e.target.value })} />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+            <Button size="sm" variant={node.data?.approved? 'outline':'default'} disabled={!node.run?.output || !!node.data?.approved} onClick={()=> onAngleApprove(node.id)}>
+              {node.data?.approved? 'Approved' : 'Approve'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Title & Description controls */}
+      {node.data?.type==='title_desc' && (
+        <div className="space-y-2">
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Landing page prompt</div>
+            <Textarea rows={4} value={String(node.data?.landingPrompt||'')} onChange={e=> onUpdateNodeData(node.id,{ landingPrompt: e.target.value })} />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Continue</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Generate Angles settings */}
+      {node.data?.type==='generate_angles' && (
+        <div className="space-y-1">
+          <div className="text-[11px] text-slate-500 mb-1">Angles to generate</div>
+          <Input type="number" min={1} max={5} value={String(node.data?.numAngles||2)} onChange={e=> onUpdateNodeData(node.id,{ numAngles: Math.max(1, Math.min(5, Number(e.target.value)||2)) })} />
+        </div>
+      )}
+
+      {/* Gemini ad images controls */}
+      {node.data?.type==='gemini_ad_images' && (
+        <div className="space-y-2">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={(node.data?.use_global_prompt!==false)} onChange={e=> onUpdateNodeData(node.id,{ use_global_prompt: e.target.checked })} />
+            <span>Use global default prompt</span>
+          </label>
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Prompt</div>
+            <Textarea rows={3} value={String(node.data?.prompt||'')} onChange={e=> onUpdateNodeData(node.id,{ prompt: e.target.value, use_global_prompt: false })} />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Gemini variant set controls */}
+      {node.data?.type==='gemini_variant_set' && (
+        <div className="space-y-2">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={(node.data?.use_global_style!==false)} onChange={e=> onUpdateNodeData(node.id,{ use_global_style: e.target.checked })} />
+            <span>Use global default style</span>
+          </label>
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Style prompt</div>
+            <Textarea rows={3} value={String(node.data?.style_prompt||'')} onChange={e=> onUpdateNodeData(node.id,{ style_prompt: e.target.value, use_global_style: false })} />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Image prompt suggester controls */}
+      {node.data?.type==='image_prompt_suggester' && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={()=> onSuggestPrompts(node.id)} disabled={node.run?.status==='running'}>Suggest prompts</Button>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+          </div>
+          {out?.ad_prompt && (
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Ad image prompt (suggested)</div>
+              <Textarea rows={3} value={String(out.ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
+              <div className="flex justify-end mt-1">
+                <Button size="sm" onClick={()=> onApplyAdPrompt(node.id)}>Set as default Gemini ad prompt</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isGallery ? (
         <div>
-          <div className="text-slate-500 mb-1">Output images</div>
-          <div className="grid grid-cols-2 gap-2">
-            {images.map((u,i)=> (
-              <div key={i} className={`relative border rounded p-1 ${(!isGallery && selectedUrls[u])? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
-                {!isGallery && (
+          <div className="text-slate-500 mb-1">Gallery images</div>
+          {images.length>0 ? (
+            <div>
+              <div className="grid grid-cols-2 gap-2">
+                {images.map((u,i)=> (
+                  <div key={i} className={`relative border rounded p-1 ${(node.data?.selected||{})[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                    <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
+                      <input type="checkbox" checked={!!(node.data?.selected||{})[u]} onChange={()=> onUpdateNodeData(node.id,{ selected: { ...(node.data?.selected||{}), [u]: !(node.data?.selected||{})[u] } })} />
+                    </label>
+                    <a href={u} download className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]">Download</a>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end mt-2">
+                <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean)}>Approve</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div>
+          )}
+        </div>
+      ) : (
+        images.length>0 ? (
+          <div>
+            <div className="text-slate-500 mb-1">Output images</div>
+            <div className="grid grid-cols-2 gap-2">
+              {images.map((u,i)=> (
+                <div key={i} className={`relative border rounded p-1 ${selectedUrls[u]? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
                   <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
                     <input type="checkbox" checked={!!selectedUrls[u]} onChange={()=> toggleSelect(u)} />
                   </label>
-                )}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
-              </div>
-            ))}
-          </div>
-          {!isGallery && (
+                  <a href={u} download className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]">Download</a>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
+                </div>
+              ))}
+            </div>
             <div className="mt-2 space-y-1">
               <div className="text-[11px] text-slate-500">Shopify product GID</div>
               <input className="w-full rounded-xl border px-3 py-2" placeholder="gid://shopify/Product/1234567890" value={productGid} onChange={e=>setProductGid(e.target.value)} />
@@ -1684,16 +1612,14 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                 <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white disabled:opacity-60" onClick={onUploadSelected} disabled={!productGid || !Object.values(selectedUrls).some(Boolean)}>Upload selected to Shopify</button>
               </div>
             </div>
-          )}
-        </div>
-      ) : (
-        (node.run?.output && !isGallery) ? (
-          <div>
-            <div className="text-slate-500 mb-1">Results</div>
-            <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.run.output,null,2)}</pre>
           </div>
         ) : (
-          isGallery ? <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div> : null
+          (node.run?.output) ? (
+            <div>
+              <div className="text-slate-500 mb-1">Results</div>
+              <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.run.output,null,2)}</pre>
+            </div>
+          ) : null
         )
       )}
 
@@ -1718,14 +1644,22 @@ function Edge({ edge, nodes, active }:{ edge:FlowEdge, nodes:FlowNode[], active:
   const from = nodes.find(n=>n.id===edge.from)
   const to = nodes.find(n=>n.id===edge.to)
   if(!from||!to) return null
-  const x1 = from.x + 240
+  const x1 = from.x + 200
   const y1 = from.y + 100
   const x2 = to.x + 20
   const y2 = to.y + 100
   const d = makePath(x1,y1,x2,y2)
   return (
     <svg className="absolute overflow-visible pointer-events-none" style={{left:0, top:0}}>
-      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+        </marker>
+        <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+        </marker>
+      </defs>
+      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" markerEnd={active? 'url(#arrowhead-active)' : 'url(#arrowhead)'} />
     </svg>
   )
 }
