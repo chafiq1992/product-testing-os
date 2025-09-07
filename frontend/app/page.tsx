@@ -4,7 +4,7 @@ import { Rocket, Plus, ExternalLink } from 'lucide-react'
 import { listTests } from '@/lib/api'
 import Link from 'next/link'
 
-function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-2xl shadow-sm">{children}</div> }
+function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-none shadow-sm">{children}</div> }
 function CardHeader({ children, className='' }:{children:React.ReactNode,className?:string}){ return <div className={`px-4 pt-4 ${className}`}>{children}</div> }
 function CardTitle({ children, className='' }:{children:React.ReactNode,className?:string}){ return <h3 className={`font-semibold ${className}`}>{children}</h3> }
 function CardContent({ children, className='' }:{children:React.ReactNode,className?:string}){ return <div className={`px-4 pb-4 ${className}`}>{children}</div> }
@@ -43,7 +43,7 @@ export default function HomePage(){
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  <div className="aspect-[16/9] w-full bg-slate-100 rounded-lg overflow-hidden border h-28 md:h-32">
+                  <div className="w-full bg-slate-100 rounded-none overflow-hidden border h-28 md:h-32">
                     {it.card_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={it.card_image} alt="cover" className="w-full h-full object-cover"/>

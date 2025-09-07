@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, Form, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
@@ -30,6 +31,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Mount static uploads directory. Use the unified path from config.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
@@ -175,6 +177,15 @@ async def list_tests(limit: int | None = None):
                 return None
             return None
 
+        def pick_any(urls: list[str] | None) -> str | None:
+            try:
+                for u in (urls or []):
+                    if isinstance(u, str) and u.startswith("http"):
+                        return u
+            except Exception:
+                return None
+            return None
+
         def pick_from_flow(payload: dict | None) -> str | None:
             try:
                 flow = (payload or {}).get("flow") or {}
@@ -199,7 +210,12 @@ async def list_tests(limit: int | None = None):
                                     return src
                         # Another possible key shape
                         cdn = out.get("cdn_urls") or []
-                        image = pick_shopify(cdn)
+                        image = pick_shopify(cdn) or pick_any(cdn)
+                        if image:
+                            return image
+                        # Last resort: any generic URLs embedded in output
+                        generic = out.get("images") or out.get("urls") or []
+                        image = pick_shopify(generic) or pick_any(generic)
                         if image:
                             return image
                     except Exception:
@@ -232,7 +248,7 @@ async def list_tests(limit: int | None = None):
                     image = pick_from_flow(payload) or image
                     uploaded = (payload.get("uploaded_images") or [])
                     if not image:
-                        image = pick_shopify(uploaded)
+                        image = pick_shopify(uploaded) or pick_any(uploaded)
                 except Exception:
                     image = None
             # Build slim item to keep response small for homepage

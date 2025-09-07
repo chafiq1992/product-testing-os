@@ -81,48 +81,63 @@ function StudioPage(){
   const flowRef = useRef(flow)
   useEffect(()=>{ flowRef.current = flow },[flow])
 
+  // Fast hydration helper from a payload snapshot (DB or cache)
+  function hydrateFromPayload(p:any){
+    try{
+      if(p?.audience) setAudience(p.audience)
+      if(p?.title) setTitle(p.title)
+      if(p?.base_price!=null) setPrice(Number(p.base_price))
+      if(Array.isArray((p as any)?.sizes)) setSizes((p as any).sizes)
+      if(Array.isArray((p as any)?.colors)) setColors((p as any).colors)
+      if(Array.isArray(p?.benefits)) setBenefits(p.benefits)
+      if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
+      if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
+      if(p?.flow && Array.isArray(p.flow.nodes) && Array.isArray(p.flow.edges)){
+        setFlow({ nodes: p.flow.nodes, edges: p.flow.edges })
+      }
+      if(p?.ui){
+        if(typeof p.ui.zoom==='number') setZoom(p.ui.zoom)
+        if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
+        if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
+      }
+      if(p?.prompts){
+        if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
+        if(typeof p.prompts.title_desc_prompt==='string') setTitleDescPrompt(p.prompts.title_desc_prompt)
+        if(typeof p.prompts.landing_copy_prompt==='string') setLandingCopyPrompt(p.prompts.landing_copy_prompt)
+        if(typeof (p.prompts as any).gemini_ad_prompt==='string') setGeminiAdPrompt((p.prompts as any).gemini_ad_prompt)
+        if(typeof (p.prompts as any).gemini_variant_style_prompt==='string') setGeminiVariantStylePrompt((p.prompts as any).gemini_variant_style_prompt)
+      }
+      if(p?.settings){
+        if(typeof p.settings.model==='string') setModel(p.settings.model)
+        if(typeof p.settings.advantage_plus==='boolean') setAdvantagePlus(p.settings.advantage_plus)
+        if(typeof p.settings.adset_budget==='number') setAdsetBudget(p.settings.adset_budget)
+        if(Array.isArray(p.settings.countries)) setCountries(p.settings.countries)
+        if(typeof p.settings.saved_audience_id==='string') setSelectedSavedAudience(p.settings.saved_audience_id)
+      }
+    }catch{}
+  }
+
   // preload from existing test when id provided
   useEffect(()=>{
     (async()=>{
       if(!testParam) return
       try{
+        // 1) Hydrate instantly from session cache if available
+        try{
+          const cached = sessionStorage.getItem(`flow_cache_${testParam}`)
+          if(cached){
+            const p = JSON.parse(cached)
+            hydrateFromPayload(p)
+            setTestId(testParam || undefined)
+          }
+        }catch{}
+        // 2) Fetch authoritative payload from API in background
         const t = await getTest(testParam)
         const p = (t as any)?.payload||{}
-        if(p?.audience) setAudience(p.audience)
-        if(p?.title) setTitle(p.title)
-        if(p?.base_price!=null) setPrice(Number(p.base_price))
-        if(Array.isArray((p as any)?.sizes)) setSizes((p as any).sizes)
-        if(Array.isArray((p as any)?.colors)) setColors((p as any).colors)
-        if(Array.isArray(p?.benefits)) setBenefits(p.benefits)
-        if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
-        if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
-        // Restore flow snapshot if present
-        if(p?.flow && Array.isArray(p.flow.nodes) && Array.isArray(p.flow.edges)){
-          setFlow({ nodes: p.flow.nodes, edges: p.flow.edges })
-        }
-        // Restore UI state
-        if(p?.ui){
-          if(typeof p.ui.zoom==='number') setZoom(p.ui.zoom)
-          if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
-          if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
-        }
-        // Restore prompts
-        if(p?.prompts){
-          if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
-          if(typeof p.prompts.title_desc_prompt==='string') setTitleDescPrompt(p.prompts.title_desc_prompt)
-          if(typeof p.prompts.landing_copy_prompt==='string') setLandingCopyPrompt(p.prompts.landing_copy_prompt)
-          if(typeof (p.prompts as any).gemini_ad_prompt==='string') setGeminiAdPrompt((p.prompts as any).gemini_ad_prompt)
-          if(typeof (p.prompts as any).gemini_variant_style_prompt==='string') setGeminiVariantStylePrompt((p.prompts as any).gemini_variant_style_prompt)
-        }
-        // Restore settings
-        if(p?.settings){
-          if(typeof p.settings.model==='string') setModel(p.settings.model)
-          if(typeof p.settings.advantage_plus==='boolean') setAdvantagePlus(p.settings.advantage_plus)
-          if(typeof p.settings.adset_budget==='number') setAdsetBudget(p.settings.adset_budget)
-          if(Array.isArray(p.settings.countries)) setCountries(p.settings.countries)
-          if(typeof p.settings.saved_audience_id==='string') setSelectedSavedAudience(p.settings.saved_audience_id)
-        }
+        hydrateFromPayload(p)
         setTestId((t as any)?.id)
+        // Persist to cache for instant subsequent opens
+        try{ sessionStorage.setItem(`flow_cache_${(t as any)?.id}`, JSON.stringify(p)) }catch{}
       }catch{}
     })()
   },[testParam])
@@ -358,6 +373,11 @@ function StudioPage(){
       if(testId){ res = await updateDraft(testId, payload as any) }
       else { res = await saveDraft(payload as any) }
       setTestId(res.id)
+      // Persist a compact snapshot locally for instant reopen
+      try{
+        const snapshot = { ...(payload.product||{}), uploaded_images: payload.image_urls||[], flow: payload.flow, ui: payload.ui, prompts: payload.prompts, settings: payload.settings }
+        sessionStorage.setItem(`flow_cache_${res.id}`, JSON.stringify(snapshot))
+      }catch{}
       alert('Saved draft')
     }catch(e:any){
       alert('Failed to save draft: '+ String(e?.message||e))

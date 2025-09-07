@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from sqlalchemy import create_engine, Column, String, DateTime, Text, desc
+from sqlalchemy import create_engine, Column, String, DateTime, Text, desc, Index
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Support external database via DATABASE_URL (e.g., Supabase Postgres). Fallback to SQLite.
@@ -34,6 +34,9 @@ class Test(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+
+# Lightweight index to speed home listing by created date
+Index('ix_tests_created_at', Test.created_at)
 
 Base.metadata.create_all(engine)
 
