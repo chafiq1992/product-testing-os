@@ -1244,6 +1244,12 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Angle'}
         <div className="text-[11px] text-slate-500 truncate">{title? String(title) : 'No title yet'}</div>
+        <div className="mt-1 flex items-center gap-1">
+          <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)} disabled={node.run?.status==='running'}>Gen</Button>
+          <Button size="sm" variant={node.data?.approved? 'outline':'default'} disabled={!node.run?.output || !!node.data?.approved} onClick={()=> onAngleApprove(node.id)}>
+            {node.data?.approved? '✓' : 'Approve'}
+          </Button>
+        </div>
       </div>
     )
   }
@@ -1253,6 +1259,9 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Title & Description'}
         <div className="text-[11px] text-slate-500 truncate">{v?.title? String(v.title) : '-'}</div>
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Continue</Button>
+        </div>
       </div>
     )
   }
@@ -1262,6 +1271,10 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Gemini Ad Images'}
         <div className="text-[11px] text-slate-500">Images: {imgs.length||0}</div>
+        <div className="mt-1 flex items-center gap-1">
+          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
       </div>
     )
   }
@@ -1271,6 +1284,10 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label|| (type==='gemini_variant_set'? 'Gemini Variant Set':'Gemini Feature/Benefit Set')}
         <div className="text-[11px] text-slate-500">Items: {items.length||0}</div>
+        <div className="mt-1 flex items-center gap-1">
+          <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
       </div>
     )
   }
@@ -1281,6 +1298,10 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Image Prompt Suggester'}
         <div className="text-[11px] text-slate-500">Variants: {vps.length||0} • Features: {fps.length||0}</div>
+        <div className="mt-1 flex items-center gap-1">
+          <Button size="sm" variant="outline" onClick={()=> onSuggestPrompts(node.id)} disabled={node.run?.status==='running'}>Suggest</Button>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
+        </div>
       </div>
     )
   }
@@ -1292,6 +1313,9 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Select Images'}
         <div className="text-[11px] text-slate-500">Images: {imgs.length||0} • Selected: {selCount}</div>
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={selCount===0 || node.run?.status==='running'}>Approve</Button>
+        </div>
       </div>
     )
   }
