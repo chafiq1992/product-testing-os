@@ -724,13 +724,8 @@ function StudioPage(){
         }
       }
       const lc = sanitizeLandingCopy(lcRaw, cdnUrls, vTitle)
-      // Update product description with a compact gallery of selected images only
-      if(product_gid){
-        const desc = cdnUrls.map(u=> `<img src="${u}" loading="lazy" style="width:100%;max-width:320px;margin:8px;border-radius:8px;"/>`).join('')
-        await shopifyUpdateDescription({ product_gid, description_html: desc })
-      }
-      // Create landing page
-      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: cdnUrls })
+      // Create landing page and also update product description server-side with full landing body
+      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: cdnUrls, product_gid })
       // Append Create Landing and Meta nodes to show path
       let landingNodeId:string|undefined
       setFlow(f=>{

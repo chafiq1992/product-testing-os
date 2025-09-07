@@ -181,7 +181,8 @@ export async function shopifyUpdateDescription(payload:{ product_gid:string, des
 export async function shopifyCreatePageFromCopy(payload:{
   title: string,
   landing_copy: any,
-  image_urls?: string[]
+  image_urls?: string[],
+  product_gid?: string,
 }){
   const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, payload)
   return data as { page_url?: string }

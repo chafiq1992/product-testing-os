@@ -16,6 +16,7 @@ from app.integrations.gemini_client import analyze_variants_from_image, build_fe
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
+from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import create_draft_image_campaign
@@ -549,6 +550,7 @@ class ShopifyCreatePageFromCopyRequest(BaseModel):
     title: str
     landing_copy: dict
     image_urls: Optional[List[str]] = None
+    product_gid: Optional[str] = None
 
 
 @app.post("/api/shopify/create_page_from_copy")
@@ -562,7 +564,15 @@ async def api_shopify_create_page_from_copy(req: ShopifyCreatePageFromCopyReques
         sec_title = sec.get("title") or "Product image"
         sec_body = sec.get("body") or ""
         alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
+    # Build the same HTML body that will be used on the page for optional product description update
+    body_html = _build_page_body_html(req.title, req.landing_copy, req.image_urls or [], alt_texts)
     page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts)
+    # Optionally update product description to match landing body
+    try:
+        if req.product_gid:
+            update_product_description(req.product_gid, body_html)
+    except Exception:
+        pass
     return {"page_url": page.get("url")}
 
 
