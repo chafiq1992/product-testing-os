@@ -470,18 +470,23 @@ function StudioPage(){
       }
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
-      // Immediately spawn Gemini image-generation nodes below the images node so they appear instantly
+      // Insert prompt-suggester immediately after images, connect it, and auto-run suggestion to tune prompts
       try{
         const sourceUrl = (shopifyCdnUrls||[])[0]
         if(sourceUrl){
-          // Insert a prompt suggester card before Gemini cards
+          // Insert a prompt suggester card before Gemini cards and connect from Images
+          let promptSuggesterNodeId:string|undefined
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
             const ps = makeNode('action', (imgNode as any).x, (imgNode as any).y+100, { label:'Image Prompt Suggester', type:'image_prompt_suggester', source_image_url: sourceUrl })
-            const next = { nodes:[...f.nodes, ps], edges: f.edges }
+            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', ps.id, 'in')]
+            const next = { nodes:[...f.nodes, ps], edges }
             flowRef.current = next
+            promptSuggesterNodeId = ps.id
             return next
           })
+          // Auto-run suggestion to extract variants/features and adjust the global ad prompt
+          try{ if(promptSuggesterNodeId){ await suggestPrompts(promptSuggesterNodeId) } }catch{}
           // Include midpoint size if sizes contain numeric range
           let adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
           try{
@@ -501,7 +506,8 @@ function StudioPage(){
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
             const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
-            const next = { nodes:[...f.nodes, gn], edges: f.edges }
+            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', gn.id, 'in')] : f.edges
+            const next = { nodes:[...f.nodes, gn], edges }
             flowRef.current = next
             geminiNodeId = gn.id
             return next
@@ -518,7 +524,8 @@ function StudioPage(){
               + "Constraints: do NOT change product identity (materials, colors, shape, branding); no added text or logos; no extra props; photorealistic lighting and skin tones."
             )
             const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: true })
-            const next = { nodes:[...f.nodes, gn2], edges: f.edges }
+            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', gn2.id, 'in')] : f.edges
+            const next = { nodes:[...f.nodes, gn2], edges }
             flowRef.current = next
             geminiNodeId = gn2.id
             return next
@@ -527,7 +534,8 @@ function StudioPage(){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Feature/Benefit Close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 6 })
-            const next = { nodes:[...f.nodes, fb], edges: f.edges }
+            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', fb.id, 'in')] : f.edges
+            const next = { nodes:[...f.nodes, fb], edges }
             flowRef.current = next
             return next
           })
@@ -535,7 +543,8 @@ function StudioPage(){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5, use_global_style: true })
-            const next = { nodes:[...f.nodes, vs], edges: f.edges }
+            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', vs.id, 'in')] : f.edges
+            const next = { nodes:[...f.nodes, vs], edges }
             flowRef.current = next
             return next
           })
@@ -657,6 +666,7 @@ function StudioPage(){
         max_variants: 5,
       })
       updateNodeRun(nodeId, { status:'success', output: out })
+      try{ if(out && typeof (out as any).ad_prompt==='string' && (out as any).ad_prompt.trim()){ setGeminiAdPrompt(String((out as any).ad_prompt)) } }catch{}
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error: String(e?.message||e) })
     }
@@ -1189,6 +1199,9 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
           {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt)}
         </div>
       </motion.div>
+      {/* Visual input/output ports for clarity */}
+      <div className="absolute w-2 h-2 rounded-full bg-slate-300 border border-slate-400" style={{ left: -8, top: 96 }} />
+      <div className="absolute w-2 h-2 rounded-full bg-slate-300 border border-slate-400" style={{ right: -8, top: 96 }} />
     </div>
   )
 }
