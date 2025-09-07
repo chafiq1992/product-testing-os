@@ -230,3 +230,19 @@ export async function geminiGenerateFeatureBenefitSet(payload:{
   const {data} = await axios.post(`${base}/api/gemini/feature_benefit_set`, payload)
   return data as { items: { prompt:string, image:string }[], model: string, input_image_url: string, error?: string }
 }
+
+// Gemini prompt suggestion (no generation)
+export async function geminiSuggestPrompts(payload:{
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, currency?:string, sizes?:string[], colors?:string[] },
+  image_url: string,
+  include_feature_benefit?: boolean,
+  max_variants?: number,
+}){
+  const {data} = await axios.post(`${base}/api/gemini/suggest_prompts`, {
+    product: payload.product,
+    image_url: payload.image_url,
+    include_feature_benefit: payload.include_feature_benefit,
+    max_variants: payload.max_variants,
+  })
+  return data as { input_image_url: string, ad_prompt: string, variant_prompts: { name:string, description?:string, prompt:string }[], feature_prompts: string[], error?: string }
+}

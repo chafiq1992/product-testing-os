@@ -12,6 +12,7 @@ from urllib.parse import quote
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
+from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
@@ -180,7 +181,8 @@ async def list_tests(limit: int | None = None):
         def pick_any(urls: list[str] | None) -> str | None:
             try:
                 for u in (urls or []):
-                    if isinstance(u, str) and u.startswith("http"):
+                    # Accept regular http(s) URLs and data URLs (Gemini inline)
+                    if isinstance(u, str) and (u.startswith("http") or u.startswith("data:")):
                         return u
             except Exception:
                 return None
@@ -193,31 +195,50 @@ async def list_tests(limit: int | None = None):
                 for n in nodes:
                     try:
                         data = (n or {}).get("data") or {}
-                        if (data.get("type") or "").strip() != "upload_images":
-                            continue
                         run = (n or {}).get("run") or {}
                         out = (run or {}).get("output") or {}
-                        # Prefer explicit Shopify URLs
-                        image = pick_shopify(out.get("images_shopify") or [])
-                        if image:
-                            return image
-                        # Fallback to objects list with src
-                        shop_imgs = out.get("shopify_images") or []
-                        if isinstance(shop_imgs, list):
-                            for si in shop_imgs:
-                                src = (si or {}).get("src")
-                                if isinstance(src, str) and "cdn.shopify.com" in src:
-                                    return src
-                        # Another possible key shape
-                        cdn = out.get("cdn_urls") or []
-                        image = pick_shopify(cdn) or pick_any(cdn)
-                        if image:
-                            return image
-                        # Last resort: any generic URLs embedded in output
-                        generic = out.get("images") or out.get("urls") or []
-                        image = pick_shopify(generic) or pick_any(generic)
-                        if image:
-                            return image
+
+                        # Upload Images node → prefer Shopify CDN
+                        if (data.get("type") or "").strip() == "upload_images":
+                            image = pick_shopify(out.get("images_shopify") or [])
+                            if image:
+                                return image
+                            shop_imgs = out.get("shopify_images") or []
+                            if isinstance(shop_imgs, list):
+                                for si in shop_imgs:
+                                    src = (si or {}).get("src")
+                                    if isinstance(src, str) and "cdn.shopify.com" in src:
+                                        return src
+                            cdn = out.get("cdn_urls") or []
+                            image = pick_shopify(cdn) or pick_any(cdn)
+                            if image:
+                                return image
+                            generic = out.get("images") or out.get("urls") or []
+                            image = pick_shopify(generic) or pick_any(generic)
+                            if image:
+                                return image
+
+                        # Image gallery → any images (allow data:)
+                        if (data.get("type") or "").strip() == "image_gallery":
+                            generic = out.get("images") or []
+                            image = pick_shopify(generic) or pick_any(generic)
+                            if image:
+                                return image
+
+                        # Gemini nodes → allow data: images
+                        dtype = (data.get("type") or "").strip()
+                        if dtype == "gemini_ad_images":
+                            generic = out.get("images") or []
+                            image = pick_shopify(generic) or pick_any(generic)
+                            if image:
+                                return image
+                        if dtype in ("gemini_variant_set", "gemini_feature_benefit_set"):
+                            items = out.get("items") or []
+                            if isinstance(items, list):
+                                for it in items:
+                                    u = (it or {}).get("image")
+                                    if isinstance(u, str) and ("cdn.shopify.com" in u or u.startswith("http") or u.startswith("data:")):
+                                        return u
                     except Exception:
                         continue
             except Exception:
@@ -412,6 +433,65 @@ async def api_gemini_variant_set(req: GeminiVariantSetRequest):
         return {"items": items, "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
     except Exception as e:
         return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
+
+# Suggest tailored prompts from an input image (no image generation)
+class GeminiSuggestPromptsRequest(BaseModel):
+    product: ProductInput
+    image_url: str
+    include_feature_benefit: Optional[bool] = True
+    max_variants: Optional[int] = 5
+
+
+@app.post("/api/gemini/suggest_prompts")
+async def api_gemini_suggest_prompts(req: GeminiSuggestPromptsRequest):
+    try:
+        product = req.product.model_dump()
+        # Base ad-image prompt similar to UI default with optional size hint
+        base_prompt = (
+            "Ultra eye‑catching ecommerce ad image derived ONLY from the provided product photo.\n"
+            "Rules: Do NOT change product identity (colors/materials/shape/branding). No text or logos.\n"
+            "Look: premium, high-contrast hero lighting, subtle rim light, soft gradient background, tasteful glow,\n"
+            "clean reflections/shadow, product-first composition (rule of thirds/center), social-feed ready."
+        )
+        mid = _compute_midpoint_size_from_product(product)
+        if mid:
+            base_prompt = base_prompt + f" Ensure the product shown is size {mid} (midpoint of provided range)."
+
+        # Variant prompts (one per detected variant)
+        detected = analyze_variants_from_image(req.image_url, max_variants=req.max_variants)
+        variant_prompts: list[dict] = []
+        base_style = (
+            "Professional ecommerce product photo, clean neutral background, soft studio lighting, crisp focus, "
+            "subtle ground shadow, premium look, 45-degree camera angle, 4:5 crop. "
+            "CRITICAL: Replace the original background with a new clean neutral studio backdrop; DO NOT reuse the source background."
+        )
+        for v in detected or []:
+            name = (v or {}).get("name") or "Variant"
+            desc = (v or {}).get("description") or ""
+            prompt = (
+                f"Create a clean standalone product image isolating the '{name}' variant from the reference photo. "
+                f"Use the visual characteristics described: {desc}. {base_style}"
+            )
+            variant_prompts.append({"name": name, "description": desc, "prompt": prompt})
+
+        feature_prompts: list[str] = []
+        if req.include_feature_benefit:
+            feature_prompts = build_feature_benefit_prompts(product, count=6)
+
+        return {
+            "input_image_url": req.image_url,
+            "ad_prompt": base_prompt,
+            "variant_prompts": variant_prompts,
+            "feature_prompts": feature_prompts,
+        }
+    except Exception as e:
+        return {
+            "input_image_url": req.image_url,
+            "ad_prompt": "",
+            "variant_prompts": [],
+            "feature_prompts": [],
+            "error": str(e),
+        }
 # ---------------- Flows/Drafts ----------------
 class DraftSaveRequest(BaseModel):
     product: ProductInput
