@@ -512,18 +512,23 @@ function StudioPage(){
             geminiNodeId = gn.id
             return next
           })
-          // Add a second Ad Images node with a specialized natural/street scene prompt appealing to parents
+          // Add a second Ad Images node with the requested kids-model natural street scene instruction
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+380) }
             const promptStreet = (
-              "Create a hyper‑realistic, attention‑grabbing ecommerce ad image derived ONLY from the provided product photo.\n"
-              + "Subject: a stylish teenage boy in an elegant pose, wearing these shoes.\n"
-              + "Environment: natural, outdoors on a suburban sidewalk or city street; believable daylight or golden hour.\n"
-              + "Composition: keep strong focus on the shoes; showcase their elegance and attractiveness; subtle depth of field; dynamic but tasteful framing.\n"
-              + "Appeal: designed to attract parents while remaining authentic for teens.\n"
-              + "Constraints: do NOT change product identity (materials, colors, shape, branding); no added text or logos; no extra props; photorealistic lighting and skin tones."
+              "Instruction\n"
+              + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring a kids model wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
+              + `Source: ${sourceUrl}\n`
+              + `Product type: ${title? String(title) : 'from the source image'}\n`
+              + "Model age range: 2–6 years (child)\n\n"
+              + "Ad style (must follow):\n\n"
+              + "Look & pose: Stylish, elegant, but natural/everyday (standing mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
+              + "Wardrobe: Product is the hero; pair with neutral basics only (no logos).\n\n"
+              + "Background (keep the same across variants): Lifestyle: soft park/sidewalk/home interior, shallow depth-of-field, uncluttered.\n\n"
+              + "Lighting & color: Soft studio lighting, even exposure, minimal shadows, true color; no color cast.\n\n"
+              + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
             )
-            const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: true })
+            const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
             const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', gn2.id, 'in')] : f.edges
             const next = { nodes:[...f.nodes, gn2], edges }
             flowRef.current = next
@@ -659,14 +664,14 @@ function StudioPage(){
     if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
+      const prevPrompt = String(geminiAdPrompt||'')
       const out = await geminiSuggestPrompts({
         product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
         image_url: sourceUrl,
         include_feature_benefit: true,
         max_variants: 5,
       })
-      updateNodeRun(nodeId, { status:'success', output: out })
-      try{ if(out && typeof (out as any).ad_prompt==='string' && (out as any).ad_prompt.trim()){ setGeminiAdPrompt(String((out as any).ad_prompt)) } }catch{}
+      updateNodeRun(nodeId, { status:'success', output: { ...out, prev_ad_prompt: prevPrompt } })
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error: String(e?.message||e) })
     }
@@ -1577,10 +1582,18 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
           </div>
           {out?.ad_prompt && (
-            <div>
-              <div className="text-[11px] text-slate-500 mb-1">Ad image prompt (suggested)</div>
-              <Textarea rows={3} value={String(out.ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
-              <div className="flex justify-end mt-1">
+            <div className="space-y-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Before (previous default)</div>
+                  <Textarea rows={6} value={String(out.prev_ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">After (suggested)</div>
+                  <Textarea rows={6} value={String(out.ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
+                </div>
+              </div>
+              <div className="flex justify-end">
                 <Button size="sm" onClick={()=> onApplyAdPrompt(node.id)}>Set as default Gemini ad prompt</Button>
               </div>
             </div>
