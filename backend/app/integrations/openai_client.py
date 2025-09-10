@@ -115,6 +115,71 @@ def gen_images(angle: dict, payload: dict) -> list:
     return [img.data[0].url]
 
 
+# ---------------- Product extraction from image ----------------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
+    """Analyze a single product photo and extract structured product inputs.
+
+    Returns a dict with keys:
+      - title (string)
+      - audience (string)
+      - benefits (string[])
+      - pain_points (string[])
+      - colors (string[])
+      - sizes (string[])
+      - variants (array of { name, description })
+    """
+    system = (
+        "You are a senior ecommerce analyst. From ONE product photo, infer only what is visually reliable.\n"
+        "Output ONLY JSON with keys: title, audience, benefits, pain_points, colors, sizes, variants.\n"
+        "- title: brief product name.\n"
+        "- audience: the most likely buyer (e.g., 'Parents of toddlers in Morocco').\n"
+        "- benefits: 3-6 concrete benefits/outcomes.\n"
+        "- pain_points: 3-6 pains that the product solves.\n"
+        "- colors: detected color variants (names).\n"
+        "- sizes: optional size hints (if visible/typical), else [].\n"
+        "- variants: list of distinct visual variants (e.g., colors/patterns/materials) with {name, description}. If unknown, [].\n"
+        "If you are uncertain, add minimal [ASSUMPTION] notes inside descriptions only."
+    )
+    user = (
+        "Analyze the product in this image and extract structured inputs as specified."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        },
+    ]
+    resp = client.chat.completions.create(
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    text = resp.choices[0].message.content
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    # Normalize fields
+    out = {
+        "title": data.get("title") or None,
+        "audience": data.get("audience") or "",
+        "benefits": [x for x in (data.get("benefits") or []) if isinstance(x, str)],
+        "pain_points": [x for x in (data.get("pain_points") or []) if isinstance(x, str)],
+        "colors": [x for x in (data.get("colors") or []) if isinstance(x, str)],
+        "sizes": [x for x in (data.get("sizes") or []) if isinstance(x, str)],
+        "variants": [
+            {"name": (v or {}).get("name"), "description": (v or {}).get("description")}
+            for v in (data.get("variants") or [])
+            if isinstance(v, dict)
+        ],
+    }
+    return out
+
 LANDING_COPY_PROMPT = (
     "You are a CRO specialist and landing-page copy engineer.\n"
     "Goal: Produce a single json object with high-converting landing copy and a complete HTML page (inline styles) that embeds only the image URLs provided by the user.\n\n"

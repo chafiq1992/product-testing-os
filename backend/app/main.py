@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
-from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy
+from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy, gen_product_from_image
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
@@ -53,6 +53,8 @@ class ProductInput(BaseModel):
     targeting: Optional[dict] = None
     advantage_plus: Optional[bool] = True
     adset_budget: Optional[float] = None
+    # Optional variant descriptions provided/approved by user (used for image prompts)
+    variant_descriptions: Optional[list[dict]] = None
 
 @app.post("/api/tests")
 async def create_test(
@@ -366,12 +368,19 @@ class GeminiVariantSetRequest(BaseModel):
     image_url: str
     style_prompt: str | None = None
     max_variants: int | None = None
+    # When provided, generate one image per provided variant using its description
+    variant_descriptions: Optional[list[dict]] = None
 
 
 @app.post("/api/gemini/variant_set")
 async def api_gemini_variant_set(req: GeminiVariantSetRequest):
     try:
-        items = gen_variant_images_from_image(req.image_url, style_prompt=req.style_prompt, max_variants=req.max_variants)
+        items = gen_variant_images_from_image(
+            req.image_url,
+            style_prompt=req.style_prompt,
+            max_variants=req.max_variants,
+            variants_override=(req.variant_descriptions or None),
+        )
         return {"items": items, "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
     except Exception as e:
         return {"items": [], "error": str(e), "model": "gemini-2.5-flash-image-preview", "input_image_url": req.image_url}
@@ -434,6 +443,20 @@ async def api_gemini_suggest_prompts(req: GeminiSuggestPromptsRequest):
             "feature_prompts": [],
             "error": str(e),
         }
+
+# -------- Product extraction from image --------
+class ProductFromImageRequest(BaseModel):
+    image_url: str
+    model: Optional[str] = None
+
+
+@app.post("/api/llm/product_from_image")
+async def api_llm_product_from_image(req: ProductFromImageRequest):
+    try:
+        data = gen_product_from_image(req.image_url, model=req.model)
+        return {"product": data, "input_image_url": req.image_url}
+    except Exception as e:
+        return {"product": None, "error": str(e), "input_image_url": req.image_url}
 # ---------------- Flows/Drafts ----------------
 class DraftSaveRequest(BaseModel):
     product: ProductInput

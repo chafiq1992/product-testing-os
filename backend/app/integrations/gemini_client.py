@@ -480,6 +480,7 @@ def gen_variant_images_from_image(
     image_url: str,
     style_prompt: str | None = None,
     max_variants: int | None = None,
+    variants_override: list[dict] | None = None,
 ) -> list[dict]:
     """Generate per-variant product images plus a composite image.
 
@@ -487,8 +488,17 @@ def gen_variant_images_from_image(
       - { kind: "variant", name, description, image, prompt }
       - { kind: "composite", image, prompt }
     """
-    # First analyze variants
-    variants = analyze_variants_from_image(image_url, max_variants=max_variants)
+    # Use provided variants if available; otherwise analyze from image
+    variants: list[dict] = []
+    if variants_override:
+        for i, v in enumerate(variants_override):
+            if not isinstance(v, dict):
+                continue
+            name = (v or {}).get("name") or f"Variant {i+1}"
+            desc = (v or {}).get("description") or "Product variant"
+            variants.append({"name": name, "description": desc, "attributes": {}})
+    if not variants:
+        variants = analyze_variants_from_image(image_url, max_variants=max_variants)
     if not variants:
         variants = [{"name": "Variant", "description": "Product variant", "attributes": {}}]
 
@@ -526,7 +536,7 @@ def gen_variant_images_from_image(
             desc = v.get("description") or ""
             style = f"{base_style} " + (style_prompt or "")
             prompt = (
-                f"Create a clean standalone product image isolating the '{name}' shoe variant from the reference photo. "
+                f"Create a clean standalone product image isolating the '{name}' product variant from the reference photo. "
                 f"Use the visual characteristics described: {desc}. {style}"
             )
             try:
@@ -565,7 +575,7 @@ def gen_variant_images_from_image(
         names = ", ".join([v.get("name") or "Variant" for v in variants])
         style = f"{base_style} " + (style_prompt or "")
         comp_prompt = (
-            f"Create a single hero product image showing all distinct shoe variants together: {names}. "
+            f"Create a single hero product image showing all distinct product variants together: {names}. "
             f"Arrange them in a balanced composition, visually appealing and well-posed. {style}"
         )
         try:

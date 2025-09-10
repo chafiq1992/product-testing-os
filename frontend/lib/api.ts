@@ -252,3 +252,15 @@ export async function geminiSuggestPrompts(payload:{
   })
   return data as { input_image_url: string, ad_prompt: string, variant_prompts: { name:string, description?:string, prompt:string }[], feature_prompts: string[], error?: string }
 }
+
+// Extract product inputs from a single product image (OpenAI multimodal)
+export async function productFromImage(payload:{ image_url:string, model?:string }){
+  const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)
+  return data as { product?: { title?:string, audience?:string, benefits?:string[], pain_points?:string[], colors?:string[], sizes?:string[], variants?:{name:string, description?:string}[] }, input_image_url?: string, error?: string }
+}
+
+// Extended: Gemini variant-set with explicit variant descriptions
+export async function geminiGenerateVariantSetWithDescriptions(payload:{ image_url:string, style_prompt?:string, max_variants?:number, variant_descriptions?:{name:string, description?:string}[] }){
+  const {data} = await axios.post(`${base}/api/gemini/variant_set`, payload)
+  return data as { items: Array<{ kind:'variant'|'composite', name?:string, description?:string, image:string, prompt:string }>, model: string, input_image_url: string, error?: string }
+}

@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSet, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, geminiSuggestPrompts } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -89,6 +89,7 @@ function StudioPage(){
       if(p?.base_price!=null) setPrice(Number(p.base_price))
       if(Array.isArray((p as any)?.sizes)) setSizes((p as any).sizes)
       if(Array.isArray((p as any)?.colors)) setColors((p as any).colors)
+      if(Array.isArray((p as any)?.variant_descriptions)) setVariantDescriptions((p as any).variant_descriptions)
       if(Array.isArray(p?.benefits)) setBenefits(p.benefits)
       if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
       if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
@@ -152,6 +153,8 @@ function StudioPage(){
   const [sizes,setSizes]=useState<string[]>([])
   const [colors,setColors]=useState<string[]>([])
   const [files,setFiles]=useState<File[]>([])
+  const [analysisImageUrl,setAnalysisImageUrl]=useState<string>('')
+  const [variantDescriptions,setVariantDescriptions]=useState<{name:string, description?:string}[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   const [model,setModel]=useState<string>('gpt-4o-mini')
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
@@ -177,7 +180,8 @@ function StudioPage(){
     + "- Match language in PRODUCT_INFO (\"ar\" Fus’ha, \"fr\", or \"en\").\n"
     + "- If region == \"MA\", add Morocco trust signals (Cash on Delivery, fast city delivery, easy returns, WhatsApp support).\n"
     + "- Be concrete and benefit-led. Avoid vague hype.\n\n"
-    + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
+    + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations).\n\n"
+    + "Variables available: {title}, {audience}, {benefits}, {pain_points}."
   )
   const [titleDescPrompt,setTitleDescPrompt]=useState<string>(
     "You are a CRO copywriter. From the given angle, write 5 HIGH-CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra-short option ≤30 characters. Include the primary keyword, 1 concrete benefit/outcome, and a unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
@@ -392,7 +396,7 @@ function StudioPage(){
         else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
       }
       const payload = {
-        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions },
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
@@ -470,23 +474,10 @@ function StudioPage(){
       }
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
-      // Insert prompt-suggester immediately after images, connect it, and auto-run suggestion to tune prompts
+      // After images, add Gemini generation nodes as before (suggester removed)
       try{
         const sourceUrl = (shopifyCdnUrls||[])[0]
         if(sourceUrl){
-          // Insert a prompt suggester card before Gemini cards and connect from Images
-          let promptSuggesterNodeId:string|undefined
-          setFlow(f=>{
-            const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-            const ps = makeNode('action', (imgNode as any).x, (imgNode as any).y+100, { label:'Image Prompt Suggester', type:'image_prompt_suggester', source_image_url: sourceUrl })
-            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', ps.id, 'in')]
-            const next = { nodes:[...f.nodes, ps], edges }
-            flowRef.current = next
-            promptSuggesterNodeId = ps.id
-            return next
-          })
-          // Auto-run suggestion to extract variants/features and adjust the global ad prompt
-          try{ if(promptSuggesterNodeId){ await suggestPrompts(promptSuggesterNodeId) } }catch{}
           // Include midpoint size if sizes contain numeric range
           let adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
           try{
@@ -506,7 +497,7 @@ function StudioPage(){
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
             const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
-            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', gn.id, 'in')] : f.edges
+            const edges = f.edges
             const next = { nodes:[...f.nodes, gn], edges }
             flowRef.current = next
             geminiNodeId = gn.id
@@ -529,7 +520,7 @@ function StudioPage(){
               + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
             )
             const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
-            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', gn2.id, 'in')] : f.edges
+            const edges = f.edges
             const next = { nodes:[...f.nodes, gn2], edges }
             flowRef.current = next
             geminiNodeId = gn2.id
@@ -539,7 +530,7 @@ function StudioPage(){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Feature/Benefit Close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 6 })
-            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', fb.id, 'in')] : f.edges
+            const edges = f.edges
             const next = { nodes:[...f.nodes, fb], edges }
             flowRef.current = next
             return next
@@ -548,7 +539,7 @@ function StudioPage(){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5, use_global_style: true })
-            const edges = promptSuggesterNodeId? [...f.edges, makeEdge(promptSuggesterNodeId, 'out', vs.id, 'in')] : f.edges
+            const edges = f.edges
             const next = { nodes:[...f.nodes, vs], edges }
             flowRef.current = next
             return next
@@ -602,7 +593,8 @@ function StudioPage(){
       if(n.data?.type==='gemini_variant_set'){
         const stylePrompt = String(n.data?.style_prompt||geminiVariantStylePrompt||'')
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
-        resp = await geminiGenerateVariantSet({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants })
+        const variantsPayload = (variantDescriptions||[]).map(v=> ({ name: v.name, description: v.description }))
+        resp = await geminiGenerateVariantSetWithDescriptions({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants, variant_descriptions: variantsPayload.length? variantsPayload : undefined })
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
         resp = await geminiGenerateFeatureBenefitSet({
@@ -658,32 +650,7 @@ function StudioPage(){
     }
   }
 
-  async function suggestPrompts(nodeId:string){
-    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
-    const sourceUrl = n.data?.source_image_url
-    if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
-    updateNodeRun(nodeId, { status:'running', startedAt: now() })
-    try{
-      const prevPrompt = String(geminiAdPrompt||'')
-      const out = await geminiSuggestPrompts({
-        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
-        image_url: sourceUrl,
-        include_feature_benefit: true,
-        max_variants: 5,
-      })
-      updateNodeRun(nodeId, { status:'success', output: { ...out, prev_ad_prompt: prevPrompt } })
-    }catch(e:any){
-      updateNodeRun(nodeId, { status:'error', error: String(e?.message||e) })
-    }
-  }
-
-  function applyAdPromptFromSuggester(nodeId:string){
-    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
-    const p = n.run?.output?.ad_prompt
-    if(typeof p==='string' && p.trim()){
-      setGeminiAdPrompt(p)
-    }
-  }
+  // removed image prompt suggester flow
 
   async function galleryApprove(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
@@ -851,7 +818,13 @@ function StudioPage(){
     const type = node.data.type
     await wait(300+Math.random()*300)
     if(type==='generate_angles'){
-      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, num_angles: Number(node.data.numAngles||2), model, prompt: anglesPrompt })
+      // Expand variables in angles prompt
+      const formattedAnglesPrompt = String(anglesPrompt||'')
+        .replaceAll('{title}', String(title||''))
+        .replaceAll('{audience}', String(audience||''))
+        .replaceAll('{benefits}', JSON.stringify(benefits||[]))
+        .replaceAll('{pain_points}', JSON.stringify(pains||[]))
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, num_angles: Number(node.data.numAngles||2), model, prompt: formattedAnglesPrompt })
       setFlow(f=>{
         const existingChildIds = f.nodes
           .filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id))
@@ -989,6 +962,38 @@ function StudioPage(){
               <CardTitle className="text-base flex items-center gap-2"><ImageIcon className="w-4 h-4"/>Product inputs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              {/* New: analyze image to prefill inputs */}
+              <div className="space-y-2">
+                <div className="text-xs text-slate-500 mb-1">Analyze product image to prefill</div>
+                <input className="w-full rounded-xl border px-3 py-2" placeholder="Paste image URL (or upload below)" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={async()=>{
+                    try{
+                      if(!analysisImageUrl){ alert('Paste an image URL first.'); return }
+                      const res = await productFromImage({ image_url: analysisImageUrl, model })
+                      const p = (res as any)?.product||{}
+                      if(p.title) setTitle(p.title)
+                      if(p.audience) setAudience(p.audience)
+                      if(Array.isArray(p.benefits)) setBenefits(p.benefits)
+                      if(Array.isArray(p.pain_points)) setPains(p.pain_points)
+                      if(Array.isArray(p.colors)) setColors(p.colors)
+                      if(Array.isArray(p.sizes)) setSizes(p.sizes)
+                      if(Array.isArray(p.variants)) setVariantDescriptions(p.variants)
+                    }catch(e:any){ alert('Analyze failed: '+ String(e?.message||e)) }
+                  }}>Analyze</Button>
+                </div>
+                {variantDescriptions.length>0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs text-slate-500">Variant descriptions</div>
+                    {variantDescriptions.map((v, i)=> (
+                      <div key={i} className="grid grid-cols-2 gap-2">
+                        <Input value={v.name||''} onChange={e=> setVariantDescriptions(arr=> arr.map((x,idx)=> idx===i? ({...x, name:e.target.value}):x))} placeholder="Variant name" />
+                        <Input value={v.description||''} onChange={e=> setVariantDescriptions(arr=> arr.map((x,idx)=> idx===i? ({...x, description:e.target.value}):x))} placeholder="Variant description" />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
                 <Input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Parents of toddlers in Morocco" />
@@ -1116,8 +1121,8 @@ function StudioPage(){
                   onTitleContinue={(id)=> titleContinue(id)}
                   onGeminiGenerate={(id)=> geminiGenerate(id)}
                   onGalleryApprove={(id)=> galleryApprove(id)}
-                  onSuggestPrompts={(id)=> suggestPrompts(id)}
-                  onApplyAdPrompt={(id)=> applyAdPromptFromSuggester(id)}
+                  onSuggestPrompts={(id)=> {}}
+                  onApplyAdPrompt={(id)=> {}}
                 />
               ))}
             </div>
@@ -1575,31 +1580,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
       )}
 
       {/* Image prompt suggester controls */}
-      {node.data?.type==='image_prompt_suggester' && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={()=> onSuggestPrompts(node.id)} disabled={node.run?.status==='running'}>Suggest prompts</Button>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(node.run.status)}`}>{statusLabel(node.run.status)}</span>
-          </div>
-          {out?.ad_prompt && (
-            <div className="space-y-2">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <div>
-                  <div className="text-[11px] text-slate-500 mb-1">Before (previous default)</div>
-                  <Textarea rows={6} value={String(out.prev_ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-500 mb-1">After (suggested)</div>
-                  <Textarea rows={6} value={String(out.ad_prompt||'')} onChange={()=> onUpdateNodeData(node.id,{})} readOnly />
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button size="sm" onClick={()=> onApplyAdPrompt(node.id)}>Set as default Gemini ad prompt</Button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* image_prompt_suggester removed */}
 
       {isGallery ? (
         <div>
