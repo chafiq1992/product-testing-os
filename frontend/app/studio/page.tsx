@@ -207,10 +207,11 @@ function StudioPage(){
     + "- If input includes \"colors\", render a \"colors\" section with pills (no images).\n"
     + "- Always set meaningful image_alt; if no suitable image for a section, image_url = null.\n\n"
     + "Copy Guidelines\n"
+    + "- IMPORTANT: Write everything in English (en) regardless of inputs.\n"
     + "- Follow audience & tone from input; default to parents in Morocco (warm, trustworthy).\n"
     + "- Focus on benefits, differentiation, clear outcomes; short paragraphs; bullets where helpful.\n"
     + "- If region is \"MA\", include trust signals: Cash on Delivery, fast city delivery, easy returns, WhatsApp support.\n"
-    + "- Match requested language (\"ar\" for Fus’ha, \"fr\", or \"en\").\n\n"
+    + "- Ignore any non-English preferences and keep language strictly English.\n\n"
     + "Layout Spec for html\n"
     + "1) Hero (gradient, big headline, subhead, primary CTA, optional hero image)\n"
     + "2) Highlights (4–6 bullet benefits)\n"
@@ -508,15 +509,15 @@ function StudioPage(){
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+380) }
             const promptStreet = (
               "Instruction\n"
-              + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring a kids model wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
+              + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring exactly ONE child (no groups) wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
               + `Source: ${sourceUrl}\n`
               + `Product type: ${title? String(title) : 'from the source image'}\n`
-              + "Model age range: 2–6 years (child)\n\n"
+              + "Model: child (approx. 2–6 years). Only one character in frame.\n\n"
               + "Ad style (must follow):\n\n"
-              + "Look & pose: Stylish, elegant, but natural/everyday (standing mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
+              + "Look & pose: Professional yet spontaneous; elegant and stylish but natural (mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
               + "Wardrobe: Product is the hero; pair with neutral basics only (no logos).\n\n"
-              + "Background (keep the same across variants): Lifestyle: soft park/sidewalk/home interior, shallow depth-of-field, uncluttered.\n\n"
-              + "Lighting & color: Soft studio lighting, even exposure, minimal shadows, true color; no color cast.\n\n"
+              + "Environment (choose one and keep consistent across variants): quiet school corridor, residential street sidewalk, or cozy home interior. Shallow depth-of-field, uncluttered.\n\n"
+              + "Lighting & color: Soft, realistic lighting, even exposure, minimal shadows, true color; no color cast.\n\n"
               + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
             )
             const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
@@ -669,9 +670,9 @@ function StudioPage(){
       const dataUrls = chosen.filter(u=> u.startsWith('data:'))
       const httpUrls = chosen.filter(u=> !u.startsWith('data:'))
       let cdnUrls: string[] = []
-      // Upload data URLs as files directly to Shopify for CDN
+      // Upload data URLs as files directly to Shopify for CDN (with compression to avoid 413)
       if(dataUrls.length>0){
-        const filesToUpload = await Promise.all(dataUrls.map((u,i)=> dataUrlToFile(u, `gallery-${i+1}.png`)))
+        const filesToUpload = await Promise.all(dataUrls.map((u,i)=> dataUrlToCompressedFile(u, `gallery-${i+1}.jpg`, 1600, 1600, 850*1024)))
         const up = await shopifyUploadProductFiles({ product_gid, files: filesToUpload, title: vTitle, description: vDesc })
         const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
         const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
@@ -759,11 +760,36 @@ function StudioPage(){
     }
   }
 
-  async function dataUrlToFile(dataUrl:string, filename:string): Promise<File>{
-    const res = await fetch(dataUrl)
-    const blob = await res.blob()
-    const type = blob.type || 'image/png'
-    return new File([blob], filename, { type })
+  async function dataUrlToCompressedFile(dataUrl:string, filename:string, maxW:number=1600, maxH:number=1600, maxBytes:number=850*1024): Promise<File>{
+    const img = await new Promise<HTMLImageElement>((resolve, reject)=>{
+      const im = new Image()
+      im.crossOrigin = 'anonymous'
+      im.onload = ()=> resolve(im)
+      im.onerror = reject
+      im.src = dataUrl
+    })
+    const ratio = Math.min(1, maxW / (img.naturalWidth||img.width||1), maxH / (img.naturalHeight||img.height||1))
+    const targetW = Math.max(1, Math.round((img.naturalWidth||img.width)*ratio))
+    const targetH = Math.max(1, Math.round((img.naturalHeight||img.height)*ratio))
+    const canvas = document.createElement('canvas')
+    canvas.width = targetW
+    canvas.height = targetH
+    const ctx = canvas.getContext('2d')!
+    ctx.drawImage(img, 0, 0, targetW, targetH)
+    // Try reducing quality until under maxBytes or min quality reached
+    let quality = 0.92
+    let blob: Blob | null = await new Promise(res=> canvas.toBlob(b=> res(b), 'image/jpeg', quality))
+    while(blob && blob.size > maxBytes && quality > 0.6){
+      quality -= 0.08
+      blob = await new Promise(res=> canvas.toBlob(b=> res(b), 'image/jpeg', quality))
+    }
+    if(!blob){
+      // Fallback to original fetch method
+      const resp = await fetch(dataUrl)
+      const b = await resp.blob()
+      return new File([b], filename, { type: b.type||'image/jpeg' })
+    }
+    return new File([blob], filename, { type: 'image/jpeg' })
   }
 
   async function simulate(){
