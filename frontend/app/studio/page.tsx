@@ -1153,8 +1153,8 @@ function StudioPage(){
                   onAngleApprove={(id)=> angleApprove(id)}
                   onTitleContinue={(id)=> titleContinue(id)}
                   onGeminiGenerate={(id)=> geminiGenerate(id)}
-                  onSuggestPrompts={(id)=> suggestPrompts(id)}
-                  onApplyAdPrompt={(id)=> applyAdPromptFromSuggester(id)}
+                  onSuggestPrompts={(id)=> {}}
+                  onApplyAdPrompt={(id)=> {}}
                   onGalleryApprove={(id)=> galleryApprove(id)}
                 />
               )}
