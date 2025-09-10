@@ -727,33 +727,11 @@ function StudioPage(){
             prompt: n.data?.landing_prompt||landingCopyPrompt,
             image_urls: cdnUrls,
             landing_copy: lc,
+            title: vTitle,
+            description: vDesc,
           }
         })
       }
-      let metaNodeId:string|undefined
-      setFlow(f=>{
-        const defaults = {
-          label:'Meta Ads',
-          type:'meta_ads_launch',
-          headline: vTitle,
-          primary_text: vDesc || '',
-          description: '',
-          call_to_action: 'SHOP_NOW',
-          landing_url: page.page_url||'',
-          image_url: (cdnUrls||[])[0]||'',
-          candidate_images: cdnUrls||[],
-          adset_budget: adsetBudget===''? 9 : Number(adsetBudget),
-          advantage_plus: advantagePlus,
-          saved_audience_id: selectedSavedAudience||'',
-          countries: countries||[],
-        }
-        const mn = makeNode('action', n.x+600, n.y, defaults)
-        const edges = [...f.edges, makeEdge(landingNodeId!, 'out', mn.id, 'in')]
-        const next = { nodes:[...f.nodes, mn], edges }
-        flowRef.current = next
-        metaNodeId = mn.id
-        return next
-      })
       updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
@@ -964,6 +942,10 @@ function StudioPage(){
           <Rocket className="w-6 h-6 text-blue-600" />
           <h1 className="font-semibold text-lg">Product Testing OS — Flow Studio</h1>
           <Badge className="bg-blue-100 text-blue-700">New UI</Badge>
+          <nav className="ml-4 flex items-center gap-1 text-sm">
+            <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Product</span>
+            <a href="/ads" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Ads</a>
+          </nav>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run flow</Button>
@@ -1625,8 +1607,23 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                   </div>
                 ))}
               </div>
-              <div className="flex justify-end mt-2">
+              <div className="flex items-center gap-2 justify-end mt-2">
                 <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean)}>Approve</Button>
+                {(()=>{
+                  try{
+                    const url = String(out?.url||'')
+                    const title = String((node.data?.title||'')||'')
+                    const imgsSel = Object.entries(node.data?.selected||{}).filter(([,v])=>!!v).map(([k])=>k)
+                    const q = new URLSearchParams()
+                    if(url) q.set('landing_url', url)
+                    if(title) q.set('title', title)
+                    if(imgsSel.length>0) q.set('images', imgsSel.map(encodeURIComponent).join(','))
+                    const href = '/ads' + (q.toString()? ('?'+q.toString()):'')
+                    return (
+                      <a className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50" href={href} target="_blank" rel="noreferrer">Create Ad</a>
+                    )
+                  }catch{return null}
+                })()}
               </div>
             </div>
           ) : (
