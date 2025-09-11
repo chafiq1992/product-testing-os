@@ -53,6 +53,25 @@ export default function AdsClient(){
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [running,setRunning]=useState<boolean>(false)
 
+  // Accept handoff from Studio via sessionStorage
+  useEffect(()=>{
+    try{
+      const raw = sessionStorage.getItem('ptos_transfer_landing')
+      if(raw){
+        const data = JSON.parse(raw||'{}')||{}
+        if(typeof data.landing_url==='string' && data.landing_url){ setLandingUrl(data.landing_url) }
+        if(typeof data.title==='string' && data.title){ setTitle(data.title) }
+        if(Array.isArray(data.images) && data.images.length>0){
+          const imgs = data.images.filter((u:string)=> typeof u==='string' && u)
+          setCandidateImages(imgs)
+          if(!sourceImage && imgs[0]) setSourceImage(imgs[0])
+        }
+        // Clear after consuming to avoid stale data
+        sessionStorage.removeItem('ptos_transfer_landing')
+      }
+    }catch{}
+  },[])
+
   useEffect(()=>{
     if(!selectedImage && adImages.length>0){ setSelectedImage(adImages[0]) }
   },[adImages,selectedImage])
@@ -205,6 +224,34 @@ export default function AdsClient(){
         </aside>
 
         <section className="col-span-12 md:col-span-6 space-y-3">
+          {/* Simple flow visual: Landing Page card -> (on run) Angles card */}
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Flow canvas</CardTitle></CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-3">
+                <div className="border rounded-xl p-3 min-w-[180px]">
+                  <div className="text-sm font-semibold">Landing Page</div>
+                  <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">{landingUrl || 'No URL'}</div>
+                  {candidateImages[0] && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
+                  )}
+                </div>
+                {/* Arrow */}
+                <svg width="36" height="12" viewBox="0 0 36 12" aria-hidden>
+                  <line x1="0" y1="6" x2="30" y2="6" stroke="#94a3b8" strokeWidth="2" />
+                  <polygon points="30,0 36,6 30,12" fill="#94a3b8" />
+                </svg>
+                {angles.length>0 && (
+                  <div className="border rounded-xl p-3 min-w-[150px]">
+                    <div className="text-sm font-semibold">Angles</div>
+                    <div className="text-xs text-slate-600">{angles.length} generated</div>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Angles</CardTitle></CardHeader>
             <CardContent>

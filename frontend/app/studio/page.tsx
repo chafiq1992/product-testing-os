@@ -688,7 +688,8 @@ function StudioPage(){
       // Deduplicate
       cdnUrls = Array.from(new Set(cdnUrls))
       // Generate landing copy with selected images
-      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: n.data?.landing_prompt||landingCopyPrompt, product_handle })
+      const enforcedEnglishPrompt = `${String(n.data?.landing_prompt||landingCopyPrompt)}\n\nCRITICAL: All copy and HTML must be in English.`
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: enforcedEnglishPrompt, product_handle })
       // Sanitize landing copy to ensure only provided CDN URLs are referenced
       const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
         const imgs = (urls||[]).filter(Boolean).slice(0,10)
@@ -731,6 +732,12 @@ function StudioPage(){
             description: vDesc,
           }
         })
+        // Push the created landing into Ads tab and navigate
+        try{
+          const transfer = { landing_url: page.page_url||null, title: vTitle, images: cdnUrls }
+          sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(transfer))
+        }catch{}
+        try{ window.location.href = '/ads' }catch{}
       }
       updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
     }catch(e:any){
@@ -1037,7 +1044,39 @@ function StudioPage(){
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Images (optional)</div>
-                <Dropzone files={files} onFiles={setFiles} />
+                <Dropzone files={files} onFiles={(incoming)=>{
+                  (async()=>{
+                    try{
+                      const newFiles = incoming
+                      setFiles(newFiles)
+                      // Try to find a created product to attach images to Shopify
+                      const snap = flowRef.current
+                      const productNode = snap.nodes.find(n=> n.data?.type==='create_product')
+                      const productGid = (productNode?.run?.output||{} as any).product_gid
+                      let urls: string[] = []
+                      if(productGid){
+                        const up = await shopifyUploadProductFiles({ product_gid: productGid, files: newFiles, title: title||undefined, description: '' })
+                        const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
+                        const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
+                        urls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
+                      }else{
+                        // Fallback to generic upload when no product exists yet
+                        const up = await uploadImages(newFiles)
+                        urls = Array.isArray(up?.urls)? up.urls : []
+                      }
+                      if(urls.length>0){
+                        setUploadedUrls(urls)
+                        // Prefill Analyze image URL
+                        if(!analysisImageUrl) setAnalysisImageUrl(urls[0])
+                        // If gallery node exists, append newly available images
+                        try{
+                          const gal = (flowRef.current.nodes.find(n=> n.data?.type==='image_gallery'))
+                          if(gal){ await appendImagesToGallery(gal.id, urls) }
+                        }catch{}
+                      }
+                    }catch(e){ /* silent */ }
+                  })()
+                }} />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">LLM model</div>
@@ -1553,6 +1592,27 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         </div>
       )}
 
+      {/* Create Landing controls */}
+      {node.data?.type==='create_landing' && (
+        <div className="space-y-2">
+          <div className="text-[11px] text-slate-500">Landing page created.</div>
+          {(()=>{
+            try{
+              const url = String((node.run?.output||{} as any)?.url||'')
+              const title = String(((node.run?.output||{} as any)?.title||'')||'')
+              const imgs = Array.isArray(((node.run?.output||{} as any)?.image_urls))? ((node.run?.output||{} as any).image_urls) : []
+              const payload = { landing_url: url, title, images: imgs }
+              return (
+                <div className="flex items-center gap-2 justify-end">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ window.location.href = '/ads' }catch{} }}>Create Ad</Button>
+                  {url && (<a href={url} target="_blank" rel="noreferrer" className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</a>)}
+                </div>
+              )
+            }catch{return null}
+          })()}
+        </div>
+      )}
+
       {/* Gemini ad images controls */}
       {node.data?.type==='gemini_ad_images' && (
         <div className="space-y-2">
@@ -1609,21 +1669,6 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               </div>
               <div className="flex items-center gap-2 justify-end mt-2">
                 <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean)}>Approve</Button>
-                {(()=>{
-                  try{
-                    const url = String(out?.url||'')
-                    const title = String((node.data?.title||'')||'')
-                    const imgsSel = Object.entries(node.data?.selected||{}).filter(([,v])=>!!v).map(([k])=>k)
-                    const q = new URLSearchParams()
-                    if(url) q.set('landing_url', url)
-                    if(title) q.set('title', title)
-                    if(imgsSel.length>0) q.set('images', imgsSel.map(encodeURIComponent).join(','))
-                    const href = '/ads' + (q.toString()? ('?'+q.toString()):'')
-                    return (
-                      <a className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50" href={href} target="_blank" rel="noreferrer">Create Ad</a>
-                    )
-                  }catch{return null}
-                })()}
               </div>
             </div>
           ) : (
