@@ -53,6 +53,24 @@ export default function AdsClient(){
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [running,setRunning]=useState<boolean>(false)
 
+  // If arriving without transfer payload, try to re-open last saved draft
+  useEffect(()=>{
+    try{
+      const cachedId = sessionStorage.getItem('ptos_last_test_id')
+      if(!cachedId) return
+      const cached = sessionStorage.getItem(`flow_cache_${cachedId}`)
+      if(cached){
+        const p = JSON.parse(cached||'{}')
+        if(typeof p?.settings?.saved_audience_id==='string') setSavedAudienceId(p.settings.saved_audience_id)
+        if(Array.isArray(p?.settings?.countries)) setCountries((p.settings.countries||[]).join(','))
+        if(typeof p?.settings?.advantage_plus==='boolean') setAdvantagePlus(!!p.settings.advantage_plus)
+        if(typeof p?.title==='string' && !title) setTitle(p.title)
+        const imgs = Array.isArray(p?.uploaded_images)? p.uploaded_images : []
+        if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
+      }
+    }catch{}
+  },[])
+
   // Accept handoff from Studio via sessionStorage
   useEffect(()=>{
     try{
@@ -113,6 +131,58 @@ export default function AdsClient(){
       setAngles(arr)
       setSelectedAngleIdx(0)
     }catch(e:any){ alert('Angles failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  // Flow canvas state for Ads (nodes, edges) to mirror Studio UX
+  type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
+  type Port = 'in'|'out'
+  type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
+  type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
+  let idSeq=1; const nextId=()=> `a${idSeq++}`
+  const [nodes,setNodes]=useState<FlowNode[]>(()=>{
+    const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'' } }
+    return [base]
+  })
+  const [edges,setEdges]=useState<FlowEdge[]>([])
+  useEffect(()=>{
+    // Keep landing node data in sync with inputs
+    setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image } }): n))
+  },[landingUrl,candidateImages])
+
+  function addOrGetNode(type:NodeType, near:{x:number,y:number}, data:any={}){
+    const existing = nodes.find(n=> n.type===type)
+    if(existing) return existing
+    const n:FlowNode = { id: nextId(), type, x: near.x+300, y: near.y, data }
+    setNodes(ns=> [...ns, n])
+    return n
+  }
+  function connect(a:FlowNode, b:FlowNode){
+    const e:FlowEdge = { id: nextId(), from:a.id, fromPort:'out', to:b.id, toPort:'in' }
+    setEdges(es=> [...es, e])
+  }
+
+  async function runFlow(){
+    try{
+      setRunning(true)
+      const landing = nodes.find(n=> n.type==='landing')!
+      // 1) Angles
+      const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      setAngles(arr)
+      const ang = addOrGetNode('angles', landing, { count: arr.length })
+      connect(landing, ang)
+      // 2) Ad Copy node populated from selected angle (user can change after)
+      const copy = addOrGetNode('ad_copy', ang, { headlines: (arr[0]?.headlines||[]), primaries: (Array.isArray(arr[0]?.primaries)? arr[0].primaries : []) })
+      connect(ang, copy)
+      // 3) Gemini Images
+      const gi = addOrGetNode('gemini_images', copy, { from: sourceImage||candidateImages[0]||'' })
+      connect(copy, gi)
+      // 4) Meta Ad
+      const ma = addOrGetNode('meta_ad', gi, { landing_url: landingUrl, candidate_images: (adImages.length? adImages : candidateImages) })
+      connect(gi, ma)
+    }catch(e:any){ alert('Run failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
 
@@ -228,26 +298,38 @@ export default function AdsClient(){
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">Flow canvas</CardTitle></CardHeader>
             <CardContent>
-              <div className="flex items-center gap-3">
-                <div className="border rounded-xl p-3 min-w-[180px]">
-                  <div className="text-sm font-semibold">Landing Page</div>
-                  <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">{landingUrl || 'No URL'}</div>
-                  {candidateImages[0] && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
-                  )}
+              <div className="relative overflow-hidden">
+                <div className="flex items-center gap-3">
+                  {nodes.map(n=> (
+                    <div key={n.id} className="border rounded-xl p-3 min-w-[180px]">
+                      <div className="text-sm font-semibold">
+                        {n.type==='landing'?'Landing Page': n.type==='angles'?'Angles': n.type==='ad_copy'?'Ad Copy': n.type==='gemini_images'?'Gemini Images':'Meta Ad'}
+                      </div>
+                      {n.type==='landing' && (
+                        <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">{landingUrl || 'No URL'}</div>
+                      )}
+                      {n.type==='angles' && (
+                        <div className="text-xs text-slate-600">{angles.length||n.data?.count||0} generated</div>
+                      )}
+                      {n.type==='ad_copy' && (
+                        <div className="text-xs text-slate-600">{(headlines.length||0)} headlines</div>
+                      )}
+                      {n.type==='gemini_images' && (
+                        <div className="text-xs text-slate-600">{adImages.length||0} images</div>
+                      )}
+                      {n.type==='meta_ad' && (
+                        <div className="text-xs text-slate-600">Ready</div>
+                      )}
+                      {n.type==='landing' && candidateImages[0] && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
+                      )}
+                    </div>
+                  ))}
                 </div>
-                {/* Arrow */}
-                <svg width="36" height="12" viewBox="0 0 36 12" aria-hidden>
-                  <line x1="0" y1="6" x2="30" y2="6" stroke="#94a3b8" strokeWidth="2" />
-                  <polygon points="30,0 36,6 30,12" fill="#94a3b8" />
-                </svg>
-                {angles.length>0 && (
-                  <div className="border rounded-xl p-3 min-w-[150px]">
-                    <div className="text-sm font-semibold">Angles</div>
-                    <div className="text-xs text-slate-600">{angles.length} generated</div>
-                  </div>
-                )}
+              </div>
+              <div className="mt-2 flex justify-end">
+                <Button size="sm" variant="outline" onClick={runFlow} disabled={running}>Run</Button>
               </div>
             </CardContent>
           </Card>

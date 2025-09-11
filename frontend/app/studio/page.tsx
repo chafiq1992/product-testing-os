@@ -121,7 +121,21 @@ function StudioPage(){
   // preload from existing test when id provided
   useEffect(()=>{
     (async()=>{
-      if(!testParam) return
+      if(!testParam){
+        // Fallback: hydrate from last cached draft if available
+        try{
+          const lastId = sessionStorage.getItem('ptos_last_test_id')
+          if(lastId){
+            const cached = sessionStorage.getItem(`flow_cache_${lastId}`)
+            if(cached){
+              const p = JSON.parse(cached)
+              hydrateFromPayload(p)
+              setTestId(lastId)
+            }
+          }
+        }catch{}
+        return
+      }
       try{
         // 1) Hydrate instantly from session cache if available
         try{
@@ -309,6 +323,17 @@ function StudioPage(){
   function finish(nodeId:string, started:number){
     const ms = Math.max(1, Math.round(performance.now()-started))
     updateNodeRun(nodeId, { finishedAt: now(), ms })
+  }
+
+  // Persist last draft id for cross-tab navigation (e.g., return from Ads)
+  useEffect(()=>{ try{ if(testId){ sessionStorage.setItem('ptos_last_test_id', testId) } }catch{} },[testId])
+
+  // Helper: Save draft then navigate to Ads, ensuring state is in DB when leaving
+  async function handleGoToAds(){
+    try{
+      await onSaveDraft()
+    }catch{}
+    try{ window.location.href = '/ads' }catch{}
   }
 
   const dragRef = useRef<{id:string|null,offsetX:number,offsetY:number}>({id:null,offsetX:0,offsetY:0})
@@ -951,7 +976,7 @@ function StudioPage(){
           <Badge className="bg-blue-100 text-blue-700">New UI</Badge>
           <nav className="ml-4 flex items-center gap-1 text-sm">
             <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Product</span>
-            <a href="/ads" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Ads</a>
+            <button className="px-3 py-1.5 rounded hover:bg-slate-100" onClick={handleGoToAds}>Create Ads</button>
           </nav>
         </div>
         <div className="flex items-center gap-2">
