@@ -5,6 +5,12 @@ import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
 import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign } from '@/lib/api'
 
+// Flow graph types used by canvas helpers
+export type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
+export type Port = 'in'|'out'
+export type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
+export type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
+
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
   const base='rounded-xl font-semibold transition inline-flex items-center justify-center'
   const sz = size==='sm' ? 'text-sm px-3 py-1.5' : 'px-4 py-2'
@@ -144,10 +150,6 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
-  type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
-  type Port = 'in'|'out'
-  type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
-  type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
   let idSeq=1; const nextId=()=> `a${idSeq++}`
   const [nodes,setNodes]=useState<FlowNode[]>(()=>{
     const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'' } }
