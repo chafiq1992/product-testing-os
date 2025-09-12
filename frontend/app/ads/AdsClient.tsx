@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone } from 'lucide-react'
@@ -52,6 +52,12 @@ export default function AdsClient(){
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [running,setRunning]=useState<boolean>(false)
+  const [zoom,setZoom]=useState<number>(1)
+  const [pan,setPan]=useState<{x:number,y:number}>({x:0,y:0})
+  const canvasRef = useRef<HTMLDivElement|null>(null)
+  const [selectedNodeId,setSelectedNodeId]=useState<string|null>(null)
+  const dragRef = useRef<{ id:string, startX:number, startY:number, nodeStartX:number, nodeStartY:number }|null>(null)
+  const panningRef = useRef<{ startX:number, startY:number, panStartX:number, panStartY:number }|null>(null)
 
   // If arriving without transfer payload, try to re-open last saved draft
   useEffect(()=>{
@@ -293,156 +299,88 @@ export default function AdsClient(){
           </Card>
         </aside>
 
-        <section className="col-span-12 md:col-span-6 space-y-3">
-          {/* Simple flow visual: Landing Page card -> (on run) Angles card */}
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Flow canvas</CardTitle></CardHeader>
-            <CardContent>
-              <div className="relative overflow-hidden">
-                <div className="flex items-center gap-3">
-                  {nodes.map(n=> (
-                    <div key={n.id} className="border rounded-xl p-3 min-w-[180px]">
-                      <div className="text-sm font-semibold">
-                        {n.type==='landing'?'Landing Page': n.type==='angles'?'Angles': n.type==='ad_copy'?'Ad Copy': n.type==='gemini_images'?'Gemini Images':'Meta Ad'}
-                      </div>
-                      {n.type==='landing' && (
-                        <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">{landingUrl || 'No URL'}</div>
-                      )}
-                      {n.type==='angles' && (
-                        <div className="text-xs text-slate-600">{angles.length||n.data?.count||0} generated</div>
-                      )}
-                      {n.type==='ad_copy' && (
-                        <div className="text-xs text-slate-600">{(headlines.length||0)} headlines</div>
-                      )}
-                      {n.type==='gemini_images' && (
-                        <div className="text-xs text-slate-600">{adImages.length||0} images</div>
-                      )}
-                      {n.type==='meta_ad' && (
-                        <div className="text-xs text-slate-600">Ready</div>
-                      )}
-                      {n.type==='landing' && candidateImages[0] && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
-                      )}
+        <section className="col-span-12 md:col-span-6 relative">
+          <div className="flex items-center justify-between px-2 py-1">
+            <div className="text-sm text-slate-500">Flow canvas</div>
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-slate-500">Zoom</div>
+              <input type="range" min={50} max={140} step={10} value={zoom*100} onChange={e=>setZoom(Number(e.target.value)/100)} className="w-40"/>
+              <Button size="sm" variant="outline" onClick={runFlow} disabled={running}>Run</Button>
+            </div>
+          </div>
+          <Separator className="mb-2"/>
+          <div
+            ref={canvasRef}
+            className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border"
+            onMouseDown={(e)=>{
+              if(e.currentTarget === e.target){
+                panningRef.current = { startX: e.clientX, startY: e.clientY, panStartX: pan.x, panStartY: pan.y }
+              }
+            }}
+            onMouseUp={()=>{ dragRef.current = null; panningRef.current = null }}
+            onMouseMove={(e)=>{
+              if(dragRef.current){
+                const { id, startX, startY, nodeStartX, nodeStartY } = dragRef.current
+                const dx = (e.clientX - startX) / zoom
+                const dy = (e.clientY - startY) / zoom
+                setNodes(ns=> ns.map(n=> n.id===id? ({...n, x: Math.round(nodeStartX + dx), y: Math.round(nodeStartY + dy)}): n))
+                return
+              }
+              if(panningRef.current){
+                const { startX, startY, panStartX, panStartY } = panningRef.current
+                setPan({ x: panStartX + (e.clientX - startX), y: panStartY + (e.clientY - startY) })
+              }
+            }}
+            onContextMenu={(e)=> e.preventDefault()}
+          >
+            <GridBackdrop/>
+            <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0', willChange:'transform'}}>
+              {edges.map(e=> (
+                <Edge key={e.id} edge={e} nodes={nodes} active={false} />
+              ))}
+              {nodes.map(n=> (
+                <div
+                  key={n.id}
+                  className={`absolute select-none ${selectedNodeId===n.id? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'} rounded-2xl bg-white border shadow w-[220px]`}
+                  style={{ left:n.x, top:n.y }}
+                  onMouseDown={(e)=>{
+                    e.stopPropagation()
+                    setSelectedNodeId(n.id)
+                    dragRef.current = { id:n.id, startX:e.clientX, startY:e.clientY, nodeStartX:n.x, nodeStartY:n.y }
+                  }}
+                >
+                  <div className="px-3 py-2 flex items-center justify-between">
+                    <div className="text-xs font-semibold text-slate-700">
+                      {n.type==='landing'? 'Landing Page': n.type==='angles'? 'Angles': n.type==='ad_copy'? 'Ad Copy': n.type==='gemini_images'? 'Gemini Images':'Meta Ad'}
                     </div>
-                  ))}
-                </div>
-              </div>
-              <div className="mt-2 flex justify-end">
-                <Button size="sm" variant="outline" onClick={runFlow} disabled={running}>Run</Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Angles</CardTitle></CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <div className="text-xs text-slate-500">How many:</div>
-                <input type="number" min={1} max={5} className="w-20 rounded-xl border px-2 py-1 text-sm" value={numAngles} onChange={e=> setNumAngles(Math.max(1, Math.min(5, Number(e.target.value)||3)))} />
-                <Button size="sm" variant="outline" onClick={runAngles} disabled={running}>Generate</Button>
-              </div>
-              {angles.length>0 && (
-                <div className="mt-3">
-                  <div className="flex gap-2 overflow-x-auto">
-                    {angles.map((a,i)=> (
-                      <button key={i} className={`text-xs px-2 py-1 rounded border ${i===selectedAngleIdx? 'bg-blue-600 text-white border-blue-600':'hover:bg-slate-50'}`} onClick={()=> setSelectedAngleIdx(i)}>
-                        {a?.name||`Angle ${i+1}`}
-                      </button>
-                    ))}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
+                  </div>
+                  <Separator/>
+                  <div className="p-3 text-sm text-slate-700 min-h-[64px]">
+                    {n.type==='landing' && (
+                      <div className="text-xs text-slate-500 break-words truncate max-w-[200px]">{landingUrl || 'No URL'}</div>
+                    )}
+                    {n.type==='angles' && (
+                      <div className="text-xs text-slate-600">{angles.length||n.data?.count||0} generated</div>
+                    )}
+                    {n.type==='ad_copy' && (
+                      <div className="text-xs text-slate-600">{(headlines.length||0)} headlines</div>
+                    )}
+                    {n.type==='gemini_images' && (
+                      <div className="text-xs text-slate-600">{adImages.length||0} images</div>
+                    )}
+                    {n.type==='meta_ad' && (
+                      <div className="text-xs text-slate-600">Ready</div>
+                    )}
+                    {n.type==='landing' && candidateImages[0] && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
+                    )}
                   </div>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Ad copy & headlines</CardTitle></CardHeader>
-            <CardContent>
-              {angle? (
-                <div className="space-y-3">
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Pick a headline</div>
-                    <div className="grid grid-cols-1 gap-1">
-                      {headlines.slice(0,8).map((h,i)=> (
-                        <label key={i} className="text-sm flex items-center gap-2">
-                          <input type="radio" name="headline" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
-                          <span>{h}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Pick a primary text</div>
-                    <div className="grid grid-cols-1 gap-1">
-                      {primaries.slice(0,3).map((p,i)=> (
-                        <label key={i} className="text-sm flex items-center gap-2">
-                          <input type="radio" name="primary" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
-                          <span>{p}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-sm text-slate-500">Generate angles to see headline and primary options.</div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ImageIcon className="w-4 h-4"/>Gemini ad images</CardTitle></CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate</Button>
-              </div>
-              {adImages.length>0 && (
-                <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {adImages.map((u,i)=> (
-                    <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={u} alt={`ad-${i}`} className="w-full h-28 object-cover" />
-                    </button>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Megaphone className="w-4 h-4"/>Finalize & create Meta ad</CardTitle></CardHeader>
-            <CardContent className="space-y-2">
-              <div>
-                <div className="text-xs text-slate-500 mb-1">CTA</div>
-                <select value={cta} onChange={e=>setCta(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-                  {['SHOP_NOW','LEARN_MORE','SIGN_UP','SUBSCRIBE','GET_OFFER','BUY_NOW','CONTACT_US'].map(x=> (<option key={x} value={x}>{x.replaceAll('_',' ')}</option>))}
-                </select>
-              </div>
-              <div>
-                <div className="text-xs text-slate-500 mb-1">Daily budget (USD)</div>
-                <Input type="number" min={1} value={String(budget)} onChange={e=> setBudget(e.target.value===''? 9 : Number(e.target.value))} />
-              </div>
-              <div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={advantagePlus} onChange={e=> setAdvantagePlus(e.target.checked)} />
-                  <span>Advantage+ audience</span>
-                </label>
-              </div>
-              {!advantagePlus && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Saved audience ID</div>
-                    <Input value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} placeholder="opt." />
-                  </div>
-                  <div>
-                    <div className="text-xs text-slate-500 mb-1">Countries (comma-separated)</div>
-                    <Input value={countries} onChange={e=> setCountries(e.target.value)} placeholder="US, MA" />
-                  </div>
-                </div>
-              )}
-              <div className="flex justify-end"><Button onClick={approveAndDraft} disabled={running}>Approve & Create Draft</Button></div>
-            </CardContent>
-          </Card>
+              ))}
+            </div>
+          </div>
         </section>
 
         <aside className="col-span-12 md:col-span-3 space-y-3">
@@ -459,6 +397,42 @@ export default function AdsClient(){
       </div>
     </div>
   )
+}
+
+function GridBackdrop(){
+  return (
+    <div className="absolute inset-0">
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,_#eef2ff_1px,transparent_1px),linear-gradient(to_bottom,_#eef2ff_1px,transparent_1px)] bg-[size:24px_24px]"/>
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(59,130,246,0.06),transparent_30%),radial-gradient(circle_at_80%_60%,rgba(14,165,233,0.06),transparent_35%)]"/>
+    </div>
+  )
+}
+function Edge({ edge, nodes, active }:{ edge:FlowEdge, nodes:FlowNode[], active:boolean }){
+  const from = nodes.find(n=> n.id===edge.from)
+  const to = nodes.find(n=> n.id===edge.to)
+  if(!from || !to) return null
+  const x1 = from.x + 200
+  const y1 = from.y + 100
+  const x2 = to.x + 20
+  const y2 = to.y + 100
+  const d = makePath(x1,y1,x2,y2)
+  return (
+    <svg className="absolute overflow-visible pointer-events-none" style={{left:0, top:0}}>
+      <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+        </marker>
+        <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+        </marker>
+      </defs>
+      <path d={d} className={`fill-none ${active? 'edge edge-active':'edge'}`} strokeWidth={active?3:2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" markerEnd={active? 'url(#arrowhead-active)' : 'url(#arrowhead)'} />
+    </svg>
+  )
+}
+function makePath(x1:number,y1:number,x2:number,y2:number){
+  const c = 0.4 * Math.abs(x2-x1)
+  return `M ${x1} ${y1} C ${x1+c} ${y1}, ${x2-c} ${y2}, ${x2} ${y2}`
 }
 
 

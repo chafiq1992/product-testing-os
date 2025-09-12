@@ -1011,6 +1011,10 @@ function StudioPage(){
                     try{
                       if(!analysisImageUrl){ alert('Paste an image URL first.'); return }
                       const res = await productFromImage({ image_url: analysisImageUrl, model })
+                      if((res as any)?.error){
+                        alert('Analyze error: ' + String((res as any).error))
+                        return
+                      }
                       const p = (res as any)?.product||{}
                       if(p.title) setTitle(p.title)
                       if(p.audience) setAudience(p.audience)
@@ -1019,6 +1023,9 @@ function StudioPage(){
                       if(Array.isArray(p.colors)) setColors(p.colors)
                       if(Array.isArray(p.sizes)) setSizes(p.sizes)
                       if(Array.isArray(p.variants)) setVariantDescriptions(p.variants)
+                      if(!p.title && !p.audience && !Array.isArray(p.benefits) && !Array.isArray(p.pain_points)){
+                        alert('Analyze completed but no structured product info was detected.')
+                      }
                     }catch(e:any){ alert('Analyze failed: '+ String(e?.message||e)) }
                   }}>Analyze</Button>
                 </div>
