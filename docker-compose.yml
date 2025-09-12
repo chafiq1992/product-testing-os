@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   app:
     build: .
@@ -22,9 +20,9 @@ services:
 
   worker:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile.worker
     container_name: pto-worker
-    command: ["bash", "-lc", "celery -A app.tasks worker --loglevel=info --concurrency=2"]
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SHOPIFY_SHOP_DOMAIN=${SHOPIFY_SHOP_DOMAIN}

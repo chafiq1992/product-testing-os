@@ -63,6 +63,21 @@ mutation UpdateProduct($input: ProductInput!) {
 }
 """
 
+PUBLICATIONS_QUERY = """
+query ListPublications {
+  publications(first: 20) { nodes { id name } }
+}
+"""
+
+PUBLISH_PRODUCT = """
+mutation PublishProduct($id: ID!, $publicationIds: [ID!]!) {
+  publishablePublish(id: $id, input: { publicationIds: $publicationIds }) {
+    publishable { id }
+    userErrors { field message }
+  }
+}
+"""
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _gql(query: str, variables: dict):
     if not SHOP:
@@ -80,7 +95,12 @@ def _gql(query: str, variables: dict):
     if "errors" in j:
         raise RuntimeError(f"GraphQL errors: {j['errors']}")
     data = j.get("data")
-    ue = (data or {}).get("productCreate", {}).get("userErrors") or (data or {}).get("pageCreate", {}).get("userErrors")
+    ue = (
+        (data or {}).get("productCreate", {}).get("userErrors")
+        or (data or {}).get("pageCreate", {}).get("userErrors")
+        or (data or {}).get("productUpdate", {}).get("userErrors")
+        or (data or {}).get("publishablePublish", {}).get("userErrors")
+    )
     if ue:
         raise RuntimeError(f"GraphQL userErrors: {ue}")
     return data
@@ -390,6 +410,21 @@ def _configure_variants_for_product(product_gid: str, base_price: float | None, 
                 pass
 
 
+def publish_product_all_channels(product_gid: str) -> dict:
+    """Publish a product to all available sales channels (publications)."""
+    try:
+        pubs = _gql(PUBLICATIONS_QUERY, {})
+        nodes = ((pubs or {}).get("publications") or {}).get("nodes") or []
+        pids = [n.get("id") for n in nodes if isinstance(n, dict) and n.get("id")]
+        if not pids:
+            return {"ok": True, "published": 0}
+        _gql(PUBLISH_PRODUCT, {"id": product_gid, "publicationIds": pids})
+        return {"ok": True, "published": len(pids)}
+    except Exception as e:
+        # best-effort; return error but do not raise
+        return {"ok": False, "error": str(e)}
+
+
 def configure_variants_for_product(product_gid: str, base_price: float | None, sizes: list[str] | None, colors: list[str] | None) -> dict:
     """Public wrapper to configure options/variants/pricing/inventory for a product.
 
@@ -402,18 +437,26 @@ def configure_variants_for_product(product_gid: str, base_price: float | None, s
         return {"ok": False, "error": str(e)}
 
 
-def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE", price: float | None = None, sizes: list[str] | None = None, colors: list[str] | None = None) -> dict:
+def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE", price: float | None = None, sizes: list[str] | None = None, colors: list[str] | None = None, product_type: str | None = None) -> dict:
     inp: dict = {
         "title": title or "Offer",
         "status": status,
     }
     if description_html:
         inp["descriptionHtml"] = description_html
+    if product_type:
+        # Shopify product organization: productType (string)
+        inp["productType"] = product_type
     data = _gql(PRODUCT_CREATE, {"input": inp})
     prod = data["productCreate"]["product"]
     # Configure variants and inventory via REST
     try:
         _configure_variants_for_product(prod["id"], price, sizes, colors)
+    except Exception:
+        pass
+    # Publish to all sales channels (best-effort)
+    try:
+        publish_product_all_channels(prod["id"])
     except Exception:
         pass
     return prod
@@ -434,6 +477,13 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         "title": title,
         "status": "ACTIVE",
     }
+    # Include product organization type when provided in payload
+    try:
+        ptype = (payload or {}).get("product_type")
+        if ptype:
+            product_in["productType"] = ptype
+    except Exception:
+        pass
 
     pdata = _gql(PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
     # Attach images via REST after creation and capture Shopify CDN URLs
@@ -516,6 +566,12 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         sizes = payload.get("sizes")
         colors = payload.get("colors")
         _configure_variants_for_product(pdata["id"], base_price, sizes, colors)
+    except Exception:
+        pass
+
+    # Publish to all sales channels (best-effort)
+    try:
+        publish_product_all_channels(pdata["id"])
     except Exception:
         pass
 

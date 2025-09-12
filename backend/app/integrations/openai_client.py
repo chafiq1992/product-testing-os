@@ -1,6 +1,9 @@
 import os, json
 from tenacity import retry, stop_after_attempt, wait_exponential
 from openai import OpenAI, BadRequestError
+import base64
+import mimetypes
+import requests
 import os
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from env)
@@ -144,6 +147,14 @@ def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
     user = (
         "Analyze the product in this image and extract structured inputs as specified."
     )
+    def _call(_messages: list[dict]):
+        return client.chat.completions.create(
+            model=(model or DEFAULT_LLM_MODEL),
+            messages=_messages,
+            response_format={"type": "json_object"},
+        )
+
+    # Primary attempt: send remote URL directly
     messages = [
         {"role": "system", "content": system},
         {
@@ -154,11 +165,35 @@ def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
             ],
         },
     ]
-    resp = client.chat.completions.create(
-        model=(model or DEFAULT_LLM_MODEL),
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
+    try:
+        resp = _call(messages)
+    except BadRequestError:
+        # Fallback: fetch image bytes and embed as a base64 data URL so the model doesn't have to fetch it remotely
+        try:
+            r = requests.get(image_url, timeout=20)
+            r.raise_for_status()
+            blob = r.content
+            # Determine mime type: prefer response header; else guess from URL
+            ctype = r.headers.get("Content-Type") or mimetypes.guess_type(image_url)[0] or "image/jpeg"
+            b64 = base64.b64encode(blob).decode("ascii")
+            data_url = f"data:{ctype};base64,{b64}"
+            messages = [
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ]
+            resp = _call(messages)
+        except Exception:
+            # Last resort: try without the image to surface a graceful structured default
+            resp = _call([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ])
     text = resp.choices[0].message.content
     try:
         data = json.loads(text)

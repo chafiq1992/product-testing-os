@@ -49,6 +49,7 @@ class ProductInput(BaseModel):
     pain_points: List[str]
     sizes: Optional[List[str]] = None
     colors: Optional[List[str]] = None
+    product_type: Optional[str] = None
     niche: Optional[str] = None
     targeting: Optional[dict] = None
     advantage_plus: Optional[bool] = True
@@ -554,6 +555,7 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
         price=payload.get("base_price"),
         sizes=payload.get("sizes") or None,
         colors=payload.get("colors") or None,
+        product_type=payload.get("product_type") or None,
     )
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
 
