@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { Rocket, FileText, Image as ImageIcon, Megaphone } from 'lucide-react'
+import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
 import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign } from '@/lib/api'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -52,6 +52,12 @@ export default function AdsClient(){
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [running,setRunning]=useState<boolean>(false)
+
+  const [anglesPrompt,setAnglesPrompt]=useState<string>('')
+  const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
+
+  const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
+
   const [zoom,setZoom]=useState<number>(1)
   const [pan,setPan]=useState<{x:number,y:number}>({x:0,y:0})
   const canvasRef = useRef<HTMLDivElement|null>(null)
@@ -90,7 +96,6 @@ export default function AdsClient(){
           setCandidateImages(imgs)
           if(!sourceImage && imgs[0]) setSourceImage(imgs[0])
         }
-        // Clear after consuming to avoid stale data
         sessionStorage.removeItem('ptos_transfer_landing')
       }
     }catch{}
@@ -131,8 +136,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const prompt = undefined
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       setSelectedAngleIdx(0)
@@ -140,7 +144,6 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
-  // Flow canvas state for Ads (nodes, edges) to mirror Studio UX
   type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
   type Port = 'in'|'out'
   type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
@@ -152,7 +155,6 @@ export default function AdsClient(){
   })
   const [edges,setEdges]=useState<FlowEdge[]>([])
   useEffect(()=>{
-    // Keep landing node data in sync with inputs
     setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image } }): n))
   },[landingUrl,candidateImages])
 
@@ -172,20 +174,16 @@ export default function AdsClient(){
     try{
       setRunning(true)
       const landing = nodes.find(n=> n.type==='landing')!
-      // 1) Angles
       const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const ang = addOrGetNode('angles', landing, { count: arr.length })
       connect(landing, ang)
-      // 2) Ad Copy node populated from selected angle (user can change after)
       const copy = addOrGetNode('ad_copy', ang, { headlines: (arr[0]?.headlines||[]), primaries: (Array.isArray(arr[0]?.primaries)? arr[0].primaries : []) })
       connect(ang, copy)
-      // 3) Gemini Images
       const gi = addOrGetNode('gemini_images', copy, { from: sourceImage||candidateImages[0]||'' })
       connect(copy, gi)
-      // 4) Meta Ad
       const ma = addOrGetNode('meta_ad', gi, { landing_url: landingUrl, candidate_images: (adImages.length? adImages : candidateImages) })
       connect(gi, ma)
     }catch(e:any){ alert('Run failed: '+ String(e?.message||e)) }
@@ -196,7 +194,7 @@ export default function AdsClient(){
     try{
       if(!sourceImage){ alert('Missing source image URL'); return }
       setRunning(true)
-      const prompt = 'Create a high‑quality ad image from this product photo. No text, premium look.'
+      const prompt = geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
@@ -232,6 +230,7 @@ export default function AdsClient(){
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
   const primaries: string[] = useMemo(()=> Array.isArray(angle?.primaries)? angle.primaries : Array.isArray(angle?.primaries?.short)? [angle.primaries.short, angle.primaries.medium, angle.primaries.long].filter(Boolean) : [], [angle])
+  const selectedNode = useMemo(()=> nodes.find(n=> n.id===selectedNodeId) || null, [nodes, selectedNodeId])
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -246,8 +245,18 @@ export default function AdsClient(){
         </div>
       </header>
 
-      <div className="grid grid-cols-12 gap-3 p-3">
-        <aside className="col-span-12 md:col-span-3 space-y-3">
+      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100vh-4rem)]">
+        <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center gap-2">
+                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='inputs'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('inputs')}>Inputs</button>
+                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='prompts'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('prompts')}>Prompts</button>
+              </div>
+            </CardHeader>
+          </Card>
+
+          {activeLeftTab==='inputs' && (
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Ad inputs</CardTitle></CardHeader>
             <CardContent className="space-y-3">
@@ -297,6 +306,25 @@ export default function AdsClient(){
               </div>
             </CardContent>
           </Card>
+          )}
+
+          {activeLeftTab==='prompts' && (
+          <Card>
+            <CardHeader className="pb-2"><CardTitle className="text-base">Prompts</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
+                <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
+                <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
+              </div>
+            </CardContent>
+          </Card>
+          )}
+
         </aside>
 
         <section className="col-span-12 md:col-span-6 relative">
@@ -383,14 +411,121 @@ export default function AdsClient(){
           </div>
         </section>
 
-        <aside className="col-span-12 md:col-span-3 space-y-3">
+        <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">Checklist</CardTitle></CardHeader>
-            <CardContent className="text-sm text-slate-600 space-y-1">
-              <div>1) Generate angles</div>
-              <div>2) Pick headline & primary text</div>
-              <div>3) Generate & select image</div>
-              <div>4) Approve & create Meta draft</div>
+            <CardHeader className="pb-2 flex items-center justify-between">
+              <CardTitle className="text-base">Inspector</CardTitle>
+              {selectedNode && (
+                <button className="p-1 rounded hover:bg-slate-50" onClick={()=> setNodes(ns=> ns.filter(n=> n.id!==selectedNode.id)) }>
+                  <Trash className="w-4 h-4 text-slate-500"/>
+                </button>
+              )}
+            </CardHeader>
+            <CardContent>
+              {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
+              {selectedNode && (
+                <div className="space-y-3 text-sm">
+                  {selectedNode.type==='angles' && (
+                    <div className="space-y-2">
+                      <div className="text-xs text-slate-500">How many</div>
+                      <input type="number" min={1} max={5} className="w-24 rounded-xl border px-2 py-1 text-sm" value={numAngles} onChange={e=> setNumAngles(Math.max(1, Math.min(5, Number(e.target.value)||3)))} />
+                      <div><Button size="sm" variant="outline" onClick={runAngles} disabled={running}>Generate</Button></div>
+                      {angles.length>0 && (
+                        <div className="space-y-1">
+                          <div className="text-xs text-slate-500">Pick angle</div>
+                          <div className="flex gap-2 overflow-x-auto">
+                            {angles.map((a,i)=> (
+                              <button key={i} className={`text-xs px-2 py-1 rounded border ${i===selectedAngleIdx? 'bg-blue-600 text-white border-blue-600':'hover:bg-slate-50'}`} onClick={()=> setSelectedAngleIdx(i)}>
+                                {a?.name||`Angle ${i+1}`}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {selectedNode.type==='ad_copy' && (
+                    <div className="space-y-3">
+                      {headlines.length>0? (
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">Pick a headline</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {headlines.slice(0,8).map((h,i)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="radio" name="headline" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                                <span>{h}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500">Generate angles first.</div>
+                      )}
+                      {primaries.length>0? (
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">Pick a primary text</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {primaries.slice(0,3).map((p,i)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="radio" name="primary" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                                <span>{p}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  {selectedNode.type==='gemini_images' && (
+                    <div className="space-y-2">
+                      <div><Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button></div>
+                      {adImages.length>0 && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {adImages.map((u,i)=> (
+                            <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={u} alt={`ad-${i}`} className="w-full h-28 object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {selectedNode.type==='meta_ad' && (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">CTA</div>
+                        <select value={cta} onChange={e=>setCta(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+                          {['SHOP_NOW','LEARN_MORE','SIGN_UP','SUBSCRIBE','GET_OFFER','BUY_NOW','CONTACT_US'].map(x=> (<option key={x} value={x}>{x.replaceAll('_',' ')}</option>))}
+                        </select>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Daily budget (USD)</div>
+                        <Input type="number" min={1} value={String(budget)} onChange={e=> setBudget(e.target.value===''? 9 : Number(e.target.value))} />
+                      </div>
+                      <div>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={advantagePlus} onChange={e=> setAdvantagePlus(e.target.checked)} />
+                          <span>Advantage+ audience</span>
+                        </label>
+                      </div>
+                      {!advantagePlus && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="text-xs text-slate-500 mb-1">Saved audience ID</div>
+                            <Input value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} placeholder="opt." />
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500 mb-1">Countries (comma-separated)</div>
+                            <Input value={countries} onChange={e=> setCountries(e.target.value)} placeholder="US, MA" />
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex justify-end"><Button onClick={approveAndDraft} disabled={running}>Approve & Create Draft</Button></div>
+                    </div>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         </aside>
