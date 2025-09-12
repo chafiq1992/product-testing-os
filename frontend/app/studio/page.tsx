@@ -1633,7 +1633,8 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               const url = String((node.run?.output||{} as any)?.url||'')
               const title = String(((node.run?.output||{} as any)?.title||'')||'')
               const imgs = Array.isArray(((node.run?.output||{} as any)?.image_urls))? ((node.run?.output||{} as any).image_urls) : []
-              const payload = { landing_url: url, title, images: imgs }
+              const lc = ((node.run?.output||{} as any)?.landing_copy)||null
+              const payload = { landing_url: url, title, images: imgs, landing_copy: lc }
               return (
                 <div className="flex items-center gap-2 justify-end">
                   <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ window.location.href = '/ads' }catch{} }}>Create Ad</Button>

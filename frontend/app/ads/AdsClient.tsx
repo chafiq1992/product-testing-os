@@ -89,18 +89,31 @@ export default function AdsClient(){
     }catch{}
   },[])
 
-  // Accept handoff from Studio via sessionStorage
+  // Accept handoff from Studio via sessionStorage (prefer structured landing copy/images over URL)
   useEffect(()=>{
     try{
       const raw = sessionStorage.getItem('ptos_transfer_landing')
       if(raw){
         const data = JSON.parse(raw||'{}')||{}
-        if(typeof data.landing_url==='string' && data.landing_url){ setLandingUrl(data.landing_url) }
         if(typeof data.title==='string' && data.title){ setTitle(data.title) }
         if(Array.isArray(data.images) && data.images.length>0){
           const imgs = data.images.filter((u:string)=> typeof u==='string' && u)
           setCandidateImages(imgs)
           if(!sourceImage && imgs[0]) setSourceImage(imgs[0])
+        }
+        // If we received structured landing copy, extract key text benefits for ad input
+        try{
+          const lc = (data as any).landing_copy
+          if(lc && typeof lc==='object'){
+            const secBodies = Array.isArray(lc.sections)? lc.sections.map((s:any)=> String(s?.body||'').trim()).filter(Boolean) : []
+            const bullets = secBodies.join('\n').split('\n').map((s:string)=> s.trim()).filter(Boolean).slice(0,8)
+            if(bullets.length>0) setBenefits(bullets.join('\n'))
+            if(!landingUrl) setLandingUrl('') // Explicitly avoid using URL as source when copy provided
+          }
+        }catch{}
+        // Only fallback to URL if no images/copy were provided
+        if(!Array.isArray((data as any).images) && typeof (data as any).landing_url==='string'){
+          setLandingUrl((data as any).landing_url)
         }
         sessionStorage.removeItem('ptos_transfer_landing')
       }
@@ -152,13 +165,13 @@ export default function AdsClient(){
 
   let idSeq=1; const nextId=()=> `a${idSeq++}`
   const [nodes,setNodes]=useState<FlowNode[]>(()=>{
-    const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'' } }
+    const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'', title: prefillTitle||'' } }
     return [base]
   })
   const [edges,setEdges]=useState<FlowEdge[]>([])
   useEffect(()=>{
-    setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image } }): n))
-  },[landingUrl,candidateImages])
+    setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image, title } }): n))
+  },[landingUrl,candidateImages,title])
 
   function addOrGetNode(type:NodeType, near:{x:number,y:number}, data:any={}){
     const existing = nodes.find(n=> n.type===type)
@@ -388,7 +401,10 @@ export default function AdsClient(){
                   <Separator/>
                   <div className="p-3 text-sm text-slate-700 min-h-[64px]">
                     {n.type==='landing' && (
-                      <div className="text-xs text-slate-500 break-words truncate max-w-[200px]">{landingUrl || 'No URL'}</div>
+                      <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">
+                        {title ? (<div className="font-medium text-slate-700 truncate">{title}</div>) : null}
+                        <div className="truncate">{landingUrl || 'No URL'}</div>
+                      </div>
                     )}
                     {n.type==='angles' && (
                       <div className="text-xs text-slate-600">{angles.length||n.data?.count||0} generated</div>
