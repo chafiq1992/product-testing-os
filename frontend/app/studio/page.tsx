@@ -1051,6 +1051,12 @@ function StudioPage(){
               <div className="space-y-2">
                 <div className="text-xs text-slate-500 mb-1">Analyze product image to prefill</div>
                 <input className="w-full rounded-xl border px-3 py-2" placeholder="Paste image URL (or upload below)" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
+                {analysisImageUrl && (
+                  <div className="w-full bg-slate-50 border rounded-xl overflow-hidden">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={analysisImageUrl} alt="analysis" className="w-full h-40 object-cover" />
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{
                     try{
@@ -1177,6 +1183,8 @@ function StudioPage(){
                           const gal = (flowRef.current.nodes.find(n=> n.data?.type==='image_gallery'))
                           if(gal){ await appendImagesToGallery(gal.id, urls) }
                         }catch{}
+                        // Best-effort: save draft so Home can show flow card with this image immediately
+                        try{ await onSaveDraft() }catch{}
                       }
                     }catch(e){ /* silent */ }
                   })()
