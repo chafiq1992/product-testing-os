@@ -1142,13 +1142,13 @@ function StudioPage(){
                       const productNode = snap.nodes.find(n=> n.data?.type==='create_product')
                       let productGid = (productNode?.run?.output||{} as any).product_gid
                       let urls: string[] = []
-                      // If no product exists yet but title provided, create a minimal product to host images on Shopify
-                      if(!productGid && (title||'').trim().length>0){
+                      // If no product exists yet, create a minimal product to host images on Shopify
+                      if(!productGid){
                         try{
                           const created = await shopifyCreateProductFromTitleDesc({
                             product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory },
                             angle: undefined,
-                            title: (title||'Offer'),
+                            title: ((title||'').trim()||'Offer'),
                             description: ''
                           })
                           productGid = (created as any)?.product_gid || productGid
