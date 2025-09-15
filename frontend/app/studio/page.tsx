@@ -1563,6 +1563,53 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
     return new File([blob], filename, { type })
   }
 
+  async function dataUrlToCompressedFile(dataUrl:string, filename:string, maxWidth:number, maxHeight:number, maxBytes:number): Promise<File>{
+    return new Promise<File>((resolve)=>{
+      try{
+        const img = new Image()
+        img.onload = async ()=>{
+          try{
+            const origW = img.width
+            const origH = img.height
+            let w = origW
+            let h = origH
+            const scale = Math.min(1, Math.min(maxWidth / Math.max(1, origW), maxHeight / Math.max(1, origH)))
+            w = Math.max(1, Math.round(origW * scale))
+            h = Math.max(1, Math.round(origH * scale))
+            const canvas = document.createElement('canvas')
+            canvas.width = w
+            canvas.height = h
+            const ctx = canvas.getContext('2d')!
+            ctx.drawImage(img, 0, 0, w, h)
+            let quality = 0.9
+            const mime = 'image/jpeg'
+            const tryBlob = async(q:number)=> new Promise<Blob|null>(r=> canvas.toBlob(b=> r(b), mime, q))
+            let blob = await tryBlob(quality)
+            while(blob && blob.size > maxBytes && quality > 0.5){
+              quality = Math.max(0.5, quality - 0.1)
+              blob = await tryBlob(quality)
+            }
+            if(!blob){
+              // Fallback to original data URL fetch
+              const f = await dataUrlToFile(dataUrl, filename)
+              resolve(f)
+              return
+            }
+            const file = new File([blob], filename, { type: mime })
+            resolve(file)
+          }catch{
+            // Fallback: no compression
+            dataUrlToFile(dataUrl, filename).then(resolve)
+          }
+        }
+        img.onerror = ()=>{ dataUrlToFile(dataUrl, filename).then(resolve) }
+        img.src = dataUrl
+      }catch{
+        dataUrlToFile(dataUrl, filename).then(resolve)
+      }
+    })
+  }
+
   async function approveMetaCampaign(){
     try{
       onUpdateRun(node.id, { status:'running', startedAt: now() })
