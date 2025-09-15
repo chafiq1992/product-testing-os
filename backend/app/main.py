@@ -606,7 +606,8 @@ async def api_shopify_create_page_from_copy(req: ShopifyCreatePageFromCopyReques
         alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
     # Build the same HTML body that will be used on the page for optional product description update
     body_html = _build_page_body_html(req.title, req.landing_copy, req.image_urls or [], alt_texts)
-    page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts)
+    # Pass precomputed body_html to avoid rebuilding large HTML twice
+    page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts, body_html_override=body_html)
     # Optionally update product description to match landing body
     try:
         if req.product_gid:

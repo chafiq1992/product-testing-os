@@ -643,8 +643,9 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
     return "".join(body_parts)
 
 
-def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] | None = None, alt_texts: list[str] | None = None) -> dict:
-    body_html = _build_page_body_html(title, landing_copy, image_urls or [], alt_texts or [])
+def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] | None = None, alt_texts: list[str] | None = None, body_html_override: str | None = None) -> dict:
+    # Use precomputed body HTML when provided to avoid building large strings twice
+    body_html = body_html_override if body_html_override is not None else _build_page_body_html(title, landing_copy, image_urls or [], alt_texts or [])
     # Generate a deterministic-ish base handle from title, and on collision retry with a short suffix
     handle = f"offer-{abs(hash(title)) % 10_000_000}"
     page_in = {
