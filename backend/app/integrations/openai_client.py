@@ -134,15 +134,16 @@ def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
     """
     system = (
         "You are a senior ecommerce analyst. From ONE product photo, infer only what is visually reliable.\n"
-        "Output ONLY JSON with keys: title, audience, benefits, pain_points, colors, sizes, variants.\n"
+        "Return ONLY a JSON object with keys: title, audience, benefits, pain_points, colors, sizes, variants.\n"
         "- title: brief product name.\n"
         "- audience: the most likely buyer (e.g., 'Parents of toddlers in Morocco').\n"
-        "- benefits: 3-6 concrete benefits/outcomes.\n"
-        "- pain_points: 3-6 pains that the product solves.\n"
+        "- benefits: 3-6 concrete benefits/outcomes. Include 1-2 that reflect visible design features (e.g., breathable mesh, extra height, reinforced toe, non-slip sole).\n"
+        "- pain_points: 3-6 pains the product solves (tie to features when visible).\n"
         "- colors: detected color variants (names).\n"
-        "- sizes: optional size hints (if visible/typical), else [].\n"
-        "- variants: list of distinct visual variants (e.g., colors/patterns/materials) with {name, description}. If unknown, [].\n"
-        "If you are uncertain, add minimal [ASSUMPTION] notes inside descriptions only."
+        "- sizes: visible or typical size hints (if any), else [].\n"
+        "- variants: list of distinct visual variants (e.g., colors/patterns/materials/prints) with {name, description}. If unknown, [].\n"
+        "Guidance: Note any visible prints/patterns, unique silhouettes, materials, added height/platforms, embroidery, special seams, closures, or accessories in variants.description.\n"
+        "If uncertain, add minimal [ASSUMPTION] notes inside descriptions only."
     )
     user = (
         "Analyze the product in this image and extract structured inputs as specified."

@@ -500,6 +500,13 @@ function StudioPage(){
       }
       if(imagesNodeId){ updateNodeRun(imagesNodeId, { status:'success', output:{ images_shopify: shopifyCdnUrls, shopify_images: shopifyImages||[], per_image: perImage||[] } }) }
 
+      // Set flow-level uploaded URLs for downstream nodes and drafts
+      if(shopifyCdnUrls.length>0){
+        setUploadedUrls(shopifyCdnUrls)
+        // Ensure analysis image URL uses Shopify CDN for consistent LLM access
+        setAnalysisImageUrl(shopifyCdnUrls[0])
+      }
+
       // After images, add Gemini generation nodes as before (suggester removed)
       try{
         const sourceUrl = (shopifyCdnUrls||[])[0]
@@ -1084,22 +1091,38 @@ function StudioPage(){
                       // Try to find a created product to attach images to Shopify
                       const snap = flowRef.current
                       const productNode = snap.nodes.find(n=> n.data?.type==='create_product')
-                      const productGid = (productNode?.run?.output||{} as any).product_gid
+                      let productGid = (productNode?.run?.output||{} as any).product_gid
                       let urls: string[] = []
+                      // If no product exists yet but title provided, create a minimal product to host images on Shopify
+                      if(!productGid && (title||'').trim().length>0){
+                        try{
+                          const created = await shopifyCreateProductFromTitleDesc({
+                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors },
+                            angle: undefined,
+                            title: (title||'Offer'),
+                            description: ''
+                          })
+                          productGid = (created as any)?.product_gid || productGid
+                          // Optionally reflect creation in UI by seeding a create_product node output if the node exists
+                          if(productGid && productNode){
+                            updateNodeRun(productNode.id, { status:'success', output:{ product_gid: productGid } })
+                          }
+                        }catch{}
+                      }
                       if(productGid){
                         const up = await shopifyUploadProductFiles({ product_gid: productGid, files: newFiles, title: title||undefined, description: '' })
                         const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
                         const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
                         urls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
                       }else{
-                        // Fallback to generic upload when no product exists yet
+                        // Fallback to generic upload when no product exists yet and no title to create product
                         const up = await uploadImages(newFiles)
                         urls = Array.isArray(up?.urls)? up.urls : []
                       }
                       if(urls.length>0){
                         setUploadedUrls(urls)
-                        // Prefill Analyze image URL
-                        if(!analysisImageUrl) setAnalysisImageUrl(urls[0])
+                        // Prefill/replace Analyze image URL with Shopify/local URL
+                        setAnalysisImageUrl(urls[0])
                         // If gallery node exists, append newly available images
                         try{
                           const gal = (flowRef.current.nodes.find(n=> n.data?.type==='image_gallery'))
