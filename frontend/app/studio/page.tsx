@@ -1307,6 +1307,7 @@ function StudioPage(){
                   onSuggestPrompts={(id)=> {}}
                   onApplyAdPrompt={(id)=> {}}
                   onGalleryApprove={(id)=> galleryApprove(id)}
+                  onExternalNav={(href)=> handleExternalNav(href)}
                 />
               )}
             </CardContent>
@@ -1515,7 +1516,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const out = node.run?.output||{}
@@ -1774,8 +1775,8 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               const payload = { landing_url: url, title, images: imgs, landing_copy: lc }
               return (
                 <div className="flex items-center gap-2 justify-end">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ handleExternalNav('/ads') }catch{} }}>Create Ad</Button>
-                  {url && (<button onClick={()=> handleExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ onExternalNav('/ads') }catch{} }}>Create Ad</Button>
+                  {url && (<button onClick={()=> onExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
                 </div>
               )
             }catch{return null}
