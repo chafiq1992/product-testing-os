@@ -164,7 +164,7 @@ export async function shopifyUploadProductImages(payload:{
 }
 
 export async function shopifyCreateProductFromTitleDesc(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[] },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[], target_category?:string },
   angle?: any,
   title: string,
   description?: string
