@@ -563,7 +563,6 @@ function StudioPage(){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+380) }
             // Build model line based on target category
-            (()=>{})
             const modelSubject = (()=>{
               const cat = String(targetCategory||'').toLowerCase()
               if(cat==='girl') return 'girl (approx. 2–6 years)'
