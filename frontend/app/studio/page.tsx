@@ -80,6 +80,7 @@ function StudioPage(){
   const canvasRef = useRef<HTMLDivElement|null>(null)
   const flowRef = useRef(flow)
   useEffect(()=>{ flowRef.current = flow },[flow])
+  const productGidRef = useRef<string|null>(null)
 
   // Fast hydration helper from a payload snapshot (DB or cache)
   function hydrateFromPayload(p:any){

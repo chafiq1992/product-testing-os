@@ -46,6 +46,7 @@ export async function saveDraft(payload:{
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
   settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
   ads?: any,
+  card_image?: string,
 }){
   const {data} = await axios.post(`${base}/api/flows/draft`, payload)
   return data as { id:string, status:string }
@@ -59,6 +60,7 @@ export async function updateDraft(id: string, payload:{
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
   settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
   ads?: any,
+  card_image?: string,
 }){
   const {data} = await axios.put(`${base}/api/flows/draft/${id}`, payload)
   return data as { id:string, status:string }
