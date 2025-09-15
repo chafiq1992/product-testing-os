@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { Rocket, Plus, ExternalLink } from 'lucide-react'
-import { listTests } from '@/lib/api'
+import { listFlows } from '@/lib/api'
 import Link from 'next/link'
 
 function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-none shadow-sm">{children}</div> }
@@ -12,7 +12,7 @@ function CardContent({ children, className='' }:{children:React.ReactNode,classN
 export default function HomePage(){
   const [items,setItems]=useState<Array<any>>([])
   const [loading,setLoading]=useState(true)
-  useEffect(()=>{ (async()=>{ try{ const res=await listTests(24); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
+  useEffect(()=>{ (async()=>{ try{ const res=await listFlows(24); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
   const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -38,15 +38,15 @@ export default function HomePage(){
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center justify-between">
-                    <span>{it?.payload?.title || 'Untitled flow'}</span>
+                    <span>{(it as any)?.title || 'Untitled flow'}</span>
                     <span className="text-xs text-slate-500">{new Date(it.created_at||Date.now()).toLocaleDateString()}</span>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="w-full bg-slate-100 rounded-none overflow-hidden border h-28 md:h-32">
-                    {it.card_image ? (
+                    {(it as any).card_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={it.card_image} alt="cover" className="w-full h-full object-cover" loading="lazy"/>
+                      <img src={(it as any).card_image} alt="cover" className="w-full h-full object-cover" loading="lazy"/>
                     ): (
                       <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">No image</div>
                     )}

@@ -467,6 +467,43 @@ function StudioPage(){
     }
   }
 
+  // Autosave every 7s when changes detected
+  useEffect(()=>{
+    let timer: any
+    let last: string | null = null
+    const tick = async ()=>{
+      try{
+        const slimNodes = flowRef.current.nodes.map(n=> ({ id:n.id, type:n.type, x:n.x, y:n.y, data:n.data, run:{ status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 } }))
+        const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
+        const uiSnap = { pan, zoom, selected }
+        let targeting: any = undefined
+        if(!advantagePlus){
+          if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
+          else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
+        }
+        const payload = {
+          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
+          image_urls: uploadedUrls||[],
+          flow: flowSnap,
+          ui: uiSnap,
+          prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
+          settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+        }
+        const snapshot = JSON.stringify(payload)
+        if(snapshot!==last){
+          last = snapshot
+          try{
+            if(testId){ await updateDraft(testId, payload as any) }
+            else{ const res = await saveDraft(payload as any); setTestId(res.id) }
+          }catch{}
+        }
+      }catch{}
+    }
+    timer = setInterval(tick, 7000)
+    return ()=>{ if(timer) clearInterval(timer) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[audience, benefits, pains, price, title, sizes, colors, model, advantagePlus, adsetBudget, countries, selectedSavedAudience, pan, zoom, selected, geminiAdPrompt, geminiVariantStylePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt])
+
   function angleApprove(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const out = n.run?.output

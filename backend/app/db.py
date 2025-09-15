@@ -58,6 +58,135 @@ def create_test_row(test_id: str, payload: Dict[str, Any], status: str = "queued
         session.commit()
 
 
+# ---------------- Flows (structured) ----------------
+class Flow(Base):
+    __tablename__ = "flows"
+
+    id = Column(String, primary_key=True)
+    status = Column(String, nullable=False, default="draft")
+    title = Column(String, nullable=True)
+    card_image = Column(String, nullable=True)
+    page_url = Column(String, nullable=True)
+    product_json = Column(Text, nullable=True)
+    flow_json = Column(Text, nullable=True)
+    ui_json = Column(Text, nullable=True)
+    prompts_json = Column(Text, nullable=True)
+    settings_json = Column(Text, nullable=True)
+    ads_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+Index('ix_flows_created_at', Flow.created_at)
+
+# Ensure new tables are created when module is imported
+Base.metadata.create_all(engine)
+
+
+def create_flow_row(flow_id: str, *, product: Dict[str, Any] | None = None, flow: Dict[str, Any] | None = None, ui: Dict[str, Any] | None = None, prompts: Dict[str, Any] | None = None, settings: Dict[str, Any] | None = None, ads: Dict[str, Any] | None = None, status: str = "draft", page_url: str | None = None, card_image: str | None = None):
+    with SessionLocal() as session:
+        # Derive title from product if provided
+        title = None
+        try:
+            if isinstance(product, dict):
+                title = product.get("title")
+        except Exception:
+            title = None
+        f = Flow(
+            id=flow_id,
+            status=status,
+            title=title,
+            card_image=card_image,
+            page_url=page_url,
+            product_json=json.dumps(product, ensure_ascii=False) if product is not None else None,
+            flow_json=json.dumps(flow, ensure_ascii=False) if flow is not None else None,
+            ui_json=json.dumps(ui, ensure_ascii=False) if ui is not None else None,
+            prompts_json=json.dumps(prompts, ensure_ascii=False) if prompts is not None else None,
+            settings_json=json.dumps(settings, ensure_ascii=False) if settings is not None else None,
+            ads_json=json.dumps(ads, ensure_ascii=False) if ads is not None else None,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        session.add(f)
+        session.commit()
+
+
+def update_flow_row(flow_id: str, *, product: Dict[str, Any] | None = None, flow: Dict[str, Any] | None = None, ui: Dict[str, Any] | None = None, prompts: Dict[str, Any] | None = None, settings: Dict[str, Any] | None = None, ads: Dict[str, Any] | None = None, status: str | None = None, page_url: str | None = None, card_image: str | None = None) -> bool:
+    with SessionLocal() as session:
+        f = session.get(Flow, flow_id)
+        if not f:
+            return False
+        if status is not None:
+            f.status = status
+        if card_image is not None:
+            f.card_image = card_image
+        if page_url is not None:
+            f.page_url = page_url
+        if product is not None:
+            f.product_json = json.dumps(product, ensure_ascii=False)
+            try:
+                t = product.get("title")
+                if t:
+                    f.title = t
+            except Exception:
+                pass
+        if flow is not None:
+            f.flow_json = json.dumps(flow, ensure_ascii=False)
+        if ui is not None:
+            f.ui_json = json.dumps(ui, ensure_ascii=False)
+        if prompts is not None:
+            f.prompts_json = json.dumps(prompts, ensure_ascii=False)
+        if settings is not None:
+            f.settings_json = json.dumps(settings, ensure_ascii=False)
+        if ads is not None:
+            f.ads_json = json.dumps(ads, ensure_ascii=False)
+        f.updated_at = _now()
+        session.commit()
+        return True
+
+
+def get_flow(flow_id: str) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        f = session.get(Flow, flow_id)
+        if not f:
+            return None
+        return {
+            "id": f.id,
+            "status": f.status,
+            "title": f.title,
+            "card_image": f.card_image,
+            "page_url": f.page_url,
+            "product": json.loads(f.product_json) if f.product_json else None,
+            "flow": json.loads(f.flow_json) if f.flow_json else None,
+            "ui": json.loads(f.ui_json) if f.ui_json else None,
+            "prompts": json.loads(f.prompts_json) if f.prompts_json else None,
+            "settings": json.loads(f.settings_json) if f.settings_json else None,
+            "ads": json.loads(f.ads_json) if f.ads_json else None,
+            "created_at": f.created_at.isoformat() + "Z",
+            "updated_at": f.updated_at.isoformat() + "Z",
+        }
+
+
+def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
+    with SessionLocal() as session:
+        q = session.query(Flow.id, Flow.status, Flow.title, Flow.card_image, Flow.page_url, Flow.created_at, Flow.updated_at).order_by(desc(Flow.created_at))
+        if limit:
+            q = q.limit(limit)
+        rows = q.all()
+        out: list[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "status": r.status,
+                "title": r.title,
+                "card_image": r.card_image,
+                "page_url": r.page_url,
+                "created_at": r.created_at.isoformat() + "Z",
+                "updated_at": r.updated_at.isoformat() + "Z",
+            })
+        return out
+
+
 def update_test_status(test_id: str, status: str, error: Optional[Dict[str, Any]] = None):
     with SessionLocal() as session:
         t = session.get(Test, test_id)

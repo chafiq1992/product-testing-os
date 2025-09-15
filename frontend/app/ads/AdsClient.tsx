@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
-import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign } from '@/lib/api'
+import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
 export type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
@@ -27,6 +27,7 @@ function Separator({ className='' }:{className?:string}){ return <div className=
 
 export default function AdsClient(){
   const params = useSearchParams()
+  const flowId = params.get('id') || params.get('flow') || ''
   const prefillLanding = params.get('landing_url')||''
   const prefillTitle = params.get('title')||''
   const prefillImages = useMemo(()=>{
@@ -58,6 +59,37 @@ export default function AdsClient(){
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [running,setRunning]=useState<boolean>(false)
+  // Load from linked flow when id provided
+  useEffect(()=>{ (async()=>{
+    if(!flowId) return
+    try{
+      const f = await getFlow(flowId)
+      if((f as any)?.product){
+        const prod = (f as any).product||{}
+        if(typeof prod.title==='string' && !title) setTitle(prod.title)
+        if(Array.isArray(prod.benefits) && prod.benefits.length>0) setBenefits((prod.benefits||[]).join('\n'))
+        if(Array.isArray(prod.pain_points) && prod.pain_points.length>0) setPains((prod.pain_points||[]).join('\n'))
+        if(typeof prod.audience==='string' && prod.audience) setAudience(prod.audience)
+      }
+      // Prefer images saved in flow (e.g., Shopify CDN URLs)
+      try{
+        const imgs = Array.isArray((f as any)?.settings?.assets_used?.feature_gallery)? (f as any).settings.assets_used.feature_gallery : []
+        if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
+      }catch{}
+      if(typeof (f as any)?.page_url==='string' && (f as any).page_url){ setLandingUrl((f as any).page_url) }
+      // Restore prior ad inputs if present
+      const ads = (f as any)?.ads||{}
+      if(typeof ads.selectedHeadline==='string') setSelectedHeadline(ads.selectedHeadline)
+      if(typeof ads.selectedPrimary==='string') setSelectedPrimary(ads.selectedPrimary)
+      if(typeof ads.cta==='string') setCta(ads.cta)
+      if(typeof ads.budget==='number') setBudget(ads.budget)
+      if(typeof ads.advantagePlus==='boolean') setAdvantagePlus(ads.advantagePlus)
+      if(typeof ads.savedAudienceId==='string') setSavedAudienceId(ads.savedAudienceId)
+      if(typeof ads.countries==='string') setCountries(ads.countries)
+      const adImgs = Array.isArray(ads.adImages)? ads.adImages : []
+      if(adImgs.length>0) setAdImages(adImgs)
+    }catch{}
+  })() },[flowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
@@ -244,6 +276,22 @@ export default function AdsClient(){
     }catch(e:any){ alert('Meta draft failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
+
+  // Autosave Ads inputs to linked flow when id present
+  useEffect(()=>{
+    if(!flowId) return
+    const t = setInterval(async ()=>{
+      try{
+        const ads:any = {
+          selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus,
+          countries, savedAudienceId, candidateImages, adImages,
+        }
+        const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
+        await updateDraft(flowId, { product: product as any, ads })
+      }catch{}
+    }, 7000)
+    return ()=> clearInterval(t)
+  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title])
 
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])

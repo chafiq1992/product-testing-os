@@ -480,6 +480,7 @@ class DraftSaveRequest(BaseModel):
     ui: Optional[dict] = None    # { pan, zoom, selected }
     prompts: Optional[dict] = None  # { angles_prompt, title_desc_prompt, landing_copy_prompt }
     settings: Optional[dict] = None  # { model, advantage_plus, adset_budget, targeting, countries, saved_audience_id }
+    ads: Optional[dict] = None      # Ad inputs state from Ads tab (headline, primary, images, etc.)
 
 
 @app.post("/api/flows/draft")
@@ -498,7 +499,24 @@ async def api_save_draft(req: DraftSaveRequest):
         payload["prompts"] = req.prompts
     if req.settings is not None:
         payload["settings"] = req.settings
+    # Legacy: persist in tests for backwards compatibility
     db.create_test_row(test_id, payload, status="draft")
+    # Structured: also persist in flows table for fast, reliable loads
+    try:
+        db.create_flow_row(
+            test_id,
+            product=req.product.model_dump(),
+            flow=req.flow,
+            ui=req.ui,
+            prompts=req.prompts,
+            settings=req.settings,
+            ads=req.ads,
+            status="draft",
+            page_url=None,
+            card_image=(payload.get("card_image") if isinstance(payload, dict) else None),
+        )
+    except Exception:
+        pass
     return {"id": test_id, "status": "draft"}
 
 
@@ -520,7 +538,57 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
     if not ok:
         # If the draft doesn't exist yet (e.g., deep-link open), create it on first save
         db.create_test_row(test_id, payload, status="draft")
+    # Mirror to structured flows table
+    try:
+        updated = db.update_flow_row(
+            test_id,
+            product=req.product.model_dump(),
+            flow=req.flow,
+            ui=req.ui,
+            prompts=req.prompts,
+            settings=req.settings,
+            ads=req.ads,
+            status="draft",
+            card_image=(payload.get("card_image") if isinstance(payload, dict) else None),
+        )
+        if not updated:
+            db.create_flow_row(
+                test_id,
+                product=req.product.model_dump(),
+                flow=req.flow,
+                ui=req.ui,
+                prompts=req.prompts,
+                settings=req.settings,
+                ads=req.ads,
+                status="draft",
+                page_url=None,
+                card_image=(payload.get("card_image") if isinstance(payload, dict) else None),
+            )
+    except Exception:
+        pass
     return {"id": test_id, "status": "draft"}
+
+
+# -------- Flows API (structured) --------
+@app.get("/api/flows/{flow_id}")
+async def api_get_flow(flow_id: str):
+    try:
+        f = db.get_flow(flow_id)
+        if not f:
+            return {"error": "not_found"}
+        return f
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/flows")
+async def api_list_flows(limit: int | None = None):
+    try:
+        eff = min(max(limit or 48, 1), 200)
+        items = db.list_flows_light(limit=eff)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
 
 
 class ShopifyCreateRequest(BaseModel):
