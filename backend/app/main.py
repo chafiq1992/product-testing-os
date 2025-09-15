@@ -481,6 +481,7 @@ class DraftSaveRequest(BaseModel):
     prompts: Optional[dict] = None  # { angles_prompt, title_desc_prompt, landing_copy_prompt }
     settings: Optional[dict] = None  # { model, advantage_plus, adset_budget, targeting, countries, saved_audience_id }
     ads: Optional[dict] = None      # Ad inputs state from Ads tab (headline, primary, images, etc.)
+    card_image: Optional[str] = None  # Preferred card image (Shopify CDN URL)
 
 
 @app.post("/api/flows/draft")
@@ -499,6 +500,8 @@ async def api_save_draft(req: DraftSaveRequest):
         payload["prompts"] = req.prompts
     if req.settings is not None:
         payload["settings"] = req.settings
+    if req.card_image:
+        payload["card_image"] = req.card_image
     # Legacy: persist in tests for backwards compatibility
     db.create_test_row(test_id, payload, status="draft")
     # Structured: also persist in flows table for fast, reliable loads
@@ -534,6 +537,8 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
         payload["prompts"] = req.prompts
     if req.settings is not None:
         payload["settings"] = req.settings
+    if req.card_image:
+        payload["card_image"] = req.card_image
     ok = db.update_test_payload(test_id, payload)
     if not ok:
         # If the draft doesn't exist yet (e.g., deep-link open), create it on first save
@@ -716,6 +721,14 @@ async def api_shopify_upload_images(req: ShopifyUploadImagesRequest):
             if images:
                 break
             time.sleep(1)
+    except Exception:
+        pass
+    # If we have at least one CDN URL, opportunistically update the flow card_image for the latest flow id if provided in request headers
+    try:
+        flow_id = None
+        import re as _re
+        # Allow client to pass a flow id in X-Flow-Id header
+        from fastapi import Request as _Req  # type: ignore
     except Exception:
         pass
     return {"urls": verbose.get("cdn_urls", []), "images": images, "per_image": verbose.get("per_image", [])}

@@ -413,10 +413,30 @@ function StudioPage(){
   async function onSaveDraft(){
     try{
       let urls = uploadedUrls
+      // Ensure Shopify CDN URLs as soon as user uploads files: create product if needed, then upload files to Shopify
       if((files||[]).length>0 && !urls){
-        const res = await uploadImages(files)
-        urls = res.urls||[]
-        setUploadedUrls(urls)
+        try{
+          // Keep a product GID reference across actions
+          if(!productGidRef.current){
+            const vTitle = title || 'Product'
+            const vDesc = ''
+            const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
+            productGidRef.current = (prod as any)?.product_gid
+          }
+          if(productGidRef.current){
+            const up = await shopifyUploadProductFiles({ product_gid: productGidRef.current, files, title: title||'Product', description: '' })
+            const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
+            const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
+            urls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
+            setUploadedUrls(urls)
+            if(urls[0]){ setAnalysisImageUrl(urls[0]) }
+          }
+        }catch{
+          // Fallback to local upload if Shopify path fails
+          const res = await uploadImages(files)
+          urls = res.urls||[]
+          setUploadedUrls(urls)
+        }
       }
       // Compact flow snapshot to avoid oversized payloads (413)
       const slimNodes = flowRef.current.nodes.map(n=> ({
@@ -443,6 +463,10 @@ function StudioPage(){
         const cdn = Array.isArray(out?.selected_shopify_urls)? out.selected_shopify_urls : Array.isArray(out?.images)? out.images.filter((u:string)=> u.startsWith('https://cdn.shopify.com')) : []
         if(Array.isArray(cdn) && cdn.length>0){ cardImage = cdn[0] }
       }catch{}
+      // If no gallery-derived image, use first uploaded Shopify CDN URL
+      if(!cardImage){
+        try{ if(Array.isArray(urls) && urls[0] && urls[0].startsWith('https://cdn.shopify.com')) cardImage = urls[0] }catch{}
+      }
       const payload = {
         product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
         image_urls: urls||[],
