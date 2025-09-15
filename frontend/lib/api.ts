@@ -203,6 +203,11 @@ export async function shopifyCreatePageFromCopy(payload:{
   return data as { page_url?: string }
 }
 
+export async function shopifyConfigureVariants(payload:{ product_gid:string, base_price?:number, sizes?:string[], colors?:string[] }){
+  const {data} = await axios.post(`${base}/api/shopify/configure_variants`, payload)
+  return data as { ok?: boolean, error?: string }
+}
+
 export async function shopifyUploadProductFiles(payload:{
   product_gid: string,
   files: File[],

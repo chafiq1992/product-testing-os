@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -562,6 +562,8 @@ function StudioPage(){
       const product_gid = productRes.product_gid
       const product_handle = productRes.handle
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
+      // Ensure variants/options/pricing/inventory are configured
+      try{ await shopifyConfigureVariants({ product_gid: product_gid!, base_price: price===''?undefined:Number(price), sizes, colors }) }catch{}
 
       let imagesNodeId:string|undefined
       setFlow(f=>{

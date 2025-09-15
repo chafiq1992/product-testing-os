@@ -506,9 +506,13 @@ async def api_save_draft(req: DraftSaveRequest):
     db.create_test_row(test_id, payload, status="draft")
     # Structured: also persist in flows table for fast, reliable loads
     try:
+        # Merge uploaded image URLs into product snapshot for structured storage
+        prod_struct = req.product.model_dump()
+        if req.image_urls:
+            prod_struct["uploaded_images"] = req.image_urls
         db.create_flow_row(
             test_id,
-            product=req.product.model_dump(),
+            product=prod_struct,
             flow=req.flow,
             ui=req.ui,
             prompts=req.prompts,
@@ -545,9 +549,12 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
         db.create_test_row(test_id, payload, status="draft")
     # Mirror to structured flows table
     try:
+        prod_struct = req.product.model_dump()
+        if req.image_urls:
+            prod_struct["uploaded_images"] = req.image_urls
         updated = db.update_flow_row(
             test_id,
-            product=req.product.model_dump(),
+            product=prod_struct,
             flow=req.flow,
             ui=req.ui,
             prompts=req.prompts,
@@ -559,7 +566,7 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
         if not updated:
             db.create_flow_row(
                 test_id,
-                product=req.product.model_dump(),
+                product=prod_struct,
                 flow=req.flow,
                 ui=req.ui,
                 prompts=req.prompts,
