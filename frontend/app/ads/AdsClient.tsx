@@ -108,6 +108,9 @@ export default function AdsClient(){
             const secBodies = Array.isArray(lc.sections)? lc.sections.map((s:any)=> String(s?.body||'').trim()).filter(Boolean) : []
             const bullets = secBodies.join('\n').split('\n').map((s:string)=> s.trim()).filter(Boolean).slice(0,8)
             if(bullets.length>0) setBenefits(bullets.join('\n'))
+            // Prefill primary text from description-like fields
+            const primary = String((lc as any)?.subheadline||'').trim() || String((lc as any)?.headline||'').trim()
+            if(primary && !selectedPrimary) setSelectedPrimary(primary)
             if(!landingUrl) setLandingUrl('') // Explicitly avoid using URL as source when copy provided
           }
         }catch{}

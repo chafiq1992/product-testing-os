@@ -210,6 +210,18 @@ async def list_tests(limit: int | None = None):
                 except Exception:
                     image = None
 
+            # As a last resort, if still no image, try explicit 'card_image' in payload
+            if not image:
+                try:
+                    p_explicit = it.get("payload_json")
+                    if p_explicit:
+                        p_obj = json.loads(p_explicit)
+                        ci = (p_obj or {}).get("card_image")
+                        if isinstance(ci, str) and ci.startswith("https://cdn.shopify.com"):
+                            image = ci
+                except Exception:
+                    pass
+
             # Extract only the minimal title from payload
             title_only = None
             try:
@@ -506,7 +518,8 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
         payload["settings"] = req.settings
     ok = db.update_test_payload(test_id, payload)
     if not ok:
-        return {"error": "not_found"}
+        # If the draft doesn't exist yet (e.g., deep-link open), create it on first save
+        db.create_test_row(test_id, payload, status="draft")
     return {"id": test_id, "status": "draft"}
 
 

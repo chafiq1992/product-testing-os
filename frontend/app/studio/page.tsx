@@ -435,13 +435,22 @@ function StudioPage(){
         if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
         else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
       }
+      // If we have Shopify CDN URLs from gallery approval or uploads, prefer the first one for card preview
+      let cardImage: string | undefined = undefined
+      try{
+        const gallery = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
+        const out = (gallery?.run?.output||{}) as any
+        const cdn = Array.isArray(out?.selected_shopify_urls)? out.selected_shopify_urls : Array.isArray(out?.images)? out.images.filter((u:string)=> u.startsWith('https://cdn.shopify.com')) : []
+        if(Array.isArray(cdn) && cdn.length>0){ cardImage = cdn[0] }
+      }catch{}
       const payload = {
         product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
         prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
-        settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined }
+        settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+        ...(cardImage? { card_image: cardImage } : {})
       }
       let res
       if(testId){ res = await updateDraft(testId, payload as any) }
