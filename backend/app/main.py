@@ -50,6 +50,8 @@ class ProductInput(BaseModel):
     sizes: Optional[List[str]] = None
     colors: Optional[List[str]] = None
     product_type: Optional[str] = None
+    # UI: gender/target category selector (girl, boy, unisex_kids, men, women, unisex)
+    target_category: Optional[str] = None
     niche: Optional[str] = None
     targeting: Optional[dict] = None
     advantage_plus: Optional[bool] = True

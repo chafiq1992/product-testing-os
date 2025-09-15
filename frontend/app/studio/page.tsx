@@ -160,6 +160,7 @@ function StudioPage(){
   // History removed for performance and simplicity
 
   const [audience,setAudience]=useState('Parents of toddlers in Morocco')
+  const [targetCategory,setTargetCategory]=useState<string>('unisex')
   const [title,setTitle]=useState('')
   const [price,setPrice]=useState<number|''>('')
   const [benefits,setBenefits]=useState<string[]>(['Comfy all-day wear'])
@@ -191,7 +192,7 @@ function StudioPage(){
     + "- scores per angle: relevance, desire_intensity, differentiation, proof_strength, objection_coverage, clarity, visual_fit, total\n"
     + "- recommendation { best_angle, why, first_test_assets[], next_tests[] }\n\n"
     + "Style & Localization:\n"
-    + "- Match language in PRODUCT_INFO (\"ar\" Fus’ha, \"fr\", or \"en\").\n"
+    + "- Match language in PRODUCT_INFO (\"ar\" Fus'ha, \"fr\", or \"en\").\n"
     + "- If region == \"MA\", add Morocco trust signals (Cash on Delivery, fast city delivery, easy returns, WhatsApp support).\n"
     + "- Be concrete and benefit-led. Avoid vague hype.\n\n"
     + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations).\n\n"
@@ -314,6 +315,8 @@ function StudioPage(){
 
   const selectedNode = flow.nodes.find(n=>n.id===selected)||null
   const [previewImage,setPreviewImage]=useState<string|null>(null)
+  const [showLeaveProtect,setShowLeaveProtect]=useState<boolean>(false)
+  const [pendingHref,setPendingHref]=useState<string|undefined>(undefined)
 
   function log(level:'info'|'error', msg:string, nodeId?:string){ setRunLog(l=>[...l,{time:now(),level,msg,nodeId}]) }
 
@@ -327,6 +330,17 @@ function StudioPage(){
 
   // Persist last draft id for cross-tab navigation (e.g., return from Ads)
   useEffect(()=>{ try{ if(testId){ sessionStorage.setItem('ptos_last_test_id', testId) } }catch{} },[testId])
+
+  // Exit protection: warn on unload/navigate away
+  useEffect(()=>{
+    const handler = (e: BeforeUnloadEvent)=>{
+      e.preventDefault()
+      e.returnValue = ''
+      return ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return ()=> window.removeEventListener('beforeunload', handler)
+  },[])
 
   // Helper: Save draft then navigate to Ads, ensuring state is in DB when leaving
   async function handleGoToAds(){
@@ -389,7 +403,7 @@ function StudioPage(){
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
       updateNodeRun(nodeId, { status:'success', output: out })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
@@ -422,7 +436,7 @@ function StudioPage(){
         else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
       }
       const payload = {
-        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions },
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
@@ -473,7 +487,7 @@ function StudioPage(){
         productNodeId = pn.id
         return next
       })
-      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors }, angle: undefined, title: v.title, description: v.description })
+      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors, target_category: targetCategory }, angle: undefined, title: v.title, description: v.description })
       const product_gid = productRes.product_gid
       const product_handle = productRes.handle
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
@@ -529,7 +543,16 @@ function StudioPage(){
           let geminiNodeId:string|undefined
           setFlow(f=>{
             const imgNode = f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-            const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: adPrompt, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
+            // Append category guidance to prompt
+            let promptWithCategory = adPrompt
+            try{
+              const cat = String(targetCategory||'').toLowerCase()
+              if(cat){
+                const subject = cat==='girl'? 'girl' : cat==='boy'? 'boy' : cat==='unisex_kids'? 'child' : cat==='men'? 'man' : cat==='women'? 'woman' : 'person'
+                promptWithCategory += ` If a human model is shown, ensure it matches this category: ${subject}.`
+              }
+            }catch{}
+            const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: promptWithCategory, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
             const edges = f.edges
             const next = { nodes:[...f.nodes, gn], edges }
             flowRef.current = next
@@ -539,12 +562,23 @@ function StudioPage(){
           // Add a second Ad Images node with the requested kids-model natural street scene instruction
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+380) }
+            // Build model line based on target category
+            (()=>{})
+            const modelSubject = (()=>{
+              const cat = String(targetCategory||'').toLowerCase()
+              if(cat==='girl') return 'girl (approx. 2–6 years)'
+              if(cat==='boy') return 'boy (approx. 2–6 years)'
+              if(cat==='unisex_kids') return 'child (approx. 2–6 years)'
+              if(cat==='men') return 'adult man'
+              if(cat==='women') return 'adult woman'
+              return 'person'
+            })()
             const promptStreet = (
               "Instruction\n"
               + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring exactly ONE child (no groups) wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
               + `Source: ${sourceUrl}\n`
               + `Product type: ${title? String(title) : 'from the source image'}\n`
-              + "Model: child (approx. 2–6 years). Only one character in frame.\n\n"
+              + `Model: ${modelSubject}. Only one character in frame.\n\n`
               + "Ad style (must follow):\n\n"
               + "Look & pose: Professional yet spontaneous; elegant and stylish but natural (mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
               + "Wardrobe: Product is the hero; pair with neutral basics only (no logos).\n\n"
@@ -631,7 +665,7 @@ function StudioPage(){
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
         resp = await geminiGenerateFeatureBenefitSet({
-          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
+          product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
           image_url: sourceUrl,
           count: typeof n.data?.count==='number'? n.data.count : 6
         })
@@ -721,7 +755,7 @@ function StudioPage(){
       cdnUrls = Array.from(new Set(cdnUrls))
       // Generate landing copy with selected images
       const enforcedEnglishPrompt = `${String(n.data?.landing_prompt||landingCopyPrompt)}\n\nCRITICAL: All copy and HTML must be in English.`
-      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: enforcedEnglishPrompt, product_handle })
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: enforcedEnglishPrompt, product_handle })
       // Sanitize landing copy to ensure only provided CDN URLs are referenced
       const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
         const imgs = (urls||[]).filter(Boolean).slice(0,10)
@@ -867,7 +901,7 @@ function StudioPage(){
         .replaceAll('{audience}', String(audience||''))
         .replaceAll('{benefits}', JSON.stringify(benefits||[]))
         .replaceAll('{pain_points}', JSON.stringify(pains||[]))
-      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors }, num_angles: Number(node.data.numAngles||2), model, prompt: formattedAnglesPrompt })
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, num_angles: Number(node.data.numAngles||2), model, prompt: formattedAnglesPrompt })
       setFlow(f=>{
         const existingChildIds = f.nodes
           .filter(n=> n.data?.type==='angle_variant' && f.edges.some(e=> e.from===node.id && e.to===n.id))
@@ -897,7 +931,7 @@ function StudioPage(){
       }catch{}
       const prompt = String(node.data?.prompt||titleDescPrompt)
       const out = await llmTitleDescription({
-        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors },
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
         angle: node.data?.angle,
         prompt,
         model,
@@ -972,6 +1006,11 @@ function StudioPage(){
       }catch(err){ await wait(3000) }
     }
     return final
+  }
+
+  function handleExternalNav(href:string){
+    setPendingHref(href)
+    setShowLeaveProtect(true)
   }
 
   return (
@@ -1052,6 +1091,17 @@ function StudioPage(){
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
                 <Input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Parents of toddlers in Morocco" />
               </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Target category</div>
+                <select value={targetCategory} onChange={e=>setTargetCategory(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                  <option value="girl">Girl</option>
+                  <option value="boy">Boy</option>
+                  <option value="unisex_kids">Unisex kids</option>
+                  <option value="men">Men</option>
+                  <option value="women">Women</option>
+                  <option value="unisex">Unisex</option>
+                </select>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <div className="text-xs text-slate-500 mb-1">Title (optional)</div>
@@ -1097,7 +1147,7 @@ function StudioPage(){
                       if(!productGid && (title||'').trim().length>0){
                         try{
                           const created = await shopifyCreateProductFromTitleDesc({
-                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors },
+                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory },
                             angle: undefined,
                             title: (title||'Offer'),
                             description: ''
@@ -1272,6 +1322,24 @@ function StudioPage(){
           <div className="max-w-5xl max-h-[90vh] p-2" onClick={(e)=> e.stopPropagation()}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={previewImage} alt="preview" className="max-w-full max-h-[85vh] rounded shadow-lg" />
+            <div className="mt-2 flex justify-end gap-2">
+              <a href={previewImage} download className="rounded-xl font-semibold px-3 py-1.5 bg-white text-slate-700">Download</a>
+              <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white" onClick={()=> setPreviewImage(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showLeaveProtect && (
+        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center" onClick={()=> setShowLeaveProtect(false)}>
+          <div className="bg-white rounded-xl shadow-lg p-4 w-[92vw] max-w-md" onClick={(e)=> e.stopPropagation()}>
+            <div className="font-semibold mb-2">Leave this flow?</div>
+            <div className="text-sm text-slate-600 mb-4">You have unsaved changes. Save your draft before leaving.</div>
+            <div className="flex justify-end gap-2">
+              <button className="rounded-xl px-3 py-1.5 border" onClick={()=>{ setShowLeaveProtect(false); setPendingHref(undefined) }}>Stay</button>
+              <button className="rounded-xl px-3 py-1.5 border" onClick={async()=>{ try{ await onSaveDraft() }catch{}; const href=pendingHref; setShowLeaveProtect(false); setPendingHref(undefined); if(href){ try{ window.location.href = href }catch{} } }}>Save & leave</button>
+              <button className="rounded-xl px-3 py-1.5 bg-rose-600 text-white" onClick={()=>{ const href=pendingHref; setShowLeaveProtect(false); setPendingHref(undefined); if(href){ try{ window.location.href = href }catch{} } }}>Leave without saving</button>
+            </div>
           </div>
         </div>
       )}
@@ -1474,7 +1542,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
       const httpUrls = chosen.filter(u=> !u.startsWith('data:'))
       let uploaded:string[] = []
       if(dataUrls.length>0){
-        const files = await Promise.all(dataUrls.map((u,i)=> dataUrlToFile(u, `gemini-${i+1}.png`)))
+        const files = await Promise.all(dataUrls.map((u,i)=> dataUrlToCompressedFile(u, `gemini-${i+1}.png`, 1600, 1600, 850*1024)))
         const up = await uploadImages(files)
         uploaded = Array.isArray(up?.urls)? up.urls : []
       }
@@ -1660,8 +1728,8 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               const payload = { landing_url: url, title, images: imgs, landing_copy: lc }
               return (
                 <div className="flex items-center gap-2 justify-end">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ window.location.href = '/ads' }catch{} }}>Create Ad</Button>
-                  {url && (<a href={url} target="_blank" rel="noreferrer" className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</a>)}
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ handleExternalNav('/ads') }catch{} }}>Create Ad</Button>
+                  {url && (<button onClick={()=> handleExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
                 </div>
               )
             }catch{return null}
@@ -1717,7 +1785,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                     <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
                       <input type="checkbox" checked={!!(node.data?.selected||{})[u]} onChange={()=> onUpdateNodeData(node.id,{ selected: { ...(node.data?.selected||{}), [u]: !(node.data?.selected||{})[u] } })} />
                     </label>
-                    <a href={u} download className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]">Download</a>
+                    <button className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); const a=document.createElement('a'); a.href=u; a.download='image'; document.body.appendChild(a); a.click(); a.remove(); }}>Download</button>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
                   </div>
@@ -1741,11 +1809,14 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                   <label className="absolute top-1 left-1 bg-white/80 rounded p-0.5">
                     <input type="checkbox" checked={!!selectedUrls[u]} onChange={()=> toggleSelect(u)} />
                   </label>
-                  <a href={u} download className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]">Download</a>
+                  <button className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); const a=document.createElement('a'); a.href=u; a.download='image'; document.body.appendChild(a); a.click(); a.remove(); }}>Download</button>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={u} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
                 </div>
               ))}
+            </div>
+            <div className="flex items-center justify-end mt-2">
+              <button className="rounded-xl font-semibold px-3 py-1.5 border" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); try{ images.forEach((u,idx)=>{ const a=document.createElement('a'); a.href=u; a.download=`image-${idx+1}`; document.body.appendChild(a); a.click(); a.remove(); }) }catch{} }}>Download All</button>
             </div>
             <div className="mt-2 space-y-1">
               <div className="text-[11px] text-slate-500">Shopify product GID</div>
