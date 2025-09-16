@@ -1,10 +1,10 @@
 import { Suspense } from 'react'
-import AdsRedirect from './AdsRedirect'
+import { StudioPage } from '../studio/page'
 
 export default function AdsPage(){
   return (
     <Suspense fallback={<div className="p-4 text-sm text-slate-500">Loading…</div>}>
-      <AdsRedirect/>
+      <StudioPage forcedMode="promotion" />
     </Suspense>
   )
 }
