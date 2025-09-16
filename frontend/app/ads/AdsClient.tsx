@@ -6,7 +6,7 @@ import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-r
 import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
-export type NodeType = 'landing'|'compose'|'headlines_out'|'copies_out'|'gemini_images'|'meta_ad'
+export type NodeType = 'landing'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
 export type Port = 'in'|'out'
 export type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
 export type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
@@ -98,7 +98,8 @@ export default function AdsClient(){
     }catch{}
   })() },[flowId])
 
-  const [anglesPrompt,setAnglesPrompt]=useState<string>('')
+  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('Generate 10 short, high-converting ad headlines based on the inputs.')
+  const [copiesPrompt,setCopiesPrompt]=useState<string>('Generate 6 ad primary texts (short/medium/long variants) based on the inputs.')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
   const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
   const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
@@ -242,11 +243,12 @@ export default function AdsClient(){
     setEdges(es=> [...es, e])
   }
 
-  async function generateComposeNode(){
+  async function createGenerators(){
     const landing = nodes.find(n=> n.type==='landing')!
-    const comp = addOrGetNode('compose', landing, { })
-    connect(landing, comp)
-    setSelectedNodeId(comp.id)
+    // Create three generator nodes in parallel from landing
+    createChildNode('headlines', landing, { }, 0, 3)
+    createChildNode('copies', landing, { }, 1, 3)
+    createChildNode('gemini_images', landing, { from: sourceImage||candidateImages[0]||'' }, 2, 3)
   }
 
   function placeChild(parent:FlowNode, index:number, total:number){
@@ -256,8 +258,27 @@ export default function AdsClient(){
     return { x: parent.x + dx, y: Math.round(parent.y + (index - mid) * dy) }
   }
 
+  function isColliding(pos:{x:number,y:number}, size={w:220,h:140}){
+    return nodes.some(n=> {
+      const a = { x: pos.x, y: pos.y, w: size.w, h: size.h }
+      const b = { x: n.x, y: n.y, w: 220, h: 140 }
+      const overlap = !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y)
+      return overlap
+    })
+  }
+
+  function findFreePosition(pos:{x:number,y:number}){
+    let p = { ...pos }
+    let guard = 0
+    while(isColliding(p) && guard<50){
+      p.y += 160
+      guard++
+    }
+    return p
+  }
+
   function createChildNode(type:NodeType, parent:FlowNode, data:any, index:number, total:number){
-    const pos = placeChild(parent, index, total)
+    const pos = findFreePosition(placeChild(parent, index, total))
     const child = addOrGetNode(type, parent, data, pos)
     connect(parent, child)
     return child
@@ -275,7 +296,7 @@ export default function AdsClient(){
     return { headlines, primaries }
   }
 
-  async function composeGenerate(){
+  async function generateHeadlines(){
     try{
       setRunning(true)
       const product = {
@@ -284,15 +305,31 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: headlinesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { headlines, primaries } = aggregateFromAngles(arr)
-      const comp = nodes.find(n=> n.type==='compose') || nodes[0]
-      // Create three children in parallel with auto layout and edges
-      createChildNode('headlines_out', comp, { headlines }, 0, 3)
-      createChildNode('copies_out', comp, { primaries }, 1, 3)
-      createChildNode('gemini_images', comp, { from: sourceImage||candidateImages[0]||'', prompt: geminiAdPrompt }, 2, 3)
+      const h = nodes.find(n=> n.type==='headlines') || nodes[0]
+      createChildNode('headlines_out', h, { headlines }, 0, 1)
+    }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  async function generateCopies(){
+    try{
+      setRunning(true)
+      const product = {
+        audience,
+        benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
+        pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
+        title: title||undefined,
+      }
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: copiesPrompt||undefined })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      setAngles(arr)
+      const { primaries } = aggregateFromAngles(arr)
+      const c = nodes.find(n=> n.type==='copies') || nodes[0]
+      createChildNode('copies_out', c, { primaries }, 0, 1)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -300,8 +337,7 @@ export default function AdsClient(){
   async function runFlow(){
     try{
       setRunning(true)
-      await generateComposeNode()
-      await composeGenerate()
+      await createGenerators()
     }catch(e:any){ alert('Run failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -315,6 +351,8 @@ export default function AdsClient(){
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
+      const imgBuilder = nodes.find(n=> n.type==='gemini_images') || nodes[0]
+      createChildNode('images_out', imgBuilder, { images: imgs }, 0, 1)
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -451,7 +489,7 @@ export default function AdsClient(){
                     ))}
                   </div>
                 )}
-                <div className="mt-2"><Button size="sm" variant="outline" onClick={async()=>{ await analyzeLanding() }}>Analyze</Button> <Button size="sm" onClick={async()=>{ await generateComposeNode() }}>Generate headlines & copies</Button></div>
+                <div className="mt-2"><Button size="sm" variant="outline" onClick={async()=>{ await analyzeLanding() }}>Analyze</Button> <Button size="sm" onClick={async()=>{ await createGenerators() }}>Add generators</Button></div>
               </div>
             </CardContent>
           </Card>
@@ -529,10 +567,12 @@ export default function AdsClient(){
                   <div className="px-3 py-2 flex items-center justify-between">
                     <div className="text-xs font-semibold text-slate-700">
                       {n.type==='landing'? 'Landing Page'
-                        : n.type==='compose'? 'Ad Headlines & Copy'
+                        : n.type==='headlines'? 'Headlines (generator)'
+                        : n.type==='copies'? 'Ad Copies (generator)'
+                        : n.type==='gemini_images'? 'Images (generator)'
                         : n.type==='headlines_out'? 'Headlines'
                         : n.type==='copies_out'? 'Ad Copies'
-                        : n.type==='gemini_images'? 'Images'
+                        : n.type==='images_out'? 'Images'
                         : 'Meta Ad'}
                     </div>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
@@ -545,10 +585,16 @@ export default function AdsClient(){
                         <div className="truncate">{landingUrl || 'No URL'}</div>
                       </div>
                     )}
-                    {n.type==='compose' && (
+                    {n.type==='headlines' && (
                       <div className="space-y-2">
-                        <div className="text-xs text-slate-600">Prepare prompts and generate outputs</div>
-                        <Button size="sm" variant="outline" onClick={composeGenerate} disabled={running}>Generate</Button>
+                        <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
+                        <Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button>
+                      </div>
+                    )}
+                    {n.type==='copies' && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-slate-600">Prepare ad copies prompt and generate outputs</div>
+                        <Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button>
                       </div>
                     )}
                     {n.type==='headlines_out' && (
@@ -562,6 +608,9 @@ export default function AdsClient(){
                         <div className="text-xs text-slate-600">{adImages.length||0} images</div>
                         <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button>
                       </div>
+                    )}
+                    {n.type==='images_out' && (
+                      <div className="text-xs text-slate-600">{adImages.length||0} images generated</div>
                     )}
                     {n.type==='meta_ad' && (
                       <div className="text-xs text-slate-600">Ready</div>
@@ -620,14 +669,24 @@ export default function AdsClient(){
                       </div>
                     </div>
                   )}
-                  {selectedNode.type==='compose' && (
+                  {selectedNode.type==='headlines' && (
                     <div className="space-y-3">
                       <div>
-                        <div className="text-xs text-slate-500 mb-1">Headlines & copy prompt</div>
-                        <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+                        <div className="text-xs text-slate-500 mb-1">Headlines prompt</div>
+                        <Textarea rows={4} value={headlinesPrompt} onChange={e=>setHeadlinesPrompt(e.target.value)} />
                         <div className="text-[11px] text-slate-500 mt-1">Uses audience, benefits, pains, title.</div>
                       </div>
-                      <div><Button size="sm" variant="outline" onClick={composeGenerate} disabled={running}>Generate</Button></div>
+                      <div><Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button></div>
+                    </div>
+                  )}
+                  {selectedNode.type==='copies' && (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Ad copies prompt</div>
+                        <Textarea rows={4} value={copiesPrompt} onChange={e=>setCopiesPrompt(e.target.value)} />
+                        <div className="text-[11px] text-slate-500 mt-1">Uses audience, benefits, pains, title.</div>
+                      </div>
+                      <div><Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button></div>
                     </div>
                   )}
                   {selectedNode.type==='headlines_out' && (
