@@ -783,7 +783,8 @@ function StudioPage(){
             adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
           }
         }catch{}
-        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: 4, neutral_background: (n.data?.neutral_background===false? false : true) })
+        const numImages = (typeof n.data?.num_images==='number' && n.data.num_images>0)? n.data.num_images : 4
+        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: numImages, neutral_background: (n.data?.neutral_background===false? false : true) })
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
         try{
@@ -849,7 +850,7 @@ function StudioPage(){
         const trigger = f.nodes.find(n=> n.type==='trigger') || { id: nextId(), type:'trigger', x:120, y:140, data:{ name:'Promotion', topic:'promotion_start' }, selected:false, run:{status:'idle',output:null,error:null,startedAt:null,finishedAt:null,ms:0} }
         const existing = f.nodes.find(n=> n.data?.type==='promotion_generate_offers')
         if(existing){ seedId = existing.id; return f }
-        const n = makeNode('action', (trigger.x+300), trigger.y, { label:'Generate Offers', type:'promotion_generate_offers', numOffers:3 })
+        const n = makeNode('action', (trigger.x+300), trigger.y, { label:'Generate Offers', type:'promotion_generate_offers', numOffers:3, prompt: buildOffersPrompt() })
         const edges = [...f.edges, makeEdge(trigger.id, 'out', n.id, 'in')]
         const next = { nodes:[...f.nodes, n], edges }
         flowRef.current = next
@@ -859,6 +860,11 @@ function StudioPage(){
       if(!seedId) return
       const nodeId = seedId
       const prompt = buildOffersPrompt()
+      // Persist latest prompt on the node so UI can display/edit it
+      setFlow(f=> ({
+        ...f,
+        nodes: f.nodes.map(n=> n.id===nodeId? ({...n, data:{...n.data, prompt: String(prompt)}}) : n)
+      }))
       updateNodeRun(nodeId, { status:'running', startedAt: now() })
       const formatted = String(prompt)
       const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, num_angles: 3, model, prompt: formatted })
@@ -903,13 +909,13 @@ function StudioPage(){
     if(offer?.subheadline) parts.push(String(offer.subheadline))
     if(offer?.visual_idea) parts.push('Visual idea: '+ String(offer.visual_idea))
     const prompt = (
-      'Create a high-converting promotional image based on this offer. Keep product identity identical to the reference photo (shape, color, print, materials). Match the target audience and category.\n\n'
+      'Create a super eye-catching promotional ad image with bold banners and clear discount tags based on this offer. Keep product identity identical to the reference photo (shape, color, print, materials). Match the target audience and category.\n\n'
       + parts.join('\n') + '\n\n'
-      + 'Emphasize clarity of the offer and legible on-image text if needed. Natural lighting and realistic composition.'
+      + 'Emphasize a conversion-focused layout, strong callouts, and legible on-image text. Use vibrant accents that fit the brand. Social-feed ready.'
     )
     let newId:string|undefined
     setFlow(f=>{
-      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false })
+      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 2 })
       const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
       const next = { nodes:[...f.nodes, child], edges }
       flowRef.current = next
@@ -1099,6 +1105,11 @@ function StudioPage(){
     if(type==='promotion_generate_offers'){
       const prompt = buildOffersPrompt()
       const formatted = String(prompt)
+      // Keep node's prompt in sync for UI visibility
+      setFlow(f=> ({
+        ...f,
+        nodes: f.nodes.map(n=> n.id===node.id? ({...n, data:{...n.data, prompt: formatted}}) : n)
+      }))
       const desired = Math.max(1, Math.min(5, Number(node.data?.numOffers||3)))
       const res = await llmGenerateAngles({
         product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
@@ -1555,6 +1566,7 @@ function StudioPage(){
                   onSuggestPrompts={(id)=> {}}
                   onApplyAdPrompt={(id)=> {}}
                   onOfferGenerateImage={(id)=> offerGenerateImage(id)}
+                  onOffersGenerate={()=> startPromotionGenerator()}
                 />
               ))}
             </div>
@@ -1646,7 +1658,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -1664,7 +1676,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage)}
+          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate)}
         </div>
       </motion.div>
       {/* Visual input/output ports for clarity */}
@@ -1679,7 +1691,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void){
   // Minimal card content: headline only
   if(node.type==='trigger'){
     return (
@@ -1696,6 +1708,12 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {node.data?.label||'Generate Offers'}
         <div className="text-[11px] text-slate-500">{count!=null? `Generated: ${count}` : `To generate: ${String(node.data?.numOffers||3)}`}</div>
+        {node.data?.prompt && (
+          <div className="mt-1 text-[11px] text-slate-600 whitespace-pre-wrap max-h-28 overflow-hidden">{String(node.data.prompt)}</div>
+        )}
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" onClick={()=> onOffersGenerate()} disabled={node.run?.status==='running'}>Generate</Button>
+        </div>
       </div>
     )
   }
