@@ -875,7 +875,7 @@ function StudioPage(){
           const transfer = { landing_url: page.page_url||null, title: vTitle, images: cdnUrls }
           sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(transfer))
         }catch{}
-        try{ window.location.href = '/ads' }catch{}
+        // Removed navigation to /ads; we stay on canvas and can create Ad nodes inline
       }
       updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
     }catch(e:any){
@@ -966,6 +966,32 @@ function StudioPage(){
   async function executeAction(node:FlowNode, bag:any){
     const type = node.data.type
     await wait(300+Math.random()*300)
+    if(type==='ad_inputs_generate_angles'){
+      // Build product payload from landing node context if present
+      const product = { audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }
+      const res = await llmGenerateAngles({ product, num_angles: Number(node.data?.numAngles||3), model, prompt: String(anglesPrompt||'') })
+      setFlow(f=>{
+        const base = f.nodes.find(x=> x.id===node.id) || node
+        const ang = makeNode('action', base.x+300, base.y, { label:'Ad Angles', type:'ad_angles', count:(res.angles||[]).length })
+        const edges = [...f.edges, makeEdge(node.id, 'out', ang.id, 'in')]
+        const next = { nodes:[...f.nodes, ang], edges }
+        flowRef.current = next
+        return next
+      })
+      return { angles: res.angles||[] }
+    }
+    if(type==='ad_angles_continue'){
+      setFlow(f=>{
+        const base = f.nodes.find(x=> x.id===node.id) || node
+        const copy = makeNode('action', base.x+300, base.y-60, { label:'Ad Copy', type:'title_desc' })
+        const images = makeNode('action', base.x+300, base.y+60, { label:'Gemini Ad Images', type:'gemini_ad_images', use_global_prompt:true })
+        const edges = [...f.edges, makeEdge(node.id, 'out', copy.id, 'in'), makeEdge(node.id, 'out', images.id, 'in')]
+        const next = { nodes:[...f.nodes, copy, images], edges }
+        flowRef.current = next
+        return next
+      })
+      return { ok:true }
+    }
     if(type==='generate_angles'){
       // Expand variables in angles prompt
       const formattedAnglesPrompt = String(anglesPrompt||'')
@@ -1389,6 +1415,47 @@ function StudioPage(){
                   onApplyAdPrompt={(id)=> {}}
                   onGalleryApprove={(id)=> galleryApprove(id)}
                   onExternalNav={(href)=> handleExternalNav(href)}
+                  onCreateAdFromLanding={(id)=>{
+                    setFlow(f=>{
+                      const base = f.nodes.find(x=> x.id===id) || { x: 0, y: 0 }
+                      const adInputs = makeNode('action', (base as any).x+300, (base as any).y, { label:'Ad Inputs', type:'generate_angles', subtype:'ad_inputs', numAngles:3 })
+                      const edges = [...f.edges, makeEdge(id, 'out', adInputs.id, 'in')]
+                      const next = { nodes:[...f.nodes, adInputs], edges }
+                      flowRef.current = next
+                      return next
+                    })
+                  }}
+                  onAdInputsGenerateAngles={(id)=>{
+                    setFlow(f=>{
+                      const base = f.nodes.find(x=> x.id===id) || { x: 0, y: 0 }
+                      const nextNode = makeNode('action', (base as any).x+300, (base as any).y, { label:'Ad Angles', type:'ad_angles', count:0 })
+                      const edges = [...f.edges, makeEdge(id, 'out', nextNode.id, 'in')]
+                      const next = { nodes:[...f.nodes, nextNode], edges }
+                      flowRef.current = next
+                      return next
+                    })
+                  }}
+                  onAdAnglesContinue={(id)=>{
+                    setFlow(f=>{
+                      const base = f.nodes.find(x=> x.id===id) || { x: 0, y: 0 }
+                      const copy = makeNode('action', (base as any).x+300, (base as any).y-60, { label:'Ad Copy', type:'title_desc' })
+                      const images = makeNode('action', (base as any).x+300, (base as any).y+60, { label:'Gemini Ad Images', type:'gemini_ad_images', use_global_prompt:true })
+                      const edges = [...f.edges, makeEdge(id, 'out', copy.id, 'in'), makeEdge(id, 'out', images.id, 'in')]
+                      const next = { nodes:[...f.nodes, copy, images], edges }
+                      flowRef.current = next
+                      return next
+                    })
+                  }}
+                  onCreateMetaFromCopy={(id)=>{
+                    setFlow(f=>{
+                      const base = f.nodes.find(x=> x.id===id) || { x: 0, y: 0 }
+                      const meta = makeNode('action', (base as any).x+320, (base as any).y+0, { label:'Meta Ad', type:'meta_ads_launch' })
+                      const edges = [...f.edges, makeEdge(id, 'out', meta.id, 'in')]
+                      const next = { nodes:[...f.nodes, meta], edges }
+                      flowRef.current = next
+                      return next
+                    })
+                  }}
                 />
               )}
             </CardContent>
@@ -1597,7 +1664,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onCreateAdFromLanding, onAdInputsGenerateAngles, onAdAnglesContinue, onCreateMetaFromCopy }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onCreateAdFromLanding:(id:string)=>void, onAdInputsGenerateAngles:(id:string)=>void, onAdAnglesContinue:(id:string)=>void, onCreateMetaFromCopy:(id:string)=>void }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const out = node.run?.output||{}
@@ -1801,7 +1868,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             </div>
           </div>
         )}
-        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch') && (
+        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch' || node.data?.type==='ad_angles') && (
           <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
         )}
       </div>
@@ -1840,6 +1907,17 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         <div className="space-y-1">
           <div className="text-[11px] text-slate-500 mb-1">Angles to generate</div>
           <Input type="number" min={1} max={5} value={String(node.data?.numAngles||2)} onChange={e=> onUpdateNodeData(node.id,{ numAngles: Math.max(1, Math.min(5, Number(e.target.value)||2)) })} />
+          {(()=>{
+            // If this is our new Ad Inputs node, show extra actions
+            if(node.data?.subtype==='ad_inputs'){
+              return (
+                <div className="mt-2 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=> onAdInputsGenerateAngles(node.id)}>Generate angles</Button>
+                </div>
+              )
+            }
+            return null
+          })()}
         </div>
       )}
 
@@ -1856,7 +1934,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               const payload = { landing_url: url, title, images: imgs, landing_copy: lc }
               return (
                 <div className="flex items-center gap-2 justify-end">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(payload)) }catch{}; try{ onExternalNav('/ads') }catch{} }}>Create Ad</Button>
+                  <Button size="sm" variant="outline" onClick={()=> onCreateAdFromLanding(node.id)}>Create Ad</Button>
                   {url && (<button onClick={()=> onExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
                 </div>
               )
@@ -1878,6 +1956,16 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
           </div>
           <div className="flex justify-end">
             <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Ad angles node (intermediate) */}
+      {node.data?.type==='ad_angles' && (
+        <div className="space-y-2">
+          <div className="text-[11px] text-slate-500">Angles generated: {Array.isArray(node.run?.output?.angles)? node.run.output.angles.length : (node.data?.count||0)}</div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={()=> onAdAnglesContinue(node.id)} disabled={!node.run?.output}>Continue</Button>
           </div>
         </div>
       )}
