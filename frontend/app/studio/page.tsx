@@ -58,6 +58,13 @@ function defaultFlow(){
   return { nodes:[t,gen], edges }
 }
 
+function defaultPromotionFlow(){
+  const t = makeNode('trigger', 120, 140, { name:'Promotion', topic:'promotion_start' })
+  const gen = makeNode('action', 420, 120, { label:'Generate Offers', type:'promotion_generate_offers', numOffers:3 })
+  const edges = [ makeEdge(t.id, 'out', gen.id, 'in') ]
+  return { nodes:[t,gen], edges }
+}
+
 export default function Page(){
   return (
     <Suspense fallback={<div className="p-4 text-sm text-slate-500">Loading…</div>}>
@@ -68,6 +75,8 @@ export default function Page(){
 
 function StudioPage(){
   const params = useSearchParams()
+  const mode = params.get('mode')
+  const isPromotionMode = mode==='promotion'
   const testParam = params.get('id')
 
   const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(defaultFlow())
@@ -101,6 +110,7 @@ function StudioPage(){
         if(typeof p.ui.zoom==='number') setZoom(p.ui.zoom)
         if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
         if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
+        if(typeof (p.ui as any).promotion_free_image_url==='string') setPromotionImageUrl((p.ui as any).promotion_free_image_url)
       }
       if(p?.prompts){
         if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
@@ -160,6 +170,19 @@ function StudioPage(){
 
   // History removed for performance and simplicity
 
+  // If in promotion mode and still on the generic default flow, switch to a promotion-specific seed
+  useEffect(()=>{
+    if(!isPromotionMode) return
+    setFlow(f=>{
+      try{
+        const looksDefault = (f.nodes.length===2 && f.nodes[0].type==='trigger' && (f.nodes[1].data?.type==='generate_angles'))
+        if(looksDefault){ const next = defaultPromotionFlow(); flowRef.current = next; return next }
+      }catch{}
+      return f
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[isPromotionMode])
+
   const [audience,setAudience]=useState('Parents of toddlers in Morocco')
   const [targetCategory,setTargetCategory]=useState<string>('unisex')
   const [title,setTitle]=useState('')
@@ -170,6 +193,8 @@ function StudioPage(){
   const [colors,setColors]=useState<string[]>([])
   const [files,setFiles]=useState<File[]>([])
   const [analysisImageUrl,setAnalysisImageUrl]=useState<string>('')
+  const [promotionImageFiles,setPromotionImageFiles]=useState<File[]>([])
+  const [promotionImageUrl,setPromotionImageUrl]=useState<string>('')
   const [variantDescriptions,setVariantDescriptions]=useState<{name:string, description?:string}[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   const [model,setModel]=useState<string>('gpt-4o-mini')
@@ -450,7 +475,7 @@ function StudioPage(){
         run: { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
       }))
       const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
-      const uiSnap = { pan, zoom, selected }
+      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl }
       let targeting: any = undefined
       if(!advantagePlus){
         if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -474,7 +499,7 @@ function StudioPage(){
         flow: flowSnap,
         ui: uiSnap,
         prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
-        settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
         ...(cardImage? { card_image: cardImage } : {})
       }
       let res
@@ -500,7 +525,7 @@ function StudioPage(){
       try{
         const slimNodes = flowRef.current.nodes.map(n=> ({ id:n.id, type:n.type, x:n.x, y:n.y, data:n.data, run:{ status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 } }))
         const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
-        const uiSnap = { pan, zoom, selected }
+        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl }
         let targeting: any = undefined
         if(!advantagePlus){
           if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -512,7 +537,7 @@ function StudioPage(){
           flow: flowSnap,
           ui: uiSnap,
           prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
-          settings: { model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+          settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
         }
         const snapshot = JSON.stringify(payload)
         if(snapshot!==last){
@@ -787,6 +812,111 @@ function StudioPage(){
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
+  }
+
+  function summarizeProductForPrompt(){
+    const info = {
+      audience,
+      benefits,
+      pain_points: pains,
+      base_price: (price===''? undefined : Number(price)),
+      title: (title||undefined),
+      sizes,
+      colors,
+      target_category: targetCategory,
+    }
+    return JSON.stringify(info)
+  }
+
+  function buildOffersPrompt(){
+    const productJson = summarizeProductForPrompt()
+    const refImage = promotionImageUrl || (uploadedUrls||[])[0] || ''
+    return (
+      "You are a senior direct-response marketer and offer strategist.\n"
+      + "Task: Based on PRODUCT_INFO, propose exactly three distinct promotional offers for a test campaign. Each offer must be concrete, believable, and easy to execute in e‑commerce. Include one value-led discount offer, one bundle/BOGO offer, and one urgency/limited-time add-on offer. If PRODUCT_INFO has a reference image, consider what visuals would best sell each offer.\n\n"
+      + "Output: Return ONE valid json object only with fields: instructions (string, 3–6 sentences with marketing ideas and tips to make the offers succeed), offers[3] each with { name, headline, subheadline, mechanics, price_anchor, risk_reversal, visual_idea }.\n\n"
+      + `PRODUCT_INFO: ${productJson}\n`
+      + (refImage? `REFERENCE_IMAGE_URL: ${refImage}\n` : '')
+      + "CRITICAL: No markdown. JSON only."
+    )
+  }
+
+  async function startPromotionGenerator(){
+    try{
+      // Seed node if not present
+      let seedId:string|undefined
+      setFlow(f=>{
+        const trigger = f.nodes.find(n=> n.type==='trigger') || { id: nextId(), type:'trigger', x:120, y:140, data:{ name:'Promotion', topic:'promotion_start' }, selected:false, run:{status:'idle',output:null,error:null,startedAt:null,finishedAt:null,ms:0} }
+        const existing = f.nodes.find(n=> n.data?.type==='promotion_generate_offers')
+        if(existing){ seedId = existing.id; return f }
+        const n = makeNode('action', (trigger.x+300), trigger.y, { label:'Generate Offers', type:'promotion_generate_offers', numOffers:3 })
+        const edges = [...f.edges, makeEdge(trigger.id, 'out', n.id, 'in')]
+        const next = { nodes:[...f.nodes, n], edges }
+        flowRef.current = next
+        seedId = n.id
+        return next
+      })
+      if(!seedId) return
+      const nodeId = seedId
+      const prompt = buildOffersPrompt()
+      updateNodeRun(nodeId, { status:'running', startedAt: now() })
+      const formatted = String(prompt)
+      const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, num_angles: 3, model, prompt: formatted })
+      // Map generic angles -> offers structure if needed
+      let offers:any[] = []
+      try{
+        if(Array.isArray((res as any)?.offers)) offers = (res as any)?.offers
+        else if(Array.isArray((res as any)?.angles)) offers = (res as any)?.angles.map((a:any)=> ({ name: a?.name||'Offer', headline: (a?.headlines||[])[0]||a?.big_idea||a?.promise||'Offer', subheadline: a?.lp_snippet?.subheadline||'', mechanics: a?.promise||'', price_anchor: (a?.ksp||[]).join('; '), risk_reversal: (Array.isArray(a?.objections)? (a.objections.map((o:any)=> o?.rebuttal).filter(Boolean).join(' • ')) : ''), visual_idea: a?.image_map?.notes||'' }))
+      }catch{}
+      const instructions = (res as any)?.instructions || (res as any)?.diagnosis?.why_these_angles || 'Follow CRO best practices and ensure clarity, proof, and risk reversal.'
+      updateNodeRun(nodeId, { status:'success', output:{ count: offers.length, instructions, offers } })
+      // Create three child offer nodes
+      setFlow(f=>{
+        let nodes = f.nodes
+        let edges = f.edges
+        const base = nodes.find(n=> n.id===nodeId) || { x:420, y:120 }
+        const count = Math.min(3, Math.max(0, offers.length||3))
+        for(let i=0;i<count;i++){
+          const off = offers[i] || { name:`Offer ${i+1}`, headline:'', subheadline:'' }
+          const child = makeNode('action', base.x+300, base.y + i*160, { label:`Offer ${i+1}`, type:'promotion_offer', offer: off })
+          nodes = [...nodes, child]
+          edges = [...edges, makeEdge(nodeId, 'out', child.id, 'in')]
+        }
+        const next = { nodes, edges }
+        flowRef.current = next
+        return next
+      })
+    }catch(e:any){
+      // Best-effort error marker on seed node if present
+      try{ const n = flowRef.current.nodes.find(x=> x.data?.type==='promotion_generate_offers'); if(n){ updateNodeRun(n.id, { status:'error', error:String(e?.message||e) }) } }catch{}
+    }
+  }
+
+  async function offerGenerateImage(offerNodeId:string){
+    const n = flowRef.current.nodes.find(x=> x.id===offerNodeId); if(!n) return
+    const src = promotionImageUrl || (uploadedUrls||[])[0] || analysisImageUrl
+    if(!src){ alert('Upload a free product image first.'); return }
+    const offer = n.data?.offer||{}
+    const parts:string[] = []
+    if(offer?.name) parts.push(String(offer.name))
+    if(offer?.headline) parts.push(String(offer.headline))
+    if(offer?.subheadline) parts.push(String(offer.subheadline))
+    if(offer?.visual_idea) parts.push('Visual idea: '+ String(offer.visual_idea))
+    const prompt = (
+      'Create a high-converting promotional image based on this offer. Keep product identity identical to the reference photo (shape, color, print, materials). Match the target audience and category.\n\n'
+      + parts.join('\n') + '\n\n'
+      + 'Emphasize clarity of the offer and legible on-image text if needed. Natural lighting and realistic composition.'
+    )
+    let newId:string|undefined
+    setFlow(f=>{
+      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false })
+      const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
+      const next = { nodes:[...f.nodes, child], edges }
+      flowRef.current = next
+      newId = child.id
+      return next
+    })
+    if(newId){ await geminiGenerate(newId) }
   }
 
   // removed image prompt suggester flow
@@ -1259,6 +1389,27 @@ function StudioPage(){
                   })()
                 }} />
               </div>
+              {isPromotionMode && (
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Free product image (promotion)</div>
+                <Dropzone files={promotionImageFiles} onFiles={(incoming)=>{
+                  (async()=>{
+                    try{
+                      const newFiles = incoming
+                      setPromotionImageFiles(newFiles)
+                      const up = await uploadImages(newFiles)
+                      const urls = Array.isArray(up?.urls)? up.urls : []
+                      if(urls.length>0){ setPromotionImageUrl(urls[0]); try{ await onSaveDraft() }catch{} }
+                    }catch{}
+                  })()
+                }} />
+                {promotionImageUrl && (
+                  <div className="mt-2 w-full bg-slate-50 border rounded-xl overflow-hidden">
+                    <img src={promotionImageUrl} alt="promotion" className="w-full h-40 object-cover" />
+                  </div>
+                )}
+              </div>
+              )}
               <div>
                 <div className="text-xs text-slate-500 mb-1">LLM model</div>
                 <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
@@ -1267,6 +1418,11 @@ function StudioPage(){
                   <option value="gpt-5">gpt-5</option>
                 </select>
               </div>
+              {isPromotionMode && (
+                <div className="mt-2 flex justify-end">
+                  <Button onClick={()=> startPromotionGenerator()} disabled={running}>Generate</Button>
+                </div>
+              )}
             </CardContent>
           </Card>
           )}
@@ -1351,6 +1507,7 @@ function StudioPage(){
                   onGalleryApprove={(id)=> galleryApprove(id)}
                   onSuggestPrompts={(id)=> {}}
                   onApplyAdPrompt={(id)=> {}}
+                  onOfferGenerateImage={(id)=> offerGenerateImage(id)}
                 />
               ))}
             </div>
@@ -1442,7 +1599,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -1460,7 +1617,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt)}
+          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage)}
         </div>
       </motion.div>
       {/* Visual input/output ports for clarity */}
@@ -1475,7 +1632,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void){
   // Minimal card content: headline only
   if(node.type==='trigger'){
     return (
@@ -1486,6 +1643,28 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
   }
   const out = node.run?.output
   const type = node.data?.type
+  if(type==='promotion_generate_offers'){
+    const count = typeof out?.count==='number'? out.count : undefined
+    return (
+      <div className="text-xs text-slate-700">
+        {node.data?.label||'Generate Offers'}
+        <div className="text-[11px] text-slate-500">{count!=null? `Generated: ${count}` : `To generate: ${String(node.data?.numOffers||3)}`}</div>
+      </div>
+    )
+  }
+  if(type==='promotion_offer'){
+    const offer = node.data?.offer||{}
+    const title = offer?.name || offer?.headline || 'Offer'
+    return (
+      <div className="text-xs text-slate-700">
+        {title}
+        <div className="text-[11px] text-slate-500 truncate">{offer?.subheadline? String(offer.subheadline) : ''}</div>
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" onClick={()=> onOfferGenerateImage(node.id)} disabled={node.run?.status==='running'}>Generate image</Button>
+        </div>
+      </div>
+    )
+  }
   if(type==='generate_angles'){
     const count = typeof out?.count==='number'? out.count : undefined
     return (

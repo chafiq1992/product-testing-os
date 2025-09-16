@@ -240,15 +240,15 @@ export default function AdsClient(){
 
   function placeChild(parent:FlowNode, index:number, total:number){
     const dx = 300
-    const dy = 150
+    const dy = 180
     const mid = (total-1)/2
     return { x: parent.x + dx, y: Math.round(parent.y + (index - mid) * dy) }
   }
 
-  function isColliding(pos:{x:number,y:number}, size={w:220,h:140}){
+  function isColliding(pos:{x:number,y:number}, size={w:220,h:160}){
     return nodes.some(n=> {
       const a = { x: pos.x, y: pos.y, w: size.w, h: size.h }
-      const b = { x: n.x, y: n.y, w: 220, h: 140 }
+      const b = { x: n.x, y: n.y, w: 220, h: 160 }
       const overlap = !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y)
       return overlap
     })
@@ -258,7 +258,7 @@ export default function AdsClient(){
     let p = { ...pos }
     let guard = 0
     while(isColliding(p) && guard<50){
-      p.y += 160
+      p.y += 200
       guard++
     }
     return p
@@ -540,78 +540,85 @@ export default function AdsClient(){
           >
             <GridBackdrop/>
             <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0', willChange:'transform'}}>
-              {edges.map(e=> (
-                <Edge key={e.id} edge={e} nodes={nodes} active={false} />
-              ))}
-              {nodes.map(n=> (
-                <div
-                  key={n.id}
-                  className={`absolute select-none ${selectedNodeId===n.id? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'} rounded-2xl bg-white border shadow w-[220px]`}
-                  style={{ left:n.x, top:n.y }}
-                  onMouseDown={(e)=>{
-                    e.stopPropagation()
-                    setSelectedNodeId(n.id)
-                    dragRef.current = { id:n.id, startX:e.clientX, startY:e.clientY, nodeStartX:n.x, nodeStartY:n.y }
-                  }}
-                >
-                  <div className="px-3 py-2 flex items-center justify-between">
-                    <div className="text-xs font-semibold text-slate-700">
-                      {n.type==='landing'? 'Landing Page'
-                        : n.type==='headlines'? 'Headlines (generator)'
-                        : n.type==='copies'? 'Ad Copies (generator)'
-                        : n.type==='gemini_images'? 'Images (generator)'
-                        : n.type==='headlines_out'? 'Headlines'
-                        : n.type==='copies_out'? 'Ad Copies'
-                        : n.type==='images_out'? 'Images'
-                        : 'Meta Ad'}
+              <div className="relative z-0">
+                {edges.map(e=> (
+                  <Edge key={e.id} edge={e} nodes={nodes} active={false} />
+                ))}
+              </div>
+              <div className="relative z-10">
+                {nodes.map(n=> (
+                  <div
+                    key={n.id}
+                    className={`absolute select-none ${selectedNodeId===n.id? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'} rounded-2xl bg-white border shadow w-[220px]`}
+                    style={{ left:n.x, top:n.y }}
+                    onMouseDown={(e)=>{
+                      e.stopPropagation()
+                      setSelectedNodeId(n.id)
+                      dragRef.current = { id:n.id, startX:e.clientX, startY:e.clientY, nodeStartX:n.x, nodeStartY:n.y }
+                    }}
+                  >
+                    <div className="px-3 py-2 flex items-center justify-between">
+                      <div className="text-xs font-semibold text-slate-700">
+                        {n.type==='landing'? 'Landing Page'
+                          : n.type==='headlines'? 'Headlines (generator)'
+                          : n.type==='copies'? 'Ad Copies (generator)'
+                          : n.type==='gemini_images'? 'Images (generator)'
+                          : n.type==='headlines_out'? 'Headlines'
+                          : n.type==='copies_out'? 'Ad Copies'
+                          : n.type==='images_out'? 'Images'
+                          : 'Meta Ad'}
+                      </div>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
                     </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
+                    <Separator/>
+                    <div className="p-3 text-sm text-slate-700 min-h-[64px]">
+                      {n.type==='landing' && (
+                        <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">
+                          {title ? (<div className="font-medium text-slate-700 truncate">{title}</div>) : null}
+                          <div className="truncate">{landingUrl || 'No URL'}</div>
+                        </div>
+                      )}
+                      {n.type==='headlines' && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
+                          <Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button>
+                        </div>
+                      )}
+                      {n.type==='copies' && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-slate-600">Prepare ad copies prompt and generate outputs</div>
+                          <Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button>
+                        </div>
+                      )}
+                      {n.type==='headlines_out' && (
+                        <div className="text-xs text-slate-600">{Array.isArray(n.data?.headlines)? n.data.headlines.length : 0} headlines</div>
+                      )}
+                      {n.type==='copies_out' && (
+                        <div className="text-xs text-slate-600">{Array.isArray(n.data?.primaries)? n.data.primaries.length : 0} copies</div>
+                      )}
+                      {n.type==='gemini_images' && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-slate-600">{adImages.length||0} images</div>
+                          <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button>
+                        </div>
+                      )}
+                      {n.type==='images_out' && (
+                        <div className="text-xs text-slate-600">{adImages.length||0} images generated</div>
+                      )}
+                      {n.type==='meta_ad' && (
+                        <div className="text-xs text-slate-600">Ready</div>
+                      )}
+                      {n.type==='landing' && candidateImages[0] && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
+                      )}
+                    </div>
+                    {/* Visual input/output ports for clarity */}
+                    <div className="absolute w-2 h-2 rounded-full bg-slate-300 border border-slate-400" style={{ left: -8, top: 96 }} />
+                    <div className="absolute w-2 h-2 rounded-full bg-slate-300 border border-slate-400" style={{ right: -8, top: 96 }} />
                   </div>
-                  <Separator/>
-                  <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-                    {n.type==='landing' && (
-                      <div className="text-xs text-slate-500 break-words truncate max-w-[220px]">
-                        {title ? (<div className="font-medium text-slate-700 truncate">{title}</div>) : null}
-                        <div className="truncate">{landingUrl || 'No URL'}</div>
-                      </div>
-                    )}
-                    {n.type==='headlines' && (
-                      <div className="space-y-2">
-                        <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
-                        <Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button>
-                      </div>
-                    )}
-                    {n.type==='copies' && (
-                      <div className="space-y-2">
-                        <div className="text-xs text-slate-600">Prepare ad copies prompt and generate outputs</div>
-                        <Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button>
-                      </div>
-                    )}
-                    {n.type==='headlines_out' && (
-                      <div className="text-xs text-slate-600">{Array.isArray(n.data?.headlines)? n.data.headlines.length : 0} headlines</div>
-                    )}
-                    {n.type==='copies_out' && (
-                      <div className="text-xs text-slate-600">{Array.isArray(n.data?.primaries)? n.data.primaries.length : 0} copies</div>
-                    )}
-                    {n.type==='gemini_images' && (
-                      <div className="space-y-2">
-                        <div className="text-xs text-slate-600">{adImages.length||0} images</div>
-                        <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button>
-                      </div>
-                    )}
-                    {n.type==='images_out' && (
-                      <div className="text-xs text-slate-600">{adImages.length||0} images generated</div>
-                    )}
-                    {n.type==='meta_ad' && (
-                      <div className="text-xs text-slate-600">Ready</div>
-                    )}
-                    {n.type==='landing' && candidateImages[0] && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
-                    )}
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </section>
