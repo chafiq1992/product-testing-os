@@ -169,12 +169,31 @@ def get_flow(flow_id: str) -> Optional[Dict[str, Any]]:
 
 def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
     with SessionLocal() as session:
-        q = session.query(Flow.id, Flow.status, Flow.title, Flow.card_image, Flow.page_url, Flow.created_at, Flow.updated_at).order_by(desc(Flow.created_at))
+        # Include settings_json to derive flow_type without heavy loads
+        q = session.query(
+            Flow.id,
+            Flow.status,
+            Flow.title,
+            Flow.card_image,
+            Flow.page_url,
+            Flow.created_at,
+            Flow.updated_at,
+            Flow.settings_json,
+        ).order_by(desc(Flow.created_at))
         if limit:
             q = q.limit(limit)
         rows = q.all()
         out: list[Dict[str, Any]] = []
         for r in rows:
+            flow_type = "product"
+            try:
+                if r.settings_json:
+                    sj = json.loads(r.settings_json)
+                    t = (sj or {}).get("flow_type")
+                    if isinstance(t, str) and t:
+                        flow_type = t
+            except Exception:
+                flow_type = "product"
             out.append({
                 "id": r.id,
                 "status": r.status,
@@ -183,6 +202,7 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
                 "page_url": r.page_url,
                 "created_at": r.created_at.isoformat() + "Z",
                 "updated_at": r.updated_at.isoformat() + "Z",
+                "flow_type": flow_type,
             })
         return out
 

@@ -44,7 +44,7 @@ export async function saveDraft(payload:{
   flow?: any,
   ui?: any,
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
-  settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
+  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
   ads?: any,
   card_image?: string,
 }){
@@ -58,7 +58,7 @@ export async function updateDraft(id: string, payload:{
   flow?: any,
   ui?: any,
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
-  settings?: { model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
+  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
   ads?: any,
   card_image?: string,
 }){
@@ -74,7 +74,7 @@ export async function getFlow(id: string){
 export async function listFlows(limit?: number){
   const q = typeof limit==='number'? `?limit=${limit}` : ''
   const {data} = await axios.get(`${base}/api/flows${q}`)
-  return data as { data: Array<{ id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, created_at?:string }>, error?:string }
+  return data as { data: Array<{ id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, created_at?:string, flow_type?: 'product'|'ads'|'promotion' }>, error?:string }
 }
 
 export async function fetchSavedAudiences(){

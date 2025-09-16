@@ -1095,6 +1095,7 @@ function StudioPage(){
           <nav className="ml-4 flex items-center gap-1 text-sm">
             <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Product</span>
             <button className="px-3 py-1.5 rounded hover:bg-slate-100" onClick={handleGoToAds}>Create Ads</button>
+            <a href="/promotion/" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Promotion</a>
           </nav>
         </div>
         <div className="flex items-center gap-2">

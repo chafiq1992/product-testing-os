@@ -1,8 +1,9 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { Rocket, Plus, ExternalLink } from 'lucide-react'
-import { listFlows } from '@/lib/api'
+import { listFlows, saveDraft } from '@/lib/api'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 
 function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-none shadow-sm">{children}</div> }
 function CardHeader({ children, className='' }:{children:React.ReactNode,className?:string}){ return <div className={`px-4 pt-4 ${className}`}>{children}</div> }
@@ -12,8 +13,26 @@ function CardContent({ children, className='' }:{children:React.ReactNode,classN
 export default function HomePage(){
   const [items,setItems]=useState<Array<any>>([])
   const [loading,setLoading]=useState(true)
+  const [showNew,setShowNew]=useState(false)
+  const [creating,setCreating]=useState(false)
+  const router = useRouter()
   useEffect(()=>{ (async()=>{ try{ const res=await listFlows(24); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
   const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
+  async function startFlow(kind:'product'|'ads'|'promotion'){
+    try{
+      setCreating(true)
+      const res = await saveDraft({
+        product: { audience:'', benefits:[], pain_points:[] },
+        settings: { flow_type: kind },
+      })
+      const id = (res as any)?.id
+      if(!id){ setCreating(false); setShowNew(false); return }
+      if(kind==='ads') router.push(`/ads/?id=${id}`)
+      else if(kind==='promotion') router.push(`/promotion/?id=${id}`)
+      else router.push(`/studio/?id=${id}`)
+    }catch{
+    }finally{ setCreating(false); setShowNew(false) }
+  }
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
@@ -22,9 +41,9 @@ export default function HomePage(){
           <h1 className="font-semibold text-lg">Product Testing OS — Flows</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Link href={studioBase? studioBase : "/studio/"} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
+          <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
-          </Link>
+          </button>
         </div>
       </header>
       <div className="p-4 md:p-6">
@@ -33,12 +52,20 @@ export default function HomePage(){
           <div className="text-sm text-slate-500">No flows yet. Click <span className="font-medium">New flow</span> to start.</div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          {items.map(it=> (
-            <Link href={studioBase? `${studioBase}?id=${it.id}` : `/studio/?id=${it.id}`} key={it.id} className="block">
+          {items.map(it=> {
+            const badge = (it as any).flow_type||'product'
+            const href = badge==='ads'? `/ads/?id=${it.id}` : badge==='promotion'? `/promotion/?id=${it.id}` : (studioBase? `${studioBase}?id=${it.id}` : `/studio/?id=${it.id}`)
+            const badgeColor = badge==='ads'? 'bg-emerald-100 text-emerald-700' : badge==='promotion'? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-blue-100 text-blue-700'
+            const badgeText = badge==='ads'? 'Create Ads' : badge==='promotion'? 'Create Promotion' : 'Create Product'
+            return (
+            <Link href={href} key={it.id} className="block">
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center justify-between">
-                    <span>{(it as any)?.title || 'Untitled flow'}</span>
+                    <span className="inline-flex items-center gap-2">
+                      <span>{(it as any)?.title || 'Untitled flow'}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded ${badgeColor}`}>{badgeText}</span>
+                    </span>
                     <span className="text-xs text-slate-500">{new Date(it.created_at||Date.now()).toLocaleDateString()}</span>
                   </CardTitle>
                 </CardHeader>
@@ -62,9 +89,33 @@ export default function HomePage(){
                 </CardContent>
               </Card>
             </Link>
-          ))}
+          )})}
         </div>
       </div>
+      {showNew && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30">
+          <div className="bg-white rounded-xl border shadow-xl w-[92vw] max-w-md p-4">
+            <div className="text-base font-semibold mb-2">Choose a flow</div>
+            <div className="grid grid-cols-1 gap-2">
+              <button disabled={creating} onClick={()=>startFlow('product')} className="border rounded-lg p-3 text-left hover:bg-slate-50">
+                <div className="font-medium">Create Product</div>
+                <div className="text-xs text-slate-500">From product inputs to landing page</div>
+              </button>
+              <button disabled={creating} onClick={()=>startFlow('ads')} className="border rounded-lg p-3 text-left hover:bg-slate-50">
+                <div className="font-medium">Create Ads</div>
+                <div className="text-xs text-slate-500">Analyze landing URL, angles, copy, images</div>
+              </button>
+              <button disabled={creating} onClick={()=>startFlow('promotion')} className="border rounded-lg p-3 text-left hover:bg-slate-50">
+                <div className="font-medium">Create Promotion</div>
+                <div className="text-xs text-slate-500">Specialized for offers and promotional images</div>
+              </button>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button onClick={()=>setShowNew(false)} className="text-sm px-3 py-1.5 rounded border">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

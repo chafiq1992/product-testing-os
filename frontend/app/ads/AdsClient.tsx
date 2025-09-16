@@ -307,6 +307,7 @@ export default function AdsClient(){
           <nav className="ml-4 flex items-center gap-1 text-sm">
             <Link href="/studio/" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Product</Link>
             <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Ads</span>
+            <Link href="/promotion/" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Promotion</Link>
           </nav>
         </div>
       </header>
