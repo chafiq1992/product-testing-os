@@ -1096,6 +1096,53 @@ function StudioPage(){
   async function executeAction(node:FlowNode, bag:any){
     const type = node.data.type
     await wait(300+Math.random()*300)
+    if(type==='promotion_generate_offers'){
+      const prompt = buildOffersPrompt()
+      const formatted = String(prompt)
+      const desired = Math.max(1, Math.min(5, Number(node.data?.numOffers||3)))
+      const res = await llmGenerateAngles({
+        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
+        num_angles: desired,
+        model,
+        prompt: formatted
+      })
+      let offers:any[] = []
+      try{
+        if(Array.isArray((res as any)?.offers)) offers = (res as any).offers
+        else if(Array.isArray((res as any)?.angles)){
+          offers = (res as any).angles.map((a:any)=> ({
+            name: a?.name||'Offer',
+            headline: (a?.headlines||[])[0]||a?.big_idea||a?.promise||'Offer',
+            subheadline: a?.lp_snippet?.subheadline||'',
+            mechanics: a?.promise||'',
+            price_anchor: (a?.ksp||[]).join('; '),
+            risk_reversal: (Array.isArray(a?.objections)? (a.objections.map((o:any)=> o?.rebuttal).filter(Boolean).join(' • ')) : ''),
+            visual_idea: a?.image_map?.notes||''
+          }))
+        }
+      }catch{}
+      // Replace existing child offer nodes connected to this generator
+      setFlow(f=>{
+        const existingChildIds = f.nodes
+          .filter(n=> n.data?.type==='promotion_offer' && f.edges.some(e=> e.from===node.id && e.to===n.id))
+          .map(n=>n.id)
+        let nodes = f.nodes.filter(n=> !existingChildIds.includes(n.id))
+        let edges = f.edges.filter(e=> e.from!==node.id && !existingChildIds.includes(e.to))
+        const base = nodes.find(n=> n.id===node.id) || { x:420, y:120 }
+        const count = Math.min(desired, Math.max(0, offers.length||desired))
+        for(let i=0;i<count;i++){
+          const off = offers[i] || { name:`Offer ${i+1}`, headline:'', subheadline:'' }
+          const child = makeNode('action', (base as any).x+300, (base as any).y + i*160, { label:`Offer ${i+1}`, type:'promotion_offer', offer: off })
+          nodes = [...nodes, child]
+          edges = [...edges, makeEdge(node.id, 'out', child.id, 'in')]
+        }
+        const next = { nodes, edges }
+        flowRef.current = next
+        return next
+      })
+      const instructions = (res as any)?.instructions || (res as any)?.diagnosis?.why_these_angles || 'Follow CRO best practices and ensure clarity, proof, and risk reversal.'
+      return { count: (offers||[]).length, instructions }
+    }
     if(type==='generate_angles'){
       // Expand variables in angles prompt
       const formattedAnglesPrompt = String(anglesPrompt||'')
