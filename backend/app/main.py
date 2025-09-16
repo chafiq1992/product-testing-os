@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
-from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy, gen_product_from_image
+from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
@@ -320,6 +320,20 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
             product_url = None
     data = gen_landing_copy(payload, angles, model=req.model, image_urls=req.image_urls or [], prompt_override=req.prompt, product_url=product_url)
     return data
+
+# Analyze landing page URL for ad inputs
+class AnalyzeLandingRequest(BaseModel):
+    url: str
+    model: Optional[str] = None
+
+
+@app.post("/api/llm/analyze_landing_page")
+async def api_llm_analyze_landing_page(req: AnalyzeLandingRequest):
+    try:
+        data = analyze_landing_page(req.url, model=req.model)
+        return data
+    except Exception as e:
+        return {"error": str(e), "url": req.url}
  
 # ---------------- Gemini image generation ----------------
 class GeminiAdImageRequest(BaseModel):

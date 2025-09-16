@@ -1092,11 +1092,6 @@ function StudioPage(){
           <Rocket className="w-6 h-6 text-blue-600" />
           <h1 className="font-semibold text-lg">Product Testing OS — Flow Studio</h1>
           <Badge className="bg-blue-100 text-blue-700">New UI</Badge>
-          <nav className="ml-4 flex items-center gap-1 text-sm">
-            <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Product</span>
-            <button className="px-3 py-1.5 rounded hover:bg-slate-100" onClick={handleGoToAds}>Create Ads</button>
-            <a href="/promotion/" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Promotion</a>
-          </nav>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run flow</Button>

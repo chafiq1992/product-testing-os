@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
-import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft } from '@/lib/api'
+import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
 export type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
@@ -162,23 +162,25 @@ export default function AdsClient(){
   async function analyzeLanding(){
     try{
       if(!landingUrl){ alert('Enter landing page URL first.'); return }
-      const res = await fetch(landingUrl)
-      const html = await res.text()
-      const tmp = document.implementation.createHTMLDocument('x')
-      tmp.documentElement.innerHTML = html
-      const ogTitle = tmp.querySelector('meta[property="og:title"]')?.getAttribute('content')||''
-      const metaDesc = tmp.querySelector('meta[name="description"]')?.getAttribute('content')||''
-      const h1 = tmp.querySelector('h1')?.textContent||''
-      const bullets = Array.from(tmp.querySelectorAll('li')).slice(0,6).map(li=> (li.textContent||'').trim()).filter(Boolean)
-      if(!title && (ogTitle||h1)) setTitle((ogTitle||h1).trim())
-      if(bullets.length>0) setBenefits(bullets.join('\n'))
-      if(metaDesc && !selectedPrimary) setSelectedPrimary(metaDesc)
-      const imgs = Array.from(tmp.images||[]).map(im=> im.getAttribute('src')||'').filter(Boolean)
-      const absolute = imgs.map(u=> u.startsWith('http')? u : new URL(u, landingUrl).toString())
-      const unique = Array.from(new Set(absolute))
-      if(unique.length>0){ setCandidateImages(unique.slice(0,10)); if(!sourceImage) setSourceImage(unique[0]) }
-      alert('Analyzed landing page to prefill inputs.')
+      setRunning(true)
+      const out = await llmAnalyzeLandingPage({ url: landingUrl })
+      if((out as any)?.error){ throw new Error((out as any).error) }
+      if(typeof (out as any)?.title==='string' && !(title&&title.trim())) setTitle((out as any).title)
+      const arr = Array.isArray((out as any)?.benefits)? (out as any).benefits : []
+      if(arr.length>0) setBenefits(arr.join('\n'))
+      const painsArr = Array.isArray((out as any)?.pain_points)? (out as any).pain_points : []
+      if(painsArr.length>0) setPains(painsArr.join('\n'))
+      const offersArr = Array.isArray((out as any)?.offers)? (out as any).offers : []
+      if(offersArr.length>0) setOffers(offersArr.join('\n'))
+      const emosArr = Array.isArray((out as any)?.emotions)? (out as any).emotions : []
+      if(emosArr.length>0 && !selectedPrimary) setSelectedPrimary(emosArr[0])
+      const imgs = Array.isArray((out as any)?.images)? (out as any).images : []
+      if(imgs.length>0){ setCandidateImages(imgs.slice(0,10)); if(!sourceImage) setSourceImage(imgs[0]) }
+      const angs = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      if(angs.length>0){ setAngles(angs); setSelectedAngleIdx(0) }
+      alert('Analyzed landing page with AI. Prefilled inputs.')
     }catch(e:any){ alert('Analyze failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
   }
 
   async function runAngles(){

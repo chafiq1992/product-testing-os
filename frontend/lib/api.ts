@@ -119,6 +119,11 @@ export async function llmLandingCopy(payload:{
   return data as { headline?:string, subheadline?:string, sections?:any[], faq?:any[], cta?:string, html?:string }
 }
 
+export async function llmAnalyzeLandingPage(payload:{ url:string, model?:string }){
+  const {data} = await axios.post(`${base}/api/llm/analyze_landing_page`, payload)
+  return data as { url:string, title?:string, benefits?:string[], pain_points?:string[], offers?:string[], emotions?:string[], angles?: any[], images?: string[], error?: string }
+}
+
 export async function shopifyCreateFromCopy(payload:{
   product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[], target_category?:string },
   angle?:any,

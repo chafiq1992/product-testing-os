@@ -369,3 +369,104 @@ def gen_title_and_description(payload: dict, angle: dict, prompt_override: str |
         return {"title": data.get("title"), "description": data.get("description")}
     except Exception:
         return {"title": None, "description": None}
+
+
+# ---------------- Analyze landing page URL ----------------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def analyze_landing_page(url: str, model: str | None = None) -> dict:
+    """Fetch a landing page and extract structured marketing insights using OpenAI.
+
+    Returns a dict with keys: title, benefits[], pain_points[], offers[], emotions[],
+    angles[] (each: {name, headlines[], primaries[]}), images[] (absolute URLs).
+    """
+    import requests, bs4, urllib.parse
+    try:
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        html = r.text
+    except Exception:
+        html = ""
+    # Lightweight parse for image URLs as a fallback
+    images: list[str] = []
+    try:
+        soup = bs4.BeautifulSoup(html or "", "html.parser")
+        srcs = []
+        for im in soup.find_all("img"):
+            s = im.get("src") or ""
+            if s:
+                srcs.append(s)
+        # Absolutize
+        images = [s if s.startswith("http") else urllib.parse.urljoin(url, s) for s in srcs]
+        # de-dup and limit
+        dedup = []
+        for u in images:
+            if u not in dedup:
+                dedup.append(u)
+        images = dedup[:12]
+    except Exception:
+        images = []
+
+    system = (
+        "You are a senior direct-response marketer. Given landing page HTML, extract high-converting inputs. "
+        "Respond ONLY as a compact JSON object with keys: title, benefits (array of short bullets), "
+        "pain_points (array), offers (array), emotions (array), angles (array of objects with fields: name, "
+        "headlines (array of 3-6 short options), primaries (array of 3-6 options))."
+    )
+    user = (
+        "Analyze this landing page HTML and produce the JSON. Avoid prose, no markdown. HTML follows:\n\n" + (html[:180000] if html else "")
+    )
+
+    def _call(_messages: list[dict]):
+        return client.chat.completions.create(
+            model=(model or DEFAULT_LLM_MODEL),
+            messages=_messages,
+            response_format={"type": "json_object"},
+        )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    try:
+        resp = _call(messages)
+        text = resp.choices[0].message.content
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    out = {
+        "title": data.get("title") if isinstance(data, dict) else None,
+        "benefits": data.get("benefits") if isinstance(data, dict) else None,
+        "pain_points": data.get("pain_points") if isinstance(data, dict) else None,
+        "offers": data.get("offers") if isinstance(data, dict) else None,
+        "emotions": data.get("emotions") if isinstance(data, dict) else None,
+        "angles": data.get("angles") if isinstance(data, dict) else None,
+        "images": images,
+        "url": url,
+    }
+    # Normalize arrays
+    for k in ("benefits", "pain_points", "offers", "emotions"):
+        v = out.get(k)
+        if not isinstance(v, list):
+            out[k] = []
+        else:
+            out[k] = [str(x).strip() for x in v if isinstance(x, (str, int))]
+    # Normalize angles
+    try:
+        angs = out.get("angles")
+        if not isinstance(angs, list):
+            out["angles"] = []
+        else:
+            norm = []
+            for a in angs:
+                if not isinstance(a, dict):
+                    continue
+                name = str(a.get("name") or "Angle").strip()
+                headlines = a.get("headlines") if isinstance(a.get("headlines"), list) else []
+                primaries = a.get("primaries") if isinstance(a.get("primaries"), list) else []
+                headlines = [str(h).strip() for h in headlines if str(h).strip()]
+                primaries = [str(p).strip() for p in primaries if str(p).strip()]
+                norm.append({"name": name, "headlines": headlines, "primaries": primaries})
+            out["angles"] = norm
+    except Exception:
+        out["angles"] = []
+    return out
