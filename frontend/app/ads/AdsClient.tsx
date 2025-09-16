@@ -230,10 +230,10 @@ export default function AdsClient(){
     setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image, title } }): n))
   },[landingUrl,candidateImages,title])
 
-  function addOrGetNode(type:NodeType, near:{x:number,y:number}, data:any={}){
+  function addOrGetNode(type:NodeType, near:{x:number,y:number}, data:any={}, pos?:{x:number,y:number}){
     const existing = nodes.find(n=> n.type===type)
     if(existing) return existing
-    const n:FlowNode = { id: nextId(), type, x: near.x+300, y: near.y, data }
+    const n:FlowNode = { id: nextId(), type, x: (pos? pos.x : near.x+300), y: (pos? pos.y : near.y), data }
     setNodes(ns=> [...ns, n])
     return n
   }
@@ -247,6 +247,20 @@ export default function AdsClient(){
     const comp = addOrGetNode('compose', landing, { })
     connect(landing, comp)
     setSelectedNodeId(comp.id)
+  }
+
+  function placeChild(parent:FlowNode, index:number, total:number){
+    const dx = 300
+    const dy = 150
+    const mid = (total-1)/2
+    return { x: parent.x + dx, y: Math.round(parent.y + (index - mid) * dy) }
+  }
+
+  function createChildNode(type:NodeType, parent:FlowNode, data:any, index:number, total:number){
+    const pos = placeChild(parent, index, total)
+    const child = addOrGetNode(type, parent, data, pos)
+    connect(parent, child)
+    return child
   }
 
   function aggregateFromAngles(arr:any[]){
@@ -275,13 +289,10 @@ export default function AdsClient(){
       setAngles(arr)
       const { headlines, primaries } = aggregateFromAngles(arr)
       const comp = nodes.find(n=> n.type==='compose') || nodes[0]
-      const hnode = addOrGetNode('headlines_out', comp, { headlines })
-      const cnode = addOrGetNode('copies_out', comp, { primaries })
-      connect(comp, hnode)
-      connect(comp, cnode)
-      // Ensure images node exists as third parallel card
-      const img = addOrGetNode('gemini_images', comp, { from: sourceImage||candidateImages[0]||'', prompt: geminiAdPrompt })
-      connect(comp, img)
+      // Create three children in parallel with auto layout and edges
+      createChildNode('headlines_out', comp, { headlines }, 0, 3)
+      createChildNode('copies_out', comp, { primaries }, 1, 3)
+      createChildNode('gemini_images', comp, { from: sourceImage||candidateImages[0]||'', prompt: geminiAdPrompt }, 2, 3)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -580,6 +591,35 @@ export default function AdsClient(){
               {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
               {selectedNode && (
                 <div className="space-y-3 text-sm">
+                  {selectedNode.type==='landing' && (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Landing page URL</div>
+                        <Input value={landingUrl} onChange={e=>setLandingUrl(e.target.value)} placeholder="https://yourstore.com/pages/offer" />
+                        <div className="mt-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button></div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Title</div>
+                        <Input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Product title" />
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Images</div>
+                        {candidateImages.length>0? (
+                          <div className="grid grid-cols-3 gap-2">
+                            {candidateImages.slice(0,9).map((u,i)=> (
+                              <div key={i} className={`relative border rounded overflow-hidden ${u===sourceImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                                <button className="absolute top-1 right-1 z-10 bg-white/90 hover:bg-white text-slate-700 rounded px-1 text-xs" onClick={(e)=>{ e.preventDefault(); setCandidateImages(arr=> arr.filter((x,idx)=> idx!==i)); if(sourceImage===u) setSourceImage('') }}>Delete</button>
+                                <button className="block w-full" onClick={()=> setSourceImage(u)}>
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={u} alt={`img-${i}`} className="w-full h-16 object-cover" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ): <div className="text-xs text-slate-500">No images parsed yet.</div>}
+                      </div>
+                    </div>
+                  )}
                   {selectedNode.type==='compose' && (
                     <div className="space-y-3">
                       <div>
