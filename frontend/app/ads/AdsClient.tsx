@@ -6,7 +6,7 @@ import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-r
 import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
-export type NodeType = 'landing'|'angles'|'ad_copy'|'gemini_images'|'meta_ad'
+export type NodeType = 'landing'|'compose'|'headlines_out'|'copies_out'|'gemini_images'|'meta_ad'
 export type Port = 'in'|'out'
 export type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
 export type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
@@ -242,22 +242,55 @@ export default function AdsClient(){
     setEdges(es=> [...es, e])
   }
 
-  async function runFlow(){
+  async function generateComposeNode(){
+    const landing = nodes.find(n=> n.type==='landing')!
+    const comp = addOrGetNode('compose', landing, { })
+    connect(landing, comp)
+    setSelectedNodeId(comp.id)
+  }
+
+  function aggregateFromAngles(arr:any[]){
+    const headlines:string[] = []
+    const primaries:string[] = []
+    for(const a of (arr||[])){
+      const hs = Array.isArray(a?.headlines)? a.headlines : []
+      const ps = Array.isArray(a?.primaries)? a.primaries : Array.isArray(a?.primaries?.short)? [a.primaries.short, a.primaries.medium, a.primaries.long].filter(Boolean) : []
+      for(const h of hs){ if(typeof h==='string' && h && headlines.length<12) headlines.push(h) }
+      for(const p of ps){ if(typeof p==='string' && p && primaries.length<12) primaries.push(p) }
+    }
+    return { headlines, primaries }
+  }
+
+  async function composeGenerate(){
     try{
       setRunning(true)
-      const landing = nodes.find(n=> n.type==='landing')!
-      const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
+      const product = {
+        audience,
+        benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
+        pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
+        title: title||undefined,
+      }
       const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
-      const ang = addOrGetNode('angles', landing, { count: arr.length })
-      connect(landing, ang)
-      const copy = addOrGetNode('ad_copy', ang, { headlines: (arr[0]?.headlines||[]), primaries: (Array.isArray(arr[0]?.primaries)? arr[0].primaries : []) })
-      connect(ang, copy)
-      const gi = addOrGetNode('gemini_images', copy, { from: sourceImage||candidateImages[0]||'' })
-      connect(copy, gi)
-      const ma = addOrGetNode('meta_ad', gi, { landing_url: landingUrl, candidate_images: (adImages.length? adImages : candidateImages) })
-      connect(gi, ma)
+      const { headlines, primaries } = aggregateFromAngles(arr)
+      const comp = nodes.find(n=> n.type==='compose') || nodes[0]
+      const hnode = addOrGetNode('headlines_out', comp, { headlines })
+      const cnode = addOrGetNode('copies_out', comp, { primaries })
+      connect(comp, hnode)
+      connect(comp, cnode)
+      // Ensure images node exists as third parallel card
+      const img = addOrGetNode('gemini_images', comp, { from: sourceImage||candidateImages[0]||'', prompt: geminiAdPrompt })
+      connect(comp, img)
+    }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  async function runFlow(){
+    try{
+      setRunning(true)
+      await generateComposeNode()
+      await composeGenerate()
     }catch(e:any){ alert('Run failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -266,7 +299,8 @@ export default function AdsClient(){
     try{
       if(!sourceImage){ alert('Missing source image URL'); return }
       setRunning(true)
-      const prompt = geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'
+      const offerText = (offers||'').trim()
+      const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}`
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
@@ -393,14 +427,20 @@ export default function AdsClient(){
                 <Input value={sourceImage} onChange={e=>setSourceImage(e.target.value)} placeholder="https://cdn.shopify.com/...jpg" />
                 {candidateImages.length>0 && (
                   <div className="mt-2 grid grid-cols-3 gap-2">
-                    {candidateImages.slice(0,6).map((u,i)=> (
-                      <button key={i} className={`border rounded overflow-hidden ${u===sourceImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSourceImage(u)}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={u} alt={`img-${i}`} className="w-full h-20 object-cover" />
-                      </button>
+                    {candidateImages.slice(0,9).map((u,i)=> (
+                      <div key={i} className={`relative border rounded overflow-hidden ${u===sourceImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                        <button className="absolute top-1 right-1 z-10 bg-white/90 hover:bg-white text-slate-700 rounded px-1 text-xs" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); setCandidateImages(arr=> arr.filter((x,idx)=> idx!==i)); if(sourceImage===u) setSourceImage('') }}>
+                          Delete
+                        </button>
+                        <button className="block w-full" onClick={()=> setSourceImage(u)}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={u} alt={`img-${i}`} className="w-full h-20 object-cover" />
+                        </button>
+                      </div>
                     ))}
                   </div>
                 )}
+                <div className="mt-2"><Button size="sm" variant="outline" onClick={async()=>{ await analyzeLanding() }}>Analyze</Button> <Button size="sm" onClick={async()=>{ await generateComposeNode() }}>Generate headlines & copies</Button></div>
               </div>
             </CardContent>
           </Card>
@@ -477,7 +517,12 @@ export default function AdsClient(){
                 >
                   <div className="px-3 py-2 flex items-center justify-between">
                     <div className="text-xs font-semibold text-slate-700">
-                      {n.type==='landing'? 'Landing Page': n.type==='angles'? 'Angles': n.type==='ad_copy'? 'Ad Copy': n.type==='gemini_images'? 'Gemini Images':'Meta Ad'}
+                      {n.type==='landing'? 'Landing Page'
+                        : n.type==='compose'? 'Ad Headlines & Copy'
+                        : n.type==='headlines_out'? 'Headlines'
+                        : n.type==='copies_out'? 'Ad Copies'
+                        : n.type==='gemini_images'? 'Images'
+                        : 'Meta Ad'}
                     </div>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
                   </div>
@@ -489,14 +534,23 @@ export default function AdsClient(){
                         <div className="truncate">{landingUrl || 'No URL'}</div>
                       </div>
                     )}
-                    {n.type==='angles' && (
-                      <div className="text-xs text-slate-600">{angles.length||n.data?.count||0} generated</div>
+                    {n.type==='compose' && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-slate-600">Prepare prompts and generate outputs</div>
+                        <Button size="sm" variant="outline" onClick={composeGenerate} disabled={running}>Generate</Button>
+                      </div>
                     )}
-                    {n.type==='ad_copy' && (
-                      <div className="text-xs text-slate-600">{(headlines.length||0)} headlines</div>
+                    {n.type==='headlines_out' && (
+                      <div className="text-xs text-slate-600">{Array.isArray(n.data?.headlines)? n.data.headlines.length : 0} headlines</div>
+                    )}
+                    {n.type==='copies_out' && (
+                      <div className="text-xs text-slate-600">{Array.isArray(n.data?.primaries)? n.data.primaries.length : 0} copies</div>
                     )}
                     {n.type==='gemini_images' && (
-                      <div className="text-xs text-slate-600">{adImages.length||0} images</div>
+                      <div className="space-y-2">
+                        <div className="text-xs text-slate-600">{adImages.length||0} images</div>
+                        <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button>
+                      </div>
                     )}
                     {n.type==='meta_ad' && (
                       <div className="text-xs text-slate-600">Ready</div>
@@ -526,60 +580,48 @@ export default function AdsClient(){
               {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
               {selectedNode && (
                 <div className="space-y-3 text-sm">
-                  {selectedNode.type==='angles' && (
-                    <div className="space-y-2">
-                      <div className="text-xs text-slate-500">How many</div>
-                      <input type="number" min={1} max={5} className="w-24 rounded-xl border px-2 py-1 text-sm" value={numAngles} onChange={e=> setNumAngles(Math.max(1, Math.min(5, Number(e.target.value)||3)))} />
-                      <div><Button size="sm" variant="outline" onClick={runAngles} disabled={running}>Generate</Button></div>
-                      {angles.length>0 && (
-                        <div className="space-y-1">
-                          <div className="text-xs text-slate-500">Pick angle</div>
-                          <div className="flex gap-2 overflow-x-auto">
-                            {angles.map((a,i)=> (
-                              <button key={i} className={`text-xs px-2 py-1 rounded border ${i===selectedAngleIdx? 'bg-blue-600 text-white border-blue-600':'hover:bg-slate-50'}`} onClick={()=> setSelectedAngleIdx(i)}>
-                                {a?.name||`Angle ${i+1}`}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                  {selectedNode.type==='compose' && (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Headlines & copy prompt</div>
+                        <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+                        <div className="text-[11px] text-slate-500 mt-1">Uses audience, benefits, pains, title.</div>
+                      </div>
+                      <div><Button size="sm" variant="outline" onClick={composeGenerate} disabled={running}>Generate</Button></div>
                     </div>
                   )}
-                  {selectedNode.type==='ad_copy' && (
-                    <div className="space-y-3">
-                      {headlines.length>0? (
-                        <div>
-                          <div className="text-xs text-slate-500 mb-1">Pick a headline</div>
-                          <div className="grid grid-cols-1 gap-1">
-                            {headlines.slice(0,8).map((h,i)=> (
-                              <label key={i} className="text-sm flex items-center gap-2">
-                                <input type="radio" name="headline" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
-                                <span>{h}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-xs text-slate-500">Generate angles first.</div>
-                      )}
-                      {primaries.length>0? (
-                        <div>
-                          <div className="text-xs text-slate-500 mb-1">Pick a primary text</div>
-                          <div className="grid grid-cols-1 gap-1">
-                            {primaries.slice(0,3).map((p,i)=> (
-                              <label key={i} className="text-sm flex items-center gap-2">
-                                <input type="radio" name="primary" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
-                                <span>{p}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
+                  {selectedNode.type==='headlines_out' && (
+                    <div className="space-y-2 text-xs">
+                      <div className="text-slate-500">Headlines</div>
+                      <div className="grid grid-cols-1 gap-1">
+                        {(Array.isArray(selectedNode.data?.headlines)? selectedNode.data.headlines : []).slice(0,12).map((h:string,i:number)=> (
+                          <label key={i} className="text-sm flex items-center gap-2">
+                            <input type="radio" name="headline" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                            <span>{h}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedNode.type==='copies_out' && (
+                    <div className="space-y-2 text-xs">
+                      <div className="text-slate-500">Primary texts</div>
+                      <div className="grid grid-cols-1 gap-1">
+                        {(Array.isArray(selectedNode.data?.primaries)? selectedNode.data.primaries : []).slice(0,12).map((p:string,i:number)=> (
+                          <label key={i} className="text-sm flex items-center gap-2">
+                            <input type="radio" name="primary" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                            <span>{p}</span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {selectedNode.type==='gemini_images' && (
                     <div className="space-y-2">
-                      <div><Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button></div>
+                      <div className="text-xs text-slate-500 mb-1">Ad image prompt</div>
+                      <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
+                      <div className="text-[11px] text-slate-500">Variables: selected image, offers</div>
+                      <div><Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images (4)</Button></div>
                       {adImages.length>0 && (
                         <div className="grid grid-cols-2 gap-2">
                           {adImages.map((u,i)=> (
