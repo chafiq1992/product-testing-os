@@ -143,6 +143,17 @@ export default function AdsClient(){
     }catch{}
   },[analyzePrompt])
 
+  // Load user default prompts for ads tools
+  useEffect(()=>{
+    try{ const v = localStorage.getItem('ptos_ads_headlines_prompt'); if(v) setHeadlinesPrompt(v) }catch{}
+    try{ const v = localStorage.getItem('ptos_ads_copies_prompt'); if(v) setCopiesPrompt(v) }catch{}
+    try{ const v = localStorage.getItem('ptos_ads_gemini_prompt'); if(v) setGeminiAdPrompt(v) }catch{}
+  },[])
+  // Persist prompts on change
+  useEffect(()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} },[headlinesPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} },[copiesPrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} },[geminiAdPrompt])
+
   // Accept handoff from Studio via sessionStorage (prefer structured landing copy/images over URL)
   useEffect(()=>{
     try{
@@ -271,6 +282,12 @@ export default function AdsClient(){
     return child
   }
 
+  function ensureGenerator(type:Extract<NodeType,'headlines'|'copies'|'gemini_images'>, parent:FlowNode, index:number, total:number){
+    const existing = nodes.find(n=> n.type===type)
+    if(existing) return existing
+    return createChildNode(type, parent, {}, index, total)
+  }
+
   function aggregateFromAngles(arr:any[]){
     const headlines:string[] = []
     const primaries:string[] = []
@@ -296,7 +313,8 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { headlines, primaries } = aggregateFromAngles(arr)
-      const h = nodes.find(n=> n.type==='headlines') || nodes[0]
+      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+      const h = ensureGenerator('headlines', landing, 0, 3)
       createChildNode('headlines_out', h, { headlines }, 0, 1)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -315,7 +333,8 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { primaries } = aggregateFromAngles(arr)
-      const c = nodes.find(n=> n.type==='copies') || nodes[0]
+      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+      const c = ensureGenerator('copies', landing, 1, 3)
       createChildNode('copies_out', c, { primaries }, 0, 1)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -338,7 +357,8 @@ export default function AdsClient(){
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
-      const imgBuilder = nodes.find(n=> n.type==='gemini_images') || nodes[0]
+      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+      const imgBuilder = ensureGenerator('gemini_images', landing, 2, 3)
       createChildNode('images_out', imgBuilder, { images: imgs }, 0, 1)
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -391,6 +411,18 @@ export default function AdsClient(){
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
   const primaries: string[] = useMemo(()=> Array.isArray(angle?.primaries)? angle.primaries : Array.isArray(angle?.primaries?.short)? [angle.primaries.short, angle.primaries.medium, angle.primaries.long].filter(Boolean) : [], [angle])
   const selectedNode = useMemo(()=> nodes.find(n=> n.id===selectedNodeId) || null, [nodes, selectedNodeId])
+
+  function expandPrompt(template:string){
+    const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+    const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+    return String(template||'')
+      .replaceAll('{audience}', audience||'')
+      .replaceAll('{benefits}', JSON.stringify(benefitsArr))
+      .replaceAll('{pain_points}', JSON.stringify(painsArr))
+      .replaceAll('{title}', title||'')
+      .replaceAll('{offers}', offers||'')
+      .replaceAll('{emotions}', emotions||'')
+  }
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -666,22 +698,28 @@ export default function AdsClient(){
                       </div>
                     </div>
                   )}
-                  {selectedNode.type==='headlines' && (
+                  {(selectedNode.type==='headlines' || selectedNode.type==='headlines_out') && (
                     <div className="space-y-3">
                       <div>
                         <div className="text-xs text-slate-500 mb-1">Headlines prompt</div>
                         <Textarea rows={4} value={headlinesPrompt} onChange={e=>setHeadlinesPrompt(e.target.value)} />
-                        <div className="text-[11px] text-slate-500 mt-1">Uses audience, benefits, pains, title.</div>
+                        <div className="text-[11px] text-slate-500 mt-1">Uses variables: {audience?'{audience} ':''}{benefits?'{benefits} ':''}{pains?'{pain_points} ':''}{title?'{title} ':''}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
+                        <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(headlinesPrompt)}</pre>
+                        <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} }}>Make default</Button></div>
                       </div>
                       <div><Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button></div>
                     </div>
                   )}
-                  {selectedNode.type==='copies' && (
+                  {(selectedNode.type==='copies' || selectedNode.type==='copies_out') && (
                     <div className="space-y-3">
                       <div>
                         <div className="text-xs text-slate-500 mb-1">Ad copies prompt</div>
                         <Textarea rows={4} value={copiesPrompt} onChange={e=>setCopiesPrompt(e.target.value)} />
-                        <div className="text-[11px] text-slate-500 mt-1">Uses audience, benefits, pains, title.</div>
+                        <div className="text-[11px] text-slate-500 mt-1">Uses variables: {audience?'{audience} ':''}{benefits?'{benefits} ':''}{pains?'{pain_points} ':''}{title?'{title} ':''}</div>
+                        <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
+                        <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(copiesPrompt)}</pre>
+                        <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} }}>Make default</Button></div>
                       </div>
                       <div><Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button></div>
                     </div>
@@ -712,11 +750,14 @@ export default function AdsClient(){
                       </div>
                     </div>
                   )}
-                  {selectedNode.type==='gemini_images' && (
+                  {(selectedNode.type==='gemini_images' || selectedNode.type==='images_out') && (
                     <div className="space-y-2">
                       <div className="text-xs text-slate-500 mb-1">Ad image prompt</div>
                       <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
-                      <div className="text-[11px] text-slate-500">Variables: selected image, offers</div>
+                      <div className="text-[11px] text-slate-500">Uses variables: {offers?'{offers} ':''}and selected image.</div>
+                      <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
+                      <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(geminiAdPrompt)}</pre>
+                      <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} }}>Make default</Button></div>
                       <div><Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images (4)</Button></div>
                       {adImages.length>0 && (
                         <div className="grid grid-cols-2 gap-2">
