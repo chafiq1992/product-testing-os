@@ -373,7 +373,7 @@ def gen_title_and_description(payload: dict, angle: dict, prompt_override: str |
 
 # ---------------- Analyze landing page URL ----------------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def analyze_landing_page(url: str, model: str | None = None) -> dict:
+def analyze_landing_page(url: str, model: str | None = None, prompt_override: str | None = None) -> dict:
     """Fetch a landing page and extract structured marketing insights using OpenAI.
 
     Returns a dict with keys: title, benefits[], pain_points[], offers[], emotions[],
@@ -406,12 +406,16 @@ def analyze_landing_page(url: str, model: str | None = None) -> dict:
     except Exception:
         images = []
 
-    system = (
+    base_instr = (
         "You are a senior direct-response marketer. Given landing page HTML, extract high-converting inputs. "
         "Respond ONLY as a compact JSON object with keys: title, benefits (array of short bullets), "
         "pain_points (array), offers (array), emotions (array), angles (array of objects with fields: name, "
         "headlines (array of 3-6 short options), primaries (array of 3-6 options))."
     )
+    if prompt_override and isinstance(prompt_override, str) and prompt_override.strip():
+        system = (prompt_override.strip() + "\n\n" + base_instr)
+    else:
+        system = base_instr
     user = (
         "Analyze this landing page HTML and produce the JSON. Avoid prose, no markdown. HTML follows:\n\n" + (html[:180000] if html else "")
     )
@@ -469,4 +473,5 @@ def analyze_landing_page(url: str, model: str | None = None) -> dict:
             out["angles"] = norm
     except Exception:
         out["angles"] = []
+    out["prompt_used"] = system
     return out

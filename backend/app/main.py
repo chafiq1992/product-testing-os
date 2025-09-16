@@ -325,12 +325,13 @@ async def api_llm_landing_copy(req: LandingCopyRequest):
 class AnalyzeLandingRequest(BaseModel):
     url: str
     model: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 @app.post("/api/llm/analyze_landing_page")
 async def api_llm_analyze_landing_page(req: AnalyzeLandingRequest):
     try:
-        data = analyze_landing_page(req.url, model=req.model)
+        data = analyze_landing_page(req.url, model=req.model, prompt_override=req.prompt)
         return data
     except Exception as e:
         return {"error": str(e), "url": req.url}

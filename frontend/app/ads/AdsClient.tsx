@@ -88,11 +88,20 @@ export default function AdsClient(){
       if(typeof ads.countries==='string') setCountries(ads.countries)
       const adImgs = Array.isArray(ads.adImages)? ads.adImages : []
       if(adImgs.length>0) setAdImages(adImgs)
+      // Restore prompts
+      try{
+        const prompts = (f as any)?.prompts||{}
+        if(typeof prompts.angles_prompt==='string') setAnglesPrompt(prompts.angles_prompt)
+        if(typeof prompts.gemini_ad_prompt==='string') setGeminiAdPrompt(prompts.gemini_ad_prompt)
+        if(typeof prompts.analyze_landing_prompt==='string') setAnalyzePrompt(prompts.analyze_landing_prompt)
+      }catch{}
     }catch{}
   })() },[flowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
+  const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
+  const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
 
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
 
@@ -120,6 +129,16 @@ export default function AdsClient(){
       }
     }catch{}
   },[])
+
+  // Fallback default analyze prompt from localStorage
+  useEffect(()=>{
+    try{
+      if(!analyzePrompt){
+        const def = localStorage.getItem('ptos_analyze_prompt_default')
+        if(def) setAnalyzePrompt(def)
+      }
+    }catch{}
+  },[analyzePrompt])
 
   // Accept handoff from Studio via sessionStorage (prefer structured landing copy/images over URL)
   useEffect(()=>{
@@ -163,8 +182,9 @@ export default function AdsClient(){
     try{
       if(!landingUrl){ alert('Enter landing page URL first.'); return }
       setRunning(true)
-      const out = await llmAnalyzeLandingPage({ url: landingUrl })
+      const out = await llmAnalyzeLandingPage({ url: landingUrl, prompt: analyzePrompt })
       if((out as any)?.error){ throw new Error((out as any).error) }
+      if(typeof (out as any)?.prompt_used==='string') setLastAnalyzePromptUsed((out as any).prompt_used)
       if(typeof (out as any)?.title==='string' && !(title&&title.trim())) setTitle((out as any).title)
       const arr = Array.isArray((out as any)?.benefits)? (out as any).benefits : []
       if(arr.length>0) setBenefits(arr.join('\n'))
@@ -289,11 +309,13 @@ export default function AdsClient(){
           countries, savedAudienceId, candidateImages, adImages,
         }
         const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
-        await updateDraft(flowId, { product: product as any, ads })
+        const prompts:any = { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, gemini_ad_prompt: geminiAdPrompt }
+        await updateDraft(flowId, { product: product as any, ads, prompts })
+        try{ localStorage.setItem('ptos_analyze_prompt_default', analyzePrompt) }catch{}
       }catch{}
     }, 7000)
     return ()=> clearInterval(t)
-  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title])
+  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, anglesPrompt, geminiAdPrompt])
 
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
@@ -333,6 +355,13 @@ export default function AdsClient(){
                 <div className="text-xs text-slate-500 mb-1">Landing page URL</div>
                 <Input value={landingUrl} onChange={e=>setLandingUrl(e.target.value)} placeholder="https://yourstore.com/pages/offer" />
                 <div className="mt-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button></div>
+                <div className="mt-2">
+                  <div className="text-xs text-slate-500 mb-1">Analyze prompt</div>
+                  <Textarea rows={4} value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
+                  {lastAnalyzePromptUsed && (
+                    <div className="text-[11px] text-slate-500 mt-1">Prompt used (last): {lastAnalyzePromptUsed.slice(0,160)}{lastAnalyzePromptUsed.length>160?'…':''}</div>
+                  )}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
