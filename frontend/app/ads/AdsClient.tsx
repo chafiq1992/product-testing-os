@@ -91,7 +91,9 @@ export default function AdsClient(){
       // Restore prompts
       try{
         const prompts = (f as any)?.prompts||{}
-        if(typeof prompts.angles_prompt==='string') setAnglesPrompt(prompts.angles_prompt)
+        if(typeof prompts.headlines_prompt==='string') setHeadlinesPrompt(prompts.headlines_prompt)
+        else if(typeof prompts.angles_prompt==='string') setHeadlinesPrompt(prompts.angles_prompt)
+        if(typeof prompts.copies_prompt==='string') setCopiesPrompt(prompts.copies_prompt)
         if(typeof prompts.gemini_ad_prompt==='string') setGeminiAdPrompt(prompts.gemini_ad_prompt)
         if(typeof prompts.analyze_landing_prompt==='string') setAnalyzePrompt(prompts.analyze_landing_prompt)
       }catch{}
@@ -204,22 +206,7 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
-  async function runAngles(){
-    try{
-      setRunning(true)
-      const product = {
-        audience,
-        benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
-        pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
-        title: title||undefined,
-      }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
-      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
-      setAngles(arr)
-      setSelectedAngleIdx(0)
-    }catch(e:any){ alert('Angles failed: '+ String(e?.message||e)) }
-    finally{ setRunning(false) }
-  }
+  // removed legacy runAngles
 
   let idSeq=1; const nextId=()=> `a${idSeq++}`
   const [nodes,setNodes]=useState<FlowNode[]>(()=>{
@@ -392,13 +379,13 @@ export default function AdsClient(){
           countries, savedAudienceId, candidateImages, adImages,
         }
         const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
-        const prompts:any = { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, gemini_ad_prompt: geminiAdPrompt }
+        const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
         await updateDraft(flowId, { product: product as any, ads, prompts })
         try{ localStorage.setItem('ptos_analyze_prompt_default', analyzePrompt) }catch{}
       }catch{}
     }, 7000)
     return ()=> clearInterval(t)
-  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, anglesPrompt, geminiAdPrompt])
+  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt])
 
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
@@ -500,9 +487,12 @@ export default function AdsClient(){
             <CardHeader className="pb-2"><CardTitle className="text-base">Prompts</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <div>
-                <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
-                <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
-                <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
+                <div className="text-xs text-slate-500 mb-1">Headlines prompt</div>
+                <Textarea rows={4} value={headlinesPrompt} onChange={e=>setHeadlinesPrompt(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Ad copies prompt</div>
+                <Textarea rows={4} value={copiesPrompt} onChange={e=>setCopiesPrompt(e.target.value)} />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
