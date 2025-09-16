@@ -93,10 +93,6 @@ export default function AdsClient(){
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
-  const [marketingPrompt,setMarketingPrompt]=useState<string>(
-    'You are a marketing agent. Review the landing page details below and extract concise ad inputs: audience, product title, key benefits (bullets), pain points (bullets), offers/promotions, and emotional triggers. Keep each list short and high-impact.'
-  )
-  const [landingCopy,setLandingCopy]=useState<any>(null)
 
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
 
@@ -141,7 +137,6 @@ export default function AdsClient(){
         try{
           const lc = (data as any).landing_copy
           if(lc && typeof lc==='object'){
-            setLandingCopy(lc)
             const secBodies = Array.isArray(lc.sections)? lc.sections.map((s:any)=> String(s?.body||'').trim()).filter(Boolean) : []
             const bullets = secBodies.join('\n').split('\n').map((s:string)=> s.trim()).filter(Boolean).slice(0,8)
             if(bullets.length>0) setBenefits(bullets.join('\n'))
@@ -159,34 +154,6 @@ export default function AdsClient(){
       }
     }catch{}
   },[])
-
-  function extractInputsFromLandingCopy(src:any){
-    try{
-      const lc = src||landingCopy
-      if(!lc || typeof lc!=='object'){ return }
-      // Derive benefits from section bodies
-      const secBodies = Array.isArray(lc.sections)? lc.sections.map((s:any)=> String(s?.body||'').trim()).filter(Boolean) : []
-      const bullets = secBodies.join('\n').split('\n').map((s:string)=> s.trim()).filter(Boolean)
-      if(bullets.length>0) setBenefits(bullets.slice(0,8).join('\n'))
-      // Derive primary text
-      const primary = String((lc as any)?.subheadline||'').trim() || String((lc as any)?.headline||'').trim()
-      if(primary) setSelectedPrimary(primary)
-      // Title
-      const h = String((lc as any)?.headline||'').trim()
-      if(h) setTitle(h)
-    }catch{}
-  }
-
-  function buildAnglesPrompt(product:{audience:string, benefits:string[], pain_points:string[], title?:string}, userPrompt:string){
-    const lines:string[] = []
-    if(userPrompt && userPrompt.trim()){ lines.push(userPrompt.trim()) }
-    lines.push('Context for ad angles:')
-    if(product.title) lines.push(`Title: ${product.title}`)
-    if(product.audience) lines.push(`Audience: ${product.audience}`)
-    if(product.benefits?.length){ lines.push('Benefits:\n- '+ product.benefits.slice(0,8).join('\n- ')) }
-    if(product.pain_points?.length){ lines.push('Pain points:\n- '+ product.pain_points.slice(0,8).join('\n- ')) }
-    return lines.join('\n\n')
-  }
 
   useEffect(()=>{
     if(!selectedImage && adImages.length>0){ setSelectedImage(adImages[0]) }
@@ -223,8 +190,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const finalPrompt = buildAnglesPrompt(product as any, anglesPrompt)
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: finalPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       setSelectedAngleIdx(0)
@@ -259,8 +225,7 @@ export default function AdsClient(){
       setRunning(true)
       const landing = nodes.find(n=> n.type==='landing')!
       const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
-      const finalPrompt = buildAnglesPrompt(product as any, anglesPrompt)
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: finalPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: anglesPrompt||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const ang = addOrGetNode('angles', landing, { count: arr.length })
@@ -365,34 +330,6 @@ export default function AdsClient(){
                 <div className="text-xs text-slate-500 mb-1">Landing page URL</div>
                 <Input value={landingUrl} onChange={e=>setLandingUrl(e.target.value)} placeholder="https://yourstore.com/pages/offer" />
                 <div className="mt-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button></div>
-                {(title || selectedPrimary || benefits || candidateImages.length>0) && (
-                  <div className="mt-3 border rounded-xl p-3 bg-slate-50">
-                    <div className="text-xs text-slate-500 mb-2">Landing preview</div>
-                    {title? (<div className="font-medium text-slate-700 truncate">{title}</div>): null}
-                    {landingUrl? (<div className="text-[11px] text-slate-500 break-all">{landingUrl}</div>): null}
-                    {selectedPrimary? (<div className="text-sm mt-2">{selectedPrimary}</div>): null}
-                    {benefits? (
-                      <ul className="list-disc pl-5 text-sm mt-2">
-                        {benefits.split('\n').slice(0,6).map((b,i)=>(<li key={i}>{b}</li>))}
-                      </ul>
-                    ): null}
-                    {candidateImages.length>0 && (
-                      <div className="grid grid-cols-3 gap-2 mt-2">
-                        {candidateImages.slice(0,6).map((u,i)=>(
-                          <div key={i} className="border rounded overflow-hidden">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={u} alt={`img-${i}`} className="w-full h-16 object-cover" />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="mt-3">
-                      <div className="text-xs text-slate-500 mb-1">Marketing extraction prompt</div>
-                      <Textarea rows={3} value={marketingPrompt} onChange={e=> setMarketingPrompt(e.target.value)} />
-                      <div className="mt-2 flex justify-end"><Button size="sm" variant="outline" onClick={()=> extractInputsFromLandingCopy(null)}>Extract inputs</Button></div>
-                    </div>
-                  </div>
-                )}
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
