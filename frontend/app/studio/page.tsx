@@ -73,7 +73,7 @@ export default function Page(){
   )
 }
 
-export function StudioPage({ forcedMode }: { forcedMode?: string }){
+function StudioPage({ forcedMode }: { forcedMode?: string }){
   const params = useSearchParams()
   const mode = forcedMode || params.get('mode')
   const isPromotionMode = mode==='promotion'
