@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
-from app.integrations.openai_client import gen_angles_and_copy, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
+from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
@@ -265,9 +265,15 @@ class AnglesRequest(BaseModel):
 
 @app.post("/api/llm/angles")
 async def api_llm_angles(req: AnglesRequest):
-    angles = gen_angles_and_copy(req.product.model_dump(), model=req.model, prompt_override=req.prompt)
+    # Return full JSON so callers can use alternative schemas (e.g., offers)
+    data = gen_angles_and_copy_full(req.product.model_dump(), model=req.model, prompt_override=req.prompt)
     k = max(1, min(5, req.num_angles or 2))
-    return {"angles": angles[:k]}
+    try:
+        if isinstance(data.get("angles"), list):
+            data["angles"] = data["angles"][:k]
+    except Exception:
+        pass
+    return data
 
 
 class TitleDescRequest(BaseModel):

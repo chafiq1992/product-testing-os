@@ -900,22 +900,28 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
 
   async function offerGenerateImage(offerNodeId:string){
     const n = flowRef.current.nodes.find(x=> x.id===offerNodeId); if(!n) return
-    const src = promotionImageUrl || (uploadedUrls||[])[0] || analysisImageUrl
-    if(!src){ alert('Upload a free product image first.'); return }
-    const offer = n.data?.offer||{}
+    const mainImage = (uploadedUrls||[])[0] || analysisImageUrl
+    const freeImage = promotionImageUrl || ''
+    const src = mainImage || freeImage
+    if(!src){ alert('Upload or provide a main product image in Product inputs.'); return }
+    const baseOffer = n.data?.offer || n.data?.offer_full || {}
     const parts:string[] = []
-    if(offer?.name) parts.push(String(offer.name))
-    if(offer?.headline) parts.push(String(offer.headline))
-    if(offer?.subheadline) parts.push(String(offer.subheadline))
-    if(offer?.visual_idea) parts.push('Visual idea: '+ String(offer.visual_idea))
+    if(baseOffer?.name) parts.push(String(baseOffer.name))
+    if(baseOffer?.headline) parts.push('Headline: '+ String(baseOffer.headline))
+    if(baseOffer?.subheadline) parts.push('Subheadline: '+ String(baseOffer.subheadline))
+    if(Array.isArray(baseOffer?.bullets)) parts.push('Bullets: '+ String((baseOffer.bullets||[]).join(' • ')))
+    if(baseOffer?.visual_idea) parts.push('Visual idea: '+ String(baseOffer.visual_idea))
+    if(Array.isArray(baseOffer?.creative_text)) parts.push('On-image banners: '+ String((baseOffer.creative_text||[]).join(' | ')))
     const prompt = (
-      'Create a super eye-catching promotional ad image with bold banners and clear discount tags based on this offer. Keep product identity identical to the reference photo (shape, color, print, materials). Match the target audience and category.\n\n'
+      'You are a senior media buyer and ecommerce marketing art director. Create three distinct, super eye-catching promotional ad images with bold banners and clear discount tags based on this offer. Keep product identity identical to the reference photo (shape, color, print, materials). Match the target audience and category.\n\n'
       + parts.join('\n') + '\n\n'
-      + 'Emphasize a conversion-focused layout, strong callouts, and legible on-image text. Use vibrant accents that fit the brand. Social-feed ready.'
+      + (freeImage? `Include a small secondary picture-in-picture using FREE_PRODUCT_IMAGE_URL as a “Free gift” badge when compositionally appropriate. FREE_PRODUCT_IMAGE_URL: ${freeImage}\n` : '')
+      + (mainImage? `MAIN_IMAGE_URL: ${mainImage}\n` : '')
+      + 'Ensure conversion-focused layout, strong callouts, and legible on-image text if included. Use vibrant accents that fit the brand. Provide high-contrast hero lighting and clean composition. Social-feed ready.'
     )
     let newId:string|undefined
     setFlow(f=>{
-      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 2 })
+      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 3 })
       const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
       const next = { nodes:[...f.nodes, child], edges }
       flowRef.current = next
@@ -923,6 +929,37 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
       return next
     })
     if(newId){ await geminiGenerate(newId) }
+  }
+
+  async function offerGenerateFull(offerNodeId:string){
+    const n = flowRef.current.nodes.find(x=> x.id===offerNodeId); if(!n) return
+    const offer = n.data?.offer||{}
+    // Default expert prompt; users can edit per-node in Inspector
+    const defaultPrompt = (
+      'You are a highly skilled, knowledgeable direct-response marketing expert. Expand the following OFFER_IDEA into a complete, compelling promotional offer ready for Meta ads.\n'
+      + 'Return ONE valid json object only with fields: offer { name, headline, subheadline, bullets[3-6], mechanics, price_anchor, risk_reversal, guarantee, urgency, CTA_label, creative_text[3-6] }.\n'
+      + 'Rules: headlines ≤ 12 words; subheadline ≤ 18 words; bullets are concrete benefits; no emojis; clear, believable, specific; English only.'
+    )
+    const productJson = summarizeProductForPrompt()
+    const prompt = (
+      `${String(n.data?.offer_prompt||defaultPrompt)}\n\nPRODUCT_INFO: ${productJson}\nOFFER_IDEA: ${JSON.stringify(offer)}`
+    )
+    // Call angles API with custom prompt; backend returns full JSON
+    const res = await llmGenerateAngles({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, num_angles: 1, model, prompt })
+    let full:any = null
+    try{
+      if((res as any)?.offer) full = (res as any).offer
+      else if((res as any)?.offers && Array.isArray((res as any).offers)) full = (res as any).offers[0]
+      else if(typeof (res as any)?.headline==='string' || typeof (res as any)?.subheadline==='string') full = res
+    }catch{}
+    if(!full){ alert('Offer generation failed.'); return }
+    setFlow(f=>{
+      const child = makeNode('action', n.x+300, n.y, { label:'Offer Copy', type:'promotion_offer_copy', offer_full: full })
+      const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
+      const next = { nodes:[...f.nodes, child], edges }
+      flowRef.current = next
+      return next
+    })
   }
 
   // removed image prompt suggester flow
@@ -1476,11 +1513,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
                   <option value="gpt-5">gpt-5</option>
                 </select>
               </div>
-              {isPromotionMode && (
-                <div className="mt-2 flex justify-end">
-                  <Button onClick={()=> startPromotionGenerator()} disabled={running}>Generate</Button>
-                </div>
-              )}
+              {/* In promotion mode, the Generate Offers node is seeded by default; button removed */}
             </CardContent>
           </Card>
           )}
@@ -1567,6 +1600,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
                   onApplyAdPrompt={(id)=> {}}
                   onOfferGenerateImage={(id)=> offerGenerateImage(id)}
                   onOffersGenerate={()=> startPromotionGenerator()}
+                  onOfferGenerateFull={(id)=> offerGenerateFull(id)}
                 />
               ))}
             </div>
@@ -1601,6 +1635,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
                   onApplyAdPrompt={(id)=> {}}
                   onGalleryApprove={(id)=> galleryApprove(id)}
                   onExternalNav={(href)=> handleExternalNav(href)}
+                  onOfferGenerateFull={(id)=> offerGenerateFull(id)}
                 />
               )}
             </CardContent>
@@ -1658,7 +1693,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate, onOfferGenerateFull }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -1676,7 +1711,7 @@ function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, paylo
         </div>
         <Separator/>
         <div className="p-3 text-sm text-slate-700 min-h-[64px]">
-          {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate)}
+        {renderNodeBody(node, selected, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate, onOfferGenerateFull)}
         </div>
       </motion.div>
       {/* Visual input/output ports for clarity */}
@@ -1691,7 +1726,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void){
   // Minimal card content: headline only
   if(node.type==='trigger'){
     return (
@@ -1724,7 +1759,20 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
       <div className="text-xs text-slate-700">
         {title}
         <div className="text-[11px] text-slate-500 truncate">{offer?.subheadline? String(offer.subheadline) : ''}</div>
-        <div className="mt-1 flex justify-end">
+        <div className="mt-1 flex items-center gap-1 justify-end">
+          <Button size="sm" variant="outline" onClick={()=> onOfferGenerateFull(node.id)} disabled={node.run?.status==='running'}>Generate offer</Button>
+          <Button size="sm" onClick={()=> onOfferGenerateImage(node.id)} disabled={node.run?.status==='running'}>Generate image</Button>
+        </div>
+      </div>
+    )
+  }
+  if(type==='promotion_offer_copy'){
+    const off = node.data?.offer_full||{}
+    return (
+      <div className="text-xs text-slate-700">
+        {off?.headline||off?.name||'Offer'}
+        <div className="text-[11px] text-slate-500 truncate">{off?.subheadline? String(off.subheadline) : ''}</div>
+        <div className="mt-1 flex items-center gap-1 justify-end">
           <Button size="sm" onClick={()=> onOfferGenerateImage(node.id)} disabled={node.run?.status==='running'}>Generate image</Button>
         </div>
       </div>
@@ -1837,7 +1885,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const out = node.run?.output||{}
@@ -2041,7 +2089,21 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             </div>
           </div>
         )}
-        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch') && (
+        {/* Offer copy generation controls */}
+        {node.data?.type==='promotion_offer' && (
+          <div className="space-y-2">
+            <div className="text-[11px] text-slate-500 mb-1">Offer expansion prompt</div>
+            <Textarea
+              rows={4}
+              value={String(node.data?.offer_prompt||'You are a highly skilled, knowledgeable direct-response marketing expert. Expand the OFFER_IDEA into a complete, compelling promotional offer ready for Meta ads. Return ONE valid json object only with fields: offer { name, headline, subheadline, bullets[3-6], mechanics, price_anchor, risk_reversal, guarantee, urgency, CTA_label, creative_text[3-6] }. Rules: headlines ≤ 12 words; subheadline ≤ 18 words; bullets are concrete benefits; no emojis; clear, believable, specific; English only.')}
+              onChange={e=> onUpdateNodeData(node.id,{ offer_prompt: e.target.value })}
+            />
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={()=> onOfferGenerateFull(node.id)} disabled={node.run?.status==='running'}>Generate Offer</Button>
+            </div>
+          </div>
+        )}
+        {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch' || node.data?.type==='promotion_offer') && (
           <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
         )}
       </div>

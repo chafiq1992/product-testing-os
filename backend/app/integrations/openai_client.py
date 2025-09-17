@@ -40,7 +40,12 @@ BASE_PROMPT = (
 )
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override: str | None = None) -> list:
+def gen_angles_and_copy_full(payload: dict, model: str | None = None, prompt_override: str | None = None) -> dict:
+    """Generate angles/copy (or other marketing JSON when prompt_override provided).
+
+    Returns the full parsed JSON object from the model so callers can access
+    alternative schemas (e.g., offers) in addition to angles.
+    """
     base = (prompt_override or BASE_PROMPT)
     msg = (
         base
@@ -58,7 +63,20 @@ def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override
         response_format={"type":"json_object"}
     )
     text = resp.choices[0].message.content
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {"angles": []}
+    # Normalize to ensure angles key exists for legacy callers
+    if not isinstance(data.get("angles"), list):
+        data["angles"] = []
+    return data
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override: str | None = None) -> list:
+    """Legacy helper that returns only the angles list for existing callers."""
+    data = gen_angles_and_copy_full(payload, model=model, prompt_override=prompt_override)
     return data.get("angles", [])
 
 IMAGE_PROMPT = (
