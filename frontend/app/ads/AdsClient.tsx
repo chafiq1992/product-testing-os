@@ -456,22 +456,27 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
-  // Autosave Ads inputs to linked flow when id present
+  // Autosave Ads inputs to linked flow when id present (debounced, silent)
   useEffect(()=>{
     if(!flowId) return
-    const t = setInterval(async ()=>{
-      try{
-        const ads:any = {
-          selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus,
-          countries, savedAudienceId, candidateImages, adImages,
-        }
-        const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
-        const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
-        await updateDraft(flowId, { product: product as any, ads, prompts })
-        try{ localStorage.setItem('ptos_analyze_prompt_default', analyzePrompt) }catch{}
-      }catch{}
-    }, 7000)
-    return ()=> clearInterval(t)
+    let timer:any
+    const schedule = ()=>{
+      if(timer) clearTimeout(timer)
+      timer = setTimeout(async()=>{
+        try{
+          const ads:any = {
+            selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus,
+            countries, savedAudienceId, candidateImages, adImages,
+          }
+          const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
+          const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
+          await updateDraft(flowId, { product: product as any, ads, prompts })
+          try{ localStorage.setItem('ptos_analyze_prompt_default', analyzePrompt) }catch{}
+        }catch{}
+      }, 800)
+    }
+    schedule()
+    return ()=>{ if(timer) clearTimeout(timer) }
   },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt])
 
   const angle = angles[selectedAngleIdx]||null

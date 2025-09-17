@@ -443,13 +443,13 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       if((files||[]).length>0 && !urls){
         try{
           // Keep a product GID reference across actions
-          if(!productGidRef.current){
+          if(!isPromotionMode && !productGidRef.current){
             const vTitle = title || 'Product'
             const vDesc = ''
             const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
             productGidRef.current = (prod as any)?.product_gid
           }
-          if(productGidRef.current){
+          if(!isPromotionMode && productGidRef.current){
             const up = await shopifyUploadProductFiles({ product_gid: productGidRef.current, files, title: title||'Product', description: '' })
             const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
             const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
@@ -511,13 +511,13 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
         const snapshot = { ...(payload.product||{}), uploaded_images: payload.image_urls||[], flow: payload.flow, ui: payload.ui, prompts: payload.prompts, settings: payload.settings }
         sessionStorage.setItem(`flow_cache_${res.id}`, JSON.stringify(snapshot))
       }catch{}
-      alert('Saved draft')
+      // silent save (no alerts)
     }catch(e:any){
-      alert('Failed to save draft: '+ String(e?.message||e))
+      // silent failure
     }
   }
 
-  // Autosave every 7s when changes detected
+  // Autosave when changes detected (debounced, silent)
   useEffect(()=>{
     let timer: any
     let last: string | null = null
@@ -549,8 +549,9 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
         }
       }catch{}
     }
-    timer = setInterval(tick, 7000)
-    return ()=>{ if(timer) clearInterval(timer) }
+    if(timer) clearInterval(timer)
+    timer = setTimeout(tick, 800)
+    return ()=>{ if(timer) clearTimeout(timer) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[audience, benefits, pains, price, title, sizes, colors, model, advantagePlus, adsetBudget, countries, selectedSavedAudience, pan, zoom, selected, geminiAdPrompt, geminiVariantStylePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt])
 
@@ -574,6 +575,10 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
     const v = n.data?.value||{}
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
+      if(isPromotionMode){
+        updateNodeRun(nodeId, { status:'error', error:'Product creation is disabled in Promotion mode.' })
+        return
+      }
       let productNodeId:string|undefined
       setFlow(f=>{
         const pn = makeNode('action', n.x+300, n.y, { label:'Create Product', type:'create_product' })
@@ -1431,7 +1436,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                 <TagsInput value={pains} onChange={setPains} placeholder="Add pain & Enter" />
               </div>
               <div>
-                <div className="text-xs text-slate-500 mb-1">Images (optional)</div>
+                <div className="text-xs text-slate-500 mb-1">Main product image</div>
                 <Dropzone files={files} onFiles={(incoming)=>{
                   (async()=>{
                     try{
@@ -1443,7 +1448,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                       let productGid = (productNode?.run?.output||{} as any).product_gid
                       let urls: string[] = []
                       // If no product exists yet, create a minimal product to host images on Shopify
-                      if(!productGid){
+                      if(!isPromotionMode && !productGid){
                         try{
                           const created = await shopifyCreateProductFromTitleDesc({
                             product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory },
@@ -1458,7 +1463,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                           }
                         }catch{}
                       }
-                      if(productGid){
+                      if(!isPromotionMode && productGid){
                         const up = await shopifyUploadProductFiles({ product_gid: productGid, files: newFiles, title: title||undefined, description: '' })
                         const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
                         const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
@@ -1486,7 +1491,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
               </div>
               {isPromotionMode && (
               <div>
-                <div className="text-xs text-slate-500 mb-1">Free product image (promotion)</div>
+                <div className="text-xs text-slate-500 mb-1">Second offer product image (promotion)</div>
                 <Dropzone files={promotionImageFiles} onFiles={(incoming)=>{
                   (async()=>{
                     try{
