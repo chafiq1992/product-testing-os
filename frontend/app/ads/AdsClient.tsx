@@ -6,7 +6,7 @@ import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-r
 import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
-export type NodeType = 'landing'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
+export type NodeType = 'landing'|'angles'|'angle_variant'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
 export type Port = 'in'|'out'
 export type FlowNode = { id:string, type:NodeType, x:number, y:number, data:any }
 export type FlowEdge = { id:string, from:string, fromPort:Port|string, to:string, toPort:Port|string }
@@ -100,8 +100,9 @@ export default function AdsClient(){
     }catch{}
   })() },[flowId])
 
-  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('Generate 10 short, high-converting ad headlines based on the inputs.')
-  const [copiesPrompt,setCopiesPrompt]=useState<string>('Generate 6 ad primary texts (short/medium/long variants) based on the inputs.')
+  const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a senior performance marketer. Based on PRODUCT_INFO, propose exactly 3 distinct ad angles, each targeting a different micro-audience and selling point. Each angle must specify: name, big_idea, promise, 6-10 headlines, and 3 primaries (short, medium, long). Avoid fluff; be specific and conversion-oriented.')
+  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 8 ultra-high-converting ad headlines. Each ≤ 12 words, concrete, specific, and benefit-led. No emojis, no ALL CAPS.')
+  const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 3 compelling Meta primary texts (short ≤60 chars, medium ≤120 chars, long ≤220 chars). Use proof or specifics when possible. No emojis, avoid spammy claims.')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
   const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
   const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
@@ -236,6 +237,11 @@ export default function AdsClient(){
     setNodes(ns=> [...ns, n])
     return n
   }
+  function addNodeUnique(type:NodeType, near:{x:number,y:number}, data:any={}, pos?:{x:number,y:number}){
+    const n:FlowNode = { id: nextId(), type, x: (pos? pos.x : near.x+300), y: (pos? pos.y : near.y), data }
+    setNodes(ns=> [...ns, n])
+    return n
+  }
   function connect(a:FlowNode, b:FlowNode){
     const e:FlowEdge = { id: nextId(), from:a.id, fromPort:'out', to:b.id, toPort:'in' }
     setEdges(es=> [...es, e])
@@ -277,7 +283,7 @@ export default function AdsClient(){
 
   function createChildNode(type:NodeType, parent:FlowNode, data:any, index:number, total:number){
     const pos = findFreePosition(placeChild(parent, index, total))
-    const child = addOrGetNode(type, parent, data, pos)
+    const child = addNodeUnique(type, parent, data, pos)
     connect(parent, child)
     return child
   }
@@ -320,6 +326,67 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
+  async function generateAngles(){
+    try{
+      setRunning(true)
+      const product = {
+        audience,
+        benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
+        pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
+        title: title||undefined,
+      }
+      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      setAngles(arr)
+      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+      const gen = addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y })
+      connect(landing, gen)
+      const count = Math.min(3, Math.max(0, arr.length||3))
+      for(let i=0;i<count;i++){
+        const a = arr[i] || { name:`Angle ${i+1}` }
+        createChildNode('angle_variant', gen, { angle: a }, i, count)
+      }
+    }catch(e:any){ alert('Angles generation failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  async function expandAngle(nodeId:string){
+    const n = nodes.find(x=> x.id===nodeId)
+    if(!n) return
+    const a = (n.data||{}).angle||{}
+    // Headlines
+    try{
+      setRunning(true)
+      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      const formattedHeadlinesPrompt = `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}`
+      const outH = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formattedHeadlinesPrompt })
+      const aggH = aggregateFromAngles(Array.isArray((outH as any)?.angles)? (outH as any).angles : [])
+      const hNode = createChildNode('headlines', n, { }, 0, 3)
+      createChildNode('headlines_out', hNode, { headlines: (aggH.headlines||[]).slice(0,8) }, 0, 1)
+    }catch{}
+    // Copies
+    try{
+      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      const formattedCopiesPrompt = `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}`
+      const outC = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formattedCopiesPrompt })
+      const aggC = aggregateFromAngles(Array.isArray((outC as any)?.angles)? (outC as any).angles : [])
+      const cNode = createChildNode('copies', n, { }, 1, 3)
+      createChildNode('copies_out', cNode, { primaries: (aggC.primaries||[]).slice(0,3) }, 0, 1)
+    }catch{}
+    // Images
+    try{
+      if(!(sourceImage||candidateImages[0])) throw new Error('Missing source image URL')
+      const imagePrompt = `${geminiAdPrompt||'Create a high‑quality ad image.'} Angle: ${String(a?.name||'')}`
+      const resp = await geminiGenerateAdImages({ image_url: (sourceImage||candidateImages[0])!, prompt: imagePrompt, num_images: 3, neutral_background: true })
+      const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
+      const imgNode = createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'' }, 2, 3)
+      createChildNode('images_out', imgNode, { images: imgs }, 0, 1)
+      setAdImages(prev=> imgs.length? imgs : prev)
+    }catch(e:any){ /* silent */ }
+    finally{ setRunning(false) }
+  }
   async function generateCopies(){
     try{
       setRunning(true)
@@ -542,7 +609,7 @@ export default function AdsClient(){
             <div className="flex items-center gap-3">
               <div className="text-xs text-slate-500">Zoom</div>
               <input type="range" min={50} max={140} step={10} value={zoom*100} onChange={e=>setZoom(Number(e.target.value)/100)} className="w-40"/>
-              <Button size="sm" variant="outline" onClick={runFlow} disabled={running}>Run</Button>
+              <Button size="sm" variant="outline" onClick={generateAngles} disabled={running}>Generate angles</Button>
             </div>
           </div>
           <Separator className="mb-2"/>
@@ -610,6 +677,18 @@ export default function AdsClient(){
                           <div className="truncate">{landingUrl || 'No URL'}</div>
                         </div>
                       )}
+                        {n.type==='angles' && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-slate-600">Prepare angles prompt and generate 3 angle cards</div>
+                          <Button size="sm" variant="outline" onClick={generateAngles} disabled={running}>Generate angles</Button>
+                        </div>
+                      )}
+                      {n.type==='angle_variant' && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-slate-600">Expand this angle into copies, headlines, and images</div>
+                          <Button size="sm" variant="outline" onClick={()=> expandAngle(n.id)} disabled={running}>Expand angle</Button>
+                        </div>
+                      )}
                       {n.type==='headlines' && (
                         <div className="space-y-2">
                           <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
@@ -638,7 +717,7 @@ export default function AdsClient(){
                         <div className="text-xs text-slate-600">{adImages.length||0} images generated</div>
                       )}
                       {n.type==='meta_ad' && (
-                        <div className="text-xs text-slate-600">Ready</div>
+                        <div className="text-xs text-slate-600">Review and approve to create draft in Meta</div>
                       )}
                       {n.type==='landing' && candidateImages[0] && (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -730,7 +809,7 @@ export default function AdsClient(){
                       <div className="grid grid-cols-1 gap-1">
                         {(Array.isArray(selectedNode.data?.headlines)? selectedNode.data.headlines : []).slice(0,12).map((h:string,i:number)=> (
                           <label key={i} className="text-sm flex items-center gap-2">
-                            <input type="radio" name="headline" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                            <input type="checkbox" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
                             <span>{h}</span>
                           </label>
                         ))}
@@ -743,7 +822,7 @@ export default function AdsClient(){
                       <div className="grid grid-cols-1 gap-1">
                         {(Array.isArray(selectedNode.data?.primaries)? selectedNode.data.primaries : []).slice(0,12).map((p:string,i:number)=> (
                           <label key={i} className="text-sm flex items-center gap-2">
-                            <input type="radio" name="primary" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                            <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
                             <span>{p}</span>
                           </label>
                         ))}
