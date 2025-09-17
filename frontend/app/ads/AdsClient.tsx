@@ -100,9 +100,9 @@ export default function AdsClient(){
     }catch{}
   })() },[flowId])
 
-  const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a senior performance marketer. Based on PRODUCT_INFO, propose exactly 3 distinct ad angles, each targeting a different micro-audience and selling point. Each angle must specify: name, big_idea, promise, 6-10 headlines, and 3 primaries (short, medium, long). Avoid fluff; be specific and conversion-oriented.')
-  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 8 ultra-high-converting ad headlines. Each ≤ 12 words, concrete, specific, and benefit-led. No emojis, no ALL CAPS.')
-  const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 3 compelling Meta primary texts (short ≤60 chars, medium ≤120 chars, long ≤220 chars). Use proof or specifics when possible. No emojis, avoid spammy claims.')
+  const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a senior performance marketer. Based on PRODUCT_INFO, propose exactly 3 distinct ad angles, each targeting a different micro-audience and selling point. Each angle must specify: name, big_idea, promise, 6-10 headlines, and 3 primaries (short, medium, long). Avoid fluff; be specific and conversion-oriented.\n\nReturn ONE valid json object only with fields: angles[3] each with { name, big_idea, promise, headlines, primaries { short, medium, long } }.')
+  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 8 ultra-high-converting ad headlines. Each ≤ 12 words, concrete, specific, and benefit-led. No emojis, no ALL CAPS.\n\nReturn ONE valid json object only with fields: angles[1] each with { headlines[8] }.')
+  const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 3 compelling Meta primary texts (short ≤60 chars, medium ≤120 chars, long ≤220 chars). Use proof or specifics when possible. No emojis, avoid spammy claims.\n\nReturn ONE valid json object only with fields: angles[1] each with { primaries { short, medium, long } }.')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
   const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
   const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
@@ -523,7 +523,7 @@ export default function AdsClient(){
               <div>
                 <div className="text-xs text-slate-500 mb-1">Landing page URL</div>
                 <Input value={landingUrl} onChange={e=>setLandingUrl(e.target.value)} placeholder="https://yourstore.com/pages/offer" />
-                <div className="mt-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button></div>
+                <div className="mt-2 flex items-center gap-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button><Button size="sm" onClick={generateAngles}>Create Ad</Button></div>
                 <div className="mt-2">
                   <div className="text-xs text-slate-500 mb-1">Analyze prompt</div>
                   <Textarea rows={4} value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
@@ -585,6 +585,10 @@ export default function AdsClient(){
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">Prompts</CardTitle></CardHeader>
             <CardContent className="space-y-3">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
+                <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+              </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Headlines prompt</div>
                 <Textarea rows={4} value={headlinesPrompt} onChange={e=>setHeadlinesPrompt(e.target.value)} />
@@ -689,7 +693,7 @@ export default function AdsClient(){
                           <Button size="sm" variant="outline" onClick={()=> expandAngle(n.id)} disabled={running}>Expand angle</Button>
                         </div>
                       )}
-                      {n.type==='headlines' && (
+                        {n.type==='headlines' && (
                         <div className="space-y-2">
                           <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
                           <Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button>

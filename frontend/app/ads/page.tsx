@@ -1,10 +1,10 @@
 import { Suspense } from 'react'
-import { StudioPage } from '../studio/page'
+import AdsClient from './AdsClient'
 
 export default function AdsPage(){
   return (
     <Suspense fallback={<div className="p-4 text-sm text-slate-500">Loading…</div>}>
-      <StudioPage forcedMode="promotion" />
+      <AdsClient/>
     </Suspense>
   )
 }
