@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
-import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage } from '@/lib/api'
+import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage, fetchSavedAudiences } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
 export type NodeType = 'landing'|'angles'|'angle_variant'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
@@ -58,6 +58,7 @@ export default function AdsClient(){
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
+  const [savedAudiences,setSavedAudiences]=useState<Array<{id:string,name:string,description?:string}>>([])
   const [running,setRunning]=useState<boolean>(false)
   // Load from linked flow when id provided
   useEffect(()=>{ (async()=>{
@@ -99,6 +100,15 @@ export default function AdsClient(){
       }catch{}
     }catch{}
   })() },[flowId])
+
+  // Load saved audiences for Meta targeting dropdown
+  useEffect(()=>{ (async()=>{
+    try{
+      const out = await fetchSavedAudiences()
+      const items = Array.isArray((out as any)?.data)? (out as any).data : []
+      setSavedAudiences(items)
+    }catch{ setSavedAudiences([]) }
+  })() },[])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
   const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines": ["...", "..."] } ] }'
@@ -502,6 +512,15 @@ export default function AdsClient(){
   async function approveAndDraft(){
     try{
       if(!landingUrl || !selectedHeadline || !selectedPrimary || !selectedImage){ alert('Select headline, primary text, image, and landing URL.'); return }
+      // Basic URL validations to avoid Meta fetch errors
+      try{
+        const u = new URL(landingUrl)
+        if(!(u.protocol==='http:' || u.protocol==='https:')) throw new Error('Invalid scheme')
+      }catch{ alert('Landing URL must be a valid http(s) URL.'); return }
+      try{
+        const iu = new URL(selectedImage)
+        if(!(iu.protocol==='http:' || iu.protocol==='https:')) throw new Error('Invalid scheme')
+      }catch{ alert('Image URL must be a valid public http(s) URL.'); return }
       setRunning(true)
       const payload:any = {
         headline: selectedHeadline,
@@ -1021,8 +1040,11 @@ export default function AdsClient(){
                         {!advantagePlus && (
                           <div className="grid grid-cols-2 gap-2">
                             <div>
-                              <div className="text-xs text-slate-500 mb-1">Saved audience ID</div>
-                              <Input value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} placeholder="opt." />
+                              <div className="text-xs text-slate-500 mb-1">Saved audience</div>
+                              <select value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+                                <option value="">None</option>
+                                {savedAudiences.map(a=> (<option key={a.id} value={a.id}>{a.name||a.id}</option>))}
+                              </select>
                             </div>
                             <div>
                               <div className="text-xs text-slate-500 mb-1">Countries (comma-separated)</div>
