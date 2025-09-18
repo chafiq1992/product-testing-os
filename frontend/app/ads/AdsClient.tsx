@@ -323,8 +323,8 @@ export default function AdsClient(){
   function getOrCreateReviewForAngle(angleId:string, near:FlowNode){
     const existing = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
     if(existing) return existing
+    // Create Review node but DO NOT connect from generator/angle; outputs will connect to it
     const meta = addNodeUnique('meta_ad', near, { angleId }, { x: near.x+300, y: near.y+300 })
-    connectUnique(near, meta)
     return meta
   }
 
@@ -342,6 +342,10 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const agg = aggregateFromAngles(arr)
       const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      // If a Review node already exists for this angle, connect this output to it
+      const angleId = String(genNode.data?.angleId||genNode.id)
+      const metaExisting = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
+      if(metaExisting){ connectUnique(outNode, metaExisting) }
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done'}}): n))
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -388,6 +392,10 @@ export default function AdsClient(){
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
       const outNode = createChildNode('images_out', genNode, { images: imgs.slice(0,4), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      // If a Review node already exists for this angle, connect this output to it
+      const angleId = String(genNode.data?.angleId||genNode.id)
+      const metaExisting = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
+      if(metaExisting){ connectUnique(outNode, metaExisting) }
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done'}}): n))
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
