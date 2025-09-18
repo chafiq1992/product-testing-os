@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
-import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage, fetchSavedAudiences } from '@/lib/api'
+import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage, fetchSavedAudiences, saveDraft, launchAdsAutomation } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
 export type NodeType = 'landing'|'angles'|'angle_variant'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
@@ -60,6 +60,8 @@ export default function AdsClient(){
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [savedAudiences,setSavedAudiences]=useState<Array<{id:string,name:string,description?:string}>>([])
   const [running,setRunning]=useState<boolean>(false)
+  const [autoRun,setAutoRun]=useState<boolean>(false)
+  const [internalFlowId,setInternalFlowId]=useState<string>(flowId||'')
   // Load from linked flow when id provided
   useEffect(()=>{ (async()=>{
     if(!flowId) return
@@ -109,6 +111,128 @@ export default function AdsClient(){
       setSavedAudiences(items)
     }catch{ setSavedAudiences([]) }
   })() },[])
+
+  // Load auto-run preference
+  useEffect(()=>{
+    try{ const v = localStorage.getItem('ptos_ads_auto_run'); if(v!=null) setAutoRun(v==='1') }catch{}
+  },[])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_ads_auto_run', autoRun? '1':'0') }catch{} },[autoRun])
+
+  // Ensure we have a draft flow id to persist automation state
+  async function ensureFlowId(): Promise<string>{
+    if(internalFlowId) return internalFlowId
+    const product = {
+      audience,
+      benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
+      pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
+      title: title||undefined,
+    }
+    const settings:any = { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus }
+    if(countries) settings.countries = countries.split(',').map(c=>c.trim()).filter(Boolean)
+    if(savedAudienceId) settings.saved_audience_id = savedAudienceId
+    const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
+    const res = await saveDraft({ product: product as any, image_urls: candidateImages, settings, prompts })
+    setInternalFlowId(res.id)
+    try{
+      const url = new URL(window.location.href)
+      url.searchParams.set('id', res.id)
+      window.history.replaceState({}, '', url.toString())
+    }catch{}
+    return res.id
+  }
+
+  function buildAdsSnapshotFromNodes(){
+    const angleNodes = nodes.filter(n=> n.type==='angle_variant')
+    const per_angle = angleNodes.map(n=>{
+      const angleId = n.id
+      const heads = nodes.filter(x=> x.type==='headlines_out' && x.data?.angleId===angleId).flatMap(x=> Array.isArray(x.data?.headlines)? x.data.headlines : [])
+      const prims = nodes.filter(x=> x.type==='copies_out' && x.data?.angleId===angleId).flatMap(x=> Array.isArray(x.data?.primaries)? x.data.primaries : [])
+      const imgs = nodes.filter(x=> x.type==='images_out' && x.data?.angleId===angleId).flatMap(x=> Array.isArray(x.data?.images)? x.data.images : [])
+      return { angle: n.data?.angle||{}, headlines: heads.slice(0,12), primaries: prims.slice(0,12), images: imgs.slice(0,12) }
+    })
+    return { landing_url: landingUrl, source_image: sourceImage||candidateImages[0]||'', angles, per_angle }
+  }
+
+  async function saveStepToDraft(extraAds?: any){
+    if(!internalFlowId) return
+    try{
+      const ads:any = {
+        selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus,
+        countries, savedAudienceId, candidateImages, adImages,
+        ...buildAdsSnapshotFromNodes(),
+        ...(extraAds||{}),
+      }
+      const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
+      const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
+      await updateDraft(internalFlowId, { product: product as any, ads, prompts, settings: { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus } as any })
+    }catch{}
+  }
+
+  async function startAutoRun(){
+    const fid = await ensureFlowId()
+    try{
+      // Launch background automation so it keeps running if user leaves
+      await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
+    }catch{}
+    // Local click-through automation
+    ;(async()=>{
+      // Wait for landing URL
+      let guard = 0
+      while(!landingUrl && autoRun && guard<60){ await new Promise(r=> setTimeout(r, 500)); guard++ }
+      if(!autoRun) return
+      if(landingUrl){ await analyzeLanding(); await saveStepToDraft() }
+      if(!autoRun) return
+      addAnglesCardOnly()
+      await generateAngles(); await saveStepToDraft()
+      if(!autoRun) return
+      // Expand each angle and generate outputs
+      const variants = nodes.filter(n=> n.type==='angle_variant')
+      // Give a short delay for nodes state to update
+      await new Promise(r=> setTimeout(r, 400))
+      const refreshed = nodes.filter(n=> n.type==='angle_variant')
+      const list = refreshed.length>0? refreshed : variants
+      for(const v of list.slice(0,3)){
+        if(!autoRun) break
+        await expandAngle(v.id)
+        await generateHeadlinesForNode(nodes.find(n=> n.type==='headlines' && n.data?.angleId===v.id)?.id||'')
+        await generateCopiesForNode(nodes.find(n=> n.type==='copies' && n.data?.angleId===v.id)?.id||'')
+        await runAdImagesForNode(nodes.find(n=> n.type==='gemini_images' && n.data?.angleId===v.id)?.id||'')
+        await saveStepToDraft()
+      }
+    })()
+  }
+
+  // Background progress poller: refresh minimal data while automation runs or when a flow id is loaded
+  useEffect(()=>{
+    if(!internalFlowId) return
+    let stop = false
+    const tick = async()=>{
+      try{
+        const f = await getFlow(internalFlowId)
+        const ads:any = (f as any)?.ads||{}
+        // Merge candidate images from analysis
+        try{
+          const imgs = Array.isArray(ads?.analyze?.images)? ads.analyze.images : []
+          if(imgs.length>0 && candidateImages.length===0){ setCandidateImages(imgs.slice(0,10)); if(!sourceImage) setSourceImage(imgs[0]) }
+        }catch{}
+        // Merge ad images from per_angle
+        try{
+          const allImgs:string[] = []
+          for(const it of (ads?.per_angle||[])){
+            for(const u of (it?.images||[])){ if(typeof u==='string' && u) allImgs.push(u) }
+          }
+          if(allImgs.length>0){ setAdImages(prev=>{ const set = new Set([...(prev||[]), ...allImgs]); return Array.from(set) }) }
+        }catch{}
+        // Merge angles if empty
+        try{
+          if(angles.length===0 && Array.isArray(ads?.angles) && ads.angles.length>0){ setAngles(ads.angles) }
+        }catch{}
+      }catch{}
+      if(!stop) setTimeout(tick, 5000)
+    }
+    const t = setTimeout(tick, 3000)
+    return ()=>{ stop = true; clearTimeout(t) }
+  },[internalFlowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
   const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines": ["...", "..."] } ] }'
@@ -594,6 +718,18 @@ export default function AdsClient(){
             <span className="px-3 py-1.5 rounded bg-blue-600 text-white">Create Ads</span>
             <Link href="/promotion/" className="px-3 py-1.5 rounded hover:bg-slate-100">Create Promotion</Link>
           </nav>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={autoRun} onChange={async (e)=>{
+              const v = e.target.checked
+              setAutoRun(v)
+              if(v){
+                await startAutoRun()
+              }
+            }} />
+            <span>Auto-run</span>
+          </label>
         </div>
       </header>
 

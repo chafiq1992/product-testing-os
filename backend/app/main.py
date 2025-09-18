@@ -24,6 +24,9 @@ from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR
 from app import db
 import re
+import threading
+import time
+import json as _json
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
@@ -493,6 +496,281 @@ async def api_llm_product_from_image(req: ProductFromImageRequest):
         return {"product": data, "input_image_url": req.image_url}
     except Exception as e:
         return {"product": None, "error": str(e), "input_image_url": req.image_url}
+
+# ---------------- Ads Automation (background) ----------------
+class AdsAutomationLaunchRequest(BaseModel):
+    flow_id: str
+    landing_url: Optional[str] = None
+    source_image: Optional[str] = None
+    num_angles: Optional[int] = 3
+    prompts: Optional[dict] = None  # { analyze_landing_prompt, angles_prompt, headlines_prompt, copies_prompt, gemini_ad_prompt }
+    model: Optional[str] = None
+
+
+def _ads_update(flow_id: str, *, ads: dict | None = None, product: dict | None = None, settings: dict | None = None, status: str | None = None, card_image: str | None = None):
+    try:
+        db.update_flow_row(flow_id, ads=ads, product=product, settings=settings, status=status, card_image=card_image)
+    except Exception:
+        pass
+
+
+def _safe(obj: object, key: str, default):
+    try:
+        v = (obj or {}).get(key) if isinstance(obj, dict) else None
+        return v if v is not None else default
+    except Exception:
+        return default
+
+
+def run_ads_automation_sync(flow_id: str, payload: dict):
+    """Runs the Ads flow in the background, updating the Flow row after each step.
+
+    payload keys:
+      - product: dict (audience, benefits[], pain_points[], title?, sizes?, colors?)
+      - landing_url: str
+      - source_image: str
+      - prompts: dict
+      - num_angles: int
+      - model: str
+    """
+    f = db.get_flow(flow_id)
+    if not f:
+        return
+    # Mark as running
+    _ads_update(flow_id, status="running")
+    try:
+        product = (payload or {}).get("product") or (f.get("product") or {}) or {}
+        prompts = (payload or {}).get("prompts") or (f.get("prompts") or {}) or {}
+        landing_url = (payload or {}).get("landing_url") or f.get("page_url") or None
+        source_image = (payload or {}).get("source_image") or _safe(f.get("settings") or {}, "cover_image", None)
+        k = max(1, min(5, int((payload or {}).get("num_angles") or 3)))
+        model = (payload or {}).get("model") or None
+
+        ads = (f.get("ads") or {}) if isinstance(f.get("ads"), dict) else {}
+        if landing_url:
+            ads["landing_url"] = landing_url
+        ads.setdefault("steps", [])
+        _ads_update(flow_id, ads=ads)
+
+        # Step 1: Analyze landing page (optional)
+        analyzed_images: list[str] = []
+        if landing_url:
+            step = {"step": "analyze_landing_page", "status": "running", "started_at": time.time()}
+            ads["steps"].append(step)
+            _ads_update(flow_id, ads=ads)
+            try:
+                out = analyze_landing_page(landing_url, model=model, prompt_override=_safe(prompts, "analyze_landing_prompt", None))
+                step["status"] = "completed"
+                step["ended_at"] = time.time()
+                step["response"] = out
+                ads["analyze"] = out
+                # Prefill product if empty fields
+                try:
+                    if isinstance(out.get("title"), str) and out.get("title") and not product.get("title"):
+                        product["title"] = out.get("title")
+                    for key in ("benefits", "pain_points"):
+                        if not product.get(key) and isinstance(out.get(key), list):
+                            product[key] = out.get(key)
+                except Exception:
+                    pass
+                # Candidate images from analysis
+                try:
+                    analyzed_images = [u for u in (out.get("images") or []) if isinstance(u, str)]
+                except Exception:
+                    analyzed_images = []
+                _ads_update(flow_id, ads=ads, product=product)
+            except Exception as e:
+                step["status"] = "failed"
+                step["ended_at"] = time.time()
+                step["error"] = {"message": str(e)}
+                _ads_update(flow_id, ads=ads)
+
+        # Step 2: Angles (prefer analyze angles; else generate)
+        angles: list[dict] = []
+        try:
+            if isinstance(ads.get("analyze", {}).get("angles"), list) and ads.get("analyze", {}).get("angles"):
+                angles = ads.get("analyze", {}).get("angles")[:k]
+            else:
+                step = {"step": "generate_angles", "status": "running", "started_at": time.time()}
+                ads["steps"].append(step)
+                _ads_update(flow_id, ads=ads)
+                data = gen_angles_and_copy_full(product, model=model, prompt_override=_safe(prompts, "angles_prompt", None))
+                angles = (data.get("angles") or [])[:k]
+                step["status"] = "completed"
+                step["ended_at"] = time.time()
+                step["response"] = {"angles": angles}
+            ads["angles"] = angles
+            _ads_update(flow_id, ads=ads)
+        except Exception as e:
+            try:
+                step["status"] = "failed"  # type: ignore
+                step["ended_at"] = time.time()  # type: ignore
+                step["error"] = {"message": str(e)}  # type: ignore
+            except Exception:
+                pass
+            _ads_update(flow_id, ads=ads, status="failed")
+            return
+
+        # Step 3: Per-angle expansions (headlines, copies, images)
+        per_angle: list[dict] = []
+        ads["per_angle"] = per_angle
+        # Select a source image
+        src_image = source_image or (analyzed_images[0] if analyzed_images else None)
+        for idx, a in enumerate(angles or []):
+            item = {"angle": a, "headlines": [], "primaries": [], "images": []}
+            per_angle.append(item)
+            # Headlines
+            try:
+                step = {"step": "generate_headlines", "angle_index": idx, "status": "running", "started_at": time.time()}
+                ads["steps"].append(step)
+                _ads_update(flow_id, ads=ads)
+                # Inject ANGLE context into the prompt override
+                base = _safe(prompts, "headlines_prompt", None)
+                if base:
+                    base = str(base).strip() + "\n\nANGLE: " + _json.dumps(a, ensure_ascii=False)
+                out = gen_angles_and_copy_full(product, model=model, prompt_override=base)
+                arr = out.get("angles") or []
+                # Aggregate headlines
+                heads: list[str] = []
+                for it in arr:
+                    hs = it.get("headlines") if isinstance(it.get("headlines"), list) else []
+                    for h in hs:
+                        if isinstance(h, str) and h.strip() and len(heads) < 12:
+                            heads.append(h.strip())
+                item["headlines"] = heads[:8]
+                step["status"] = "completed"
+                step["ended_at"] = time.time()
+                step["response"] = {"headlines": item["headlines"]}
+                _ads_update(flow_id, ads=ads)
+            except Exception as e:
+                step["status"] = "failed"  # type: ignore
+                step["ended_at"] = time.time()  # type: ignore
+                step["error"] = {"message": str(e)}  # type: ignore
+                _ads_update(flow_id, ads=ads)
+
+            # Copies
+            try:
+                step = {"step": "generate_copies", "angle_index": idx, "status": "running", "started_at": time.time()}
+                ads["steps"].append(step)
+                _ads_update(flow_id, ads=ads)
+                base = _safe(prompts, "copies_prompt", None)
+                if base:
+                    base = str(base).strip() + "\n\nANGLE: " + _json.dumps(a, ensure_ascii=False)
+                out = gen_angles_and_copy_full(product, model=model, prompt_override=base)
+                arr = out.get("angles") or []
+                prims: list[str] = []
+                for it in arr:
+                    ps = []
+                    if isinstance(it.get("primaries"), list):
+                        ps = it.get("primaries") or []
+                    elif isinstance(it.get("primaries"), dict):
+                        cand = [it.get("primaries", {}).get("short"), it.get("primaries", {}).get("medium"), it.get("primaries", {}).get("long")]
+                        ps = [p for p in cand if isinstance(p, str)]
+                    for p in ps:
+                        if isinstance(p, str) and p.strip() and len(prims) < 12:
+                            prims.append(p.strip())
+                item["primaries"] = prims[:2]
+                step["status"] = "completed"
+                step["ended_at"] = time.time()
+                step["response"] = {"primaries": item["primaries"]}
+                _ads_update(flow_id, ads=ads)
+            except Exception as e:
+                step["status"] = "failed"  # type: ignore
+                step["ended_at"] = time.time()  # type: ignore
+                step["error"] = {"message": str(e)}  # type: ignore
+                _ads_update(flow_id, ads=ads)
+
+            # Images
+            try:
+                step = {"step": "generate_images", "angle_index": idx, "status": "running", "started_at": time.time()}
+                ads["steps"].append(step)
+                _ads_update(flow_id, ads=ads)
+                src = src_image or (product.get("uploaded_images", [None])[0])
+                if not src and isinstance(ads.get("analyze", {}).get("images"), list):
+                    arr_imgs = ads.get("analyze", {}).get("images") or []
+                    src = arr_imgs[0] if arr_imgs else None
+                if src:
+                    offer_text = ""
+                    try:
+                        offers = ads.get("analyze", {}).get("offers") if isinstance(ads.get("analyze"), dict) else []
+                        if isinstance(offers, list) and offers:
+                            offer_text = f" Emphasize the offer/promotion: {offers[0]}"
+                    except Exception:
+                        offer_text = ""
+                    base_prompt = _safe(prompts, "gemini_ad_prompt", "Create a high\u200a-quality ad image from this product photo. No text, premium look.")
+                    angle_suffix = (" Angle: " + str(a.get("name"))) if isinstance(a.get("name"), str) else ""
+                    prompt = f"{base_prompt}{offer_text}{angle_suffix}"
+                    imgs = gen_ad_images_from_image(src, prompt, num_images=4)
+                else:
+                    imgs = []
+                item["images"] = imgs
+                # Opportunistically set card_image to a Shopify CDN URL if present in outputs
+                card_image = None
+                try:
+                    for u in imgs:
+                        if isinstance(u, str) and u.startswith("https://cdn.shopify.com"):
+                            card_image = u
+                            break
+                except Exception:
+                    card_image = None
+                step["status"] = "completed"
+                step["ended_at"] = time.time()
+                step["response"] = {"images": imgs}
+                # Update settings.assets_used.feature_gallery
+                settings = f.get("settings") or {}
+                try:
+                    assets = settings.get("assets_used") or {}
+                    gallery = list(assets.get("feature_gallery") or [])
+                    for u in imgs:
+                        if isinstance(u, str) and u not in gallery:
+                            gallery.append(u)
+                    assets["feature_gallery"] = gallery
+                    settings["assets_used"] = assets
+                except Exception:
+                    settings = settings or {}
+                _ads_update(flow_id, ads=ads, settings=settings, card_image=card_image)
+            except Exception as e:
+                step["status"] = "failed"  # type: ignore
+                step["ended_at"] = time.time()  # type: ignore
+                step["error"] = {"message": str(e)}  # type: ignore
+                _ads_update(flow_id, ads=ads)
+
+        # Done
+        _ads_update(flow_id, ads=ads, status="completed")
+    except Exception as e:
+        try:
+            ads = (db.get_flow(flow_id) or {}).get("ads") or {}
+            steps = ads.get("steps") or []
+            steps.append({"step": "fatal", "status": "failed", "error": {"message": str(e)}, "ended_at": time.time()})
+            ads["steps"] = steps
+            _ads_update(flow_id, ads=ads, status="failed")
+        except Exception:
+            _ads_update(flow_id, status="failed")
+
+
+@app.post("/api/flows/ads/launch")
+async def api_ads_launch(req: AdsAutomationLaunchRequest):
+    try:
+        f = db.get_flow(req.flow_id)
+        if not f:
+            return {"error": "not_found"}
+        # If already running or completed, don't enqueue a duplicate
+        status = f.get("status")
+        if status in ("running", "completed"):
+            return {"flow_id": req.flow_id, "status": status}
+        payload = {
+            "product": f.get("product") or {},
+            "landing_url": req.landing_url or f.get("page_url"),
+            "source_image": req.source_image,
+            "prompts": req.prompts or (f.get("prompts") or {}),
+            "num_angles": req.num_angles or 3,
+            "model": req.model,
+        }
+        t = threading.Thread(target=run_ads_automation_sync, args=(req.flow_id, payload), daemon=True)
+        t.start()
+        return {"flow_id": req.flow_id, "status": "queued"}
+    except Exception as e:
+        return {"error": str(e)}
 # ---------------- Flows/Drafts ----------------
 class DraftSaveRequest(BaseModel):
     product: ProductInput
