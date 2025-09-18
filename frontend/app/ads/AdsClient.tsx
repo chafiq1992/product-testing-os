@@ -101,8 +101,8 @@ export default function AdsClient(){
   })() },[flowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
-  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 8 ultra-high-converting ad headlines. Each ≤ 12 words, concrete, specific, and benefit-led. No emojis, no ALL CAPS.\n\nReturn ONE valid json object only with fields: angles[1] each with { headlines[8] }.')
-  const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 3 compelling Meta primary texts (short ≤60 chars, medium ≤120 chars, long ≤220 chars). Use proof or specifics when possible. No emojis, avoid spammy claims.\n\nReturn ONE valid json object only with fields: angles[1] each with { primaries { short, medium, long } }.')
+  const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines": ["...", "..."] } ] }')
+  const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a senior direct‑response copywriter. Using PRODUCT_INFO and ANGLE, write 2 high‑converting Meta primary texts. Rules: variant A ≤60 chars; variant B ≤120 chars; use specificity, social proof if available, avoid emojis and spammy claims.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "primaries": ["...short...", "...medium..."] } ] }')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
   const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
   const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
@@ -318,7 +318,7 @@ export default function AdsClient(){
     return { headlines, primaries }
   }
 
-  function getOrCreateMetaForAngle(angleId:string, near:FlowNode){
+  function getOrCreateReviewForAngle(angleId:string, near:FlowNode){
     const existing = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
     if(existing) return existing
     const meta = addNodeUnique('meta_ad', near, { angleId }, { x: near.x+300, y: near.y+300 })
@@ -339,7 +339,7 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const agg = aggregateFromAngles(arr)
       const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
-      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      const meta = getOrCreateReviewForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -358,7 +358,7 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const agg = aggregateFromAngles(arr)
       const outNode = createChildNode('copies_out', genNode, { primaries: (agg.primaries||[]).slice(0,2), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
-      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      const meta = getOrCreateReviewForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -379,7 +379,7 @@ export default function AdsClient(){
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
       const outNode = createChildNode('images_out', genNode, { images: imgs.slice(0,4), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
-      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      const meta = getOrCreateReviewForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -441,12 +441,7 @@ export default function AdsClient(){
     createChildNode('headlines', n, { angle: a, angleId }, 0, 3)
     createChildNode('copies', n, { angle: a, angleId }, 1, 3)
     createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'', angle: a, angleId }, 2, 3)
-    // Ensure a Meta Ad node exists for this angle
-    const metaExisting = nodes.find(x=> x.type==='meta_ad' && x.data?.angleId===angleId)
-    if(!metaExisting){
-      const meta = addNodeUnique('meta_ad', n, { angleId }, { x: n.x+300, y: n.y+300 })
-      connectUnique(n, meta)
-    }
+    // Defer Review node until we have at least one output
   }
   async function generateCopies(){
     try{
@@ -683,6 +678,7 @@ export default function AdsClient(){
             ref={canvasRef}
             className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-auto border"
             onMouseDown={(e)=>{
+              // Always allow background drag to pan
               if(e.currentTarget === e.target){
                 panningRef.current = { startX: e.clientX, startY: e.clientY, panStartX: pan.x, panStartY: pan.y }
               }
@@ -725,15 +721,17 @@ export default function AdsClient(){
                     <div className="px-3 py-2 flex items-center justify-between">
                       <div className="text-xs font-semibold text-slate-700">
                         {n.type==='landing'? 'Landing Page'
-                          : n.type==='headlines'? 'Headlines (generator)'
-                          : n.type==='copies'? 'Ad Copies (generator)'
-                          : n.type==='gemini_images'? 'Images (generator)'
-                          : n.type==='headlines_out'? 'Headlines'
-                          : n.type==='copies_out'? 'Ad Copies'
-                          : n.type==='images_out'? 'Images'
-                          : 'Meta Ad'}
+                          : n.type==='angles'? 'Generate Angles'
+                          : n.type==='angle_variant'? `Angle: ${String(n.data?.angle?.name||'Variant')}`
+                          : n.type==='headlines'? 'Generate Headlines'
+                          : n.type==='copies'? 'Generate Ad Copies'
+                          : n.type==='gemini_images'? 'Generate Ad Images'
+                          : n.type==='headlines_out'? 'Headlines Output'
+                          : n.type==='copies_out'? 'Ad Copies Output'
+                          : n.type==='images_out'? 'Images Output'
+                          : 'Review & Approve'}
                       </div>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">idle</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${'bg-slate-100 text-slate-600'}`}>idle</span>
                     </div>
                     <Separator/>
                     <div className="p-3 text-sm text-slate-700 min-h-[64px]">
@@ -895,7 +893,7 @@ export default function AdsClient(){
                       </div>
                     </div>
                   )}
-                  {(selectedNode.type==='gemini_images' || selectedNode.type==='images_out') && (
+                      {(selectedNode.type==='gemini_images' || selectedNode.type==='images_out') && (
                     <div className="space-y-2">
                       <div className="text-xs text-slate-500 mb-1">Ad image prompt</div>
                       <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
@@ -903,13 +901,29 @@ export default function AdsClient(){
                       <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                       <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(geminiAdPrompt)}</pre>
                       <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} }}>Make default</Button></div>
-                      <div><Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images (4)</Button></div>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={()=> selectedNode.type==='gemini_images'? runAdImagesForNode(selectedNode.id): runAdImages()} disabled={running}>Generate images (4)</Button>
+                            {selectedNode.type==='images_out' && Array.isArray(selectedNode.data?.images) && selectedNode.data.images.length>0 && (
+                              <>
+                                <Button size="sm" variant="outline" onClick={()=>{
+                                  try{
+                                    for(const u of (selectedNode.data?.images||[])){
+                                      const a=document.createElement('a'); a.href=u; a.download='ad-image.jpg'; document.body.appendChild(a); a.click(); a.remove()
+                                    }
+                                  }catch{}
+                                }}>Download all</Button>
+                              </>
+                            )}
+                          </div>
                       {adImages.length>0 && (
                         <div className="grid grid-cols-2 gap-2">
                           {adImages.map((u,i)=> (
-                            <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
+                              <button key={i} className={`group border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img src={u} alt={`ad-${i}`} className="w-full h-28 object-cover" />
+                                <div className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition">
+                                  <button className="text-[10px] px-1 py-0.5 rounded bg-white/90 border" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); try{ const a=document.createElement('a'); a.href=u; a.download='ad-image.jpg'; document.body.appendChild(a); a.click(); a.remove() }catch{} }}>Download</button>
+                                </div>
                             </button>
                           ))}
                         </div>
