@@ -100,7 +100,7 @@ export default function AdsClient(){
     }catch{}
   })() },[flowId])
 
-  const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a senior performance marketer. Based on PRODUCT_INFO, propose exactly 3 distinct ad angles, each targeting a different micro-audience and selling point. Each angle must specify: name, big_idea, promise, 6-10 headlines, and 3 primaries (short, medium, long). Avoid fluff; be specific and conversion-oriented.\n\nReturn ONE valid json object only with fields: angles[3] each with { name, big_idea, promise, headlines, primaries { short, medium, long } }.')
+  const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
   const [headlinesPrompt,setHeadlinesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 8 ultra-high-converting ad headlines. Each ≤ 12 words, concrete, specific, and benefit-led. No emojis, no ALL CAPS.\n\nReturn ONE valid json object only with fields: angles[1] each with { headlines[8] }.')
   const [copiesPrompt,setCopiesPrompt]=useState<string>('You are a direct-response copywriter. From the selected ANGLE and PRODUCT_INFO, write 3 compelling Meta primary texts (short ≤60 chars, medium ≤120 chars, long ≤220 chars). Use proof or specifics when possible. No emojis, avoid spammy claims.\n\nReturn ONE valid json object only with fields: angles[1] each with { primaries { short, medium, long } }.')
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
@@ -306,7 +306,12 @@ export default function AdsClient(){
     const primaries:string[] = []
     for(const a of (arr||[])){
       const hs = Array.isArray(a?.headlines)? a.headlines : []
-      const ps = Array.isArray(a?.primaries)? a.primaries : Array.isArray(a?.primaries?.short)? [a.primaries.short, a.primaries.medium, a.primaries.long].filter(Boolean) : []
+      let ps:string[] = []
+      if(Array.isArray(a?.primaries)) ps = a.primaries
+      else if(a?.primaries && typeof a.primaries==='object'){
+        const cand = [a.primaries.short, a.primaries.medium, a.primaries.long]
+        ps = cand.filter((x:any)=> typeof x==='string' && x)
+      }
       for(const h of hs){ if(typeof h==='string' && h && headlines.length<12) headlines.push(h) }
       for(const p of ps){ if(typeof p==='string' && p && primaries.length<12) primaries.push(p) }
     }
@@ -333,7 +338,7 @@ export default function AdsClient(){
       const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const agg = aggregateFromAngles(arr)
-      const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,12), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
@@ -352,7 +357,7 @@ export default function AdsClient(){
       const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const agg = aggregateFromAngles(arr)
-      const outNode = createChildNode('copies_out', genNode, { primaries: (agg.primaries||[]).slice(0,12), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const outNode = createChildNode('copies_out', genNode, { primaries: (agg.primaries||[]).slice(0,2), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
@@ -373,7 +378,7 @@ export default function AdsClient(){
       const resp = await geminiGenerateAdImages({ image_url: src, prompt, num_images: 4, neutral_background: true })
       const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
       setAdImages(imgs)
-      const outNode = createChildNode('images_out', genNode, { images: imgs, angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const outNode = createChildNode('images_out', genNode, { images: imgs.slice(0,4), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
@@ -676,7 +681,7 @@ export default function AdsClient(){
           <Separator className="mb-2"/>
           <div
             ref={canvasRef}
-            className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border"
+            className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-auto border"
             onMouseDown={(e)=>{
               if(e.currentTarget === e.target){
                 panningRef.current = { startX: e.clientX, startY: e.clientY, panStartX: pan.x, panStartY: pan.y }
