@@ -247,12 +247,18 @@ export default function AdsClient(){
     setEdges(es=> [...es, e])
   }
 
-  async function createGenerators(){
-    const landing = nodes.find(n=> n.type==='landing')!
-    // Create three generator nodes in parallel from landing
-    createChildNode('headlines', landing, { }, 0, 3)
-    createChildNode('copies', landing, { }, 1, 3)
-    createChildNode('gemini_images', landing, { from: sourceImage||candidateImages[0]||'' }, 2, 3)
+  function connectUnique(a:FlowNode, b:FlowNode){
+    setEdges(es=> es.some(x=> x.from===a.id && x.to===b.id)? es : [...es, { id: nextId(), from:a.id, fromPort:'out', to:b.id, toPort:'in' }])
+  }
+
+  // Add only the Generate Angles node from the landing card (no API calls yet)
+  function addAnglesCardOnly(){
+    const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+    const existing = nodes.find(n=> n.type==='angles')
+    if(existing){ setSelectedNodeId(existing.id); return }
+    const gen = addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y })
+    connect(landing, gen)
+    setSelectedNodeId(gen.id)
   }
 
   function placeChild(parent:FlowNode, index:number, total:number){
@@ -306,6 +312,73 @@ export default function AdsClient(){
     return { headlines, primaries }
   }
 
+  function getOrCreateMetaForAngle(angleId:string, near:FlowNode){
+    const existing = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
+    if(existing) return existing
+    const meta = addNodeUnique('meta_ad', near, { angleId }, { x: near.x+300, y: near.y+300 })
+    connectUnique(near, meta)
+    return meta
+  }
+
+  async function generateHeadlinesForNode(nodeId:string){
+    try{
+      const genNode = nodes.find(n=> n.id===nodeId && n.type==='headlines')
+      if(!genNode) return
+      setRunning(true)
+      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      const a = genNode.data?.angle
+      const formatted = a? `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : headlinesPrompt
+      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      const agg = aggregateFromAngles(arr)
+      const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,12), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      connectUnique(outNode, meta)
+    }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  async function generateCopiesForNode(nodeId:string){
+    try{
+      const genNode = nodes.find(n=> n.id===nodeId && n.type==='copies')
+      if(!genNode) return
+      setRunning(true)
+      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      const a = genNode.data?.angle
+      const formatted = a? `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : copiesPrompt
+      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      const agg = aggregateFromAngles(arr)
+      const outNode = createChildNode('copies_out', genNode, { primaries: (agg.primaries||[]).slice(0,12), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      connectUnique(outNode, meta)
+    }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
+  async function runAdImagesForNode(nodeId:string){
+    try{
+      const genNode = nodes.find(n=> n.id===nodeId && n.type==='gemini_images')
+      if(!genNode) return
+      const src = genNode.data?.from || sourceImage || candidateImages[0]
+      if(!src){ alert('Missing source image URL'); return }
+      setRunning(true)
+      const offerText = (offers||'').trim()
+      const a = genNode.data?.angle
+      const angleSuffix = a && a.name? ` Angle: ${String(a.name)}` : ''
+      const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}${angleSuffix}`
+      const resp = await geminiGenerateAdImages({ image_url: src, prompt, num_images: 4, neutral_background: true })
+      const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
+      setAdImages(imgs)
+      const outNode = createChildNode('images_out', genNode, { images: imgs, angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const meta = getOrCreateMetaForAngle(String(genNode.data?.angleId||genNode.id), genNode)
+      connectUnique(outNode, meta)
+    }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
+    finally{ setRunning(false) }
+  }
+
   async function generateHeadlines(){
     try{
       setRunning(true)
@@ -321,7 +394,9 @@ export default function AdsClient(){
       const { headlines, primaries } = aggregateFromAngles(arr)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
       const h = ensureGenerator('headlines', landing, 0, 3)
-      createChildNode('headlines_out', h, { headlines }, 0, 1)
+      const outNode = createChildNode('headlines_out', h, { headlines }, 0, 1)
+      const meta = nodes.find(n=> n.type==='meta_ad') || addNodeUnique('meta_ad', h, {}, { x: h.x+300, y: h.y+300 })
+      connectUnique(outNode, meta!)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -339,8 +414,9 @@ export default function AdsClient(){
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
-      const gen = addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y })
-      connect(landing, gen)
+      const existing = nodes.find(n=> n.type==='angles')
+      const gen = existing || addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y })
+      connectUnique(landing, gen)
       const count = Math.min(3, Math.max(0, arr.length||3))
       for(let i=0;i<count;i++){
         const a = arr[i] || { name:`Angle ${i+1}` }
@@ -354,38 +430,17 @@ export default function AdsClient(){
     const n = nodes.find(x=> x.id===nodeId)
     if(!n) return
     const a = (n.data||{}).angle||{}
-    // Headlines
-    try{
-      setRunning(true)
-      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
-      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
-      const formattedHeadlinesPrompt = `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}`
-      const outH = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formattedHeadlinesPrompt })
-      const aggH = aggregateFromAngles(Array.isArray((outH as any)?.angles)? (outH as any).angles : [])
-      const hNode = createChildNode('headlines', n, { }, 0, 3)
-      createChildNode('headlines_out', hNode, { headlines: (aggH.headlines||[]).slice(0,8) }, 0, 1)
-    }catch{}
-    // Copies
-    try{
-      const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
-      const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
-      const formattedCopiesPrompt = `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}`
-      const outC = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formattedCopiesPrompt })
-      const aggC = aggregateFromAngles(Array.isArray((outC as any)?.angles)? (outC as any).angles : [])
-      const cNode = createChildNode('copies', n, { }, 1, 3)
-      createChildNode('copies_out', cNode, { primaries: (aggC.primaries||[]).slice(0,3) }, 0, 1)
-    }catch{}
-    // Images
-    try{
-      if(!(sourceImage||candidateImages[0])) throw new Error('Missing source image URL')
-      const imagePrompt = `${geminiAdPrompt||'Create a high‑quality ad image.'} Angle: ${String(a?.name||'')}`
-      const resp = await geminiGenerateAdImages({ image_url: (sourceImage||candidateImages[0])!, prompt: imagePrompt, num_images: 3, neutral_background: true })
-      const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
-      const imgNode = createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'' }, 2, 3)
-      createChildNode('images_out', imgNode, { images: imgs }, 0, 1)
-      setAdImages(prev=> imgs.length? imgs : prev)
-    }catch(e:any){ /* silent */ }
-    finally{ setRunning(false) }
+    const angleId = n.id
+    // Only add generator cards (no API calls here)
+    createChildNode('headlines', n, { angle: a, angleId }, 0, 3)
+    createChildNode('copies', n, { angle: a, angleId }, 1, 3)
+    createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'', angle: a, angleId }, 2, 3)
+    // Ensure a Meta Ad node exists for this angle
+    const metaExisting = nodes.find(x=> x.type==='meta_ad' && x.data?.angleId===angleId)
+    if(!metaExisting){
+      const meta = addNodeUnique('meta_ad', n, { angleId }, { x: n.x+300, y: n.y+300 })
+      connect(n, meta)
+    }
   }
   async function generateCopies(){
     try{
@@ -402,16 +457,10 @@ export default function AdsClient(){
       const { primaries } = aggregateFromAngles(arr)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
       const c = ensureGenerator('copies', landing, 1, 3)
-      createChildNode('copies_out', c, { primaries }, 0, 1)
+      const outNode = createChildNode('copies_out', c, { primaries }, 0, 1)
+      const meta = nodes.find(n=> n.type==='meta_ad') || addNodeUnique('meta_ad', c, {}, { x: c.x+300, y: c.y+300 })
+      connectUnique(outNode, meta!)
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
-    finally{ setRunning(false) }
-  }
-
-  async function runFlow(){
-    try{
-      setRunning(true)
-      await createGenerators()
-    }catch(e:any){ alert('Run failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
 
@@ -426,7 +475,9 @@ export default function AdsClient(){
       setAdImages(imgs)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
       const imgBuilder = ensureGenerator('gemini_images', landing, 2, 3)
-      createChildNode('images_out', imgBuilder, { images: imgs }, 0, 1)
+      const outNode = createChildNode('images_out', imgBuilder, { images: imgs }, 0, 1)
+      const meta = nodes.find(n=> n.type==='meta_ad') || addNodeUnique('meta_ad', imgBuilder, {}, { x: imgBuilder.x+300, y: imgBuilder.y+300 })
+      connectUnique(outNode, meta!)
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -528,7 +579,7 @@ export default function AdsClient(){
               <div>
                 <div className="text-xs text-slate-500 mb-1">Landing page URL</div>
                 <Input value={landingUrl} onChange={e=>setLandingUrl(e.target.value)} placeholder="https://yourstore.com/pages/offer" />
-                <div className="mt-2 flex items-center gap-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button><Button size="sm" onClick={generateAngles}>Create Ad</Button></div>
+                <div className="mt-2 flex items-center gap-2"><Button size="sm" variant="outline" onClick={analyzeLanding}>Analyze</Button><Button size="sm" onClick={addAnglesCardOnly}>Create Ad</Button></div>
                 <div className="mt-2">
                   <div className="text-xs text-slate-500 mb-1">Analyze prompt</div>
                   <Textarea rows={4} value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
@@ -580,7 +631,7 @@ export default function AdsClient(){
                     ))}
                   </div>
                 )}
-                <div className="mt-2"><Button size="sm" variant="outline" onClick={async()=>{ await analyzeLanding() }}>Analyze</Button> <Button size="sm" onClick={async()=>{ await createGenerators() }}>Add generators</Button></div>
+                <div className="mt-2"><Button size="sm" variant="outline" onClick={async()=>{ await analyzeLanding() }}>Analyze</Button></div>
               </div>
             </CardContent>
           </Card>
@@ -698,16 +749,16 @@ export default function AdsClient(){
                           <Button size="sm" variant="outline" onClick={()=> expandAngle(n.id)} disabled={running}>Expand angle</Button>
                         </div>
                       )}
-                        {n.type==='headlines' && (
+                      {n.type==='headlines' && (
                         <div className="space-y-2">
                           <div className="text-xs text-slate-600">Prepare headlines prompt and generate outputs</div>
-                          <Button size="sm" variant="outline" onClick={generateHeadlines} disabled={running}>Generate headlines</Button>
+                          <Button size="sm" variant="outline" onClick={()=> generateHeadlinesForNode(n.id)} disabled={running}>Generate headlines</Button>
                         </div>
                       )}
                       {n.type==='copies' && (
                         <div className="space-y-2">
                           <div className="text-xs text-slate-600">Prepare ad copies prompt and generate outputs</div>
-                          <Button size="sm" variant="outline" onClick={generateCopies} disabled={running}>Generate copies</Button>
+                          <Button size="sm" variant="outline" onClick={()=> generateCopiesForNode(n.id)} disabled={running}>Generate copies</Button>
                         </div>
                       )}
                       {n.type==='headlines_out' && (
@@ -719,7 +770,7 @@ export default function AdsClient(){
                       {n.type==='gemini_images' && (
                         <div className="space-y-2">
                           <div className="text-xs text-slate-600">{adImages.length||0} images</div>
-                          <Button size="sm" variant="outline" onClick={runAdImages} disabled={running}>Generate images</Button>
+                          <Button size="sm" variant="outline" onClick={()=> runAdImagesForNode(n.id)} disabled={running}>Generate images</Button>
                         </div>
                       )}
                       {n.type==='images_out' && (
@@ -860,36 +911,83 @@ export default function AdsClient(){
                     </div>
                   )}
                   {selectedNode.type==='meta_ad' && (
-                    <div className="space-y-2">
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">CTA</div>
-                        <select value={cta} onChange={e=>setCta(e.target.value)} className="w-full rounded-xl border px-3 py-2">
-                          {['SHOP_NOW','LEARN_MORE','SIGN_UP','SUBSCRIBE','GET_OFFER','BUY_NOW','CONTACT_US'].map(x=> (<option key={x} value={x}>{x.replaceAll('_',' ')}</option>))}
-                        </select>
-                      </div>
-                      <div>
-                        <div className="text-xs text-slate-500 mb-1">Daily budget (USD)</div>
-                        <Input type="number" min={1} value={String(budget)} onChange={e=> setBudget(e.target.value===''? 9 : Number(e.target.value))} />
-                      </div>
-                      <div>
-                        <label className="flex items-center gap-2 text-sm">
-                          <input type="checkbox" checked={advantagePlus} onChange={e=> setAdvantagePlus(e.target.checked)} />
-                          <span>Advantage+ audience</span>
-                        </label>
-                      </div>
-                      {!advantagePlus && (
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="text-xs text-slate-500 mb-1">Saved audience ID</div>
-                            <Input value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} placeholder="opt." />
+                    <div className="space-y-3">
+                      {/* Aggregate outputs upstream of this meta node */}
+                      {(()=>{
+                        const metaId = selectedNode.id
+                        const incoming = edges.filter(e=> e.to===metaId).map(e=> nodes.find(n=> n.id===e.from)).filter(Boolean) as FlowNode[]
+                        const heads = incoming.filter(n=> n.type==='headlines_out').flatMap(n=> Array.isArray(n.data?.headlines)? n.data.headlines : [])
+                        const prims = incoming.filter(n=> n.type==='copies_out').flatMap(n=> Array.isArray(n.data?.primaries)? n.data.primaries : [])
+                        const imgs = incoming.filter(n=> n.type==='images_out').flatMap(n=> Array.isArray(n.data?.images)? n.data.images : [])
+                        return (
+                          <div className="space-y-3 text-xs">
+                            <div>
+                              <div className="text-slate-500 mb-1">Select headline</div>
+                              <div className="grid grid-cols-1 gap-1 max-h-36 overflow-auto">
+                                {heads.slice(0,24).map((h:string,i:number)=> (
+                                  <label key={i} className="text-sm flex items-center gap-2">
+                                    <input type="checkbox" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                                    <span>{h}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 mb-1">Select primary text</div>
+                              <div className="grid grid-cols-1 gap-1 max-h-36 overflow-auto">
+                                {prims.slice(0,24).map((p:string,i:number)=> (
+                                  <label key={i} className="text-sm flex items-center gap-2">
+                                    <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                                    <span>{p}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 mb-1">Select image</div>
+                              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-auto">
+                                {imgs.slice(0,24).map((u:string,i:number)=> (
+                                  <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src={u} alt={`ad-${i}`} className="w-full h-20 object-cover" />
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </div>
-                          <div>
-                            <div className="text-xs text-slate-500 mb-1">Countries (comma-separated)</div>
-                            <Input value={countries} onChange={e=> setCountries(e.target.value)} placeholder="US, MA" />
-                          </div>
+                        )
+                      })()}
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">CTA</div>
+                          <select value={cta} onChange={e=>setCta(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+                            {['SHOP_NOW','LEARN_MORE','SIGN_UP','SUBSCRIBE','GET_OFFER','BUY_NOW','CONTACT_US'].map(x=> (<option key={x} value={x}>{x.replaceAll('_',' ')}</option>))}
+                          </select>
                         </div>
-                      )}
-                      <div className="flex justify-end"><Button onClick={approveAndDraft} disabled={running}>Approve & Create Draft</Button></div>
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">Daily budget (USD)</div>
+                          <Input type="number" min={1} value={String(budget)} onChange={e=> setBudget(e.target.value===''? 9 : Number(e.target.value))} />
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input type="checkbox" checked={advantagePlus} onChange={e=> setAdvantagePlus(e.target.checked)} />
+                            <span>Advantage+ audience</span>
+                          </label>
+                        </div>
+                        {!advantagePlus && (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <div className="text-xs text-slate-500 mb-1">Saved audience ID</div>
+                              <Input value={savedAudienceId} onChange={e=> setSavedAudienceId(e.target.value)} placeholder="opt." />
+                            </div>
+                            <div>
+                              <div className="text-xs text-slate-500 mb-1">Countries (comma-separated)</div>
+                              <Input value={countries} onChange={e=> setCountries(e.target.value)} placeholder="US, MA" />
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex justify-end"><Button onClick={approveAndDraft} disabled={running}>Approve & Create Draft</Button></div>
+                      </div>
                     </div>
                   )}
                 </div>
