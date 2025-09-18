@@ -82,6 +82,19 @@ export async function fetchSavedAudiences(){
   return data as { data: Array<{id:string,name:string,description?:string}>, error?:string }
 }
 
+// Ads automation (background)
+export async function launchAdsAutomation(payload:{
+  flow_id: string,
+  landing_url?: string,
+  source_image?: string,
+  num_angles?: number,
+  prompts?: { analyze_landing_prompt?:string, angles_prompt?:string, headlines_prompt?:string, copies_prompt?:string, gemini_ad_prompt?:string },
+  model?: string,
+}){
+  const {data} = await axios.post(`${base}/api/flows/ads/launch`, payload)
+  return data as { flow_id?: string, status?: string, error?: string }
+}
+
 // LLM interactive endpoints
 export async function llmGenerateAngles(payload:{
   product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[], target_category?:string },
