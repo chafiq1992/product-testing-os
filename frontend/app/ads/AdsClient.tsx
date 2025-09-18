@@ -220,7 +220,8 @@ export default function AdsClient(){
 
   // removed legacy runAngles
 
-  let idSeq=1; const nextId=()=> `a${idSeq++}`
+  const idSeqRef = useRef(1)
+  const nextId = ()=> `a${idSeqRef.current++}`
   const [nodes,setNodes]=useState<FlowNode[]>(()=>{
     const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'', title: prefillTitle||'' } }
     return [base]
@@ -257,7 +258,7 @@ export default function AdsClient(){
     const existing = nodes.find(n=> n.type==='angles')
     if(existing){ setSelectedNodeId(existing.id); return }
     const gen = addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y })
-    connect(landing, gen)
+    connectUnique(landing, gen)
     setSelectedNodeId(gen.id)
   }
 
@@ -290,7 +291,7 @@ export default function AdsClient(){
   function createChildNode(type:NodeType, parent:FlowNode, data:any, index:number, total:number){
     const pos = findFreePosition(placeChild(parent, index, total))
     const child = addNodeUnique(type, parent, data, pos)
-    connect(parent, child)
+    connectUnique(parent, child)
     return child
   }
 
@@ -439,7 +440,7 @@ export default function AdsClient(){
     const metaExisting = nodes.find(x=> x.type==='meta_ad' && x.data?.angleId===angleId)
     if(!metaExisting){
       const meta = addNodeUnique('meta_ad', n, { angleId }, { x: n.x+300, y: n.y+300 })
-      connect(n, meta)
+      connectUnique(n, meta)
     }
   }
   async function generateCopies(){
