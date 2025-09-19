@@ -751,6 +751,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===galleryNodeId? ({...n, run:{...n.run, output:{ ...(n.run?.output||{}), images: nextImgs }}}) : n)}))
     }catch{}
   }
+  
 
   async function geminiGenerate(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
