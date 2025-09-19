@@ -1003,6 +1003,7 @@ export default function AdsClient(){
           <div
             ref={canvasRef}
             className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-auto border"
+            onWheel={(e)=>{ if((e as any).ctrlKey){ e.preventDefault() } }}
             onMouseDown={(e)=>{
               // Pan when clicking background (not on node cards)
               const t = e.target as HTMLElement
