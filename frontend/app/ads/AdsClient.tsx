@@ -1173,7 +1173,6 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(headlinesPrompt)}</pre>
                             <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=> setHeadlinesPrompt(recommendedHeadlinesPrompt)}>Use recommended</Button>
                               <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} }}>Make default</Button>
                             </div>
                       </div>
@@ -1189,7 +1188,6 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(copiesPrompt)}</pre>
                             <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=> setCopiesPrompt(recommendedCopiesPrompt)}>Use recommended</Button>
                               <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} }}>Make default</Button>
                             </div>
                       </div>
