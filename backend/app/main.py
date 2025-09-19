@@ -859,7 +859,6 @@ async def api_update_draft(test_id: str, req: DraftSaveRequest):
             prompts=req.prompts,
             settings=req.settings,
             ads=req.ads,
-            status="draft",
             card_image=(payload.get("card_image") if isinstance(payload, dict) else None),
         )
         if not updated:

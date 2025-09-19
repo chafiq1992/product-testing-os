@@ -227,8 +227,21 @@ export default function AdsClient(){
         try{
           if(angles.length===0 && Array.isArray(ads?.angles) && ads.angles.length>0){ setAngles(ads.angles) }
         }catch{}
+
+        // Hydrate canvas nodes/edges from backend ads state
+        try{
+          hydrateCanvasFromBackend(ads)
+        }catch{}
+
+        // Track active step to animate edges
+        try{
+          const steps = Array.isArray(ads?.steps)? ads.steps : []
+          const running = steps.filter((s:any)=> (s?.status==='running'))
+          const last = running.length>0? running[running.length-1] : (steps.length>0? steps[steps.length-1] : null)
+          setActiveStep(last||null)
+        }catch{}
       }catch{}
-      if(!stop) setTimeout(tick, 5000)
+      if(!stop) setTimeout(tick, 8000)
     }
     const t = setTimeout(tick, 3000)
     return ()=>{ stop = true; clearTimeout(t) }
@@ -251,6 +264,7 @@ export default function AdsClient(){
   const [selectedNodeId,setSelectedNodeId]=useState<string|null>(null)
   const dragRef = useRef<{ id:string, startX:number, startY:number, nodeStartX:number, nodeStartY:number }|null>(null)
   const panningRef = useRef<{ startX:number, startY:number, panStartX:number, panStartY:number }|null>(null)
+  const [activeStep,setActiveStep]=useState<any>(null)
 
   // If arriving without transfer payload, try to re-open last saved draft
   useEffect(()=>{
@@ -437,6 +451,89 @@ export default function AdsClient(){
     return createChildNode(type, parent, {}, index, total)
   }
 
+  // Hydrate canvas from backend ads state (angles, per-angle outputs)
+  function hydrateCanvasFromBackend(ads:any){
+    if(!ads || typeof ads!=='object') return
+    // Ensure angles/angle_variant nodes
+    const backAngles:any[] = Array.isArray(ads.angles)? ads.angles : []
+    if(backAngles.length>0){
+      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
+      let gen = nodes.find(n=> n.type==='angles')
+      if(!gen){ gen = addNodeUnique('angles', landing, {}, { x: landing.x+300, y: landing.y }); connectUnique(landing, gen) }
+      const existingVariants = nodes.filter(n=> n.type==='angle_variant')
+      if(existingVariants.length===0){
+        const count = Math.min(3, backAngles.length)
+        for(let i=0;i<count;i++){
+          const a = backAngles[i]
+          const av = createChildNode('angle_variant', gen!, { angle: a, angleIndex: i }, i, count)
+          // Prepare generator nodes for animation
+          createChildNode('headlines', av, { angle: a, angleId: av.id, angleIndex: i }, 0, 3)
+          createChildNode('copies', av, { angle: a, angleId: av.id, angleIndex: i }, 1, 3)
+          createChildNode('gemini_images', av, { from: sourceImage||candidateImages[0]||'', angle: a, angleId: av.id, angleIndex: i }, 2, 3)
+        }
+      }
+    }
+    // Ensure outputs from per_angle
+    const per:any[] = Array.isArray(ads.per_angle)? ads.per_angle : []
+    if(per.length>0){
+      per.forEach((it:any, idx:number)=>{
+        // Find angle node by index
+        const angleNode = nodes.find(n=> n.type==='angle_variant' && Number((n.data||{}).angleIndex)===idx)
+        if(!angleNode) return
+        // Headlines out
+        if(Array.isArray(it.headlines) && it.headlines.length>0){
+          const exists = nodes.find(n=> n.type==='headlines_out' && (n.data||{}).angleId===angleNode.id)
+          if(!exists){
+            const out = createChildNode('headlines_out', angleNode, { headlines: it.headlines.slice(0,8), angleId: angleNode.id }, 0, 1)
+            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            connectUnique(out, meta)
+          }
+        }
+        // Copies out
+        if(Array.isArray(it.primaries) && it.primaries.length>0){
+          const exists = nodes.find(n=> n.type==='copies_out' && (n.data||{}).angleId===angleNode.id)
+          if(!exists){
+            const out = createChildNode('copies_out', angleNode, { primaries: it.primaries.slice(0,2), angleId: angleNode.id }, 0, 1)
+            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            connectUnique(out, meta)
+          }
+        }
+        // Images out
+        if(Array.isArray(it.images) && it.images.length>0){
+          const exists = nodes.find(n=> n.type==='images_out' && (n.data||{}).angleId===angleNode.id)
+          if(!exists){
+            const out = createChildNode('images_out', angleNode, { images: it.images.slice(0,4), angleId: angleNode.id }, 0, 1)
+            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            connectUnique(out, meta)
+          }
+        }
+      })
+    }
+  }
+
+  // Determine which edges should show active animation based on backend step
+  function isEdgeActive(edge:FlowEdge){
+    if(!activeStep) return false
+    const step = String(activeStep.step||'')
+    if(step==='generate_angles'){
+      const from = nodes.find(n=> n.id===edge.from)
+      const to = nodes.find(n=> n.id===edge.to)
+      return !!(from && to && from.type==='landing' && to.type==='angles')
+    }
+    const idx = Number(activeStep.angle_index)
+    if(Number.isNaN(idx)) return false
+    const from = nodes.find(n=> n.id===edge.from)
+    const to = nodes.find(n=> n.id===edge.to)
+    if(!from || !to) return false
+    if(from.type!=='angle_variant') return false
+    const aidx = Number((from.data||{}).angleIndex)
+    if(aidx!==idx) return false
+    if(step==='generate_headlines' && to.type==='headlines') return true
+    if(step==='generate_copies' && to.type==='copies') return true
+    if(step==='generate_images' && to.type==='gemini_images') return true
+    return false
+  }
+
   function aggregateFromAngles(arr:any[]){
     const headlines:string[] = []
     const primaries:string[] = []
@@ -576,7 +673,7 @@ export default function AdsClient(){
       const count = Math.min(3, Math.max(0, arr.length||3))
       for(let i=0;i<count;i++){
         const a = arr[i] || { name:`Angle ${i+1}` }
-        createChildNode('angle_variant', gen, { angle: a }, i, count)
+        createChildNode('angle_variant', gen, { angle: a, angleIndex: i }, i, count)
       }
     }catch(e:any){ alert('Angles generation failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -588,9 +685,9 @@ export default function AdsClient(){
     const a = (n.data||{}).angle||{}
     const angleId = n.id
     // Only add generator cards (no API calls here)
-    createChildNode('headlines', n, { angle: a, angleId }, 0, 3)
-    createChildNode('copies', n, { angle: a, angleId }, 1, 3)
-    createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'', angle: a, angleId }, 2, 3)
+    createChildNode('headlines', n, { angle: a, angleId, angleIndex: (n.data||{}).angleIndex }, 0, 3)
+    createChildNode('copies', n, { angle: a, angleId, angleIndex: (n.data||{}).angleIndex }, 1, 3)
+    createChildNode('gemini_images', n, { from: sourceImage||candidateImages[0]||'', angle: a, angleId, angleIndex: (n.data||{}).angleIndex }, 2, 3)
     // Defer Review node until we have at least one output
   }
   async function generateCopies(){
@@ -876,7 +973,7 @@ export default function AdsClient(){
             <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0', willChange:'transform'}}>
               <div className="relative z-0">
                 {edges.map(e=> (
-                  <Edge key={e.id} edge={e} nodes={nodes} active={false} />
+                  <Edge key={e.id} edge={e} nodes={nodes} active={isEdgeActive(e)} />
                 ))}
               </div>
               <div className="relative z-10">
