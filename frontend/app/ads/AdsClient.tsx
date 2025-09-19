@@ -150,7 +150,7 @@ export default function AdsClient(){
       const imgs = nodes.filter(x=> x.type==='images_out' && x.data?.angleId===angleId).flatMap(x=> Array.isArray(x.data?.images)? x.data.images : [])
       return { angle: n.data?.angle||{}, headlines: heads.slice(0,12), primaries: prims.slice(0,12), images: imgs.slice(0,12) }
     })
-    return { landing_url: landingUrl, source_image: sourceImage||candidateImages[0]||'', angles, per_angle }
+    return { landing_url: landingUrl, source_image: sourceImage||candidateImages[1]||candidateImages[0]||'', angles, per_angle }
   }
 
   async function saveStepToDraft(extraAds?: any){
@@ -172,15 +172,21 @@ export default function AdsClient(){
     const fid = await ensureFlowId()
     try{
       // Launch background automation so it keeps running if user leaves
-      await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
+      await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[1]||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
     }catch{}
     // Local click-through automation
     ;(async()=>{
-      // Wait briefly for landing URL; if not provided, proceed with inputs-only path
-      let guard = 0
-      while(!landingUrl && autoRun && guard<10){ await new Promise(r=> setTimeout(r, 500)); guard++ }
+      // Wait until landing URL is set and a proper source image is chosen (prefer 2nd image)
+      while(autoRun && (!landingUrl || !sourceImage)){
+        if(!sourceImage && candidateImages.length>1){ setSourceImage(candidateImages[1]) }
+        await new Promise(r=> setTimeout(r, 400))
+      }
       if(!autoRun) return
-      if(landingUrl){ await analyzeLanding(); await saveStepToDraft() }
+      // Ensure images are parsed at least once from the landing page
+      if(landingUrl && (!candidateImages || candidateImages.length===0)){
+        await analyzeLanding()
+      }
+      await saveStepToDraft()
       if(!autoRun) return
       addAnglesCardOnly()
       setActiveStep({ step:'generate_angles' })
@@ -252,7 +258,10 @@ export default function AdsClient(){
         // Merge candidate images from analysis
         try{
           const imgs = Array.isArray(ads?.analyze?.images)? ads.analyze.images : []
-          if(imgs.length>0 && candidateImages.length===0){ setCandidateImages(imgs.slice(0,10)); if(!sourceImage) setSourceImage(imgs[0]) }
+          const filtered = (imgs||[]).filter((u:string)=> typeof u==='string' && u)
+          const skipped = filtered.slice(1)
+          const final = skipped.length>0? skipped : filtered
+          if(final.length>0 && candidateImages.length===0){ setCandidateImages(final.slice(0,10)); if(!sourceImage) setSourceImage(final[0]) }
         }catch{}
         // Merge ad images from per_angle
         try{
@@ -354,7 +363,7 @@ export default function AdsClient(){
         if(Array.isArray(data.images) && data.images.length>0){
           const imgs = data.images.filter((u:string)=> typeof u==='string' && u)
           setCandidateImages(imgs)
-          if(!sourceImage && imgs[0]) setSourceImage(imgs[0])
+          if(!sourceImage && (imgs[1]||imgs[0])) setSourceImage(imgs[1]||imgs[0])
         }
         // If we received structured landing copy, extract key text benefits for ad input
         try{
@@ -399,7 +408,10 @@ export default function AdsClient(){
       const emosArr = Array.isArray((out as any)?.emotions)? (out as any).emotions : []
       if(emosArr.length>0 && !selectedPrimary) setSelectedPrimary(emosArr[0])
       const imgs = Array.isArray((out as any)?.images)? (out as any).images : []
-      if(imgs.length>0){ setCandidateImages(imgs.slice(0,10)); if(!sourceImage) setSourceImage(imgs[0]) }
+      const filtered = (imgs||[]).filter((u:string)=> typeof u==='string' && u)
+      const cands = filtered.slice(1)
+      const final = cands.length>0? cands : filtered
+      if(final.length>0){ setCandidateImages(final.slice(0,10)); if(!sourceImage) setSourceImage(final[0]) }
       const angs = Array.isArray((out as any)?.angles)? (out as any).angles : []
       if(angs.length>0){ setAngles(angs); setSelectedAngleIdx(0) }
       alert('Analyzed landing page with AI. Prefilled inputs.')
@@ -510,7 +522,7 @@ export default function AdsClient(){
           // Prepare generator nodes for animation
           createChildNode('headlines', av, { angle: a, angleId: av.id, angleIndex: i }, 0, 3)
           createChildNode('copies', av, { angle: a, angleId: av.id, angleIndex: i }, 1, 3)
-          createChildNode('gemini_images', av, { from: sourceImage||candidateImages[0]||'', angle: a, angleId: av.id, angleIndex: i }, 2, 3)
+          createChildNode('gemini_images', av, { from: sourceImage||candidateImages[1]||candidateImages[0]||'', angle: a, angleId: av.id, angleIndex: i }, 2, 3)
         }
       }
     }
@@ -653,7 +665,7 @@ export default function AdsClient(){
       const genNode = nodes.find(n=> n.id===nodeId && n.type==='gemini_images')
       if(!genNode) return
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'running'}}): n))
-      const src = genNode.data?.from || sourceImage || candidateImages[0]
+      const src = genNode.data?.from || sourceImage || candidateImages[1] || candidateImages[0]
       if(!src){ alert('Missing source image URL'); return }
       setRunning(true)
       const offerText = (offers||'').trim()
@@ -1161,7 +1173,6 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(headlinesPrompt)}</pre>
                             <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=> setHeadlinesPrompt(recommendedHeadlinesPrompt)}>Use recommended</Button>
                               <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} }}>Make default</Button>
                             </div>
                       </div>
@@ -1177,7 +1188,6 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(copiesPrompt)}</pre>
                             <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=> setCopiesPrompt(recommendedCopiesPrompt)}>Use recommended</Button>
                               <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} }}>Make default</Button>
                             </div>
                       </div>
