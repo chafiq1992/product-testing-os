@@ -176,30 +176,69 @@ export default function AdsClient(){
     }catch{}
     // Local click-through automation
     ;(async()=>{
-      // Wait for landing URL
+      // Wait briefly for landing URL; if not provided, proceed with inputs-only path
       let guard = 0
-      while(!landingUrl && autoRun && guard<60){ await new Promise(r=> setTimeout(r, 500)); guard++ }
+      while(!landingUrl && autoRun && guard<10){ await new Promise(r=> setTimeout(r, 500)); guard++ }
       if(!autoRun) return
       if(landingUrl){ await analyzeLanding(); await saveStepToDraft() }
       if(!autoRun) return
       addAnglesCardOnly()
-      await generateAngles(); await saveStepToDraft()
+      setActiveStep({ step:'generate_angles' })
+      const createdAngles = await autoGenerateAnglesFromInputs()
+      await saveStepToDraft()
       if(!autoRun) return
       // Expand each angle and generate outputs
-      const variants = nodes.filter(n=> n.type==='angle_variant')
-      // Give a short delay for nodes state to update
-      await new Promise(r=> setTimeout(r, 400))
-      const refreshed = nodes.filter(n=> n.type==='angle_variant')
-      const list = refreshed.length>0? refreshed : variants
-      for(const v of list.slice(0,3)){
+      const list = (createdAngles && createdAngles.length>0)? createdAngles : nodesRef.current.filter(n=> n.type==='angle_variant').slice(0,3)
+      for(let i=0;i<list.length;i++){
+        const v = list[i]
         if(!autoRun) break
         await expandAngle(v.id)
-        await generateHeadlinesForNode(nodes.find(n=> n.type==='headlines' && n.data?.angleId===v.id)?.id||'')
-        await generateCopiesForNode(nodes.find(n=> n.type==='copies' && n.data?.angleId===v.id)?.id||'')
-        await runAdImagesForNode(nodes.find(n=> n.type==='gemini_images' && n.data?.angleId===v.id)?.id||'')
+        await new Promise(r=> setTimeout(r, 250))
+        const genH = nodesRef.current.find(n=> n.type==='headlines' && n.data?.angleId===v.id)
+        const genC = nodesRef.current.find(n=> n.type==='copies' && n.data?.angleId===v.id)
+        const genI = nodesRef.current.find(n=> n.type==='gemini_images' && n.data?.angleId===v.id)
+        setActiveStep({ step:'generate_headlines', angle_index: i })
+        if(genH) await generateHeadlinesForNode(genH.id)
+        setActiveStep({ step:'generate_copies', angle_index: i })
+        if(genC) await generateCopiesForNode(genC.id)
+        setActiveStep({ step:'generate_images', angle_index: i })
+        if(genI) await runAdImagesForNode(genI.id)
         await saveStepToDraft()
       }
+      setActiveStep(null)
     })()
+  }
+
+  // Direct angles generation from current inputs and deterministic node creation
+  async function autoGenerateAnglesFromInputs(){
+    try{
+      setRunning(true)
+      const product = {
+        audience,
+        benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
+        pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
+        title: title||undefined,
+      }
+      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined })
+      const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
+      setAngles(arr)
+      const landing = nodesRef.current.find(n=> n.type==='landing') || nodesRef.current[0]
+      let gen = nodesRef.current.find(n=> n.type==='angles')
+      if(!gen && landing){ gen = addNodeUnique('angles', landing, { }, { x: landing.x+300, y: landing.y }); connectUnique(landing, gen) }
+      const created: FlowNode[] = []
+      const count = Math.min(3, Math.max(0, arr.length||3))
+      for(let i=0;i<count;i++){
+        const a = arr[i] || { name:`Angle ${i+1}` }
+        const av = createChildNode('angle_variant', gen!, { angle: a, angleIndex: i }, i, count)
+        created.push(av)
+      }
+      return created
+    }catch(e:any){
+      alert('Angles generation failed: '+ String(e?.message||e))
+      return []
+    }finally{
+      setRunning(false)
+    }
   }
 
   // Background progress poller: refresh minimal data while automation runs or when a flow id is loaded
@@ -377,6 +416,8 @@ export default function AdsClient(){
     return [base]
   })
   const [edges,setEdges]=useState<FlowEdge[]>([])
+  const nodesRef = useRef<FlowNode[]>([])
+  useEffect(()=>{ nodesRef.current = nodes },[nodes])
   useEffect(()=>{
     setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image, title } }): n))
   },[landingUrl,candidateImages,title])
