@@ -62,6 +62,7 @@ export default function AdsClient(){
   const [running,setRunning]=useState<boolean>(false)
   const [autoRun,setAutoRun]=useState<boolean>(false)
   const [internalFlowId,setInternalFlowId]=useState<string>(flowId||'')
+  const automationLaunchedRef = useRef<Record<string, boolean>>({})
   // Load from linked flow when id provided
   useEffect(()=>{ (async()=>{
     if(!flowId) return
@@ -172,7 +173,10 @@ export default function AdsClient(){
     const fid = await ensureFlowId()
     try{
       // Launch background automation so it keeps running if user leaves
-      await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[1]||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
+      if(!automationLaunchedRef.current[fid]){
+        const resp = await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[1]||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
+        if(resp && !(resp as any).error){ automationLaunchedRef.current[fid] = true }
+      }
     }catch{}
     // Local click-through automation
     ;(async()=>{
@@ -510,10 +514,11 @@ export default function AdsClient(){
     // Ensure angles/angle_variant nodes
     const backAngles:any[] = Array.isArray(ads.angles)? ads.angles : []
     if(backAngles.length>0){
-      const landing = nodes.find(n=> n.type==='landing') || nodes[0]
-      let gen = nodes.find(n=> n.type==='angles')
+      const currentNodes = nodesRef.current
+      const landing = currentNodes.find(n=> n.type==='landing') || currentNodes[0]
+      let gen = currentNodes.find(n=> n.type==='angles')
       if(!gen){ gen = addNodeUnique('angles', landing, {}, { x: landing.x+300, y: landing.y }); connectUnique(landing, gen) }
-      const existingVariants = nodes.filter(n=> n.type==='angle_variant')
+      const existingVariants = currentNodes.filter(n=> n.type==='angle_variant')
       if(existingVariants.length===0){
         const count = Math.min(3, backAngles.length)
         for(let i=0;i<count;i++){
@@ -531,32 +536,32 @@ export default function AdsClient(){
     if(per.length>0){
       per.forEach((it:any, idx:number)=>{
         // Find angle node by index
-        const angleNode = nodes.find(n=> n.type==='angle_variant' && Number((n.data||{}).angleIndex)===idx)
+        const angleNode = nodesRef.current.find(n=> n.type==='angle_variant' && Number((n.data||{}).angleIndex)===idx)
         if(!angleNode) return
         // Headlines out
         if(Array.isArray(it.headlines) && it.headlines.length>0){
-          const exists = nodes.find(n=> n.type==='headlines_out' && (n.data||{}).angleId===angleNode.id)
+          const exists = nodesRef.current.find(n=> n.type==='headlines_out' && (n.data||{}).angleId===angleNode.id)
           if(!exists){
             const out = createChildNode('headlines_out', angleNode, { headlines: it.headlines.slice(0,8), angleId: angleNode.id }, 0, 1)
-            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            const meta = nodesRef.current.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
             connectUnique(out, meta)
           }
         }
         // Copies out
         if(Array.isArray(it.primaries) && it.primaries.length>0){
-          const exists = nodes.find(n=> n.type==='copies_out' && (n.data||{}).angleId===angleNode.id)
+          const exists = nodesRef.current.find(n=> n.type==='copies_out' && (n.data||{}).angleId===angleNode.id)
           if(!exists){
             const out = createChildNode('copies_out', angleNode, { primaries: it.primaries.slice(0,2), angleId: angleNode.id }, 0, 1)
-            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            const meta = nodesRef.current.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
             connectUnique(out, meta)
           }
         }
         // Images out
         if(Array.isArray(it.images) && it.images.length>0){
-          const exists = nodes.find(n=> n.type==='images_out' && (n.data||{}).angleId===angleNode.id)
+          const exists = nodesRef.current.find(n=> n.type==='images_out' && (n.data||{}).angleId===angleNode.id)
           if(!exists){
             const out = createChildNode('images_out', angleNode, { images: it.images.slice(0,4), angleId: angleNode.id }, 0, 1)
-            const meta = nodes.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
+            const meta = nodesRef.current.find(n=> n.type==='meta_ad' && (n.data||{}).angleId===angleNode.id) || addNodeUnique('meta_ad', out, { angleId: angleNode.id }, { x: out.x+300, y: out.y+300 })
             connectUnique(out, meta)
           }
         }
