@@ -1541,27 +1541,32 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                 <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
                 <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
+                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Make default</Button></div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Title & Description prompt</div>
                 <Textarea rows={4} value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating title and description.</div>
+                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Make default</Button></div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Landing copy prompt</div>
                 <Textarea rows={5} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Images (Shopify CDN URLs) are also sent to map section.image_url.</div>
+                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make default</Button></div>
               </div>
               <Separator/>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
                 <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Gemini ad images.</div>
+                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make default</Button></div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini variant style prompt</div>
                 <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
+                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make default</Button></div>
               </div>
             </CardContent>
           </Card>
