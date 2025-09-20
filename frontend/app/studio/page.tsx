@@ -870,7 +870,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
         let variantsPayload = (variantDescriptions||[]).map(v=> ({ name: v.name, description: v.description }))
         if(opts?.variantOverride && Array.isArray(opts.variantOverride) && opts.variantOverride.length>0){
-          variantsPayload = opts.variantOverride
+          variantsPayload = opts.variantOverride.map(v=> ({ name: v.name, description: v.description }))
         }
         resp = await geminiGenerateVariantSetWithDescriptions({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants, variant_descriptions: variantsPayload.length? variantsPayload : undefined })
         // Persist data URLs to server uploads for durability
