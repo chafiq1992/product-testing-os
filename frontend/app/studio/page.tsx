@@ -751,6 +751,14 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===galleryNodeId? ({...n, run:{...n.run, output:{ ...(n.run?.output||{}), images: nextImgs }}}) : n)}))
     }catch{}
   }
+  async function appendImagesToGalleryAuto(newImages:string[]){
+    try{
+      if(!newImages || newImages.length===0) return
+      const snap = flowRef.current
+      const gal = snap.nodes.find(x=> x.data?.type==='image_gallery')
+      if(gal){ await appendImagesToGallery(gal.id, newImages) }
+    }catch{}
+  }
   
 
   async function geminiGenerate(nodeId:string){
@@ -1691,15 +1699,6 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
     </div>
   )
 }
-
-  async function appendImagesToGalleryAuto(newImages:string[]){
-    try{
-      if(!newImages || newImages.length===0) return
-      const snap = flowRef.current
-      const gal = snap.nodes.find(x=> x.data?.type==='image_gallery')
-      if(gal){ await appendImagesToGallery(gal.id, newImages) }
-    }catch{}
-  }
 
 function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   const hasErr = nodes.some(n=>n.run.status==='error')
