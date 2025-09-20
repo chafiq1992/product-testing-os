@@ -77,6 +77,11 @@ export async function listFlows(limit?: number){
   return data as { data: Array<{ id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, created_at?:string, flow_type?: 'product'|'ads'|'promotion' }>, error?:string }
 }
 
+export async function deleteFlow(id: string){
+  const {data} = await axios.delete(`${base}/api/flows/${id}`)
+  return data as { ok?: boolean, error?: string }
+}
+
 export async function fetchSavedAudiences(){
   const {data} = await axios.get(`${base}/api/meta/audiences`)
   return data as { data: Array<{id:string,name:string,description?:string}>, error?:string }

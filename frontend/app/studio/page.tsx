@@ -105,7 +105,19 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       if(Array.isArray(p?.pain_points)) setPains(p.pain_points)
       if(Array.isArray(p?.uploaded_images)) setUploadedUrls(p.uploaded_images)
       if(p?.flow && Array.isArray(p.flow.nodes) && Array.isArray(p.flow.edges)){
-        setFlow({ nodes: p.flow.nodes, edges: p.flow.edges })
+        try{
+          const galleryImages = Array.isArray((p?.ui||{}).gallery_images)? (p.ui as any).gallery_images : undefined
+          const nodes = (p.flow.nodes as any[]).map((n:any)=>{
+            if(n?.data?.type==='image_gallery' && Array.isArray(galleryImages)){
+              const baseRun = n.run || { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
+              return { ...n, run:{ ...baseRun, output:{ ...(baseRun?.output||{}), images: galleryImages } } }
+            }
+            return n
+          })
+          setFlow({ nodes, edges: p.flow.edges })
+        }catch{
+          setFlow({ nodes: p.flow.nodes, edges: p.flow.edges })
+        }
       }
       if(p?.ui){
         if(typeof p.ui.zoom==='number') setZoom(p.ui.zoom)
@@ -295,6 +307,34 @@ Return the JSON object with all required keys and the complete HTML in the html 
     + "Look: premium, high-contrast hero lighting, subtle rim light, soft gradient background, tasteful glow,\n"
     + "clean reflections/shadow, product-first composition (rule of thirds/center), social-feed ready."
   )
+  async function dataUrlToFileSimple(dataUrl:string, filename:string): Promise<File>{
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    const type = blob.type || 'image/png'
+    return new File([blob], filename, { type })
+  }
+
+  async function ensureHttpUrls(urls:string[]): Promise<string[]>{
+    try{
+      if(!urls || urls.length===0) return []
+      const out:string[] = []
+      const files: File[] = []
+      const mapIdx: number[] = []
+      urls.forEach((u, i)=>{
+        if(typeof u==='string' && u.startsWith('data:')){ mapIdx.push(i) }
+      })
+      for(const i of mapIdx){ files.push(await dataUrlToFileSimple(urls[i], `gen-${i+1}.jpg`)) }
+      let uploaded:string[] = []
+      if(files.length>0){ try{ const up = await uploadImages(files); uploaded = Array.isArray(up?.urls)? up.urls : [] }catch{ uploaded = [] } }
+      let j=0
+      for(let i=0;i<urls.length;i++){
+        if(urls[i].startsWith('data:')){ out.push(uploaded[j]||urls[i]); j++ }
+        else{ out.push(urls[i]) }
+      }
+      return out
+    }catch{ return urls }
+  }
+
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
   )
@@ -513,7 +553,11 @@ Return the JSON object with all required keys and the complete HTML in the html 
         run: { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
       }))
       const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
-      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl }
+      const galNode = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
+      const galOut:any = (galNode?.run?.output||{})
+      const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
+      const galSelected = (galNode?.data?.selected||{})
+      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected }
       let targeting: any = undefined
       if(!advantagePlus){
         if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -563,7 +607,11 @@ Return the JSON object with all required keys and the complete HTML in the html 
       try{
         const slimNodes = flowRef.current.nodes.map(n=> ({ id:n.id, type:n.type, x:n.x, y:n.y, data:n.data, run:{ status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 } }))
         const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
-        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl }
+        const galNode = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
+        const galOut:any = (galNode?.run?.output||{})
+        const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
+        const galSelected = (galNode?.data?.selected||{})
+        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected }
         let targeting: any = undefined
         if(!advantagePlus){
           if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -810,7 +858,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
   }
   
 
-  async function geminiGenerate(nodeId:string){
+  async function geminiGenerate(nodeId:string, opts?: { variantOverride?: { name:string, description?:string }[] }){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const sourceUrl = n.data?.source_image_url
     if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
@@ -820,8 +868,19 @@ Return the JSON object with all required keys and the complete HTML in the html 
       if(n.data?.type==='gemini_variant_set'){
         const stylePrompt = String(n.data?.style_prompt||geminiVariantStylePrompt||'')
         const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
-        const variantsPayload = (variantDescriptions||[]).map(v=> ({ name: v.name, description: v.description }))
+        let variantsPayload = (variantDescriptions||[]).map(v=> ({ name: v.name, description: v.description }))
+        if(opts?.variantOverride && Array.isArray(opts.variantOverride) && opts.variantOverride.length>0){
+          variantsPayload = opts.variantOverride
+        }
         resp = await geminiGenerateVariantSetWithDescriptions({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants, variant_descriptions: variantsPayload.length? variantsPayload : undefined })
+        // Persist data URLs to server uploads for durability
+        try{
+          const items = Array.isArray(resp?.items)? resp.items : []
+          const images = items.map((it:any)=> it?.image).filter(Boolean)
+          const http = await ensureHttpUrls(images)
+          const updated = items.map((it:any, idx:number)=> ({ ...it, image: http[idx]||it.image }))
+          resp = { ...(resp||{}), items: updated }
+        }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
         resp = await geminiGenerateFeatureBenefitSet({
@@ -829,6 +888,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
           image_url: sourceUrl,
           count: typeof n.data?.count==='number'? n.data.count : 6
         })
+        try{
+          const items = Array.isArray(resp?.items)? resp.items : []
+          const images = items.map((it:any)=> it?.image).filter(Boolean)
+          const http = await ensureHttpUrls(images)
+          const updated = items.map((it:any, idx:number)=> ({ ...it, image: http[idx]||it.image }))
+          resp = { ...(resp||{}), items: updated }
+        }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else{
         const useGlobal = (n.data?.use_global_prompt!==false)
@@ -848,6 +914,11 @@ Return the JSON object with all required keys and the complete HTML in the html 
         }catch{}
         const numImages = (typeof n.data?.num_images==='number' && n.data.num_images>0)? n.data.num_images : 4
         resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: numImages, neutral_background: (n.data?.neutral_background===false? false : true) })
+        try{
+          const images = Array.isArray(resp?.images)? resp.images : []
+          const http = await ensureHttpUrls(images)
+          resp = { ...(resp||{}), images: http }
+        }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
         try{
@@ -873,6 +944,8 @@ Return the JSON object with all required keys and the complete HTML in the html 
           await appendImagesToGallery(gallery.id, newImgs)
         }
       }catch{}
+      // Best-effort: save immediately so actions are persisted like Meta Ads Manager
+      try{ await onSaveDraft() }catch{}
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
@@ -1747,13 +1820,14 @@ Return the JSON object with all required keys and the complete HTML in the html 
                   onAngleGenerate={(id)=> angleGenerate(id)}
                   onAngleApprove={(id)=> angleApprove(id)}
                   onTitleContinue={(id)=> titleContinue(id)}
-                  onGeminiGenerate={(id)=> geminiGenerate(id)}
+                  onGeminiGenerate={(id, opts)=> geminiGenerate(id, opts)}
                   onSuggestPrompts={(id)=> {}}
                   onApplyAdPrompt={(id)=> {}}
                   onGalleryApprove={(id)=> galleryApprove(id)}
                   onExternalNav={(href)=> handleExternalNav(href)}
                   onOfferGenerateFull={(id)=> offerGenerateFull(id)}
                   onAppendToGallery={(urls)=> appendImagesToGalleryAuto(urls)}
+                  productColors={colors}
                 />
               )}
             </CardContent>
@@ -1811,7 +1885,7 @@ function StatusBadge({ nodes }:{nodes:FlowNode[]}){
   return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
 }
 
-function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate, onOfferGenerateFull }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void }){
+function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate, onOfferGenerateFull }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
   const ring = selected ? 'ring-2 ring-blue-500' : 'ring-1 ring-slate-200'
   const glow = active ? 'shadow-[0_0_0_4px_rgba(59,130,246,0.15)]' : ''
@@ -1844,7 +1918,7 @@ function statusColor(s:RunState['status']){
   return s==='idle'? 'bg-slate-100 text-slate-600' : s==='running'? 'bg-amber-100 text-amber-700' : s==='success'? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
 }
 
-function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void){
+function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void){
   // Minimal card content: headline only
   if(node.type==='trigger'){
     return (
@@ -2003,11 +2077,12 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull, onAppendToGallery }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void, onAppendToGallery:(urls:string[])=>void }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull, onAppendToGallery, productColors }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void, onAppendToGallery:(urls:string[])=>void, productColors: string[] }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const [landingInspectorMode,setLandingInspectorMode] = useState<'preview'|'html'>('preview')
   const out = node.run?.output||{}
+  const [selectedVariantColor, setSelectedVariantColor] = useState<string>('')
   const t = traceForNode(node, latestTrace)
   let images:string[] = []
   const isGallery = node.data?.type==='image_gallery'
@@ -2399,6 +2474,24 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             </div>
           ) : null
         )
+      )}
+
+      {/* Specific Variant Generator (color) */}
+      {node.data?.type==='gemini_variant_set' && Array.isArray(productColors) && productColors.length>0 && (
+        <div className="mt-3 border-t pt-2">
+          <div className="text-[11px] text-slate-500 mb-1">Generate a specific color variant</div>
+          <div className="flex items-center gap-2">
+            <select value={selectedVariantColor} onChange={e=> setSelectedVariantColor(e.target.value)} className="w-full rounded-xl border px-3 py-2">
+              <option value="">Select color…</option>
+              {productColors.map((c, i)=> (<option key={i} value={c}>{c}</option>))}
+            </select>
+            <Button size="sm" variant="outline" disabled={!selectedVariantColor || node.run?.status==='running'} onClick={async()=>{
+              const color = selectedVariantColor
+              const desc = `Exact colorway: ${color}. CRITICAL: Strictly render the ${color} color variant only; do not change materials, shape, or branding. Neutral studio background.`
+              onGeminiGenerate(node.id, { variantOverride: [{ name: color, description: desc }] })
+            }}>Generate</Button>
+          </div>
+        </div>
       )}
 
       {/* Requests view removed to keep sidebar minimal and responsive */}

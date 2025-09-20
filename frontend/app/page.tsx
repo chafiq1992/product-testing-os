@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { Rocket, Plus, ExternalLink } from 'lucide-react'
-import { listFlows, saveDraft } from '@/lib/api'
+import { listFlows, saveDraft, deleteFlow } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
@@ -16,7 +16,7 @@ export default function HomePage(){
   const [showNew,setShowNew]=useState(false)
   const [creating,setCreating]=useState(false)
   const router = useRouter()
-  useEffect(()=>{ (async()=>{ try{ const res=await listFlows(24); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
+  useEffect(()=>{ (async()=>{ try{ const res=await listFlows(); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
   const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
   async function startFlow(kind:'product'|'ads'|'promotion'){
     try{
@@ -57,6 +57,16 @@ export default function HomePage(){
             const href = badge==='ads'? `/ads/?id=${it.id}` : badge==='promotion'? `/promotion/?id=${it.id}` : (studioBase? `${studioBase}?id=${it.id}` : `/studio/?id=${it.id}`)
             const badgeColor = badge==='ads'? 'bg-emerald-100 text-emerald-700' : badge==='promotion'? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-blue-100 text-blue-700'
             const badgeText = badge==='ads'? 'Create Ads' : badge==='promotion'? 'Create Promotion' : 'Create Product'
+            async function onDelete(e: React.MouseEvent){
+              e.preventDefault(); e.stopPropagation();
+              try{
+                const ok = window.confirm('Delete this flow permanently? This will remove its local uploads.');
+                if(!ok) return;
+                const res = await deleteFlow(it.id)
+                if((res as any)?.error){ alert(String((res as any).error)); return }
+                setItems(arr=> arr.filter(x=> x.id!==it.id))
+              }catch(err:any){ alert('Delete failed: '+ String(err?.message||err)) }
+            }
             return (
             <Link href={href} key={it.id} className="block">
               <Card>
@@ -66,7 +76,10 @@ export default function HomePage(){
                       <span>{(it as any)?.title || 'Untitled flow'}</span>
                       <span className={`text-[10px] px-2 py-0.5 rounded ${badgeColor}`}>{badgeText}</span>
                     </span>
-                    <span className="text-xs text-slate-500">{new Date(it.created_at||Date.now()).toLocaleDateString()}</span>
+                    <span className="flex items-center gap-2">
+                      <button title="Delete" onClick={onDelete} className="p-1 rounded hover:bg-slate-50 text-slate-500">×</button>
+                      <span className="text-xs text-slate-500">{new Date(it.created_at||Date.now()).toLocaleDateString()}</span>
+                    </span>
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">

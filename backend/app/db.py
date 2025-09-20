@@ -190,6 +190,7 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
             Flow.created_at,
             Flow.updated_at,
             Flow.settings_json,
+            Flow.product_json,
         ).order_by(desc(Flow.created_at))
         if limit:
             q = q.limit(limit)
@@ -205,17 +206,60 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
                         flow_type = t
             except Exception:
                 flow_type = "product"
+            # Derive a fallback card image if not explicitly set
+            card_image = r.card_image
+            if not card_image:
+                try:
+                    # Prefer assets_used.feature_gallery[0] in settings
+                    if r.settings_json:
+                        sj = json.loads(r.settings_json)
+                        assets = (sj or {}).get("assets_used") or {}
+                        gallery = assets.get("feature_gallery") or []
+                        if isinstance(gallery, list) and gallery:
+                            first = gallery[0]
+                            if isinstance(first, str) and first:
+                                card_image = first
+                    # Fallback: first uploaded image from product_json
+                    if (not card_image) and r.product_json:
+                        pj = json.loads(r.product_json)
+                        up = (pj or {}).get("uploaded_images") or []
+                        if isinstance(up, list) and up:
+                            first = up[0]
+                            if isinstance(first, str) and first:
+                                card_image = first
+                except Exception:
+                    card_image = r.card_image
             out.append({
                 "id": r.id,
                 "status": r.status,
                 "title": r.title,
-                "card_image": r.card_image,
+                "card_image": card_image,
                 "page_url": r.page_url,
                 "created_at": r.created_at.isoformat() + "Z",
                 "updated_at": r.updated_at.isoformat() + "Z",
                 "flow_type": flow_type,
             })
         return out
+
+
+def delete_flow_row(flow_id: str) -> bool:
+    with SessionLocal() as session:
+        f = session.get(Flow, flow_id)
+        if not f:
+            return False
+        session.delete(f)
+        session.commit()
+        return True
+
+
+def delete_test_row(test_id: str) -> bool:
+    with SessionLocal() as session:
+        t = session.get(Test, test_id)
+        if not t:
+            return False
+        session.delete(t)
+        session.commit()
+        return True
 
 
 # ---------------- App Prompts (global defaults) ----------------

@@ -921,11 +921,58 @@ async def api_get_flow(flow_id: str):
 @app.get("/api/flows")
 async def api_list_flows(limit: int | None = None):
     try:
-        eff = min(max(limit or 48, 1), 200)
+        # When no limit provided, return all flows; otherwise cap to 200
+        eff = None if (limit is None) else min(max(limit, 1), 200)
         items = db.list_flows_light(limit=eff)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
+
+
+@app.delete("/api/flows/{flow_id}")
+async def api_delete_flow(flow_id: str):
+    """Delete a flow and any locally stored uploads referenced by it.
+
+    Shopify CDN images cannot be deleted from here; only local /uploads files are removed.
+    """
+    try:
+        f = db.get_flow(flow_id)
+        # Attempt to delete any local uploads referenced in product.uploaded_images
+        try:
+            from urllib.parse import urlparse
+            uploaded = []
+            if isinstance((f or {}).get("product"), dict):
+                uploaded = (f.get("product") or {}).get("uploaded_images") or []  # type: ignore
+            for u in uploaded or []:
+                if not isinstance(u, str):
+                    continue
+                # Only delete local uploads
+                if "/uploads/" in u and (u.startswith("/") or "://" in u):
+                    path = urlparse(u).path
+                    if path.startswith("/uploads/"):
+                        fname = path.split("/uploads/")[-1]
+                        try:
+                            from pathlib import Path
+                            p = Path(UPLOADS_DIR) / fname
+                            if p.exists():
+                                p.unlink(missing_ok=True)  # type: ignore
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        # Delete rows from both structured flows and legacy tests
+        try:
+            db.delete_flow_row(flow_id)
+        except Exception:
+            pass
+        try:
+            db.delete_test_row(flow_id)
+        except Exception:
+            pass
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 class ShopifyCreateRequest(BaseModel):
