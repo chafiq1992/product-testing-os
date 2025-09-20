@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -90,6 +90,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
   const flowRef = useRef(flow)
   useEffect(()=>{ flowRef.current = flow },[flow])
   const productGidRef = useRef<string|null>(null)
+  const [productHandle,setProductHandle] = useState<string|undefined>(undefined)
 
   // Fast hydration helper from a payload snapshot (DB or cache)
   function hydrateFromPayload(p:any){
@@ -125,6 +126,8 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
         if(typeof p.settings.adset_budget==='number') setAdsetBudget(p.settings.adset_budget)
         if(Array.isArray(p.settings.countries)) setCountries(p.settings.countries)
         if(typeof p.settings.saved_audience_id==='string') setSelectedSavedAudience(p.settings.saved_audience_id)
+        if(typeof (p.settings as any).product_gid==='string'){ productGidRef.current = (p.settings as any).product_gid }
+        if(typeof (p.settings as any).product_handle==='string'){ setProductHandle((p.settings as any).product_handle) }
       }
     }catch{}
   }
@@ -295,6 +298,9 @@ Return the JSON object with all required keys and the complete HTML in the html 
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
   )
+  const [landingPreview,setLandingPreview]=useState<{ html?:string, json?:any, error?:string }|null>(null)
+  const [landingPreviewMode,setLandingPreviewMode]=useState<'preview'|'html'>('preview')
+  const [landingPreviewLoading,setLandingPreviewLoading]=useState<boolean>(false)
   const landingPromptLabel = 'Create Landing (Elegant v3 · STRICT)'
   const landingPromptType = 'create_landing'
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
@@ -478,6 +484,8 @@ Return the JSON object with all required keys and the complete HTML in the html 
             const vDesc = ''
             const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
             productGidRef.current = (prod as any)?.product_gid
+            const handle = (prod as any)?.handle
+            if(handle){ setProductHandle(handle) }
           }
           if(!isPromotionMode && productGidRef.current){
             const up = await shopifyUploadProductFiles({ product_gid: productGidRef.current, files, title: title||'Product', description: '' })
@@ -561,13 +569,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
           if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
           else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
         }
-        const payload = {
+      const payload = {
           product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
           image_urls: uploadedUrls||[],
           flow: flowSnap,
           ui: uiSnap,
-          prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
-          settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
+        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, ...(productGidRef.current? { product_gid: productGidRef.current } : {}), ...(productHandle? { product_handle: productHandle } : {}) },
         }
         const snapshot = JSON.stringify(payload)
         if(snapshot!==last){
@@ -618,12 +626,23 @@ Return the JSON object with all required keys and the complete HTML in the html 
         productNodeId = pn.id
         return next
       })
-      const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors, target_category: targetCategory }, angle: undefined, title: v.title, description: v.description })
-      const product_gid = productRes.product_gid
-      const product_handle = productRes.handle
+      // Reuse an existing product when available; otherwise create a new one
+      let product_gid = productGidRef.current
+      let product_handle_local = productHandle
+      if(!product_gid){
+        const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors, target_category: targetCategory }, angle: undefined, title: v.title, description: v.description })
+        product_gid = productRes.product_gid || null
+        product_handle_local = productRes.handle || undefined
+        productGidRef.current = product_gid
+        if(product_handle_local){ setProductHandle(product_handle_local) }
+      }else{
+        // If we already have a product, update its title to the new approved one
+        const newTitle = String(v.title||'').trim()
+        if(newTitle){ try{ await shopifyUpdateTitle({ product_gid, title: newTitle }) }catch{} }
+      }
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
       // Ensure variants/options/pricing/inventory are configured
-      try{ await shopifyConfigureVariants({ product_gid: product_gid!, base_price: price===''?undefined:Number(price), sizes, colors }) }catch{}
+      try{ if(product_gid){ await shopifyConfigureVariants({ product_gid: product_gid, base_price: price===''?undefined:Number(price), sizes, colors }) } }catch{}
 
       let imagesNodeId:string|undefined
       setFlow(f=>{
@@ -752,7 +771,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         // Position gallery below the last Gemini node if present, else below images
         const gemNodes = f.nodes.filter(x=> x.data?.type && String(x.data.type).startsWith('gemini_'))
         const base = gemNodes[gemNodes.length-1] || f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle, title: v.title, description: v.description, landing_prompt: landingCopyPrompt, selected:{} })
+        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle: product_handle_local, title: v.title, description: v.description, landing_prompt: landingCopyPrompt, selected:{} })
         let edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gal.id, 'in')]
         // Connect all existing Gemini nodes to gallery for visual path
         gemNodes.forEach(gn=> { edges = [...edges, makeEdge(gn.id, 'out', gal.id, 'in')] })
@@ -1572,8 +1591,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
                 <div className="mt-1 flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Make default</Button>
-                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ angles_prompt: anglesPrompt }); localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Set app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ angles_prompt: anglesPrompt }); localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Make app default</Button>
                 </div>
               </div>
               <div>
@@ -1581,8 +1599,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <Textarea rows={4} value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating title and description.</div>
                 <div className="mt-1 flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Make default</Button>
-                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ title_desc_prompt: titleDescPrompt }); localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Set app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ title_desc_prompt: titleDescPrompt }); localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Make app default</Button>
                 </div>
               </div>
               <div>
@@ -1590,9 +1607,47 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <Textarea rows={8} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Generates a complete page using the Elegant Minimal design system. Uses only provided image URLs.</div>
                 <div className="mt-1 flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make default</Button>
-                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ landing_copy_prompt: landingCopyPrompt }); localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Set app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ landing_copy_prompt: landingCopyPrompt }); localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{
+                    try{
+                      setLandingPreviewLoading(true)
+                      const imgs = (uploadedUrls||[])
+                      const res = await llmLandingCopy({
+                        product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
+                        title: title||undefined,
+                        description: '',
+                        model,
+                        image_urls: imgs,
+                        prompt: landingCopyPrompt,
+                        product_handle: productHandle,
+                      })
+                      setLandingPreview({ html: String((res as any)?.html||''), json: res })
+                      setLandingPreviewMode('preview')
+                    }catch(e:any){ setLandingPreview({ error: String(e?.message||e) }) }
+                    finally{ setLandingPreviewLoading(false) }
+                  }}>Preview</Button>
                 </div>
+                {landingPreviewLoading && (
+                  <div className="text-[11px] text-slate-500 mt-2">Generating preview…</div>
+                )}
+                {landingPreview?.html && (
+                  <div className="mt-2 border rounded-xl overflow-hidden">
+                    <div className="flex items-center justify-between px-2 py-1 border-b bg-slate-50">
+                      <div className="text-[11px] text-slate-600">Landing preview</div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={()=> setLandingPreviewMode('preview')} className={`text-[11px] px-2 py-0.5 rounded ${landingPreviewMode==='preview'?'bg-white border':'border-transparent'}`}>Preview</button>
+                        <button onClick={()=> setLandingPreviewMode('html')} className={`text-[11px] px-2 py-0.5 rounded ${landingPreviewMode==='html'?'bg-white border':'border-transparent'}`}>HTML</button>
+                      </div>
+                    </div>
+                    <div className="max-h-[420px] overflow-auto">
+                      {landingPreviewMode==='preview' ? (
+                        <iframe title="landing-preview" srcDoc={landingPreview.html} className="w-full h-[400px] bg-white" />
+                      ) : (
+                        <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto">{landingPreview.html}</pre>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
               <Separator/>
               <div>
@@ -1600,8 +1655,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Gemini ad images.</div>
                 <div className="mt-1 flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make default</Button>
-                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_ad_prompt: geminiAdPrompt }); localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Set app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_ad_prompt: geminiAdPrompt }); localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make app default</Button>
                 </div>
               </div>
               <div>
@@ -1609,8 +1663,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
                 <div className="mt-1 flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make default</Button>
-                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_variant_style_prompt: geminiVariantStylePrompt }); localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Set app default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_variant_style_prompt: geminiVariantStylePrompt }); localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make app default</Button>
                 </div>
               </div>
             </CardContent>
@@ -1953,6 +2006,7 @@ function traceForNode(node:FlowNode, trace:any[]){
 function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull, onAppendToGallery }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void, onAppendToGallery:(urls:string[])=>void }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
+  const [landingInspectorMode,setLandingInspectorMode] = useState<'preview'|'html'>('preview')
   const out = node.run?.output||{}
   const t = traceForNode(node, latestTrace)
   let images:string[] = []
@@ -2221,13 +2275,26 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
           {(()=>{
             try{
               const url = String((node.run?.output||{} as any)?.url||'')
-              const title = String(((node.run?.output||{} as any)?.title||'')||'')
-              const imgs = Array.isArray(((node.run?.output||{} as any)?.image_urls))? ((node.run?.output||{} as any).image_urls) : []
               const lc = ((node.run?.output||{} as any)?.landing_copy)||null
-              const payload = { landing_url: url, title, images: imgs, landing_copy: lc }
+              const html = String((lc||{} as any)?.html||'')
               return (
-                <div className="flex items-center gap-2 justify-end">
-                  {url && (<button onClick={()=> onExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 justify-between">
+                    <div className="flex items-center gap-1">
+                      <button onClick={()=> setLandingInspectorMode('preview')} className={`text-[11px] px-2 py-0.5 rounded ${landingInspectorMode==='preview'?'bg-white border':'border-transparent'}`}>Preview</button>
+                      <button onClick={()=> setLandingInspectorMode('html')} className={`text-[11px] px-2 py-0.5 rounded ${landingInspectorMode==='html'?'bg-white border':'border-transparent'}`}>HTML</button>
+                    </div>
+                    {url && (<button onClick={()=> onExternalNav(url)} className="text-xs px-3 py-1.5 rounded border hover:bg-slate-50">Open page</button>)}
+                  </div>
+                  {html && (
+                    <div className="max-h-[320px] overflow-auto border rounded-lg">
+                      {landingInspectorMode==='preview' ? (
+                        <iframe title="landing-inline-preview" srcDoc={html} className="w-full h-[300px] bg-white" />
+                      ) : (
+                        <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto">{html}</pre>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             }catch{return null}

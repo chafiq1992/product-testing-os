@@ -678,3 +678,14 @@ def update_product_description(product_gid: str, description_html: str) -> dict:
     data = _gql(PRODUCT_UPDATE, {"input": inp})
     prod = data["productUpdate"]["product"]
     return prod
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_title(product_gid: str, title: str) -> dict:
+    inp = {
+        "id": product_gid,
+        "title": title or "Offer"
+    }
+    data = _gql(PRODUCT_UPDATE, {"input": inp})
+    prod = data["productUpdate"]["product"]
+    return prod

@@ -16,6 +16,7 @@ from app.integrations.gemini_client import analyze_variants_from_image, build_fe
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
+from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
@@ -987,6 +988,17 @@ class ShopifyUpdateDescriptionRequest(BaseModel):
 @app.post("/api/shopify/update_description")
 async def api_shopify_update_description(req: ShopifyUpdateDescriptionRequest):
     prod = update_product_description(req.product_gid, req.description_html)
+    return {"product_gid": prod.get("id"), "handle": prod.get("handle")}
+
+
+class ShopifyUpdateTitleRequest(BaseModel):
+    product_gid: str
+    title: str
+
+
+@app.post("/api/shopify/update_title")
+async def api_shopify_update_title(req: ShopifyUpdateTitleRequest):
+    prod = update_product_title(req.product_gid, req.title)
     return {"product_gid": prod.get("id"), "handle": prod.get("handle")}
 
 
