@@ -16,7 +16,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
@@ -298,6 +298,21 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       const gA = localStorage.getItem('ptos_prompts_gemini_ad'); if(gA) setGeminiAdPrompt(gA)
       const gV = localStorage.getItem('ptos_prompts_gemini_variant_style'); if(gV) setGeminiVariantStylePrompt(gV)
     }catch{}
+  },[])
+  // Load app-wide defaults from server and apply to state (and persist to localStorage)
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const gp = await getGlobalPrompts()
+        if(gp && typeof gp==='object'){
+          if(typeof gp.angles_prompt==='string'){ setAnglesPrompt(gp.angles_prompt); try{ localStorage.setItem('ptos_prompts_angles', gp.angles_prompt) }catch{} }
+          if(typeof gp.title_desc_prompt==='string'){ setTitleDescPrompt(gp.title_desc_prompt); try{ localStorage.setItem('ptos_prompts_title_desc', gp.title_desc_prompt) }catch{} }
+          if(typeof gp.landing_copy_prompt==='string'){ setLandingCopyPrompt(gp.landing_copy_prompt); try{ localStorage.setItem('ptos_prompts_landing_copy', gp.landing_copy_prompt) }catch{} }
+          if(typeof gp.gemini_ad_prompt==='string'){ setGeminiAdPrompt(gp.gemini_ad_prompt); try{ localStorage.setItem('ptos_prompts_gemini_ad', gp.gemini_ad_prompt) }catch{} }
+          if(typeof gp.gemini_variant_style_prompt==='string'){ setGeminiVariantStylePrompt(gp.gemini_variant_style_prompt); try{ localStorage.setItem('ptos_prompts_gemini_variant_style', gp.gemini_variant_style_prompt) }catch{} }
+        }
+      }catch{}
+    })()
   },[])
   // Persist prompts to localStorage when changed
   useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} },[anglesPrompt])
@@ -656,7 +671,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
               }
             }catch{}
             const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: promptWithCategory, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
-            const edges = f.edges
+            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gn.id, 'in')]
             const next = { nodes:[...f.nodes, gn], edges }
             flowRef.current = next
             geminiNodeId = gn.id
@@ -689,7 +704,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
               + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
             )
             const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
-            const edges = f.edges
+            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gn2.id, 'in')]
             const next = { nodes:[...f.nodes, gn2], edges }
             flowRef.current = next
             geminiNodeId = gn2.id
@@ -699,7 +714,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Feature/Benefit Close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 6 })
-            const edges = f.edges
+            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', fb.id, 'in')]
             const next = { nodes:[...f.nodes, fb], edges }
             flowRef.current = next
             return next
@@ -708,7 +723,7 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
             const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5, use_global_style: true })
-            const edges = f.edges
+            const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', vs.id, 'in')]
             const next = { nodes:[...f.nodes, vs], edges }
             flowRef.current = next
             return next
@@ -1541,32 +1556,47 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                 <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
                 <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating angles.</div>
-                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Make default</Button></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Make default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ angles_prompt: anglesPrompt }); localStorage.setItem('ptos_prompts_angles', anglesPrompt) }catch{} }}>Set app default</Button>
+                </div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Title & Description prompt</div>
                 <Textarea rows={4} value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Used when generating title and description.</div>
-                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Make default</Button></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Make default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ title_desc_prompt: titleDescPrompt }); localStorage.setItem('ptos_prompts_title_desc', titleDescPrompt) }catch{} }}>Set app default</Button>
+                </div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Landing copy prompt</div>
                 <Textarea rows={5} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Images (Shopify CDN URLs) are also sent to map section.image_url.</div>
-                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make default</Button></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ landing_copy_prompt: landingCopyPrompt }); localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Set app default</Button>
+                </div>
               </div>
               <Separator/>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
                 <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Gemini ad images.</div>
-                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make default</Button></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_ad_prompt: geminiAdPrompt }); localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Set app default</Button>
+                </div>
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini variant style prompt</div>
                 <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
-                <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make default</Button></div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make default</Button>
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_variant_style_prompt: geminiVariantStylePrompt }); localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Set app default</Button>
+                </div>
               </div>
             </CardContent>
           </Card>

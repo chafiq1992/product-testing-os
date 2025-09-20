@@ -62,6 +62,32 @@ class ProductInput(BaseModel):
     # Optional variant descriptions provided/approved by user (used for image prompts)
     variant_descriptions: Optional[list[dict]] = None
 
+# ---------------- App-wide Prompt Defaults ----------------
+class PromptsUpdate(BaseModel):
+    angles_prompt: Optional[str] = None
+    title_desc_prompt: Optional[str] = None
+    landing_copy_prompt: Optional[str] = None
+    gemini_ad_prompt: Optional[str] = None
+    gemini_variant_style_prompt: Optional[str] = None
+
+
+@app.get("/api/prompts")
+async def api_get_prompts():
+    try:
+        return db.get_app_prompts()
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.post("/api/prompts")
+async def api_set_prompts(req: PromptsUpdate):
+    try:
+        patch = {k: v for k, v in (req.model_dump().items()) if v is not None}
+        out = db.set_app_prompts(patch)
+        return out
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/api/tests")
 async def create_test(
     request: Request,

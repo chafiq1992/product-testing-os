@@ -79,7 +79,18 @@ class Flow(Base):
 
 Index('ix_flows_created_at', Flow.created_at)
 
-# Ensure new tables are created when module is imported
+# Global app-wide prompts (key/value store)
+class AppPrompt(Base):
+    __tablename__ = "app_prompts"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+Index('ix_app_prompts_updated_at', AppPrompt.updated_at)
+
+# Ensure new tables are created when module is imported (includes newly added tables)
 Base.metadata.create_all(engine)
 
 
@@ -205,6 +216,41 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
                 "flow_type": flow_type,
             })
         return out
+
+
+# ---------------- App Prompts (global defaults) ----------------
+def get_app_prompts() -> Dict[str, str]:
+    """Return all global prompt defaults as a dict { key: value }"""
+    with SessionLocal() as session:
+        rows = session.query(AppPrompt).all()
+        out: Dict[str, str] = {}
+        for r in rows:
+            try:
+                if isinstance(r.key, str) and isinstance(r.value, str):
+                    out[r.key] = r.value
+            except Exception:
+                continue
+        return out
+
+
+def set_app_prompts(patch: Dict[str, str]) -> Dict[str, str]:
+    """Upsert provided prompt keys; returns full dict after update."""
+    if not isinstance(patch, dict):
+        return get_app_prompts()
+    with SessionLocal() as session:
+        for k, v in patch.items():
+            if not isinstance(k, str):
+                continue
+            if not isinstance(v, str):
+                continue
+            item = session.get(AppPrompt, k)
+            if item:
+                item.value = v
+                item.updated_at = _now()
+            else:
+                session.add(AppPrompt(key=k, value=v, updated_at=_now()))
+        session.commit()
+    return get_app_prompts()
 
 
 def update_test_status(test_id: str, status: str, error: Optional[Dict[str, Any]] = None):

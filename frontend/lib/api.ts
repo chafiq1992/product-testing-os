@@ -302,3 +302,15 @@ export async function geminiGenerateVariantSetWithDescriptions(payload:{ image_u
   const {data} = await axios.post(`${base}/api/gemini/variant_set`, payload)
   return data as { items: Array<{ kind:'variant'|'composite', name?:string, description?:string, image:string, prompt:string }>, model: string, input_image_url: string, error?: string }
 }
+
+// -------- App-wide prompts (global defaults) --------
+export async function getGlobalPrompts(){
+  const {data} = await axios.get(`${base}/api/prompts`)
+  // API returns a plain object mapping keys to strings
+  return data as { [key:string]: string }
+}
+
+export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string, gemini_ad_prompt?:string, gemini_variant_style_prompt?:string }){
+  const {data} = await axios.post(`${base}/api/prompts`, payload)
+  return data as { [key:string]: string }
+}
