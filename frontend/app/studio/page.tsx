@@ -228,51 +228,64 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
     "You are a CRO copywriter. From the given angle, write 5 HIGH-CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra-short option ≤30 characters. Include the primary keyword, 1 concrete benefit/outcome, and a unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
     + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand-safe, concrete, and benefit-led."
   )
-  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(
-    "You are a CRO specialist and landing-page copy engineer.\n"
-    + "Goal: Produce a single json object with high-converting landing copy and a complete HTML page (inline styles) that embeds only the image URLs provided by the user.\n\n"
-    + "Output Contract\n"
-    + "Return one valid json object (no markdown, no prose) with these keys:\n"
-    + "- headline (string)\n"
-    + "- subheadline (string)\n"
-    + "- sections (array of { id, title, body, image_url|null, image_alt })\n"
-    + "  Recommended IDs: \"hero\",\"highlights\",\"colors\",\"feature_gallery\",\"quick_specs\",\"trust_badges\",\"reviews\",\"cta_block\"\n"
-    + "- faq (array of { q, a })\n"
-    + "- cta ({ primary_label, primary_url, secondary_label, secondary_url })\n"
-    + "- html (string) — a complete, self-contained page using inline CSS, mobile-first\n"
-    + "- assets_used (object) mapping provided images actually used\n\n"
-    + "Image Mapping Rules\n"
-    + "- Use only provided image URLs; never invent URLs.\n"
-    + "- Prefer an image labeled \"hero\" for the hero section; else first wide image.\n"
-    + "- Map remaining images to \"feature_gallery\" (≤10) and \"reviews\" if labels include \"review\".\n"
-    + "- If input includes \"colors\", render a \"colors\" section with pills (no images).\n"
-    + "- Always set meaningful image_alt; if no suitable image for a section, image_url = null.\n\n"
-    + "Copy Guidelines\n"
-    + "- IMPORTANT: Write everything in English (en) regardless of inputs.\n"
-    + "- Follow audience & tone from input; default to parents in Morocco (warm, trustworthy).\n"
-    + "- Focus on benefits, differentiation, clear outcomes; short paragraphs; bullets where helpful.\n"
-    + "- If region is \"MA\", include trust signals: Cash on Delivery, fast city delivery, easy returns, WhatsApp support.\n"
-    + "- Ignore any non-English preferences and keep language strictly English.\n\n"
-    + "Layout Spec for html\n"
-    + "1) Hero (gradient, big headline, subhead, primary CTA, optional hero image)\n"
-    + "2) Highlights (4–6 bullet benefits)\n"
-    + "3) Color Options (if provided)\n"
-    + "4) Feature Gallery (up to 10 cards with image + short copy)\n"
-    + "5) Quick Specs (compact two-column list/table)\n"
-    + "6) Trust Badges (styled text badges, no external icons)\n"
-    + "7) Reviews (2–3 short testimonials; generic labels if names missing)\n"
-    + "8) CTA Block (bold final CTA + optional secondary CTA)\n"
-    + "9) Footer (small print, contact)\n\n"
-    + "Styling constraints (inline CSS only):\n"
-    + "- Use brand primary (fallback #004AAD); rounded cards, soft shadows, generous spacing, system fonts.\n"
-    + "- Buttons large & mobile-first; accessible contrast.\n"
-    + "- All images: loading=\"lazy\", width:100%, height:auto, border-radius:12px.\n\n"
-    + "Validation:\n"
-    + "- html must be valid and self-contained (no external CSS/JS).\n"
-    + "- Use only provided image URLs.\n"
-    + "- Ensure all CTAs use provided URLs; if missing, use \"#\".\n"
-    + "- CRITICAL: Output must be a single valid json object only (no markdown, no explanations)."
-  )
+  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a CRO specialist and landing‑page copy engineer.
+
+GOAL
+Return ONE valid JSON object (no markdown, no prose) that contains persuasive copy AND a fully self‑contained HTML page styled with the ELEGANT MINIMAL design system below. The HTML MUST be a complete document (<!DOCTYPE html><html>…</html>) with one <style> block using only inline CSS. DO NOT return loose <section> fragments.
+
+OUTPUT CONTRACT
+Return a single JSON object with keys:
+- headline (string)
+- subheadline (string)
+- sections (array of { id, title, body, image_url|null, image_alt })
+  Recommended IDs: "hero", "highlights", "colors", "feature_gallery", "quick_specs", "trust_badges", "reviews", "cta_block"
+- faq (array of { q, a })
+- cta ({ primary_label, primary_url, secondary_label, secondary_url })
+- html (string) — a COMPLETE, mobile‑first page using INLINE CSS ONLY (no external CSS/JS)
+- assets_used (object) mapping provided images used. Keys: { hero: string|null, feature_gallery: string[] }
+
+IMAGE RULES
+- Use ONLY image URLs provided by the user. NEVER invent URLs.
+- Prefer an image labeled "hero" (or the first wide image) for the hero.
+- Map remaining images to feature_gallery (≤10).
+- If "colors" are provided in input, render a Colors section with named pills only (no images).
+- Every meaningful image MUST have descriptive image_alt. If no suitable image, set image_url = null.
+
+AUDIENCE & COPY
+- Default audience: parents in Morocco (warm, trustworthy, concise).
+- Focus on benefits and outcomes (comfort, durability, safety, easy care). Use short paragraphs and bullets.
+- If region == "MA": include trust signals (Cash on Delivery, 24–48h city delivery, easy returns, WhatsApp support).
+- Match requested language if specified ("ar" for Fus’ha, "fr", or "en").
+
+ELEGANT MINIMAL — REQUIRED DESIGN SYSTEM (implement in <style>)
+Use these tokens, classes, and layout primitives exactly so pages render with the desired elegance:
+:root { --brand:#004AAD; --ink:#222; --muted:#666; --bg:#fafafa; --card:#fff; --pill:#f1f7ff; --shadow:0 8px 28px rgba(0,0,0,.08); }
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5} a{color:inherit;text-decoration:none} img{display:block;width:100%;height:auto;border-radius:12px} .container{max-width:1080px;margin:0 auto;padding:20px} .grid{display:grid;gap:18px} .g-2{grid-template-columns:repeat(2,minmax(0,1fr))} .g-3{grid-template-columns:repeat(3,minmax(0,1fr))} @media(max-width:840px){.g-2,.g-3{grid-template-columns:1fr}} .section{padding:34px 0} .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:18px} .pill{background:var(--pill);border-radius:999px;padding:10px 14px;font-weight:600;color:var(--brand);display:inline-block} .badge{background:#eef4ff;border:1px solid #dfe9ff;color:var(--brand);border-radius:10px;padding:10px 12px;font-weight:700;display:inline-block} h1{font-size:clamp(28px,4vw,42px);margin:0 0 8px} h2.section-title{font-size:clamp(22px,3.2vw,30px);margin:0 0 12px} p.section-sub{margin:0 0 18px;color:var(--muted)} header{position:sticky;top:0;background:#fff;border-bottom:1px solid #eee;z-index:10} header .bar{display:flex;align-items:center;gap:12px;height:64px} .brand{width:40px;height:40px;border-radius:10px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700} .hero{padding:40px 0;background:linear-gradient(135deg,#fef9f9,#f1f7ff)} .cta-row{display:flex;gap:12px;flex-wrap:wrap} .btn{padding:14px 22px;border-radius:999px;font-weight:700;border:0;cursor:pointer} .btn-primary{background:var(--brand);color:#fff} .btn-secondary{background:#ffd700;color:#333} .kpis{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))} @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}} .kpi{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:16px;display:flex;gap:12px;align-items:center} .kpi-icon{width:36px;height:36px;border-radius:10px;background:var(--pill);display:grid;place-items:center;color:var(--brand);font-weight:900} .shape{position:absolute;inset:auto auto -20px -20px;width:120px;height:120px;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.12),transparent 60%);filter:blur(2px);border-radius:50%} .specs{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))} @media(max-width:760px){.specs{grid-template-columns:1fr}} .spec{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:14px} .review{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:16px} .footer{color:#888;border-top:1px solid #eee;padding:24px 0;margin-top:24px;text-align:center}
+
+HTML LAYOUT ORDER (must follow)
+1) Hero: gradient background, big headline + subhead, CTA buttons (primary+secondary), optional hero image inside .card with a .shape overlay.
+2) Highlights: 4–6 benefit "KPIs" using .kpi items with minimalist text icons (use glyphs: ◎, ✓, ↺, ≡; NO external icon files).
+3) Colors (optional): render color name pills (.pill).
+4) Feature Gallery: up to 10 .card items each with <img> (loading="lazy") + short copy (h3 + p.section-sub).
+5) Quick Specs: two‑column grid using .specs and .spec.
+6) Trust Badges: 3–5 .badge items (Cash on Delivery, 24–48h City Delivery, Easy Returns, WhatsApp Support).
+7) Reviews: 2–3 .review cards (use generic labels if names missing).
+8) CTA Block: strong headline + buttons.
+9) Footer: small print + contact.
+
+ACCESSIBILITY & SEO
+- Provide <title> from headline and a concise <meta name="description"> from subheadline.
+- All images MUST have alt text describing the content.
+- Buttons are <a> links styled as buttons; use CTA URLs (fallback "#").
+
+STRICT VALIDATION
+- The html string MUST include: <!DOCTYPE html>, <html>, <head> with <style>, and <body>.
+- Do NOT return raw <section> blocks. If your draft begins with <section>, REBUILD as a full document.
+- Use only provided image URLs.
+- Return exactly ONE JSON object and nothing else.
+
+RETURN
+Return the JSON object with all required keys and the complete HTML in the html string.`)
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>(
     "Ultra eye‑catching ecommerce ad image derived ONLY from the provided product photo.\n"
     + "Rules: Do NOT change product identity (colors/materials/shape/branding). No text or logos.\n"
@@ -282,6 +295,8 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
   )
+  const landingPromptLabel = 'Create Landing (Elegant v3 · STRICT)'
+  const landingPromptType = 'create_landing'
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
   const [countries,setCountries]=useState<string[]>([])
@@ -1028,8 +1043,8 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
       // Deduplicate
       cdnUrls = Array.from(new Set(cdnUrls))
       // Generate landing copy with selected images
-      const enforcedEnglishPrompt = `${String(n.data?.landing_prompt||landingCopyPrompt)}\n\nCRITICAL: All copy and HTML must be in English.`
-      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: enforcedEnglishPrompt, product_handle })
+      const landingPromptFinal = String(n.data?.landing_prompt||landingCopyPrompt)
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: landingPromptFinal, product_handle })
       // Sanitize landing copy to ensure only provided CDN URLs are referenced
       const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
         const imgs = (urls||[]).filter(Boolean).slice(0,10)
@@ -1571,9 +1586,9 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-500 mb-1">Landing copy prompt</div>
-                <Textarea rows={5} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
-                <div className="text-[11px] text-slate-500 mt-1">Images (Shopify CDN URLs) are also sent to map section.image_url.</div>
+                <div className="text-xs text-slate-500 mb-1 flex items-center gap-2"><span className="font-medium text-slate-700">{landingPromptLabel}</span><span className="text-[10px] px-2 py-0.5 rounded border">{landingPromptType}</span></div>
+                <Textarea rows={8} value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Generates a complete page using the Elegant Minimal design system. Uses only provided image URLs.</div>
                 <div className="mt-1 flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Make default</Button>
                   <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ landing_copy_prompt: landingCopyPrompt }); localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} }}>Set app default</Button>
