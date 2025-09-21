@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, Form, File, Request
+from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +29,9 @@ import re
 import threading
 import time
 import json as _json
+import io
+import mimetypes
+from urllib.parse import urlparse
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
@@ -1194,6 +1198,69 @@ async def api_uploads(request: Request, files: List[UploadFile] = File(...)):
         else:
             urls.append(f"{abs_base}{encoded_path}")
     return {"urls": urls}
+
+
+@app.get("/proxy/image")
+async def proxy_image(url: str):
+    """Fetch a remote image server-side and return it as same-origin.
+
+    Notes:
+      - Only allows http(s) URLs
+      - Blocks private/local addresses to avoid SSRF
+      - Ensures response is an image (or octet-stream with guessed image type)
+    """
+    try:
+        import requests  # Local import to avoid slowing cold start
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return Response(status_code=400, content=b"invalid scheme")
+        host = (parsed.hostname or "").lower()
+        # Basic SSRF guard: block localhost/private ranges
+        forbidden_hosts = {"localhost", "127.0.0.1", "::1"}
+        if host in forbidden_hosts:
+            return Response(status_code=400, content=b"forbidden host")
+        # Block obvious private IPs
+        try:
+            import ipaddress
+            try:
+                ip = ipaddress.ip_address(host)
+                if ip.is_private or ip.is_loopback or ip.is_link_local:
+                    return Response(status_code=400, content=b"forbidden ip")
+            except ValueError:
+                # host is a domain name; ok to continue
+                pass
+        except Exception:
+            pass
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        ctype = r.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        data = r.content
+        # Accept image/* or guess when octet-stream
+        if not ctype.startswith("image/"):
+            # Some CDNs use octet-stream; attempt to guess from URL
+            guessed, _ = mimetypes.guess_type(url)
+            if guessed and guessed.startswith("image/"):
+                ctype = guessed
+            else:
+                # As a last resort, try to infer PNG to avoid CORB when browsers sniff
+                # but reject non-image sizes > 10MB
+                if len(data) > 10 * 1024 * 1024:
+                    return Response(status_code=415, content=b"unsupported content")
+                # Fallback: deny non-image content types explicitly
+                return Response(status_code=415, content=b"unsupported content-type")
+
+        resp = StreamingResponse(io.BytesIO(data), media_type=ctype)
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+    except Exception as e:
+        return Response(status_code=502, content=str(e).encode("utf-8"))
 
 
 class MetaLaunchRequest(BaseModel):

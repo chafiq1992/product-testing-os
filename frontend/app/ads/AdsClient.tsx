@@ -46,6 +46,19 @@ export default function AdsClient(){
   const [sourceImage,setSourceImage]=useState<string>(prefillImages[0]||'')
   const [candidateImages,setCandidateImages]=useState<string[]>(prefillImages)
 
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+  function toDisplayUrl(u: string){
+    try{
+      if(!u) return u
+      if(u.startsWith('/')) return u
+      if(!/^https?:\/\//i.test(u)) return u
+      const host = new URL(u).hostname
+      const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
+      const ok = allowed.some(d=> host===d || host.endsWith('.'+d))
+      return ok? u : `${apiBase}/proxy/image?url=${encodeURIComponent(u)}`
+    }catch{ return u }
+  }
+
   const [numAngles,setNumAngles]=useState<number>(3)
   const [angles,setAngles]=useState<any[]>([])
   const [selectedAngleIdx,setSelectedAngleIdx]=useState<number>(0)
@@ -952,7 +965,7 @@ export default function AdsClient(){
                         </button>
                         <button className="block w-full" onClick={()=> setSourceImage(u)}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={u} alt={`img-${i}`} className="w-full h-20 object-cover" />
+                          <img src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-20 object-cover" />
                         </button>
                       </div>
                     ))}
@@ -1114,7 +1127,7 @@ export default function AdsClient(){
                       )}
                       {n.type==='landing' && candidateImages[0] && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={candidateImages[0]} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
+                        <img src={toDisplayUrl(candidateImages[0])} alt="cover" className="mt-2 w-[180px] h-24 object-cover rounded" />
                       )}
                     </div>
                     {/* Visual input/output ports for clarity */}
@@ -1252,10 +1265,10 @@ export default function AdsClient(){
                         <div className="grid grid-cols-2 gap-2">
                           {adImages.map((u,i)=> (
                               <button key={i} className={`group border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={u} alt={`ad-${i}`} className="w-full h-28 object-cover" />
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={toDisplayUrl(u)} alt={`ad-${i}`} className="w-full h-28 object-cover" />
                                 <div className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition">
-                                  <button className="text-[10px] px-1 py-0.5 rounded bg-white/90 border" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); try{ const a=document.createElement('a'); a.href=u; a.download='ad-image.jpg'; document.body.appendChild(a); a.click(); a.remove() }catch{} }}>Download</button>
+                                  <button className="text-[10px] px-1 py-0.5 rounded bg-white/90 border" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); try{ const a=document.createElement('a'); a.href=toDisplayUrl(u); a.download='ad-image.jpg'; document.body.appendChild(a); a.click(); a.remove() }catch{} }}>Download</button>
                                 </div>
                             </button>
                           ))}
@@ -1301,8 +1314,8 @@ export default function AdsClient(){
                               <div className="grid grid-cols-2 gap-2 max-h-48 overflow-auto">
                                 {imgs.slice(0,24).map((u:string,i:number)=> (
                                   <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
-                                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                                    <img src={u} alt={`ad-${i}`} className="w-full h-20 object-cover" />
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img src={toDisplayUrl(u)} alt={`ad-${i}`} className="w-full h-20 object-cover" />
                                   </button>
                                 ))}
                               </div>

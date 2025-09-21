@@ -16,6 +16,18 @@ export default function HomePage(){
   const [showNew,setShowNew]=useState(false)
   const [creating,setCreating]=useState(false)
   const router = useRouter()
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+  function toDisplayUrl(u: string){
+    try{
+      if(!u) return u
+      if(u.startsWith('/')) return u
+      if(!/^https?:\/\//i.test(u)) return u
+      const host = new URL(u).hostname
+      const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
+      const ok = allowed.some(d=> host===d || host.endsWith('.'+d))
+      return ok? u : `${apiBase}/proxy/image?url=${encodeURIComponent(u)}`
+    }catch{ return u }
+  }
   useEffect(()=>{ (async()=>{ try{ const res=await listFlows(); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
   const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
   async function startFlow(kind:'product'|'ads'|'promotion'){
@@ -86,7 +98,7 @@ export default function HomePage(){
                   <div className="w-full bg-slate-100 rounded-none overflow-hidden border h-28 md:h-32">
                     {(it as any).card_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={(it as any).card_image} alt="cover" className="w-full h-full object-cover" loading="lazy"/>
+                      <img src={toDisplayUrl((it as any).card_image)} alt="cover" className="w-full h-full object-cover" loading="lazy"/>
                     ): (
                       <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">No image</div>
                     )}
