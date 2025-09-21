@@ -48,6 +48,16 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
+class VariantInput(BaseModel):
+    size: Optional[str] = None
+    color: Optional[str] = None
+    price: Optional[float] = None
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    quantity: Optional[int] = None
+    track_quantity: Optional[bool] = None
+
+
 class ProductInput(BaseModel):
     title: Optional[str] = None
     base_price: Optional[float] = None
@@ -66,6 +76,10 @@ class ProductInput(BaseModel):
     adset_budget: Optional[float] = None
     # Optional variant descriptions provided/approved by user (used for image prompts)
     variant_descriptions: Optional[list[dict]] = None
+    # Inventory/variant config
+    track_quantity: Optional[bool] = True
+    quantity: Optional[int] = None
+    variants: Optional[List[VariantInput]] = None
 
 # ---------------- App-wide Prompt Defaults ----------------
 class PromptsUpdate(BaseModel):
@@ -1027,6 +1041,9 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
         sizes=payload.get("sizes") or None,
         colors=payload.get("colors") or None,
         product_type=payload.get("product_type") or None,
+        track_quantity=payload.get("track_quantity"),
+        quantity=payload.get("quantity"),
+        variants=payload.get("variants"),
     )
     return {"product_gid": product.get("id"), "handle": product.get("handle")}
 
@@ -1337,9 +1354,21 @@ class ShopifyConfigureVariantsRequest(BaseModel):
     base_price: Optional[float] = None
     sizes: Optional[List[str]] = None
     colors: Optional[List[str]] = None
+    track_quantity: Optional[bool] = None
+    quantity: Optional[int] = None
+    variants: Optional[List[VariantInput]] = None
 
 
 @app.post("/api/shopify/configure_variants")
 async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
-    res = configure_variants_for_product(req.product_gid, req.base_price, req.sizes, req.colors)
+    res = configure_variants_for_product(
+        req.product_gid,
+        req.base_price,
+        req.sizes,
+        req.colors,
+        req.track_quantity,
+        req.quantity,
+        # Pydantic models serialize to dicts when dumped by FastAPI
+        [v.model_dump() for v in (req.variants or [])] if isinstance(req.variants, list) else None,
+    )
     return res

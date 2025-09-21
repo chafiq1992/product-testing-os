@@ -322,7 +322,15 @@ def _update_product_options(numeric_product_id: str, sizes: list[str] | None, co
         pass
 
 
-def _create_variant(numeric_product_id: str, option1: str | None, option2: str | None, price: float | None) -> dict | None:
+def _create_variant(
+    numeric_product_id: str,
+    option1: str | None,
+    option2: str | None,
+    price: float | None,
+    *,
+    sku: str | None = None,
+    barcode: str | None = None,
+) -> dict | None:
     try:
         variant: dict = {}
         if option1 is not None:
@@ -331,6 +339,10 @@ def _create_variant(numeric_product_id: str, option1: str | None, option2: str |
             variant["option2"] = option2
         if price is not None:
             variant["price"] = str(price)
+        if sku:
+            variant["sku"] = sku
+        if barcode:
+            variant["barcode"] = barcode
         resp = _rest_post(f"/products/{numeric_product_id}/variants.json", {"variant": variant})
         return (resp or {}).get("variant")
     except Exception:
@@ -352,10 +364,63 @@ def _update_variant_price(variant_id: str, price: float) -> None:
         pass
 
 
-def _configure_variants_for_product(product_gid: str, base_price: float | None, sizes: list[str] | None, colors: list[str] | None) -> None:
+def _configure_variants_for_product(
+    product_gid: str,
+    base_price: float | None,
+    sizes: list[str] | None,
+    colors: list[str] | None,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+) -> None:
     numeric_id = _numeric_product_id_from_gid(product_gid)
     if not numeric_id:
         return
+    # Location used for inventory level updates (best-effort)
+    loc_id = _get_primary_location_id()
+
+    # Explicit variants provided: honor per-variant price/sku/qty/track when present
+    explicit_variants: list[dict] = [v for v in (variants or []) if isinstance(v, dict)]
+    if explicit_variants:
+        uniq_sizes: list[str] = []
+        uniq_colors: list[str] = []
+        for v in explicit_variants:
+            try:
+                sv = (v.get("size") or "").strip()
+                cv = (v.get("color") or "").strip()
+                if sv and sv not in uniq_sizes:
+                    uniq_sizes.append(sv)
+                if cv and cv not in uniq_colors:
+                    uniq_colors.append(cv)
+            except Exception:
+                continue
+        if uniq_sizes or uniq_colors:
+            _update_product_options(numeric_id, uniq_sizes or None, uniq_colors or None)
+        for v in explicit_variants:
+            try:
+                sv = (v.get("size") or None)
+                cv = (v.get("color") or None)
+                price = v.get("price", base_price)
+                sku = (v.get("sku") or None)
+                barcode = (v.get("barcode") or None)
+                created = _create_variant(numeric_id, sv, cv, price, sku=sku if isinstance(sku, str) and sku.strip() else None, barcode=barcode if isinstance(barcode, str) and barcode.strip() else None)
+                if created and loc_id:
+                    inv_item_id = str((created or {}).get("inventory_item_id"))
+                    if inv_item_id and inv_item_id != "None":
+                        # Per-variant track flag wins; else global; else default True
+                        tq_raw = v.get("track_quantity")
+                        eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
+                        _set_inventory_tracked(inv_item_id, eff_tq)
+                        # Per-variant quantity wins; else global quantity; else leave as-is (no set)
+                        q_raw = v.get("quantity")
+                        eff_q = q_raw if (q_raw is not None) else quantity
+                        if eff_q is not None:
+                            _set_inventory_level(loc_id, inv_item_id, int(eff_q))
+            except Exception:
+                continue
+        return
+
+    # Fallback: sizes/colors combos with base price
     values_size = [s.strip() for s in (sizes or []) if isinstance(s, str) and s.strip()]
     values_color = [c.strip() for c in (colors or []) if isinstance(c, str) and c.strip()]
     if values_size or values_color:
@@ -378,22 +443,24 @@ def _configure_variants_for_product(product_gid: str, base_price: float | None, 
                 v = _create_variant(numeric_id, None, cv, base_price)
                 if v:
                     created_variants.append(v)
-        # Enable inventory and set stock 2 for each
-        loc_id = _get_primary_location_id()
+        # Enable inventory and set stock per provided quantity (default 2)
         if loc_id:
             for v in created_variants:
                 try:
                     inv_item_id = str((v or {}).get("inventory_item_id"))
                     if inv_item_id and inv_item_id != "None":
-                        _set_inventory_tracked(inv_item_id, True)
-                        _set_inventory_level(loc_id, inv_item_id, 2)
+                        _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True)
+                        if quantity is not None:
+                            _set_inventory_level(loc_id, inv_item_id, int(quantity))
+                        else:
+                            _set_inventory_level(loc_id, inv_item_id, 2)
                 except Exception:
                     continue
     else:
         # Single default variant: update price and inventory
-        variants = _list_variants(numeric_id)
-        if variants:
-            first = variants[0]
+        variants_list = _list_variants(numeric_id)
+        if variants_list:
+            first = variants_list[0]
             try:
                 var_id = str(first.get("id"))
                 if base_price is not None and var_id:
@@ -401,11 +468,13 @@ def _configure_variants_for_product(product_gid: str, base_price: float | None, 
             except Exception:
                 pass
             try:
-                loc_id = _get_primary_location_id()
                 inv_item_id = str(first.get("inventory_item_id"))
                 if loc_id and inv_item_id and inv_item_id != "None":
-                    _set_inventory_tracked(inv_item_id, True)
-                    _set_inventory_level(loc_id, inv_item_id, 2)
+                    _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True)
+                    if quantity is not None:
+                        _set_inventory_level(loc_id, inv_item_id, int(quantity))
+                    else:
+                        _set_inventory_level(loc_id, inv_item_id, 2)
             except Exception:
                 pass
 
@@ -425,19 +494,39 @@ def publish_product_all_channels(product_gid: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def configure_variants_for_product(product_gid: str, base_price: float | None, sizes: list[str] | None, colors: list[str] | None) -> dict:
+def configure_variants_for_product(
+    product_gid: str,
+    base_price: float | None,
+    sizes: list[str] | None,
+    colors: list[str] | None,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+) -> dict:
     """Public wrapper to configure options/variants/pricing/inventory for a product.
 
     Returns a small summary describing what was attempted.
     """
     try:
-        _configure_variants_for_product(product_gid, base_price, sizes, colors)
+        _configure_variants_for_product(product_gid, base_price, sizes, colors, track_quantity, quantity, variants)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-def create_product_only(title: str, description_html: str | None = None, status: str = "ACTIVE", price: float | None = None, sizes: list[str] | None = None, colors: list[str] | None = None, product_type: str | None = None) -> dict:
+def create_product_only(
+    title: str,
+    description_html: str | None = None,
+    status: str = "ACTIVE",
+    price: float | None = None,
+    sizes: list[str] | None = None,
+    colors: list[str] | None = None,
+    product_type: str | None = None,
+    *,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+) -> dict:
     inp: dict = {
         "title": title or "Offer",
         "status": status,
@@ -451,7 +540,7 @@ def create_product_only(title: str, description_html: str | None = None, status:
     prod = data["productCreate"]["product"]
     # Configure variants and inventory via REST
     try:
-        _configure_variants_for_product(prod["id"], price, sizes, colors)
+        _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants)
     except Exception:
         pass
     # Publish to all sales channels (best-effort)
@@ -565,7 +654,10 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         base_price = payload.get("base_price")
         sizes = payload.get("sizes")
         colors = payload.get("colors")
-        _configure_variants_for_product(pdata["id"], base_price, sizes, colors)
+        track_quantity = payload.get("track_quantity")
+        quantity = payload.get("quantity")
+        variants = payload.get("variants")
+        _configure_variants_for_product(pdata["id"], base_price, sizes, colors, track_quantity, quantity, variants)
     except Exception:
         pass
 
