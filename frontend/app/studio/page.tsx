@@ -598,6 +598,18 @@ Return the JSON object with all required keys and the complete HTML in the html 
             if(handle){ setProductHandle(handle) }
           }
           if(!isPromotionMode && productGidRef.current){
+            // Ensure options/variants/inventory reflect current inputs when product is first created during save
+            try{
+              const rep = await shopifyConfigureVariants({
+                product_gid: productGidRef.current,
+                base_price: price===''? undefined : Number(price),
+                sizes,
+                colors,
+                track_quantity: trackQty,
+                quantity: quantity===''? undefined : Number(quantity)
+              })
+              if(rep && Array.isArray((rep as any).skipped)) setShopifyIssues((rep as any).skipped)
+            }catch{}
             const up = await shopifyUploadProductFiles({ product_gid: productGidRef.current, files, title: title||'Product', description: '' })
             const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
             const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
@@ -1750,6 +1762,20 @@ Return the JSON object with all required keys and the complete HTML in the html 
                           if(productGid && productNode){
                             updateNodeRun(productNode.id, { status:'success', output:{ product_gid: productGid } })
                           }
+                          // Immediately configure variants/options/inventory so product reflects UI inputs
+                          try{
+                            if(productGid){
+                              const rep2 = await shopifyConfigureVariants({
+                                product_gid: productGid,
+                                base_price: price===''? undefined : Number(price),
+                                sizes,
+                                colors,
+                                track_quantity: trackQty,
+                                quantity: quantity===''? undefined : Number(quantity)
+                              })
+                              if(rep2 && Array.isArray((rep2 as any).skipped)) setShopifyIssues((rep2 as any).skipped)
+                            }
+                          }catch{}
                         }catch{}
                       }
                       if(!isPromotionMode && productGid){
