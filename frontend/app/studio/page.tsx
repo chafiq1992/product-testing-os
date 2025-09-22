@@ -1608,6 +1608,21 @@ Return the JSON object with all required keys and the complete HTML in the html 
         <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
           <Card>
             <CardHeader className="pb-2">
+              <CardTitle className="text-base">LLM model</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div>
+                <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-4a">chatgpt-4a</option>
+                  <option value="gpt-5">gpt-5</option>
+                </select>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
                 <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='inputs'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('inputs')}>Inputs</button>
                 <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='prompts'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('prompts')}>Prompts</button>
@@ -1831,14 +1846,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 )}
               </div>
               )}
-              <div>
-                <div className="text-xs text-slate-500 mb-1">LLM model</div>
-                <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                  <option value="gpt-4.1">gpt-4.1</option>
-                  <option value="gpt-5">gpt-5</option>
-                </select>
-              </div>
+              
               {/* In promotion mode, the Generate Offers node is seeded by default; button removed */}
             </CardContent>
           </Card>

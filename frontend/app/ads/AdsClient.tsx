@@ -81,6 +81,7 @@ export default function AdsClient(){
   const [cta,setCta]=useState<string>('SHOP_NOW')
   const [budget,setBudget]=useState<number>(9)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
+  const [model,setModel]=useState<string>('gpt-4o-mini')
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [savedAudiences,setSavedAudiences]=useState<Array<{id:string,name:string,description?:string}>>([])
@@ -113,6 +114,8 @@ export default function AdsClient(){
         if(ui.pan && typeof ui.pan.x==='number' && typeof ui.pan.y==='number') setPan({x:ui.pan.x,y:ui.pan.y})
         if(typeof ui.selected_node==='string') setSelectedNodeId(ui.selected_node)
         if(typeof ui.active_left_tab==='string' && (ui.active_left_tab==='inputs' || ui.active_left_tab==='prompts')) setActiveLeftTab(ui.active_left_tab)
+        const mdl = (f as any)?.settings?.model
+        if(typeof mdl==='string') setModel(mdl)
       }catch{}
       try{
         const flow = (f as any)?.flow||{}
@@ -177,7 +180,7 @@ export default function AdsClient(){
       pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
       title: title||undefined,
     }
-    const settings:any = { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus }
+    const settings:any = { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus, model }
     if(countries) settings.countries = countries.split(',').map(c=>c.trim()).filter(Boolean)
     if(savedAudienceId) settings.saved_audience_id = savedAudienceId
     const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
@@ -218,7 +221,7 @@ export default function AdsClient(){
       const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
       const ui = { zoom, pan, selected_node: selectedNodeId, active_left_tab: activeLeftTab }
       const flow = { nodes, edges }
-      await updateDraft(internalFlowId, { product: product as any, ads, prompts, settings: { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus } as any, ui, flow })
+      await updateDraft(internalFlowId, { product: product as any, ads, prompts, settings: { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus, model } as any, ui, flow })
     }catch{}
   }
 
@@ -227,7 +230,7 @@ export default function AdsClient(){
     try{
       // Launch background automation so it keeps running if user leaves
       if(!automationLaunchedRef.current[fid]){
-        const resp = await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[1]||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt } })
+        const resp = await launchAdsAutomation({ flow_id: fid, landing_url: landingUrl||undefined, source_image: (sourceImage||candidateImages[1]||candidateImages[0]||undefined), num_angles: 3, prompts: { analyze_landing_prompt: analyzePrompt, angles_prompt: anglesPrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }, model })
         if(resp && !(resp as any).error){ automationLaunchedRef.current[fid] = true }
       }
     }catch{}
@@ -282,7 +285,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const landing = nodesRef.current.find(n=> n.type==='landing') || nodesRef.current[0]
@@ -412,6 +415,7 @@ export default function AdsClient(){
         if(typeof p?.settings?.saved_audience_id==='string') setSavedAudienceId(p.settings.saved_audience_id)
         if(Array.isArray(p?.settings?.countries)) setCountries((p.settings.countries||[]).join(','))
         if(typeof p?.settings?.advantage_plus==='boolean') setAdvantagePlus(!!p.settings.advantage_plus)
+        if(typeof p?.settings?.model==='string') setModel(p.settings.model)
         if(typeof p?.title==='string' && !title) setTitle(p.title)
         const imgs = Array.isArray(p?.uploaded_images)? p.uploaded_images : []
         if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
@@ -482,7 +486,7 @@ export default function AdsClient(){
     try{
       if(!landingUrl){ alert('Enter landing page URL first.'); return }
       setRunning(true)
-      const out = await llmAnalyzeLandingPage({ url: landingUrl, prompt: analyzePrompt })
+      const out = await llmAnalyzeLandingPage({ url: landingUrl, prompt: analyzePrompt, model })
       if((out as any)?.error){ throw new Error((out as any).error) }
       if(typeof (out as any)?.prompt_used==='string') setLastAnalyzePromptUsed((out as any).prompt_used)
       if(typeof (out as any)?.title==='string' && !(title&&title.trim())){ setTitle((out as any).title); setInputSources(s=>({...s, title:'analyze_landing'})) }
@@ -711,7 +715,7 @@ export default function AdsClient(){
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
       const formatted = a? `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : headlinesPrompt
-      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
+      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const a0 = arr[0] || {}
       const h_en = Array.isArray((a0 as any).headlines_en)? (a0 as any).headlines_en : (Array.isArray((a0 as any).headlines)? (a0 as any).headlines : [])
@@ -745,7 +749,7 @@ export default function AdsClient(){
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
       const formatted = a? `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : copiesPrompt
-      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
+      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const a0 = arr[0] || {}
       // Backward-compatible extraction of EN if only primaries exist
@@ -819,7 +823,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: headlinesPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: headlinesPrompt||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { headlines, primaries } = aggregateFromAngles(arr)
@@ -842,7 +846,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: 3, prompt: anglesPrompt||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
@@ -886,7 +890,7 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: copiesPrompt||undefined })
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: copiesPrompt||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { primaries } = aggregateFromAngles(arr)
@@ -974,7 +978,7 @@ export default function AdsClient(){
     }
     schedule()
     return ()=>{ if(timer) clearTimeout(timer) }
-  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt, nodes, edges, zoom, pan, selectedNodeId, activeLeftTab])
+  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt, nodes, edges, zoom, pan, selectedNodeId, activeLeftTab, model])
 
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
@@ -1021,6 +1025,21 @@ export default function AdsClient(){
 
       <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100vh-4rem)]">
         <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">LLM model</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div>
+                <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                  <option value="gpt-4o-mini">gpt-4o-mini</option>
+                  <option value="gpt-4.1">gpt-4.1</option>
+                  <option value="gpt-4a">chatgpt-4a</option>
+                  <option value="gpt-5">gpt-5</option>
+                </select>
+              </div>
+            </CardContent>
+          </Card>
           <Card>
             <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
