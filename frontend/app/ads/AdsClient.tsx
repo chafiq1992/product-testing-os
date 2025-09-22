@@ -729,7 +729,7 @@ export default function AdsClient(){
         inputSnapshot: { audience, benefits:benefitsArr, pain_points:painsArr, title, angle:a },
         inputSources: inputSources,
         outputSnapshot: { headlines_en: (h_en||[]).slice(0,8), headlines_fr:(h_fr||[]).slice(0,8), headlines_ar:(h_ar||[]).slice(0,8) },
-        logs: [] }}}): n))
+        logs: [] }}}}): n))
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -772,7 +772,7 @@ export default function AdsClient(){
         inputSnapshot: { audience, benefits:benefitsArr, pain_points:painsArr, title, angle:a },
         inputSources: inputSources,
         outputSnapshot: { primaries_en:(p_en||[]).slice(0,2), primaries_fr:(p_fr||[]).slice(0,2), primaries_ar:(p_ar||[]).slice(0,2) },
-        logs: [] }}}): n))
+        logs: [] }}}}): n))
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -805,7 +805,7 @@ export default function AdsClient(){
         inputSnapshot: { image_url: src, offers: offerText, angle:a },
         inputSources: inputSources,
         outputSnapshot: { images: imgs.slice(0,4) },
-        logs: [] }}}): n))
+        logs: [] }}}}): n))
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -861,7 +861,7 @@ export default function AdsClient(){
         inputSnapshot: product,
         inputSources: inputSources,
         outputSnapshot: { angles: arr.slice(0,3) },
-        logs: [] }}}): n))
+        logs: [] }}}}): n))
     }catch(e:any){ alert('Angles generation failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
