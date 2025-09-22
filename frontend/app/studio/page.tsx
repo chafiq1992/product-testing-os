@@ -90,7 +90,7 @@ export default function Page(){
   )
 }
 
-function StudioPage({ forcedMode }: { forcedMode?: string }){
+export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const params = useSearchParams()
   const mode = forcedMode || params.get('mode')
   const isPromotionMode = mode==='promotion'
@@ -211,8 +211,9 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
     if(!isPromotionMode) return
     setFlow(f=>{
       try{
-        const looksDefault = (f.nodes.length===2 && f.nodes[0].type==='trigger' && (f.nodes[1].data?.type==='generate_angles'))
-        if(looksDefault){ const next = defaultPromotionFlow(); flowRef.current = next; return next }
+        const hasPromotion = f.nodes.some(n=> String(n.data?.type||'').startsWith('promotion_'))
+        const looksGenericSeed = (f.nodes.length===2 && f.nodes[0].type==='trigger' && (f.nodes[1].data?.type==='title_desc'))
+        if(!hasPromotion && looksGenericSeed){ const next = defaultPromotionFlow(); flowRef.current = next; return next }
       }catch{}
       return f
     })
