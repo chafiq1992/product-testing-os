@@ -362,6 +362,46 @@ Return the JSON object with all required keys and the complete HTML in the html 
     }catch{ return urls }
   }
 
+  function getGalleryNode(): FlowNode | undefined {
+    try{
+      const snap = flowRef.current
+      return snap.nodes.find(x=> x.data?.type==='image_gallery')
+    }catch{ return undefined }
+  }
+
+  async function toShopifyUrls(urls:string[]): Promise<string[]>{
+    try{
+      const gal = getGalleryNode()
+      const product_gid: string|undefined = gal?.data?.product_gid
+      if(!product_gid){
+        // No product yet: fallback to ensuring HTTP URLs only
+        return await ensureHttpUrls(urls)
+      }
+      const dataUrls = (urls||[]).filter(u=> typeof u==='string' && u.startsWith('data:'))
+      const httpUrls = (urls||[]).filter(u=> typeof u==='string' && !u.startsWith('data:'))
+      let cdn: string[] = []
+      if(dataUrls.length>0){
+        const filesToUpload = await Promise.all(dataUrls.map((u,i)=> dataUrlToCompressedFile(u, `gen-${i+1}.jpg`, 1600, 1600, 850*1024)))
+        try{
+          const up = await shopifyUploadProductFiles({ product_gid, files: filesToUpload, title, description: '' })
+          const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
+          const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
+          cdn = [...cdn, ...(urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)]
+        }catch{}
+      }
+      if(httpUrls.length>0){
+        try{
+          const up2 = await shopifyUploadProductImages({ product_gid, image_urls: httpUrls, title, description: '' })
+          const urls2 = Array.isArray(up2?.urls)? up2.urls : []
+          const urlsFromImages2 = Array.isArray(up2?.images)? (up2.images.map((it:any)=> it?.src).filter(Boolean)) : []
+          cdn = [...cdn, ...(urls2.length>0? urls2 : urlsFromImages2)]
+        }catch{}
+      }
+      const uniq = Array.from(new Set(cdn)).slice(0, 20)
+      return uniq.length>0? uniq : await ensureHttpUrls(urls)
+    }catch{ return urls }
+  }
+
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
   )
@@ -934,12 +974,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
           variantsPayload = opts.variantOverride.map(v=> ({ name: v.name, description: v.description }))
         }
         resp = await geminiGenerateVariantSetWithDescriptions({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants, variant_descriptions: variantsPayload.length? variantsPayload : undefined })
-        // Persist data URLs to server uploads for durability
+        // Immediately upload generated images to Shopify and replace with CDN URLs
         try{
           const items = Array.isArray(resp?.items)? resp.items : []
           const images = items.map((it:any)=> it?.image).filter(Boolean)
-          const http = await ensureHttpUrls(images)
-          const updated = items.map((it:any, idx:number)=> ({ ...it, image: http[idx]||it.image }))
+          const cdn = await toShopifyUrls(images)
+          const updated = items.map((it:any, idx:number)=> ({ ...it, image: cdn[idx]||it.image }))
           resp = { ...(resp||{}), items: updated }
         }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
@@ -952,8 +992,8 @@ Return the JSON object with all required keys and the complete HTML in the html 
         try{
           const items = Array.isArray(resp?.items)? resp.items : []
           const images = items.map((it:any)=> it?.image).filter(Boolean)
-          const http = await ensureHttpUrls(images)
-          const updated = items.map((it:any, idx:number)=> ({ ...it, image: http[idx]||it.image }))
+          const cdn = await toShopifyUrls(images)
+          const updated = items.map((it:any, idx:number)=> ({ ...it, image: cdn[idx]||it.image }))
           resp = { ...(resp||{}), items: updated }
         }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
@@ -977,8 +1017,8 @@ Return the JSON object with all required keys and the complete HTML in the html 
         resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: numImages, neutral_background: (n.data?.neutral_background===false? false : true) })
         try{
           const images = Array.isArray(resp?.images)? resp.images : []
-          const http = await ensureHttpUrls(images)
-          resp = { ...(resp||{}), images: http }
+          const cdn = await toShopifyUrls(images)
+          resp = { ...(resp||{}), images: cdn }
         }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
         // Auto-run the Feature/Benefit node if present
