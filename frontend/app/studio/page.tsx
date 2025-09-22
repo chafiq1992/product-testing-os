@@ -674,6 +674,21 @@ Return the JSON object with all required keys and the complete HTML in the html 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[audience, benefits, pains, price, title, sizes, colors, model, advantagePlus, adsetBudget, countries, selectedSavedAudience, pan, zoom, selected, geminiAdPrompt, geminiVariantStylePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt])
 
+  // Keep Title & Description node's title in sync with left Title input when empty
+  useEffect(()=>{
+    try{
+      const snap = flowRef.current
+      const td = snap.nodes.find(x=> x.data?.type==='title_desc')
+      if(td){
+        const cur = (td.data?.value||{})
+        const curTitle = String(cur.title||'')
+        if(!curTitle && String(title||'')){
+          setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===td.id? ({...n, data:{...n.data, value:{ title: String(title||''), description: String((n.data?.value||{}).description||'') }}}) : n)}))
+        }
+      }
+    }catch{}
+  },[title])
+
   function angleApprove(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const out = n.run?.output
@@ -692,6 +707,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
   async function titleContinue(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const v = n.data?.value||{}
+    // Fallback to global Title input when node's value is empty; persist into node
+    const vTitle: string = (String(v.title||'').trim() || String(title||'').trim() || 'Offer')
+    const vDesc: string = String(v.description||'').trim()
+    setFlow(f=> ({
+      ...f,
+      nodes: f.nodes.map(x=> x.id===nodeId? ({...x, data:{...x.data, value:{ title: vTitle, description: vDesc }}}) : x)
+    }))
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
       if(isPromotionMode){
@@ -711,14 +733,14 @@ Return the JSON object with all required keys and the complete HTML in the html 
       let product_gid = productGidRef.current
       let product_handle_local = productHandle
       if(!product_gid){
-        const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: v.title, sizes, colors, target_category: targetCategory }, angle: undefined, title: v.title, description: v.description })
+        const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
         product_gid = productRes.product_gid || null
         product_handle_local = productRes.handle || undefined
         productGidRef.current = product_gid
         if(product_handle_local){ setProductHandle(product_handle_local) }
       }else{
         // If we already have a product, update its title to the new approved one
-        const newTitle = String(v.title||'').trim()
+        const newTitle = String(vTitle||'').trim()
         if(newTitle){ try{ await shopifyUpdateTitle({ product_gid, title: newTitle }) }catch{} }
       }
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
@@ -738,7 +760,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
       let shopifyImages:any[]|undefined
       let perImage:any[]|undefined
       if((files||[]).length>0 && product_gid){
-        const up = await shopifyUploadProductFiles({ product_gid, files, title: v.title, description: v.description })
+        const up = await shopifyUploadProductFiles({ product_gid, files, title: vTitle, description: vDesc })
         const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
         const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
         shopifyCdnUrls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
@@ -852,7 +874,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         // Position gallery below the last Gemini node if present, else below images
         const gemNodes = f.nodes.filter(x=> x.data?.type && String(x.data.type).startsWith('gemini_'))
         const base = gemNodes[gemNodes.length-1] || f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle: product_handle_local, title: v.title, description: v.description, landing_prompt: landingCopyPrompt, selected:{} })
+        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle: product_handle_local, title: vTitle, description: vDesc, landing_prompt: landingCopyPrompt, selected:{} })
         let edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gal.id, 'in')]
         // Connect all existing Gemini nodes to gallery for visual path
         gemNodes.forEach(gn=> { edges = [...edges, makeEdge(gn.id, 'out', gal.id, 'in')] })
@@ -1308,6 +1330,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
   async function executeAction(node:FlowNode, bag:any){
     const type = node.data.type
     await wait(300+Math.random()*300)
+    if(type==='title_desc'){
+      // Pass-through Title & Description node so Run doesn't error and inspector shows values
+      const v = (node.data?.value||{}) as { title?:string, description?:string }
+      const t = String(v.title||title||'').trim()
+      const d = String(v.description||'').trim()
+      return { title: t, description: d }
+    }
     if(type==='promotion_generate_offers'){
       const prompt = buildOffersPrompt()
       const formatted = String(prompt)
@@ -2364,6 +2393,14 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
       {/* Title & Description controls */}
       {node.data?.type==='title_desc' && (
         <div className="space-y-2">
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Title</div>
+            <Input value={String((node.data?.value||{}).title||'')} onChange={e=> onUpdateNodeData(node.id,{ value: { ...(node.data?.value||{}), title: e.target.value } })} />
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Description</div>
+            <Textarea rows={3} value={String((node.data?.value||{}).description||'')} onChange={e=> onUpdateNodeData(node.id,{ value: { ...(node.data?.value||{}), description: e.target.value } })} />
+          </div>
           <div>
             <div className="text-[11px] text-slate-500 mb-1">Landing page prompt</div>
             <Textarea rows={4} value={String(node.data?.landingPrompt||'')} onChange={e=> onUpdateNodeData(node.id,{ landingPrompt: e.target.value })} />
