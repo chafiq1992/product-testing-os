@@ -1196,9 +1196,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
       }
       // Deduplicate
       cdnUrls = Array.from(new Set(cdnUrls))
-      // Generate landing copy with selected images
+      // Build final image lists: prefer Shopify CDN, then original HTTP URLs; include data URLs only for page rendering (not for LLM)
+      const finalHttpImages: string[] = Array.from(new Set([ ...cdnUrls, ...httpUrls ])).slice(0, 10)
+      const finalAllImagesForPage: string[] = Array.from(new Set([ ...cdnUrls, ...httpUrls, ...dataUrls ])).slice(0, 10)
+      // Generate landing copy with selected images (HTTP/CDN only for reliability)
       const landingPromptFinal = String(n.data?.landing_prompt||landingCopyPrompt)
-      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: cdnUrls, prompt: landingPromptFinal, product_handle })
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: finalHttpImages, prompt: landingPromptFinal, product_handle })
       // Sanitize landing copy to ensure only provided CDN URLs are referenced
       const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
         const imgs = (urls||[]).filter(Boolean).slice(0,10)
@@ -1216,13 +1219,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
           assets_used: { ...(base?.assets_used||{}), hero: imgs[0]||null, feature_gallery: imgs }
         }
       }
-      const lc = sanitizeLandingCopy(lcRaw, cdnUrls, vTitle)
+      const lc = sanitizeLandingCopy(lcRaw, finalAllImagesForPage, vTitle)
       // Create landing page and also update product description server-side with full landing body
-      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: cdnUrls, product_gid })
+      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: finalAllImagesForPage, product_gid })
       // Append Create Landing and Meta nodes to show path
       let landingNodeId:string|undefined
       setFlow(f=>{
-        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing', prompt: n.data?.landing_prompt||landingCopyPrompt, image_urls: cdnUrls })
+        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing', prompt: n.data?.landing_prompt||landingCopyPrompt, image_urls: finalAllImagesForPage })
         const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
         const next = { nodes:[...f.nodes, ln], edges }
         flowRef.current = next
@@ -1235,7 +1238,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
           output:{
             url: page.page_url||null,
             prompt: n.data?.landing_prompt||landingCopyPrompt,
-            image_urls: cdnUrls,
+            image_urls: finalAllImagesForPage,
             landing_copy: lc,
             title: vTitle,
             description: vDesc,

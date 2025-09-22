@@ -293,8 +293,8 @@ def gen_landing_copy(payload: dict, angles: list, model: str | None = None, imag
     )
     # Prepare multimodal content if images are provided; limit to a few to avoid timeouts
     images = list(image_urls or [])
-    if len(images) > 4:
-        images = images[:4]
+    if len(images) > 10:
+        images = images[:10]
     if images:
         content = [{"type":"text","text": msg}] + [
             {"type":"image_url","image_url":{"url": u}} for u in images
