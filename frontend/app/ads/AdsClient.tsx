@@ -45,6 +45,16 @@ export default function AdsClient(){
   const [emotions,setEmotions]=useState<string>('')
   const [sourceImage,setSourceImage]=useState<string>(prefillImages[0]||'')
   const [candidateImages,setCandidateImages]=useState<string[]>(prefillImages)
+  // Track where each input came from (manual vs analyze_landing)
+  const [inputSources,setInputSources]=useState<Record<string,'manual'|'analyze_landing'>>({
+    audience:'manual',
+    benefits:'manual',
+    pains:'manual',
+    offers:'manual',
+    emotions:'manual',
+    title:'manual',
+    sourceImage:'manual',
+  })
 
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ''
   function toDisplayUrl(u: string){
@@ -350,6 +360,36 @@ export default function AdsClient(){
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
   const [analyzePrompt,setAnalyzePrompt]=useState<string>('You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3-5 marketing angles with headlines and primary texts. Respond only as compact JSON. Avoid prose.')
   const [lastAnalyzePromptUsed,setLastAnalyzePromptUsed]=useState<string>('')
+  // Prompt version histories per tool
+  type PromptVersion = { version:number, text:string, savedAt:number }
+  const [anglesPromptVersions,setAnglesPromptVersions]=useState<PromptVersion[]>([])
+  const [headlinesPromptVersions,setHeadlinesPromptVersions]=useState<PromptVersion[]>([])
+  const [copiesPromptVersions,setCopiesPromptVersions]=useState<PromptVersion[]>([])
+  const [geminiPromptVersions,setGeminiPromptVersions]=useState<PromptVersion[]>([])
+  function loadPromptVersions(){
+    try{ const v = localStorage.getItem('ptos_versions_angles'); if(v) setAnglesPromptVersions(JSON.parse(v)) }catch{}
+    try{ const v = localStorage.getItem('ptos_versions_headlines'); if(v) setHeadlinesPromptVersions(JSON.parse(v)) }catch{}
+    try{ const v = localStorage.getItem('ptos_versions_copies'); if(v) setCopiesPromptVersions(JSON.parse(v)) }catch{}
+    try{ const v = localStorage.getItem('ptos_versions_gemini'); if(v) setGeminiPromptVersions(JSON.parse(v)) }catch{}
+  }
+  useEffect(()=>{ loadPromptVersions() },[])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_versions_angles', JSON.stringify(anglesPromptVersions||[])) }catch{} },[anglesPromptVersions])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_versions_headlines', JSON.stringify(headlinesPromptVersions||[])) }catch{} },[headlinesPromptVersions])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_versions_copies', JSON.stringify(copiesPromptVersions||[])) }catch{} },[copiesPromptVersions])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_versions_gemini', JSON.stringify(geminiPromptVersions||[])) }catch{} },[geminiPromptVersions])
+  function savePromptVersion(kind:'angles'|'headlines'|'copies'|'gemini'){
+    const now = Date.now()
+    if(kind==='angles') setAnglesPromptVersions(prev=>[{version:(prev[0]?.version||0)+1, text:anglesPrompt, savedAt:now}, ...prev])
+    if(kind==='headlines') setHeadlinesPromptVersions(prev=>[{version:(prev[0]?.version||0)+1, text:headlinesPrompt, savedAt:now}, ...prev])
+    if(kind==='copies') setCopiesPromptVersions(prev=>[{version:(prev[0]?.version||0)+1, text:copiesPrompt, savedAt:now}, ...prev])
+    if(kind==='gemini') setGeminiPromptVersions(prev=>[{version:(prev[0]?.version||0)+1, text:geminiAdPrompt, savedAt:now}, ...prev])
+  }
+  function restorePromptVersion(kind:'angles'|'headlines'|'copies'|'gemini', v:number){
+    if(kind==='angles'){ const it=anglesPromptVersions.find(x=>x.version===v); if(it) setAnglesPrompt(it.text) }
+    if(kind==='headlines'){ const it=headlinesPromptVersions.find(x=>x.version===v); if(it) setHeadlinesPrompt(it.text) }
+    if(kind==='copies'){ const it=copiesPromptVersions.find(x=>x.version===v); if(it) setCopiesPrompt(it.text) }
+    if(kind==='gemini'){ const it=geminiPromptVersions.find(x=>x.version===v); if(it) setGeminiAdPrompt(it.text) }
+  }
 
   const [activeLeftTab,setActiveLeftTab]=useState<'inputs'|'prompts'>('inputs')
 
@@ -445,20 +485,20 @@ export default function AdsClient(){
       const out = await llmAnalyzeLandingPage({ url: landingUrl, prompt: analyzePrompt })
       if((out as any)?.error){ throw new Error((out as any).error) }
       if(typeof (out as any)?.prompt_used==='string') setLastAnalyzePromptUsed((out as any).prompt_used)
-      if(typeof (out as any)?.title==='string' && !(title&&title.trim())) setTitle((out as any).title)
+      if(typeof (out as any)?.title==='string' && !(title&&title.trim())){ setTitle((out as any).title); setInputSources(s=>({...s, title:'analyze_landing'})) }
       const arr = Array.isArray((out as any)?.benefits)? (out as any).benefits : []
-      if(arr.length>0) setBenefits(arr.join('\n'))
+      if(arr.length>0){ setBenefits(arr.join('\n')); setInputSources(s=>({...s, benefits:'analyze_landing'})) }
       const painsArr = Array.isArray((out as any)?.pain_points)? (out as any).pain_points : []
-      if(painsArr.length>0) setPains(painsArr.join('\n'))
+      if(painsArr.length>0){ setPains(painsArr.join('\n')); setInputSources(s=>({...s, pains:'analyze_landing'})) }
       const offersArr = Array.isArray((out as any)?.offers)? (out as any).offers : []
-      if(offersArr.length>0) setOffers(offersArr.join('\n'))
+      if(offersArr.length>0){ setOffers(offersArr.join('\n')); setInputSources(s=>({...s, offers:'analyze_landing'})) }
       const emosArr = Array.isArray((out as any)?.emotions)? (out as any).emotions : []
       if(emosArr.length>0 && !selectedPrimary) setSelectedPrimary(emosArr[0])
       const imgs = Array.isArray((out as any)?.images)? (out as any).images : []
       const filtered = (imgs||[]).filter((u:string)=> typeof u==='string' && u)
       const cands = filtered.slice(1)
       const final = cands.length>0? cands : filtered
-      if(final.length>0){ setCandidateImages(final.slice(0,10)); if(!sourceImage) setSourceImage(final[0]) }
+      if(final.length>0){ setCandidateImages(final.slice(0,10)); if(!sourceImage){ setSourceImage(final[0]); setInputSources(s=>({...s, sourceImage:'analyze_landing'})) } }
       const angs = Array.isArray((out as any)?.angles)? (out as any).angles : []
       if(angs.length>0){ setAngles(angs); setSelectedAngleIdx(0) }
       alert('Analyzed landing page with AI. Prefilled inputs.')
@@ -666,6 +706,7 @@ export default function AdsClient(){
       if(!genNode) return
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'running'}}): n))
       setRunning(true)
+      const startedAt = Date.now()
       const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
@@ -681,6 +722,14 @@ export default function AdsClient(){
       const angleId = String(genNode.data?.angleId||genNode.id)
       const metaExisting = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
       if(metaExisting){ connectUnique(outNode, metaExisting) }
+      const finishedAt = Date.now()
+      setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done', meta:{ ...(n.data?.meta||{}), lastRun:{
+        nodeType:'headlines', startedAt, finishedAt, durationMs: finishedAt-startedAt,
+        model: 'default (server)', promptUsed: formatted,
+        inputSnapshot: { audience, benefits:benefitsArr, pain_points:painsArr, title, angle:a },
+        inputSources: inputSources,
+        outputSnapshot: { headlines_en: (h_en||[]).slice(0,8), headlines_fr:(h_fr||[]).slice(0,8), headlines_ar:(h_ar||[]).slice(0,8) },
+        logs: [] }}}): n))
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done'}}): n))
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -692,6 +741,7 @@ export default function AdsClient(){
       if(!genNode) return
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'running'}}): n))
       setRunning(true)
+      const startedAt = Date.now()
       const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
@@ -716,6 +766,14 @@ export default function AdsClient(){
       const angleId = String(genNode.data?.angleId||genNode.id)
       const outputs = nodes.filter(n=> (n.type==='headlines_out' || n.type==='images_out') && n.data?.angleId===angleId)
       for(const o of outputs){ connectUnique(o, meta) }
+      const finishedAt = Date.now()
+      setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done', meta:{ ...(n.data?.meta||{}), lastRun:{
+        nodeType:'copies', startedAt, finishedAt, durationMs: finishedAt-startedAt,
+        model: 'default (server)', promptUsed: formatted,
+        inputSnapshot: { audience, benefits:benefitsArr, pain_points:painsArr, title, angle:a },
+        inputSources: inputSources,
+        outputSnapshot: { primaries_en:(p_en||[]).slice(0,2), primaries_fr:(p_fr||[]).slice(0,2), primaries_ar:(p_ar||[]).slice(0,2) },
+        logs: [] }}}): n))
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done'}}): n))
     }catch(e:any){ alert('Generate failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -729,6 +787,7 @@ export default function AdsClient(){
       const src = genNode.data?.from || sourceImage || candidateImages[1] || candidateImages[0]
       if(!src){ alert('Missing source image URL'); return }
       setRunning(true)
+      const startedAt = Date.now()
       const offerText = (offers||'').trim()
       const a = genNode.data?.angle
       const angleSuffix = a && a.name? ` Angle: ${String(a.name)}` : ''
@@ -741,6 +800,14 @@ export default function AdsClient(){
       const angleId = String(genNode.data?.angleId||genNode.id)
       const metaExisting = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
       if(metaExisting){ connectUnique(outNode, metaExisting) }
+      const finishedAt = Date.now()
+      setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done', meta:{ ...(n.data?.meta||{}), lastRun:{
+        nodeType:'gemini_images', startedAt, finishedAt, durationMs: finishedAt-startedAt,
+        model: 'Gemini (server default)', promptUsed: prompt,
+        inputSnapshot: { image_url: src, offers: offerText, angle:a },
+        inputSources: inputSources,
+        outputSnapshot: { images: imgs.slice(0,4) },
+        logs: [] }}}): n))
       setNodes(ns=> ns.map(n=> n.id===nodeId? ({...n, data:{...n.data, status:'done'}}): n))
     }catch(e:any){ alert('Image gen failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -771,6 +838,7 @@ export default function AdsClient(){
   async function generateAngles(){
     try{
       setRunning(true)
+      const startedAt = Date.now()
       const product = {
         audience,
         benefits: benefits.split('\n').map(s=>s.trim()).filter(Boolean),
@@ -789,6 +857,14 @@ export default function AdsClient(){
         const a = arr[i] || { name:`Angle ${i+1}` }
         createChildNode('angle_variant', gen, { angle: a, angleIndex: i }, i, count)
       }
+      const finishedAt = Date.now()
+      setNodes(ns=> ns.map(n=> n.id===gen.id? ({...n, data:{...n.data, meta:{ ...(n.data?.meta||{}), lastRun:{
+        nodeType:'angles', startedAt, finishedAt, durationMs: finishedAt-startedAt,
+        model: 'default (server)', promptUsed: anglesPrompt,
+        inputSnapshot: product,
+        inputSources: inputSources,
+        outputSnapshot: { angles: arr.slice(0,3) },
+        logs: [] }}}): n))
     }catch(e:any){ alert('Angles generation failed: '+ String(e?.message||e)) }
     finally{ setRunning(false) }
   }
@@ -957,6 +1033,104 @@ export default function AdsClient(){
             </CardHeader>
           </Card>
 
+          {selectedNode && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Selected Card Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              {selectedNode.type==='angle_variant' && (
+                <div className="space-y-2">
+                  <div className="text-slate-500">Angle</div>
+                  <div className="font-medium">{String(selectedNode.data?.angle?.name||'')}</div>
+                  <div>Big idea: {String(selectedNode.data?.angle?.big_idea||'')}</div>
+                  <div>Promise: {String(selectedNode.data?.angle?.promise||'')}</div>
+                  {Array.isArray(selectedNode.data?.angle?.headlines) && selectedNode.data.angle.headlines.length>0 && (
+                    <div>
+                      <div className="text-slate-500">Headlines</div>
+                      <ul className="list-disc pl-4">{selectedNode.data.angle.headlines.slice(0,8).map((h:string,i:number)=> (<li key={i}>{h}</li>))}</ul>
+                    </div>
+                  )}
+                  {(()=>{ const anglesNode = nodes.find(n=> n.type==='angles'); const run:any = (anglesNode?.data?.meta||{}).lastRun; return run? (
+                    <div className="space-y-1">
+                      <div className="text-slate-500">Generated by</div>
+                      <div>Model: {run.model||'default'}</div>
+                      <div>Duration: {run.durationMs} ms</div>
+                      <div>Prompt used:</div>
+                      <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{run.promptUsed||''}</pre>
+                    </div>
+                  ) : null })()}
+                </div>
+              )}
+
+              {selectedNode.type==='headlines' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Prompt</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{headlinesPrompt}</pre>
+                  {run && (
+                    <>
+                      <div className="text-slate-500">Last output</div>
+                      <ul className="list-disc pl-4">{(run.outputSnapshot?.headlines_en||[]).map((h:string,i:number)=> (<li key={i}>{h}</li>))}</ul>
+                    </>
+                  )}
+                </div>
+              )})()}
+
+              {selectedNode.type==='headlines_out' && (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Headlines</div>
+                  <ul className="list-disc pl-4">{(Array.isArray(selectedNode.data?.headlines_en)? selectedNode.data.headlines_en : (selectedNode.data?.headlines||[])).slice(0,12).map((h:string,i:number)=> (<li key={i}>{h}</li>))}</ul>
+                </div>
+              )}
+
+              {selectedNode.type==='copies' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Prompt</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{copiesPrompt}</pre>
+                  {run && (
+                    <>
+                      <div className="text-slate-500">Last output</div>
+                      <ul className="list-disc pl-4">{(run.outputSnapshot?.primaries_en||[]).map((p:string,i:number)=> (<li key={i}><span className="whitespace-pre-line">{p}</span></li>))}</ul>
+                    </>
+                  )}
+                </div>
+              )})()}
+
+              {selectedNode.type==='copies_out' && (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Primary texts</div>
+                  <ul className="list-disc pl-4">{(Array.isArray(selectedNode.data?.primaries_en)? selectedNode.data.primaries_en : (selectedNode.data?.primaries||[])).slice(0,12).map((p:string,i:number)=> (<li key={i}><span className="whitespace-pre-line">{p}</span></li>))}</ul>
+                </div>
+              )}
+
+              {selectedNode.type==='gemini_images' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Prompt</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{geminiAdPrompt}</pre>
+                  {run && (
+                    <>
+                      <div>Source image: {String(run.inputSnapshot?.image_url||'')}</div>
+                      <div className="text-slate-500">Last images</div>
+                      <div className="grid grid-cols-2 gap-2">{(run.outputSnapshot?.images||[]).map((u:string,i:number)=> (
+                        <img key={i} src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-20 object-cover rounded border" />
+                      ))}</div>
+                    </>
+                  )}
+                </div>
+              )})()}
+
+              {selectedNode.type==='images_out' && (
+                <div className="space-y-1">
+                  <div className="text-slate-500">Images</div>
+                  <div className="grid grid-cols-2 gap-2">{(selectedNode.data?.images||[]).slice(0,8).map((u:string,i:number)=> (
+                    <img key={i} src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-20 object-cover rounded border" />
+                  ))}</div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          )}
+
           {activeLeftTab==='inputs' && (
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileText className="w-4 h-4"/>Ad inputs</CardTitle></CardHeader>
@@ -975,32 +1149,32 @@ export default function AdsClient(){
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
-                <Input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Shoppers likely to buy this product" />
+                <Input value={audience} onChange={e=>{ setAudience(e.target.value); setInputSources(s=>({...s, audience:'manual'})) }} placeholder="Shoppers likely to buy this product" />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Product title</div>
-                <Input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Product title" />
+                <Input value={title} onChange={e=>{ setTitle(e.target.value); setInputSources(s=>({...s, title:'manual'})) }} placeholder="Product title" />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Key benefits (one per line)</div>
-                <Textarea rows={3} value={benefits} onChange={e=>setBenefits(e.target.value)} />
+                <Textarea rows={3} value={benefits} onChange={e=>{ setBenefits(e.target.value); setInputSources(s=>({...s, benefits:'manual'})) }} />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Pain points (one per line)</div>
-                <Textarea rows={3} value={pains} onChange={e=>setPains(e.target.value)} />
+                <Textarea rows={3} value={pains} onChange={e=>{ setPains(e.target.value); setInputSources(s=>({...s, pains:'manual'})) }} />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Offers / Promotions</div>
-                <Textarea rows={2} value={offers} onChange={e=>setOffers(e.target.value)} placeholder="E.g., -20%, Free shipping, Bundle" />
+                <Textarea rows={2} value={offers} onChange={e=>{ setOffers(e.target.value); setInputSources(s=>({...s, offers:'manual'})) }} placeholder="E.g., -20%, Free shipping, Bundle" />
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Emotional triggers</div>
-                <Textarea rows={2} value={emotions} onChange={e=>setEmotions(e.target.value)} placeholder="Trust, novelty, safety, time-saving" />
+                <Textarea rows={2} value={emotions} onChange={e=>{ setEmotions(e.target.value); setInputSources(s=>({...s, emotions:'manual'})) }} placeholder="Trust, novelty, safety, time-saving" />
               </div>
               <Separator/>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Source image for ad</div>
-                <Input value={sourceImage} onChange={e=>setSourceImage(e.target.value)} placeholder="https://cdn.shopify.com/...jpg" />
+                <Input value={sourceImage} onChange={e=>{ setSourceImage(e.target.value); setInputSources(s=>({...s, sourceImage:'manual'})) }} placeholder="https://cdn.shopify.com/...jpg" />
                 {candidateImages.length>0 && (
                   <div className="mt-2 grid grid-cols-3 gap-2">
                     {candidateImages.slice(0,9).map((u,i)=> (
@@ -1008,7 +1182,7 @@ export default function AdsClient(){
                         <button className="absolute top-1 right-1 z-10 bg-white/90 hover:bg-white text-slate-700 rounded px-1 text-xs" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); setCandidateImages(arr=> arr.filter((x,idx)=> idx!==i)); if(sourceImage===u) setSourceImage('') }}>
                           Delete
                         </button>
-                        <button className="block w-full" onClick={()=> setSourceImage(u)}>
+                        <button className="block w-full" onClick={()=> { setSourceImage(u); setInputSources(s=>({...s, sourceImage:'manual'})) }}>
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-20 object-cover" />
                         </button>
@@ -1208,7 +1382,7 @@ export default function AdsClient(){
                       </div>
                       <div>
                         <div className="text-xs text-slate-500 mb-1">Title</div>
-                        <Input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Product title" />
+                        <Input value={title} onChange={e=>{ setTitle(e.target.value); setInputSources(s=>({...s, title:'manual'})) }} placeholder="Product title" />
                       </div>
                       <div>
                         <div className="text-xs text-slate-500 mb-1">Images</div>
@@ -1217,7 +1391,7 @@ export default function AdsClient(){
                             {candidateImages.slice(0,9).map((u,i)=> (
                               <div key={i} className={`relative border rounded overflow-hidden ${u===sourceImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
                                 <button className="absolute top-1 right-1 z-10 bg-white/90 hover:bg-white text-slate-700 rounded px-1 text-xs" onClick={(e)=>{ e.preventDefault(); setCandidateImages(arr=> arr.filter((x,idx)=> idx!==i)); if(sourceImage===u) setSourceImage('') }}>Delete</button>
-                                <button className="block w-full" onClick={()=> setSourceImage(u)}>
+                                <button className="block w-full" onClick={()=> { setSourceImage(u); setInputSources(s=>({...s, sourceImage:'manual'})) }}>
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img src={u} alt={`img-${i}`} className="w-full h-16 object-cover" />
                                 </button>
@@ -1228,6 +1402,47 @@ export default function AdsClient(){
                       </div>
                     </div>
                   )}
+                  {selectedNode.type==='angles' && (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Angles prompt</div>
+                        <Textarea rows={4} value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+                        <div className="mt-1 flex items-center gap-2">
+                          <select className="text-xs border rounded px-2 py-1"
+                            onChange={e=>{ const v=Number(e.target.value); if(!Number.isNaN(v)) restorePromptVersion('angles', v) }}
+                            defaultValue="">
+                            <option value="">Versions…</option>
+                            {anglesPromptVersions.map(v=> (
+                              <option key={v.version} value={v.version}>{`v${v.version} – ${new Date(v.savedAt).toLocaleString()}`}</option>
+                            ))}
+                          </select>
+                          <Button size="sm" variant="outline" onClick={()=> savePromptVersion('angles')}>Save version</Button>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
+                      <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{anglesPrompt}</pre>
+                      <div className="text-[11px] text-slate-500">Inputs:</div>
+                      <ul className="list-disc pl-4 text-xs">
+                        <li>audience ({inputSources.audience}): {audience}</li>
+                        <li>benefits ({inputSources.benefits}): {benefits.split('\n').filter(Boolean).slice(0,4).join(', ')}</li>
+                        <li>pain_points ({inputSources.pains}): {pains.split('\n').filter(Boolean).slice(0,4).join(', ')}</li>
+                        <li>title ({inputSources.title}): {title}</li>
+                      </ul>
+                      {(()=>{ const run:any = (selectedNode.data?.meta||{}).lastRun; return run? (
+                        <div className="text-xs space-y-1">
+                          <div className="text-slate-500">Last run</div>
+                          <div>Model: {run.model||'default'}</div>
+                          <div>Duration: {run.durationMs} ms</div>
+                          <div>Started: {new Date(run.startedAt).toLocaleString()}</div>
+                          <div className="text-slate-500">Output angles:</div>
+                          <ul className="list-disc pl-4">
+                            {(run.outputSnapshot?.angles||[]).map((a:any,i:number)=> (<li key={i}>{String(a?.name||'Angle')}</li>))}
+                          </ul>
+                        </div>
+                      ) : null })()}
+                      <div><Button size="sm" variant="outline" onClick={generateAngles} disabled={running}>Generate angles</Button></div>
+                    </div>
+                  )}
                       {(selectedNode.type==='headlines' || selectedNode.type==='headlines_out') && (
                     <div className="space-y-3">
                       <div>
@@ -1236,11 +1451,32 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Uses variables: {audience?'{audience} ':''}{benefits?'{benefits} ':''}{pains?'{pain_points} ':''}{title?'{title} ':''}</div>
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(headlinesPrompt)}</pre>
-                            <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} }}>Make default</Button>
-                            </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <select className="text-xs border rounded px-2 py-1"
+                            onChange={e=>{ const v=Number(e.target.value); if(!Number.isNaN(v)) restorePromptVersion('headlines', v) }} defaultValue="">
+                            <option value="">Versions…</option>
+                            {headlinesPromptVersions.map(v=> (<option key={v.version} value={v.version}>{`v${v.version} – ${new Date(v.savedAt).toLocaleString()}`}</option>))}
+                          </select>
+                          <Button size="sm" variant="outline" onClick={()=> savePromptVersion('headlines')}>Save version</Button>
+                          <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_headlines_prompt', headlinesPrompt) }catch{} }}>Make default</Button>
+                        </div>
                       </div>
-                          <div><Button size="sm" variant="outline" onClick={()=> generateHeadlinesForNode(selectedNode.id)} disabled={running}>Generate headlines</Button></div>
+                      {(()=>{ const run:any = (selectedNode.data?.meta||{}).lastRun; return run? (
+                        <div className="text-xs space-y-1">
+                          <div className="text-slate-500">Last run</div>
+                          <div>Model: {run.model||'default'}</div>
+                          <div>Duration: {run.durationMs} ms</div>
+                          <div>Started: {new Date(run.startedAt).toLocaleString()}</div>
+                          <div className="text-slate-500">Inputs:</div>
+                          <ul className="list-disc pl-4">
+                            <li>audience ({inputSources.audience}): {audience}</li>
+                            <li>benefits ({inputSources.benefits}): {(run.inputSnapshot?.benefits||[]).join(', ')}</li>
+                            <li>pain_points ({inputSources.pains}): {(run.inputSnapshot?.pain_points||[]).join(', ')}</li>
+                            <li>title ({inputSources.title}): {run.inputSnapshot?.title||''}</li>
+                          </ul>
+                        </div>
+                      ) : null })()}
+                      <div><Button size="sm" variant="outline" onClick={()=> generateHeadlinesForNode(selectedNode.id)} disabled={running}>Generate headlines</Button></div>
                     </div>
                   )}
                       {(selectedNode.type==='copies' || selectedNode.type==='copies_out') && (
@@ -1251,11 +1487,25 @@ export default function AdsClient(){
                         <div className="text-[11px] text-slate-500 mt-1">Uses variables: {audience?'{audience} ':''}{benefits?'{benefits} ':''}{pains?'{pain_points} ':''}{title?'{title} ':''}</div>
                         <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                         <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(copiesPrompt)}</pre>
-                            <div className="mt-1 flex items-center gap-2">
-                              <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} }}>Make default</Button>
-                            </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <select className="text-xs border rounded px-2 py-1"
+                            onChange={e=>{ const v=Number(e.target.value); if(!Number.isNaN(v)) restorePromptVersion('copies', v) }} defaultValue="">
+                            <option value="">Versions…</option>
+                            {copiesPromptVersions.map(v=> (<option key={v.version} value={v.version}>{`v${v.version} – ${new Date(v.savedAt).toLocaleString()}`}</option>))}
+                          </select>
+                          <Button size="sm" variant="outline" onClick={()=> savePromptVersion('copies')}>Save version</Button>
+                          <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_copies_prompt', copiesPrompt) }catch{} }}>Make default</Button>
+                        </div>
                       </div>
-                          <div><Button size="sm" variant="outline" onClick={()=> generateCopiesForNode(selectedNode.id)} disabled={running}>Generate copies</Button></div>
+                      {(()=>{ const run:any = (selectedNode.data?.meta||{}).lastRun; return run? (
+                        <div className="text-xs space-y-1">
+                          <div className="text-slate-500">Last run</div>
+                          <div>Model: {run.model||'default'}</div>
+                          <div>Duration: {run.durationMs} ms</div>
+                          <div>Started: {new Date(run.startedAt).toLocaleString()}</div>
+                        </div>
+                      ) : null })()}
+                      <div><Button size="sm" variant="outline" onClick={()=> generateCopiesForNode(selectedNode.id)} disabled={running}>Generate copies</Button></div>
                     </div>
                   )}
                   {selectedNode.type==='headlines_out' && (
@@ -1349,7 +1599,24 @@ export default function AdsClient(){
                       <div className="text-[11px] text-slate-500">Uses variables: {offers?'{offers} ':''}and selected image.</div>
                       <div className="text-[11px] text-slate-500 mt-1">Preview:</div>
                       <pre className="text-[11px] bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-32 overflow-auto">{expandPrompt(geminiAdPrompt)}</pre>
-                      <div className="mt-1"><Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} }}>Make default</Button></div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <select className="text-xs border rounded px-2 py-1"
+                          onChange={e=>{ const v=Number(e.target.value); if(!Number.isNaN(v)) restorePromptVersion('gemini', v) }} defaultValue="">
+                          <option value="">Versions…</option>
+                          {geminiPromptVersions.map(v=> (<option key={v.version} value={v.version}>{`v${v.version} – ${new Date(v.savedAt).toLocaleString()}`}</option>))}
+                        </select>
+                        <Button size="sm" variant="outline" onClick={()=> savePromptVersion('gemini')}>Save version</Button>
+                        <Button size="sm" variant="outline" onClick={()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} }}>Make default</Button>
+                      </div>
+                      {(()=>{ const run:any = (selectedNode.data?.meta||{}).lastRun; return run? (
+                        <div className="text-xs space-y-1 mt-2">
+                          <div className="text-slate-500">Last run</div>
+                          <div>Model: {run.model||'default'}</div>
+                          <div>Duration: {run.durationMs} ms</div>
+                          <div>Started: {new Date(run.startedAt).toLocaleString()}</div>
+                          <div>Source image ({inputSources.sourceImage}): {String(run.inputSnapshot?.image_url||'')}</div>
+                        </div>
+                      ) : null })()}
                           <div className="flex items-center gap-2">
                             <Button size="sm" variant="outline" onClick={()=> selectedNode.type==='gemini_images'? runAdImagesForNode(selectedNode.id): runAdImages()} disabled={running}>Generate images (4)</Button>
                             {selectedNode.type==='images_out' && Array.isArray(selectedNode.data?.images) && selectedNode.data.images.length>0 && (

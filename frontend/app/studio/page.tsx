@@ -1159,7 +1159,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
     )
     let newId:string|undefined
     setFlow(f=>{
-      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 3 })
+      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 4 })
       const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
       const next = { nodes:[...f.nodes, child], edges }
       flowRef.current = next
