@@ -19,6 +19,23 @@ import TagsInput from '@/components/TagsInput'
 import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
+// Resolve displayable image URLs: avoid proxy for same-origin and trusted hosts
+const __API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+function toDisplayUrl(u: string){
+  try{
+    if(!u) return u
+    if(u.startsWith('/')) return u
+    if(!/^https?:\/\//i.test(u)) return u
+    const urlHost = new URL(u).host
+    let ownHost = ''
+    try{ ownHost = __API_BASE? new URL(__API_BASE).host : (typeof window!=='undefined'? window.location.host : '') }catch{}
+    const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
+    const isAllowed = allowed.some(d=> urlHost===d || urlHost.endsWith('.'+d))
+    const isOwn = !!ownHost && urlHost===ownHost
+    return (isAllowed || isOwn)? u : `${__API_BASE}/proxy/image?url=${encodeURIComponent(u)}`
+  }catch{ return u }
+}
+
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
   const base='rounded-xl font-semibold transition inline-flex items-center justify-center'
   const sz = size==='sm' ? 'text-sm px-3 py-1.5' : 'px-4 py-2'
@@ -1500,7 +1517,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 {analysisImageUrl && (
                   <div className="w-full bg-slate-50 border rounded-xl overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={((analysisImageUrl && /^https?:\/\//.test(analysisImageUrl))? ((process.env.NEXT_PUBLIC_API_BASE_URL||'') + '/proxy/image?url=' + encodeURIComponent(analysisImageUrl)) : analysisImageUrl)} alt="analysis" className="w-full h-40 object-cover" />
+                    <img src={toDisplayUrl(analysisImageUrl)} alt="analysis" className="w-full h-40 object-cover" />
                   </div>
                 )}
                 <div className="flex items-center gap-2">
@@ -1604,6 +1621,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
                             description: ''
                           })
                           productGid = (created as any)?.product_gid || productGid
+                          try{
+                            // Persist the created product so subsequent steps update instead of creating anew
+                            if(productGid){ productGidRef.current = productGid }
+                            const handle = (created as any)?.handle
+                            if(handle){ setProductHandle(handle) }
+                          }catch{}
                           // Optionally reflect creation in UI by seeding a create_product node output if the node exists
                           if(productGid && productNode){
                             updateNodeRun(productNode.id, { status:'success', output:{ product_gid: productGid } })
@@ -1652,7 +1675,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 }} />
                 {promotionImageUrl && (
                   <div className="mt-2 w-full bg-slate-50 border rounded-xl overflow-hidden">
-                    <img src={((promotionImageUrl && /^https?:\/\//.test(promotionImageUrl))? ((process.env.NEXT_PUBLIC_API_BASE_URL||'') + '/proxy/image?url=' + encodeURIComponent(promotionImageUrl)) : promotionImageUrl)} alt="promotion" className="w-full h-40 object-cover" />
+                    <img src={toDisplayUrl(promotionImageUrl)} alt="promotion" className="w-full h-40 object-cover" />
                   </div>
                 )}
               </div>
@@ -1857,7 +1880,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center" onClick={()=> setPreviewImage(null)}>
           <div className="max-w-5xl max-h-[90vh] p-2" onClick={(e)=> e.stopPropagation()}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={((previewImage && /^https?:\/\//.test(previewImage))? ((process.env.NEXT_PUBLIC_API_BASE_URL||'') + '/proxy/image?url=' + encodeURIComponent(previewImage)) : previewImage)} alt="preview" className="max-w-full max-h-[85vh] rounded shadow-lg" />
+            <img src={toDisplayUrl(previewImage)} alt="preview" className="max-w-full max-h-[85vh] rounded shadow-lg" />
             <div className="mt-2 flex justify-end gap-2">
               <a href={previewImage} download className="rounded-xl font-semibold px-3 py-1.5 bg-white text-slate-700">Download</a>
               <button className="rounded-xl font-semibold px-3 py-1.5 bg-blue-600 text-white" onClick={()=> setPreviewImage(null)}>Close</button>
@@ -2443,7 +2466,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                     </label>
                     <button className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); const a=document.createElement('a'); a.href=u; a.download='image'; document.body.appendChild(a); a.click(); a.remove(); }}>Download</button>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={((u && /^https?:\/\//.test(u))? ((process.env.NEXT_PUBLIC_API_BASE_URL||'') + '/proxy/image?url=' + encodeURIComponent(u)) : u)} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
+                    <img src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
                   </div>
                 ))}
               </div>
@@ -2467,7 +2490,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                   </label>
                   <button className="absolute top-1 right-1 bg-white/85 text-slate-700 rounded px-1 text-[10px]" onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); const a=document.createElement('a'); a.href=u; a.download='image'; document.body.appendChild(a); a.click(); a.remove(); }}>Download</button>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={((u && /^https?:\/\//.test(u))? ((process.env.NEXT_PUBLIC_API_BASE_URL||'') + '/proxy/image?url=' + encodeURIComponent(u)) : u)} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
+                  <img src={toDisplayUrl(u)} alt={`img-${i}`} className="w-full h-24 object-cover rounded" onClick={()=> onPreview(u)} />
                 </div>
               ))}
             </div>

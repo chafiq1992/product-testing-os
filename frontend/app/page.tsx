@@ -22,9 +22,11 @@ export default function HomePage(){
       if(!u) return u
       if(u.startsWith('/')) return u
       if(!/^https?:\/\//i.test(u)) return u
-      const host = new URL(u).hostname
+      const host = new URL(u).host
+      let ownHost = ''
+      try{ ownHost = apiBase? new URL(apiBase).host : (typeof window!=='undefined'? window.location.host : '') }catch{}
       const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
-      const ok = allowed.some(d=> host===d || host.endsWith('.'+d))
+      const ok = allowed.some(d=> host===d || host.endsWith('.'+d)) || (!!ownHost && host===ownHost)
       return ok? u : `${apiBase}/proxy/image?url=${encodeURIComponent(u)}`
     }catch{ return u }
   }
