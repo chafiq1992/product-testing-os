@@ -1334,25 +1334,6 @@ async def api_meta_draft_image_campaign(req: MetaDraftImageCampaignRequest):
 async def health():
     return {"ok": True}
 
-# Mount static files last so that API routes have precedence.
-# The directory is configurable via STATIC_DIR env var, otherwise we look for
-#   - /app/static (inside container)
-#   - <project-root>/frontend/out (local dev after `next export`)
-
-STATIC_DIR = os.getenv("STATIC_DIR", "/app/static")
-# fallback for local dev
-if STATIC_DIR == "/app/static":
-    alt = Path(__file__).resolve().parents[2] / "frontend" / "out"
-    if alt.exists():
-        STATIC_DIR = str(alt)
-
-if Path(STATIC_DIR).exists():
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
-else:
-    # Skip mounting when directory not found (e.g., during backend-only local dev)
-    print(f"[WARN] Static directory '{STATIC_DIR}' not found. Frontend assets will not be served.")
-
-
 # Utility endpoint to (re)configure Shopify product variants and inventory
 class ShopifyConfigureVariantsRequest(BaseModel):
     product_gid: str
@@ -1377,3 +1358,21 @@ async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
         [v.model_dump() for v in (req.variants or [])] if isinstance(req.variants, list) else None,
     )
     return res
+
+# Mount static files last so that API routes have precedence.
+# The directory is configurable via STATIC_DIR env var, otherwise we look for
+#   - /app/static (inside container)
+#   - <project-root>/frontend/out (local dev after `next export`)
+
+STATIC_DIR = os.getenv("STATIC_DIR", "/app/static")
+# fallback for local dev
+if STATIC_DIR == "/app/static":
+    alt = Path(__file__).resolve().parents[2] / "frontend" / "out"
+    if alt.exists():
+        STATIC_DIR = str(alt)
+
+if Path(STATIC_DIR).exists():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+else:
+    # Skip mounting when directory not found (e.g., during backend-only local dev)
+    print(f"[WARN] Static directory '{STATIC_DIR}' not found. Frontend assets will not be served.")
