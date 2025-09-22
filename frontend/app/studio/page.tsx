@@ -142,6 +142,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
         if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
         if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
         if(typeof (p.ui as any).promotion_free_image_url==='string') setPromotionImageUrl((p.ui as any).promotion_free_image_url)
+        if(typeof (p.ui as any).promotion_offer_text==='string') setPromotionOfferText((p.ui as any).promotion_offer_text)
         if(typeof (p.ui as any).active_left_tab==='string'){
           const v = String((p.ui as any).active_left_tab)
           if(v==='inputs' || v==='prompts') setActiveLeftTab(v)
@@ -233,6 +234,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [analysisImageUrl,setAnalysisImageUrl]=useState<string>('')
   const [promotionImageFiles,setPromotionImageFiles]=useState<File[]>([])
   const [promotionImageUrl,setPromotionImageUrl]=useState<string>('')
+  const [promotionOfferText,setPromotionOfferText]=useState<string>('')
   const [variantDescriptions,setVariantDescriptions]=useState<{name:string, description?:string}[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
   const [model,setModel]=useState<string>('gpt-4o-mini')
@@ -582,7 +584,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
       const galOut:any = (galNode?.run?.output||{})
       const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
       const galSelected = (galNode?.data?.selected||{})
-      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
+      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, promotion_offer_text: promotionOfferText, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
       let targeting: any = undefined
       if(!advantagePlus){
         if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -636,7 +638,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         const galOut:any = (galNode?.run?.output||{})
         const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
         const galSelected = (galNode?.data?.selected||{})
-        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
+        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, promotion_offer_text: promotionOfferText, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
         let targeting: any = undefined
         if(!advantagePlus){
           if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -1032,6 +1034,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
       + "Task: Based on PRODUCT_INFO, propose exactly three distinct promotional offers for a test campaign. Each offer must be concrete, believable, and easy to execute in e‑commerce. Include one value-led discount offer, one bundle/BOGO offer, and one urgency/limited-time add-on offer. If PRODUCT_INFO has a reference image, consider what visuals would best sell each offer.\n\n"
       + "Output: Return ONE valid json object only with fields: instructions (string, 3–6 sentences with marketing ideas and tips to make the offers succeed), offers[3] each with { name, headline, subheadline, mechanics, price_anchor, risk_reversal, visual_idea }.\n\n"
       + `PRODUCT_INFO: ${productJson}\n`
+      + (promotionOfferText? `PREFERRED_OFFER: ${promotionOfferText}\n` : '')
       + (refImage? `REFERENCE_IMAGE_URL: ${refImage}\n` : '')
       + "CRITICAL: No markdown. JSON only."
     )
@@ -1371,6 +1374,16 @@ Return the JSON object with all required keys and the complete HTML in the html 
           }))
         }
       }catch{}
+      // If user provided an explicit offer text, force it as the first offer
+      try{
+        const txt = String(promotionOfferText||'').trim()
+        if(txt){
+          const custom = { name: txt, headline: txt, subheadline: '', mechanics: txt, price_anchor: '', risk_reversal: '', visual_idea: '' }
+          // Deduplicate if model already returned the same headline/name
+          const filtered = (offers||[]).filter((o:any)=> String(o?.headline||o?.name||'').trim().toLowerCase() !== txt.toLowerCase())
+          offers = [custom, ...filtered]
+        }
+      }catch{}
       // Replace existing child offer nodes connected to this generator
       setFlow(f=>{
         const existingChildIds = f.nodes
@@ -1692,6 +1705,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
                   })()
                 }} />
               </div>
+              {isPromotionMode && (
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Offer (optional)</div>
+                <Input value={promotionOfferText} onChange={async (e)=>{ setPromotionOfferText(e.target.value); try{ await onSaveDraft() }catch{} }} placeholder="e.g., Buy 1, get 1 free" />
+              </div>
+              )}
               {isPromotionMode && (
               <div>
                 <div className="text-xs text-slate-500 mb-1">Second offer product image (promotion)</div>
