@@ -70,9 +70,10 @@ function makeEdge(from:string, fromPort:Port|string, to:string, toPort:Port|stri
 
 function defaultFlow(){
   const t = makeNode('trigger', 120, 140, { name:'New Product', topic:'new_product' })
-  const td = makeNode('action', 420, 120, { label:'Title & Description', type:'title_desc', value:{ title:'', description:'' }, landingPrompt:'Generate a concise landing page section (headline, subheadline, 2-3 bullets) based on the title and description.' })
-  const edges = [ makeEdge(t.id, 'out', td.id, 'in') ]
-  return { nodes:[t,td], edges }
+  // Start by generating angles first (2 by default). User picks one, then we proceed to Title & Description.
+  const ga = makeNode('action', 420, 120, { label:'Generate Angles', type:'generate_angles', numAngles: 2 })
+  const edges = [ makeEdge(t.id, 'out', ga.id, 'in') ]
+  return { nodes:[t,ga], edges }
 }
 
 function defaultPromotionFlow(){
@@ -237,7 +238,8 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [model,setModel]=useState<string>('gpt-4o-mini')
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
   const [anglesPrompt,setAnglesPrompt]=useState<string>(
-    "You are a senior CRO & direct-response strategist.\n"
+    "You are a marketing products strategist and market expert. Focus on how to sell this product and to whom; pinpoint the ideal audience and deliver exactly two high‑converting angles.\n"
+    + "You are a senior CRO & direct-response strategist.\n"
     + "Task: From the provided PRODUCT_INFO (and optional IMAGES), identify the dominant buying driver and primary friction, then generate 2–5 distinct ad angles that are most likely to convert. Prioritize angles with clear proof, risk reversal, and a concrete, specific promise. Use only facts present in PRODUCT_INFO; if you must infer, mark it [ASSUMPTION].\n\n"
     + "Method:\n"
     + "1) Diagnose Fit (audience, pains, outcomes, offer, price, guarantees, constraints/region/language).\n"
@@ -262,8 +264,9 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
     + "Variables available: {title}, {audience}, {benefits}, {pain_points}."
   )
   const [titleDescPrompt,setTitleDescPrompt]=useState<string>(
-    "You are a CRO copywriter. From the given angle, write 5 HIGH-CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra-short option ≤30 characters. Include the primary keyword, 1 concrete benefit/outcome, and a unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
-    + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand-safe, concrete, and benefit-led."
+    "You are a marketing products strategist, market expert, and CRO copywriter. Optimize for surfacing in chat assistants (ChatGPT, Gemini, Perplexity): clear, specific, brand‑safe, non‑clickbait.\n"
+    + "From the given ANGLE and PRODUCT_INFO, write 5 HIGH‑CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra‑short option ≤30 characters. Include the primary keyword, one concrete benefit/outcome, and one unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
+    + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand‑safe, concrete, and benefit‑led."
   )
   const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a CRO specialist and landing‑page copy engineer.
 
@@ -1405,7 +1408,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
         let nodes = f.nodes.filter(n=> !existingChildIds.includes(n.id))
         let edges = f.edges.filter(e=> e.from!==node.id && !existingChildIds.includes(e.to))
         ;(res.angles||[]).forEach((a:any, i:number)=>{
-          const child = makeNode('action', node.x+300, node.y + i*160, { label:`Angle ${i+1}`, type:'angle_variant', angle:a, prompt:"Generate a concise product title (<=30 chars) and a 1-2 sentence description from this angle." })
+          const child = makeNode('action', node.x+300, node.y + i*160, { label:`Angle ${i+1}`, type:'angle_variant', angle:a })
           nodes = [...nodes, child]
           edges = [...edges, makeEdge(node.id, 'out', child.id, 'in')]
         })
