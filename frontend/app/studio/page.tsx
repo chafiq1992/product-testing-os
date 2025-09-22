@@ -97,7 +97,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const isPromotionMode = mode==='promotion'
   const testParam = params.get('id')
 
-  const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(defaultFlow())
+  const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(isPromotionMode? defaultPromotionFlow() : defaultFlow())
   const [selected,setSelected]=useState<string|null>(null)
   const [zoom,setZoom]=useState(1)
   const [pan,setPan]=useState<{x:number,y:number}>({x:0,y:0})
