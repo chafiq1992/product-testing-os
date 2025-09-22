@@ -230,6 +230,9 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
   const [sizes,setSizes]=useState<string[]>([])
   const [colors,setColors]=useState<string[]>([])
+  const [trackQty,setTrackQty]=useState<boolean>(true)
+  const [quantity,setQuantity]=useState<number|''>('')
+  const [shopifyIssues,setShopifyIssues]=useState<Array<{field:string,reason:string}>|null>(null)
   const [files,setFiles]=useState<File[]>([])
   const [analysisImageUrl,setAnalysisImageUrl]=useState<string>('')
   const [promotionImageFiles,setPromotionImageFiles]=useState<File[]>([])
@@ -589,7 +592,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
           if(!isPromotionMode && !productGidRef.current){
             const vTitle = title || 'Product'
             const vDesc = ''
-            const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
+            const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) }, angle: undefined, title: vTitle, description: vDesc })
             productGidRef.current = (prod as any)?.product_gid
             const handle = (prod as any)?.handle
             if(handle){ setProductHandle(handle) }
@@ -779,11 +782,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
       let product_gid = productGidRef.current
       let product_handle_local = productHandle
       if(!product_gid){
-        const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc })
+        const productRes = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) }, angle: undefined, title: vTitle, description: vDesc })
         product_gid = productRes.product_gid || null
         product_handle_local = productRes.handle || undefined
         productGidRef.current = product_gid
         if(product_handle_local){ setProductHandle(product_handle_local) }
+        try{ const rep = (productRes as any)?.report; if(rep && Array.isArray(rep.skipped)) setShopifyIssues(rep.skipped) }catch{}
       }else{
         // If we already have a product, update its title to the new approved one
         const newTitle = String(vTitle||'').trim()
@@ -791,7 +795,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
       }
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
       // Ensure variants/options/pricing/inventory are configured
-      try{ if(product_gid){ await shopifyConfigureVariants({ product_gid: product_gid, base_price: price===''?undefined:Number(price), sizes, colors }) } }catch{}
+      try{
+        if(product_gid){
+          const rep = await shopifyConfigureVariants({ product_gid: product_gid, base_price: price===''?undefined:Number(price), sizes, colors, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) })
+          if(rep && Array.isArray((rep as any).skipped)) setShopifyIssues((rep as any).skipped)
+        }
+      }catch{}
 
       let imagesNodeId:string|undefined
       setFlow(f=>{
@@ -1667,6 +1676,16 @@ Return the JSON object with all required keys and the complete HTML in the html 
                 <div>
                   <div className="text-xs text-slate-500 mb-1">Base price (MAD)</div>
                   <Input type="number" value={price} onChange={e=> setPrice(e.target.value===''? '': Number(e.target.value))} placeholder="189" />
+                  <div className="flex items-center gap-3 mt-2">
+                    <label className="flex items-center gap-2 text-xs text-slate-600">
+                      <input type="checkbox" checked={trackQty} onChange={e=> setTrackQty(e.target.checked)} />
+                      Track inventory
+                    </label>
+                    <div className="flex items-center gap-2 text-xs text-slate-600">
+                      <span>Initial quantity</span>
+                      <Input type="number" className="w-24" value={quantity} onChange={e=> setQuantity(e.target.value===''? '' : Number(e.target.value))} placeholder="10" />
+                    </div>
+                  </div>
                 </div>
               </div>
               {/* Budget moved to Meta Ads card */}
@@ -1680,6 +1699,16 @@ Return the JSON object with all required keys and the complete HTML in the html 
                   <TagsInput value={colors} onChange={setColors} placeholder="Add color & Enter (e.g., Red, Blue)" />
                 </div>
               </div>
+              {Array.isArray(shopifyIssues) && shopifyIssues.length>0 && (
+                <div className="mt-2 p-2 rounded border border-amber-300 bg-amber-50 text-amber-800 text-xs">
+                  <div className="font-medium mb-1">Not applied to Shopify:</div>
+                  <ul className="list-disc pl-5">
+                    {shopifyIssues.map((it, i)=> (
+                      <li key={i}><span className="font-medium">{it.field}</span>: {it.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div>
                 <div className="text-xs text-slate-500 mb-1">Key benefits</div>
                 <TagsInput value={benefits} onChange={setBenefits} placeholder="Add benefit & Enter" />
@@ -1704,12 +1733,13 @@ Return the JSON object with all required keys and the complete HTML in the html 
                       if(!isPromotionMode && !productGid){
                         try{
                           const created = await shopifyCreateProductFromTitleDesc({
-                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory },
+                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) },
                             angle: undefined,
                             title: ((title||'').trim()||'Offer'),
                             description: ''
                           })
                           productGid = (created as any)?.product_gid || productGid
+                          try{ const rep = (created as any)?.report; if(rep && Array.isArray(rep.skipped)){ setShopifyIssues(rep.skipped) } }catch{}
                           try{
                             // Persist the created product so subsequent steps update instead of creating anew
                             if(productGid){ productGidRef.current = productGid }
