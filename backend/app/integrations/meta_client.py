@@ -9,8 +9,7 @@ PAGE_ID = os.getenv("META_PAGE_ID", "")
 PIXEL_ID = os.getenv("META_PIXEL_ID", "")
 OBJECTIVE = os.getenv("META_OBJECTIVE", "TRAFFIC").upper()  # TRAFFIC (default) or CONVERSIONS/SALES
 COUNTRIES = [c.strip().upper() for c in (os.getenv("META_COUNTRIES", "US").split(",")) if c.strip()]
-API_VERSION = os.getenv("META_API_VERSION", "v23.0")
-BASE = f"https://graph.facebook.com/{API_VERSION}"
+API_VERSION = os.getenv("META_API_VERSION", "v20.0")
 
 
 def _redact_url(url: str) -> str:
