@@ -343,8 +343,8 @@ export default function AdsClient(){
   },[internalFlowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
-  const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines": ["...", "..."] } ] }'
-  const recommendedCopiesPrompt = 'You are a senior direct‑response copywriter. Using PRODUCT_INFO and ANGLE, write 2 high‑converting Meta primary texts. Rules: variant A ≤60 chars; variant B ≤120 chars; use specificity, social proof if available, avoid emojis and spammy claims.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "primaries": ["...short...", "...medium..."] } ] }'
+  const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta in English, and also provide faithful French and Arabic translations. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines_en": ["..."], "headlines_fr": ["..."], "headlines_ar": ["..."] } ] }'
+  const recommendedCopiesPrompt = 'You are a senior direct‑response copywriter. Using PRODUCT_INFO and ANGLE, write 2 persuasive Meta primary texts that are multi‑line, include tasteful and relevant emojis, and maximize conversion with clear value, social proof (if implied), and a strong CTA. Each copy can be 2–4 short lines with line breaks. Provide English versions and faithful French and Arabic translations.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "primaries_en": ["...multi\nline\nA...", "...multi\nline\nB..."], "primaries_fr": ["...A FR...", "...B FR..."], "primaries_ar": ["...A AR...", "...B AR..."] } ] }'
   const [headlinesPrompt,setHeadlinesPrompt]=useState<string>(recommendedHeadlinesPrompt)
   const [copiesPrompt,setCopiesPrompt]=useState<string>(recommendedCopiesPrompt)
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
@@ -672,8 +672,11 @@ export default function AdsClient(){
       const formatted = a? `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : headlinesPrompt
       const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
-      const agg = aggregateFromAngles(arr)
-      const outNode = createChildNode('headlines_out', genNode, { headlines: (agg.headlines||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const a0 = arr[0] || {}
+      const h_en = Array.isArray((a0 as any).headlines_en)? (a0 as any).headlines_en : (Array.isArray((a0 as any).headlines)? (a0 as any).headlines : [])
+      const h_fr = Array.isArray((a0 as any).headlines_fr)? (a0 as any).headlines_fr : []
+      const h_ar = Array.isArray((a0 as any).headlines_ar)? (a0 as any).headlines_ar : []
+      const outNode = createChildNode('headlines_out', genNode, { headlines_en: (h_en||[]).slice(0,8), headlines_fr: (h_fr||[]).slice(0,8), headlines_ar: (h_ar||[]).slice(0,8), headlines: (h_en||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       // If a Review node already exists for this angle, connect this output to it
       const angleId = String(genNode.data?.angleId||genNode.id)
       const metaExisting = nodes.find(n=> n.type==='meta_ad' && n.data?.angleId===angleId)
@@ -695,8 +698,18 @@ export default function AdsClient(){
       const formatted = a? `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : copiesPrompt
       const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
-      const agg = aggregateFromAngles(arr)
-      const outNode = createChildNode('copies_out', genNode, { primaries: (agg.primaries||[]).slice(0,2), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
+      const a0 = arr[0] || {}
+      // Backward-compatible extraction of EN if only primaries exist
+      let basePrimaries: string[] = []
+      try{
+        const prim = (a0 as any).primaries
+        if(Array.isArray(prim)) basePrimaries = prim
+        else if(prim && typeof prim==='object') basePrimaries = [prim.short, prim.medium, prim.long].filter((x:any)=> typeof x==='string' && x)
+      }catch{}
+      const p_en = Array.isArray((a0 as any).primaries_en)? (a0 as any).primaries_en : basePrimaries
+      const p_fr = Array.isArray((a0 as any).primaries_fr)? (a0 as any).primaries_fr : []
+      const p_ar = Array.isArray((a0 as any).primaries_ar)? (a0 as any).primaries_ar : []
+      const outNode = createChildNode('copies_out', genNode, { primaries_en: (p_en||[]).slice(0,2), primaries_fr: (p_fr||[]).slice(0,2), primaries_ar: (p_ar||[]).slice(0,2), primaries: (p_en||[]).slice(0,2), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       // Create Review node now and connect all existing outputs
       const meta = getOrCreateReviewForAngle(String(genNode.data?.angleId||genNode.id), genNode)
       connectUnique(outNode, meta)
@@ -1247,28 +1260,86 @@ export default function AdsClient(){
                   )}
                   {selectedNode.type==='headlines_out' && (
                     <div className="space-y-2 text-xs">
-                      <div className="text-slate-500">Headlines</div>
+                      <div className="text-slate-500">Headlines (EN)</div>
                       <div className="grid grid-cols-1 gap-1">
-                        {(Array.isArray(selectedNode.data?.headlines)? selectedNode.data.headlines : []).slice(0,12).map((h:string,i:number)=> (
+                        {(
+                          Array.isArray(selectedNode.data?.headlines_en)? selectedNode.data.headlines_en
+                          : (Array.isArray(selectedNode.data?.headlines)? selectedNode.data.headlines : [])
+                        ).slice(0,12).map((h:string,i:number)=> (
                           <label key={i} className="text-sm flex items-center gap-2">
                             <input type="checkbox" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
                             <span>{h}</span>
                           </label>
                         ))}
                       </div>
+                      {Array.isArray(selectedNode.data?.headlines_fr) && selectedNode.data.headlines_fr.length>0 && (
+                        <>
+                          <div className="text-slate-500 mt-2">Titres (FR)</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {selectedNode.data.headlines_fr.slice(0,12).map((h:string,i:number)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="checkbox" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                                <span>{h}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {Array.isArray(selectedNode.data?.headlines_ar) && selectedNode.data.headlines_ar.length>0 && (
+                        <>
+                          <div className="text-slate-500 mt-2">العناوين (AR)</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {selectedNode.data.headlines_ar.slice(0,12).map((h:string,i:number)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="checkbox" checked={selectedHeadline===h} onChange={()=> setSelectedHeadline(h)} />
+                                <span>{h}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                   {selectedNode.type==='copies_out' && (
                     <div className="space-y-2 text-xs">
-                      <div className="text-slate-500">Primary texts</div>
+                      <div className="text-slate-500">Primary texts (EN)</div>
                       <div className="grid grid-cols-1 gap-1">
-                        {(Array.isArray(selectedNode.data?.primaries)? selectedNode.data.primaries : []).slice(0,12).map((p:string,i:number)=> (
+                        {(
+                          Array.isArray(selectedNode.data?.primaries_en)? selectedNode.data.primaries_en
+                          : (Array.isArray(selectedNode.data?.primaries)? selectedNode.data.primaries : [])
+                        ).slice(0,12).map((p:string,i:number)=> (
                           <label key={i} className="text-sm flex items-center gap-2">
                             <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
-                            <span>{p}</span>
+                            <span className="whitespace-pre-line">{p}</span>
                           </label>
                         ))}
                       </div>
+                      {Array.isArray(selectedNode.data?.primaries_fr) && selectedNode.data.primaries_fr.length>0 && (
+                        <>
+                          <div className="text-slate-500 mt-2">Textes (FR)</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {selectedNode.data.primaries_fr.slice(0,12).map((p:string,i:number)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                                <span className="whitespace-pre-line">{p}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {Array.isArray(selectedNode.data?.primaries_ar) && selectedNode.data.primaries_ar.length>0 && (
+                        <>
+                          <div className="text-slate-500 mt-2">النصوص (AR)</div>
+                          <div className="grid grid-cols-1 gap-1">
+                            {selectedNode.data.primaries_ar.slice(0,12).map((p:string,i:number)=> (
+                              <label key={i} className="text-sm flex items-center gap-2">
+                                <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
+                                <span className="whitespace-pre-line">{p}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                       {(selectedNode.type==='gemini_images' || selectedNode.type==='images_out') && (
@@ -1314,8 +1385,20 @@ export default function AdsClient(){
                       {(()=>{
                         const metaId = selectedNode.id
                         const incoming = edges.filter(e=> e.to===metaId).map(e=> nodes.find(n=> n.id===e.from)).filter(Boolean) as FlowNode[]
-                        const heads = incoming.filter(n=> n.type==='headlines_out').flatMap(n=> Array.isArray(n.data?.headlines)? n.data.headlines : [])
-                        const prims = incoming.filter(n=> n.type==='copies_out').flatMap(n=> Array.isArray(n.data?.primaries)? n.data.primaries : [])
+                        const heads = incoming.filter(n=> n.type==='headlines_out').flatMap(n=> {
+                          const d:any = n.data||{}
+                          const en = Array.isArray(d.headlines_en)? d.headlines_en : (Array.isArray(d.headlines)? d.headlines : [])
+                          const fr = Array.isArray(d.headlines_fr)? d.headlines_fr : []
+                          const ar = Array.isArray(d.headlines_ar)? d.headlines_ar : []
+                          return [...en, ...fr, ...ar]
+                        })
+                        const prims = incoming.filter(n=> n.type==='copies_out').flatMap(n=> {
+                          const d:any = n.data||{}
+                          const en = Array.isArray(d.primaries_en)? d.primaries_en : (Array.isArray(d.primaries)? d.primaries : [])
+                          const fr = Array.isArray(d.primaries_fr)? d.primaries_fr : []
+                          const ar = Array.isArray(d.primaries_ar)? d.primaries_ar : []
+                          return [...en, ...fr, ...ar]
+                        })
                         const imgs = incoming.filter(n=> n.type==='images_out').flatMap(n=> Array.isArray(n.data?.images)? n.data.images : [])
                         return (
                           <div className="space-y-3 text-xs">
@@ -1336,7 +1419,7 @@ export default function AdsClient(){
                                 {prims.slice(0,24).map((p:string,i:number)=> (
                                   <label key={i} className="text-sm flex items-center gap-2">
                                     <input type="checkbox" checked={selectedPrimary===p} onChange={()=> setSelectedPrimary(p)} />
-                                    <span>{p}</span>
+                                    <span className="whitespace-pre-line">{p}</span>
                                   </label>
                                 ))}
                               </div>
@@ -1344,7 +1427,10 @@ export default function AdsClient(){
                             <div>
                               <div className="text-slate-500 mb-1">Select image</div>
                               <div className="grid grid-cols-2 gap-2 max-h-48 overflow-auto">
-                                {imgs.slice(0,24).map((u:string,i:number)=> (
+                                {Array.from(new Set([...
+                                  imgs.slice(0,24),
+                                  ...candidateImages.slice(0,24)
+                                ])).map((u:string,i:number)=> (
                                   <button key={i} className={`border rounded overflow-hidden ${u===selectedImage? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`} onClick={()=> setSelectedImage(u)}>
                                   {/* eslint-disable-next-line @next/next/no-img-element */}
                                   <img src={toDisplayUrl(u)} alt={`ad-${i}`} className="w-full h-20 object-cover" />
