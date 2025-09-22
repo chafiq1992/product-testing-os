@@ -202,13 +202,13 @@ export async function shopifyUploadProductImages(payload:{
 }
 
 export async function shopifyCreateProductFromTitleDesc(payload:{
-  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[], target_category?:string },
+  product:{ audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, sizes?:string[], colors?:string[], target_category?:string, track_quantity?: boolean, quantity?: number, variants?: any[] },
   angle?: any,
   title: string,
   description?: string
 }){
   const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, payload)
-  return data as { product_gid?: string, handle?: string }
+  return data as { product_gid?: string, handle?: string, report?: { ok?: boolean, options_updated?:{size_count:number,color_count:number}, variants_created?: number, inventory_items_updated?: number, skipped?: {field:string, reason:string}[], errors?: string[] }, error?: string }
 }
 
 export async function shopifyUpdateDescription(payload:{ product_gid:string, description_html:string }){
@@ -231,9 +231,9 @@ export async function shopifyCreatePageFromCopy(payload:{
   return data as { page_url?: string }
 }
 
-export async function shopifyConfigureVariants(payload:{ product_gid:string, base_price?:number, sizes?:string[], colors?:string[] }){
+export async function shopifyConfigureVariants(payload:{ product_gid:string, base_price?:number, sizes?:string[], colors?:string[], track_quantity?: boolean, quantity?: number, variants?: any[] }){
   const {data} = await axios.post(`${base}/api/shopify/configure_variants`, payload)
-  return data as { ok?: boolean, error?: string }
+  return data as { ok?: boolean, options_updated?:{size_count:number,color_count:number}, variants_created?: number, inventory_items_updated?: number, skipped?: {field:string, reason:string}[], errors?: string[] }
 }
 
 export async function shopifyUploadProductFiles(payload:{

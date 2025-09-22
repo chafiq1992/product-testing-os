@@ -1029,23 +1029,28 @@ class ShopifyProductCreateRequest(BaseModel):
 
 @app.post("/api/shopify/product_create_from_title_desc")
 async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRequest):
-    payload = req.product.model_dump()
-    if req.description:
-        payload["description"] = req.description
-    # Create product with variants/options/pricing when provided. Description is set later via update.
-    product = create_product_only(
-        req.title,
-        description_html=None,
-        status="ACTIVE",
-        price=payload.get("base_price"),
-        sizes=payload.get("sizes") or None,
-        colors=payload.get("colors") or None,
-        product_type=payload.get("product_type") or None,
-        track_quantity=payload.get("track_quantity"),
-        quantity=payload.get("quantity"),
-        variants=payload.get("variants"),
-    )
-    return {"product_gid": product.get("id"), "handle": product.get("handle")}
+    try:
+        payload = req.product.model_dump()
+        if req.description:
+            payload["description"] = req.description
+        # Create product with variants/options/pricing when provided. Description is set later via update.
+        result = create_product_only(
+            req.title,
+            description_html=None,
+            status="ACTIVE",
+            price=payload.get("base_price"),
+            sizes=payload.get("sizes") or None,
+            colors=payload.get("colors") or None,
+            product_type=payload.get("product_type") or None,
+            track_quantity=payload.get("track_quantity"),
+            quantity=payload.get("quantity"),
+            variants=payload.get("variants"),
+        )
+        prod = (result or {}).get("product") or {}
+        report = (result or {}).get("report") or {"ok": True}
+        return {"product_gid": prod.get("id"), "handle": prod.get("handle"), "report": report}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 class ShopifyUpdateDescriptionRequest(BaseModel):

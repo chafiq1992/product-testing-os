@@ -372,10 +372,20 @@ def _configure_variants_for_product(
     track_quantity: bool | None = None,
     quantity: int | None = None,
     variants: list[dict] | None = None,
-) -> None:
+) -> dict:
     numeric_id = _numeric_product_id_from_gid(product_gid)
+    report: dict = {
+        "ok": True,
+        "options_updated": {"size_count": 0, "color_count": 0},
+        "variants_created": 0,
+        "inventory_items_updated": 0,
+        "skipped": [],
+        "errors": [],
+    }
     if not numeric_id:
-        return
+        report["ok"] = False
+        report["errors"].append("Invalid product GID")
+        return report
     # Location used for inventory level updates (best-effort)
     loc_id = _get_primary_location_id()
 
@@ -396,6 +406,7 @@ def _configure_variants_for_product(
                 continue
         if uniq_sizes or uniq_colors:
             _update_product_options(numeric_id, uniq_sizes or None, uniq_colors or None)
+            report["options_updated"] = {"size_count": len(uniq_sizes), "color_count": len(uniq_colors)}
         for v in explicit_variants:
             try:
                 sv = (v.get("size") or None)
@@ -404,6 +415,8 @@ def _configure_variants_for_product(
                 sku = (v.get("sku") or None)
                 barcode = (v.get("barcode") or None)
                 created = _create_variant(numeric_id, sv, cv, price, sku=sku if isinstance(sku, str) and sku.strip() else None, barcode=barcode if isinstance(barcode, str) and barcode.strip() else None)
+                if created:
+                    report["variants_created"] += 1
                 if created and loc_id:
                     inv_item_id = str((created or {}).get("inventory_item_id"))
                     if inv_item_id and inv_item_id != "None":
@@ -416,9 +429,12 @@ def _configure_variants_for_product(
                         eff_q = q_raw if (q_raw is not None) else quantity
                         if eff_q is not None:
                             _set_inventory_level(loc_id, inv_item_id, int(eff_q))
-            except Exception:
+                            report["inventory_items_updated"] += 1
+            except Exception as e:
+                report["ok"] = False
+                report["errors"].append(str(e))
                 continue
-        return
+        return report
 
     # Fallback: sizes/colors combos with base price
     values_size = [s.strip() for s in (sizes or []) if isinstance(s, str) and s.strip()]
@@ -426,6 +442,7 @@ def _configure_variants_for_product(
     if values_size or values_color:
         # Update product options and create variants for all combinations
         _update_product_options(numeric_id, values_size or None, values_color or None)
+        report["options_updated"] = {"size_count": len(values_size), "color_count": len(values_color)}
         created_variants: list[dict] = []
         if values_size and values_color:
             for sv in values_size:
@@ -443,6 +460,7 @@ def _configure_variants_for_product(
                 v = _create_variant(numeric_id, None, cv, base_price)
                 if v:
                     created_variants.append(v)
+        report["variants_created"] = len(created_variants)
         # Enable inventory and set stock per provided quantity (default 2)
         if loc_id:
             for v in created_variants:
@@ -454,8 +472,11 @@ def _configure_variants_for_product(
                             _set_inventory_level(loc_id, inv_item_id, int(quantity))
                         else:
                             _set_inventory_level(loc_id, inv_item_id, 2)
+                        report["inventory_items_updated"] += 1
                 except Exception:
                     continue
+        if base_price is None:
+            report["skipped"].append({"field": "base_price", "reason": "missing"})
     else:
         # Single default variant: update price and inventory
         variants_list = _list_variants(numeric_id)
@@ -465,6 +486,8 @@ def _configure_variants_for_product(
                 var_id = str(first.get("id"))
                 if base_price is not None and var_id:
                     _update_variant_price(var_id, base_price)
+                else:
+                    report["skipped"].append({"field": "base_price", "reason": "missing"})
             except Exception:
                 pass
             try:
@@ -475,8 +498,17 @@ def _configure_variants_for_product(
                         _set_inventory_level(loc_id, inv_item_id, int(quantity))
                     else:
                         _set_inventory_level(loc_id, inv_item_id, 2)
+                    report["inventory_items_updated"] += 1
             except Exception:
                 pass
+        else:
+            report["skipped"].append({"field": "variants", "reason": "no default variant found"})
+    # Mark skipped options when empty inputs were provided
+    if sizes is not None and not values_size:
+        report["skipped"].append({"field": "sizes", "reason": "empty"})
+    if colors is not None and not values_color:
+        report["skipped"].append({"field": "colors", "reason": "empty"})
+    return report
 
 
 def publish_product_all_channels(product_gid: str) -> dict:
@@ -508,10 +540,10 @@ def configure_variants_for_product(
     Returns a small summary describing what was attempted.
     """
     try:
-        _configure_variants_for_product(product_gid, base_price, sizes, colors, track_quantity, quantity, variants)
-        return {"ok": True}
+        rep = _configure_variants_for_product(product_gid, base_price, sizes, colors, track_quantity, quantity, variants)
+        return rep
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "errors": [str(e)]}
 
 
 def create_product_only(
@@ -539,16 +571,17 @@ def create_product_only(
     data = _gql(PRODUCT_CREATE, {"input": inp})
     prod = data["productCreate"]["product"]
     # Configure variants and inventory via REST
+    config_report: dict | None = None
     try:
-        _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants)
-    except Exception:
-        pass
+        config_report = _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants)
+    except Exception as e:
+        config_report = {"ok": False, "errors": [str(e)]}
     # Publish to all sales channels (best-effort)
     try:
         publish_product_all_channels(prod["id"])
     except Exception:
         pass
-    return prod
+    return {"product": prod, "report": (config_report or {"ok": True})}
 
 
 def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None) -> dict:
