@@ -94,6 +94,30 @@ export default function AdsClient(){
         if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
       }catch{}
       if(typeof (f as any)?.page_url==='string' && (f as any).page_url){ setLandingUrl((f as any).page_url) }
+      // Restore flow canvas and UI state if present
+      try{
+        const ui = (f as any)?.ui||{}
+        if(typeof ui.zoom==='number') setZoom(ui.zoom)
+        if(ui.pan && typeof ui.pan.x==='number' && typeof ui.pan.y==='number') setPan({x:ui.pan.x,y:ui.pan.y})
+        if(typeof ui.selected_node==='string') setSelectedNodeId(ui.selected_node)
+        if(typeof ui.active_left_tab==='string' && (ui.active_left_tab==='inputs' || ui.active_left_tab==='prompts')) setActiveLeftTab(ui.active_left_tab)
+      }catch{}
+      try{
+        const flow = (f as any)?.flow||{}
+        const nodesSaved = Array.isArray(flow?.nodes)? flow.nodes : []
+        const edgesSaved = Array.isArray(flow?.edges)? flow.edges : []
+        if(nodesSaved.length>0){
+          setNodes(nodesSaved)
+          setEdges(edgesSaved)
+          // Bump id sequence to avoid ID collisions with restored nodes
+          try{
+            const nums = nodesSaved.map((n:any)=> Number(String(n?.id||'').replace(/[^0-9]/g,''))).filter((x:number)=> Number.isFinite(x))
+            const maxId = nums.length>0? Math.max(...nums) : 0
+            idSeqRef.current = Math.max(idSeqRef.current, maxId+1)
+          }catch{}
+        }
+      }catch{}
+
       // Restore prior ad inputs if present
       const ads = (f as any)?.ads||{}
       if(typeof ads.selectedHeadline==='string') setSelectedHeadline(ads.selectedHeadline)
@@ -145,7 +169,9 @@ export default function AdsClient(){
     if(countries) settings.countries = countries.split(',').map(c=>c.trim()).filter(Boolean)
     if(savedAudienceId) settings.saved_audience_id = savedAudienceId
     const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
-    const res = await saveDraft({ product: product as any, image_urls: candidateImages, settings, prompts })
+    const ui = { zoom, pan, selected_node: selectedNodeId, active_left_tab: activeLeftTab }
+    const flow = { nodes, edges }
+    const res = await saveDraft({ product: product as any, image_urls: candidateImages, settings, prompts, ui, flow })
     setInternalFlowId(res.id)
     try{
       const url = new URL(window.location.href)
@@ -178,7 +204,9 @@ export default function AdsClient(){
       }
       const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
       const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
-      await updateDraft(internalFlowId, { product: product as any, ads, prompts, settings: { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus } as any })
+      const ui = { zoom, pan, selected_node: selectedNodeId, active_left_tab: activeLeftTab }
+      const flow = { nodes, edges }
+      await updateDraft(internalFlowId, { product: product as any, ads, prompts, settings: { flow_type:'ads', adset_budget: budget, advantage_plus: advantagePlus } as any, ui, flow })
     }catch{}
   }
 
@@ -835,7 +863,7 @@ export default function AdsClient(){
     finally{ setRunning(false) }
   }
 
-  // Autosave Ads inputs to linked flow when id present (debounced, silent)
+  // Autosave Ads inputs and canvas/UI to linked flow when id present (debounced, silent)
   useEffect(()=>{
     if(!flowId) return
     let timer:any
@@ -849,14 +877,16 @@ export default function AdsClient(){
           }
           const product = { audience, benefits: benefits.split('\n').filter(Boolean), pain_points: pains.split('\n').filter(Boolean), title: title||undefined }
           const prompts:any = { analyze_landing_prompt: analyzePrompt, headlines_prompt: headlinesPrompt, copies_prompt: copiesPrompt, gemini_ad_prompt: geminiAdPrompt }
-          await updateDraft(flowId, { product: product as any, ads, prompts })
+          const ui = { zoom, pan, selected_node: selectedNodeId, active_left_tab: activeLeftTab }
+          const flow = { nodes, edges }
+          await updateDraft(flowId, { product: product as any, ads, prompts, ui, flow })
           try{ localStorage.setItem('ptos_analyze_prompt_default', analyzePrompt) }catch{}
         }catch{}
       }, 800)
     }
     schedule()
     return ()=>{ if(timer) clearTimeout(timer) }
-  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt])
+  },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt, nodes, edges, zoom, pan, selectedNodeId, activeLeftTab])
 
   const angle = angles[selectedAngleIdx]||null
   const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])

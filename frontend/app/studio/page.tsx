@@ -124,6 +124,10 @@ function StudioPage({ forcedMode }: { forcedMode?: string }){
         if(p.ui.pan && typeof p.ui.pan.x==='number' && typeof p.ui.pan.y==='number') setPan({x:p.ui.pan.x,y:p.ui.pan.y})
         if(typeof p.ui.selected==='string' || p.ui.selected===null) setSelected(p.ui.selected)
         if(typeof (p.ui as any).promotion_free_image_url==='string') setPromotionImageUrl((p.ui as any).promotion_free_image_url)
+        if(typeof (p.ui as any).active_left_tab==='string'){
+          const v = String((p.ui as any).active_left_tab)
+          if(v==='inputs' || v==='prompts') setActiveLeftTab(v)
+        }
       }
       if(p?.prompts){
         if(typeof p.prompts.angles_prompt==='string') setAnglesPrompt(p.prompts.angles_prompt)
@@ -557,7 +561,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
       const galOut:any = (galNode?.run?.output||{})
       const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
       const galSelected = (galNode?.data?.selected||{})
-      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected }
+      const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
       let targeting: any = undefined
       if(!advantagePlus){
         if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
@@ -611,12 +615,23 @@ Return the JSON object with all required keys and the complete HTML in the html 
         const galOut:any = (galNode?.run?.output||{})
         const galImages:string[] = Array.isArray(galOut?.images)? galOut.images : []
         const galSelected = (galNode?.data?.selected||{})
-        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected }
+        const uiSnap = { pan, zoom, selected, promotion_free_image_url: promotionImageUrl, gallery_images: galImages, gallery_selected: galSelected, active_left_tab: activeLeftTab }
         let targeting: any = undefined
         if(!advantagePlus){
           if(selectedSavedAudience){ targeting = { saved_audience_id: selectedSavedAudience } }
           else if(countries.length>0){ targeting = { geo_locations: { countries: countries.map(c=>c.toUpperCase()) } } }
         }
+      // Derive card image similarly to manual save
+      let cardImage: string | undefined = undefined
+      try{
+        const gallery = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
+        const out = (gallery?.run?.output||{}) as any
+        const cdn = Array.isArray(out?.selected_shopify_urls)? out.selected_shopify_urls : Array.isArray(out?.images)? out.images.filter((u:string)=> u.startsWith('https://cdn.shopify.com')) : []
+        if(Array.isArray(cdn) && cdn.length>0){ cardImage = cdn[0] }
+      }catch{}
+      if(!cardImage){
+        try{ if(Array.isArray(uploadedUrls) && uploadedUrls[0] && uploadedUrls[0].startsWith('https://cdn.shopify.com')) cardImage = uploadedUrls[0] }catch{}
+      }
       const payload = {
           product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, variant_descriptions: variantDescriptions, target_category: targetCategory },
           image_urls: uploadedUrls||[],
@@ -624,6 +639,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
           ui: uiSnap,
         prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
         settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, ...(productGidRef.current? { product_gid: productGidRef.current } : {}), ...(productHandle? { product_handle: productHandle } : {}) },
+        ...(cardImage? { card_image: cardImage } : {}),
         }
         const snapshot = JSON.stringify(payload)
         if(snapshot!==last){
