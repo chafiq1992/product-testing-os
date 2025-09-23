@@ -725,8 +725,12 @@ export default function AdsClient(){
       const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
-      const formatted = a? `${headlinesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : headlinesPrompt
-      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined, model })
+      const productInfo = { audience, benefits:benefitsArr, pain_points:painsArr, title }
+      const baseExpanded = expandPrompt(headlinesPrompt)
+      const formatted = a
+        ? `${baseExpanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}\nANGLE: ${JSON.stringify(a)}`
+        : `${baseExpanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}`
+      const out = await llmGenerateAngles({ product: productInfo as any, num_angles: 1, prompt: formatted||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const a0 = arr[0] || {}
       let h_en:string[] = []
@@ -774,8 +778,12 @@ export default function AdsClient(){
       const benefitsArr = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
       const painsArr = pains.split('\n').map(s=>s.trim()).filter(Boolean)
       const a = genNode.data?.angle
-      const formatted = a? `${copiesPrompt}\n\nPRODUCT_INFO: ${JSON.stringify({audience, benefits:benefitsArr, pain_points:painsArr, title})}\nANGLE: ${JSON.stringify(a)}` : copiesPrompt
-      const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined, model })
+      const productInfo = { audience, benefits:benefitsArr, pain_points:painsArr, title }
+      const baseExpanded = expandPrompt(copiesPrompt)
+      const formatted = a
+        ? `${baseExpanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}\nANGLE: ${JSON.stringify(a)}`
+        : `${baseExpanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}`
+      const out = await llmGenerateAngles({ product: productInfo as any, num_angles: 1, prompt: formatted||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const a0 = arr[0] || {}
       // Backward-compatible extraction of EN if only primaries exist
@@ -832,7 +840,8 @@ export default function AdsClient(){
       const offerText = (offers||'').trim()
       const a = genNode.data?.angle
       const angleSuffix = a && a.name? ` Angle: ${String(a.name)}` : ''
-      const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}${angleSuffix}`
+      const baseExpanded = expandPrompt(geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.')
+      const prompt = `${baseExpanded}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}${angleSuffix}`
       const resp = await geminiGenerateAdImages({ image_url: src, prompt, num_images: 4, neutral_background: true })
       let imgs:string[] = []
       try{
@@ -868,7 +877,9 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: headlinesPrompt||undefined, model })
+      const expanded = expandPrompt(headlinesPrompt)
+      const promptWithProduct = `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(product)}`
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: promptWithProduct||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { headlines, primaries } = aggregateFromAngles(arr)
@@ -935,7 +946,9 @@ export default function AdsClient(){
         pain_points: pains.split('\n').map(s=>s.trim()).filter(Boolean),
         title: title||undefined,
       }
-      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: copiesPrompt||undefined, model })
+      const expanded = expandPrompt(copiesPrompt)
+      const promptWithProduct = `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(product)}`
+      const out = await llmGenerateAngles({ product: product as any, num_angles: numAngles, prompt: promptWithProduct||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       setAngles(arr)
       const { primaries } = aggregateFromAngles(arr)
@@ -953,7 +966,8 @@ export default function AdsClient(){
       if(!sourceImage){ alert('Missing source image URL'); return }
       setRunning(true)
       const offerText = (offers||'').trim()
-      const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}`
+      const baseExpanded = expandPrompt(geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.')
+      const prompt = `${baseExpanded}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}`
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
       let imgs:string[] = []
       try{
@@ -1144,10 +1158,21 @@ export default function AdsClient(){
                 </div>
               )}
 
-              {selectedNode.type==='headlines' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+              {selectedNode.type==='headlines' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; const b=benefits.split('\n').map(s=>s.trim()).filter(Boolean); const p=pains.split('\n').map(s=>s.trim()).filter(Boolean); const productInfo={audience, benefits:b, pain_points:p, title}; const expanded=expandPrompt(headlinesPrompt); const angle=selectedNode.data?.angle; const exact= angle? `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}\nANGLE: ${JSON.stringify(angle)}` : `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}`; return (
                 <div className="space-y-1">
                   <div className="text-slate-500">Prompt</div>
                   <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{headlinesPrompt}</pre>
+                  <div className="text-slate-500">Expanded preview</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{expanded}</pre>
+                  <div className="text-slate-500">Variables used</div>
+                  <div className="text-xs grid grid-cols-2 gap-2">
+                    <div><span className="text-slate-500">Audience:</span> {audience||'-'}</div>
+                    <div><span className="text-slate-500">Title:</span> {title||'-'}</div>
+                    <div className="col-span-2"><span className="text-slate-500">Benefits:</span> {b.join(' | ')||'-'}</div>
+                    <div className="col-span-2"><span className="text-slate-500">Pain points:</span> {p.join(' | ')||'-'}</div>
+                  </div>
+                  <div className="text-slate-500">Exact prompt next run</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{exact}</pre>
                   {run && (
                     <>
                       <div className="text-slate-500">Last output</div>
@@ -1164,10 +1189,21 @@ export default function AdsClient(){
                 </div>
               )}
 
-              {selectedNode.type==='copies' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+              {selectedNode.type==='copies' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; const b=benefits.split('\n').map(s=>s.trim()).filter(Boolean); const p=pains.split('\n').map(s=>s.trim()).filter(Boolean); const productInfo={audience, benefits:b, pain_points:p, title}; const expanded=expandPrompt(copiesPrompt); const angle=selectedNode.data?.angle; const exact= angle? `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}\nANGLE: ${JSON.stringify(angle)}` : `${expanded}\n\nPRODUCT_INFO: ${JSON.stringify(productInfo)}`; return (
                 <div className="space-y-1">
                   <div className="text-slate-500">Prompt</div>
                   <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{copiesPrompt}</pre>
+                  <div className="text-slate-500">Expanded preview</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{expanded}</pre>
+                  <div className="text-slate-500">Variables used</div>
+                  <div className="text-xs grid grid-cols-2 gap-2">
+                    <div><span className="text-slate-500">Audience:</span> {audience||'-'}</div>
+                    <div><span className="text-slate-500">Title:</span> {title||'-'}</div>
+                    <div className="col-span-2"><span className="text-slate-500">Benefits:</span> {b.join(' | ')||'-'}</div>
+                    <div className="col-span-2"><span className="text-slate-500">Pain points:</span> {p.join(' | ')||'-'}</div>
+                  </div>
+                  <div className="text-slate-500">Exact prompt next run</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{exact}</pre>
                   {run && (
                     <>
                       <div className="text-slate-500">Last output</div>
@@ -1184,10 +1220,19 @@ export default function AdsClient(){
                 </div>
               )}
 
-              {selectedNode.type==='gemini_images' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; return (
+              {selectedNode.type==='gemini_images' && (()=>{ const run:any=(selectedNode.data?.meta||{}).lastRun; const b=benefits.split('\n').map(s=>s.trim()).filter(Boolean); const p=pains.split('\n').map(s=>s.trim()).filter(Boolean); const expanded=expandPrompt(geminiAdPrompt); const a=selectedNode.data?.angle; const angleSuffix = a && a.name? ` Angle: ${String(a.name)}` : ''; const exact = `${expanded}${offers? ` Emphasize the offer/promotion: ${offers}.`: ''}${angleSuffix}`; return (
                 <div className="space-y-1">
                   <div className="text-slate-500">Prompt</div>
                   <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{geminiAdPrompt}</pre>
+                  <div className="text-slate-500">Expanded preview</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{expanded}</pre>
+                  <div className="text-slate-500">Variables used</div>
+                  <div className="text-xs grid grid-cols-2 gap-2">
+                    <div className="col-span-2"><span className="text-slate-500">Offers:</span> {offers||'-'}</div>
+                    <div className="col-span-2"><span className="text-slate-500">Emotions:</span> {emotions||'-'}</div>
+                  </div>
+                  <div className="text-slate-500">Exact prompt next run</div>
+                  <pre className="bg-slate-50 border rounded p-2 whitespace-pre-wrap max-h-24 overflow-auto">{exact}</pre>
                   {run && (
                     <>
                       <div>Source image: {String(run.inputSnapshot?.image_url||'')}</div>
