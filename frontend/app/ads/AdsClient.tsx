@@ -464,7 +464,7 @@ export default function AdsClient(){
   const idSeqRef = useRef(1)
   const nextId = ()=> `a${idSeqRef.current++}`
   const [nodes,setNodes]=useState<FlowNode[]>(()=>{
-    const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: prefillLanding||'', image: (prefillImages||[])[0]||'', title: prefillTitle||'' } }
+    const base = { id: nextId(), type:'landing' as const, x:120, y:160, data:{ url: '', image: '', title: '' } }
     return [base]
   })
   const [edges,setEdges]=useState<FlowEdge[]>([])
