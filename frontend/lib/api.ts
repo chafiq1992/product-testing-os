@@ -302,7 +302,7 @@ export async function geminiSuggestPrompts(payload:{
 }
 
 // Extract product inputs from a single product image (OpenAI multimodal)
-export async function productFromImage(payload:{ image_url:string, model?:string }){
+export async function productFromImage(payload:{ image_url:string, model?:string, target_category?: string }){
   const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)
   return data as { product?: { title?:string, audience?:string, benefits?:string[], pain_points?:string[], colors?:string[], sizes?:string[], variants?:{name:string, description?:string}[] }, input_image_url?: string, error?: string }
 }

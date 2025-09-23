@@ -1646,11 +1646,22 @@ Return the JSON object with all required keys and the complete HTML in the html 
                     <img src={toDisplayUrl(analysisImageUrl)} alt="analysis" className="w-full h-40 object-cover" />
                   </div>
                 )}
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">Target category</div>
+                  <select value={targetCategory} onChange={e=>setTargetCategory(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                    <option value="girl">Girl</option>
+                    <option value="boy">Boy</option>
+                    <option value="unisex_kids">Unisex kids</option>
+                    <option value="men">Men</option>
+                    <option value="women">Women</option>
+                    <option value="unisex">Unisex</option>
+                  </select>
+                </div>
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{
                     try{
                       if(!analysisImageUrl){ alert('Paste an image URL first.'); return }
-                      const res = await productFromImage({ image_url: analysisImageUrl, model })
+                      const res = await productFromImage({ image_url: analysisImageUrl, model, target_category: targetCategory })
                       if((res as any)?.error){
                         alert('Analyze error: ' + String((res as any).error))
                         return
@@ -1684,17 +1695,6 @@ Return the JSON object with all required keys and the complete HTML in the html 
               <div>
                 <div className="text-xs text-slate-500 mb-1">Audience</div>
                 <Input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Parents of toddlers in Morocco" />
-              </div>
-              <div>
-                <div className="text-xs text-slate-500 mb-1">Target category</div>
-                <select value={targetCategory} onChange={e=>setTargetCategory(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
-                  <option value="girl">Girl</option>
-                  <option value="boy">Boy</option>
-                  <option value="unisex_kids">Unisex kids</option>
-                  <option value="men">Men</option>
-                  <option value="women">Women</option>
-                  <option value="unisex">Unisex</option>
-                </select>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>

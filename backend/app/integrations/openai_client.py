@@ -138,7 +138,7 @@ def gen_images(angle: dict, payload: dict) -> list:
 
 # ---------------- Product extraction from image ----------------
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
-def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
+def gen_product_from_image(image_url: str, model: str | None = None, target_category: str | None = None) -> dict:
     """Analyze a single product photo and extract structured product inputs.
 
     Returns a dict with keys:
@@ -150,7 +150,7 @@ def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
       - sizes (string[])
       - variants (array of { name, description })
     """
-    system = (
+    system_base = (
         "You are a senior ecommerce analyst. From ONE product photo, infer only what is visually reliable.\n"
         "Return ONLY a JSON object with keys: title, audience, benefits, pain_points, colors, sizes, variants.\n"
         "- title: brief product name.\n"
@@ -163,6 +163,21 @@ def gen_product_from_image(image_url: str, model: str | None = None) -> dict:
         "Guidance: Note any visible prints/patterns, unique silhouettes, materials, added height/platforms, embroidery, special seams, closures, or accessories in variants.description.\n"
         "If uncertain, add minimal [ASSUMPTION] notes inside descriptions only."
     )
+    cat_hint = ""
+    if isinstance(target_category, str) and target_category.strip():
+        cat = target_category.strip().lower()
+        cat_hint = (
+            "\nCRITICAL: TARGET_CATEGORY is '" + cat + "'. Constrain outputs (audience, benefits, pain_points, variants) to this category.\n"
+            "Examples and mapping guidance:\n"
+            "- girl: children's product for girls; audience like 'Parents of girls'.\n"
+            "- boy: children's product for boys; audience like 'Parents of boys'.\n"
+            "- unisex_kids: children's product for kids (girls and boys); audience like 'Parents of kids'.\n"
+            "- men: adult men's product; audience like 'Men' or gift for men.\n"
+            "- women: adult women's product; audience like 'Women' or gift for women.\n"
+            "- unisex: suitable for all adults; keep audience neutral (e.g., 'Shoppers').\n"
+            "If the image suggests a different demographic, still adhere to TARGET_CATEGORY."
+        )
+    system = system_base + cat_hint
     user = (
         "Analyze the product in this image and extract structured inputs as specified."
     )

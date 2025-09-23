@@ -532,12 +532,13 @@ async def api_gemini_suggest_prompts(req: GeminiSuggestPromptsRequest):
 class ProductFromImageRequest(BaseModel):
     image_url: str
     model: Optional[str] = None
+    target_category: Optional[str] = None
 
 
 @app.post("/api/llm/product_from_image")
 async def api_llm_product_from_image(req: ProductFromImageRequest):
     try:
-        data = gen_product_from_image(req.image_url, model=req.model)
+        data = gen_product_from_image(req.image_url, model=req.model, target_category=req.target_category)
         return {"product": data, "input_image_url": req.image_url}
     except Exception as e:
         return {"product": None, "error": str(e), "input_image_url": req.image_url}
