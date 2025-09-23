@@ -28,23 +28,15 @@ function Separator({ className='' }:{className?:string}){ return <div className=
 export default function AdsClient(){
   const params = useSearchParams()
   const flowId = params.get('id') || params.get('flow') || ''
-  const prefillLanding = params.get('landing_url')||''
-  const prefillTitle = params.get('title')||''
-  const prefillImages = useMemo(()=>{
-    const raw = params.get('images')||''
-    if(!raw) return [] as string[]
-    try{ return raw.split(',').map(s=> decodeURIComponent(s)).filter(Boolean) }catch{ return [] }
-  },[params])
-
-  const [landingUrl,setLandingUrl]=useState<string>(prefillLanding)
+  const [landingUrl,setLandingUrl]=useState<string>('')
   const [audience,setAudience]=useState<string>('Shoppers likely to buy this product')
-  const [title,setTitle]=useState<string>(prefillTitle)
+  const [title,setTitle]=useState<string>('')
   const [benefits,setBenefits]=useState<string>('')
   const [pains,setPains]=useState<string>('')
   const [offers,setOffers]=useState<string>('')
   const [emotions,setEmotions]=useState<string>('')
-  const [sourceImage,setSourceImage]=useState<string>(prefillImages[0]||'')
-  const [candidateImages,setCandidateImages]=useState<string[]>(prefillImages)
+  const [sourceImage,setSourceImage]=useState<string>('')
+  const [candidateImages,setCandidateImages]=useState<string[]>([])
   // Track where each input came from (manual vs analyze_landing)
   const [inputSources,setInputSources]=useState<Record<string,'manual'|'analyze_landing'>>({
     audience:'manual',
@@ -94,19 +86,7 @@ export default function AdsClient(){
     if(!flowId) return
     try{
       const f = await getFlow(flowId)
-      if((f as any)?.product){
-        const prod = (f as any).product||{}
-        if(typeof prod.title==='string' && !title) setTitle(prod.title)
-        if(Array.isArray(prod.benefits) && prod.benefits.length>0) setBenefits((prod.benefits||[]).join('\n'))
-        if(Array.isArray(prod.pain_points) && prod.pain_points.length>0) setPains((prod.pain_points||[]).join('\n'))
-        if(typeof prod.audience==='string' && prod.audience) setAudience(prod.audience)
-      }
-      // Prefer images saved in flow (e.g., Shopify CDN URLs)
-      try{
-        const imgs = Array.isArray((f as any)?.settings?.assets_used?.feature_gallery)? (f as any).settings.assets_used.feature_gallery : []
-        if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
-      }catch{}
-      if(typeof (f as any)?.page_url==='string' && (f as any).page_url){ setLandingUrl((f as any).page_url) }
+      // Intentionally avoid pre-filling ads inputs from linked product flow or page_url
       // Restore flow canvas and UI state if present
       try{
         const ui = (f as any)?.ui||{}
@@ -445,38 +425,7 @@ export default function AdsClient(){
   useEffect(()=>{ try{ localStorage.setItem('ptos_ads_gemini_prompt', geminiAdPrompt) }catch{} },[geminiAdPrompt])
 
   // Accept handoff from Studio via sessionStorage (prefer structured landing copy/images over URL)
-  useEffect(()=>{
-    try{
-      const raw = sessionStorage.getItem('ptos_transfer_landing')
-      if(raw){
-        const data = JSON.parse(raw||'{}')||{}
-        if(typeof data.title==='string' && data.title){ setTitle(data.title) }
-        if(Array.isArray(data.images) && data.images.length>0){
-          const imgs = data.images.filter((u:string)=> typeof u==='string' && u)
-          setCandidateImages(imgs)
-          if(!sourceImage && (imgs[1]||imgs[0])) setSourceImage(imgs[1]||imgs[0])
-        }
-        // If we received structured landing copy, extract key text benefits for ad input
-        try{
-          const lc = (data as any).landing_copy
-          if(lc && typeof lc==='object'){
-            const secBodies = Array.isArray(lc.sections)? lc.sections.map((s:any)=> String(s?.body||'').trim()).filter(Boolean) : []
-            const bullets = secBodies.join('\n').split('\n').map((s:string)=> s.trim()).filter(Boolean).slice(0,8)
-            if(bullets.length>0) setBenefits(bullets.join('\n'))
-            // Prefill primary text from description-like fields
-            const primary = String((lc as any)?.subheadline||'').trim() || String((lc as any)?.headline||'').trim()
-            if(primary && !selectedPrimary) setSelectedPrimary(primary)
-            if(!landingUrl) setLandingUrl('') // Explicitly avoid using URL as source when copy provided
-          }
-        }catch{}
-        // Only fallback to URL if no images/copy were provided
-        if(!Array.isArray((data as any).images) && typeof (data as any).landing_url==='string'){
-          setLandingUrl((data as any).landing_url)
-        }
-        sessionStorage.removeItem('ptos_transfer_landing')
-      }
-    }catch{}
-  },[])
+  useEffect(()=>{ try{ sessionStorage.removeItem('ptos_transfer_landing') }catch{} },[])
 
   useEffect(()=>{
     if(!selectedImage && adImages.length>0){ setSelectedImage(adImages[0]) }
