@@ -356,8 +356,8 @@ export default function AdsClient(){
   },[internalFlowId])
 
   const [anglesPrompt,setAnglesPrompt]=useState<string>('You are a marketing strategist, professional performance marketer, and market researcher. Using PRODUCT_INFO, generate exactly 3 distinct, high-converting angles for paid ads. Each angle must include: name (concise), big_idea (1 sentence), promise (benefit-focused), 6-10 headlines (≤12 words, specific, no emojis/ALL CAPS), and primaries with 2 variants: short (≤60 chars) and medium (≤120 chars). Avoid fluff; be concrete and conversion-oriented.\n\nReturn ONE valid json object ONLY with fields: angles[3] each with { name, big_idea, promise, headlines[6..10], primaries { short, medium } }.')
-  const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta in English, and also provide faithful French and Arabic translations. Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines_en": ["..."], "headlines_fr": ["..."], "headlines_ar": ["..."] } ] }'
-  const recommendedCopiesPrompt = 'You are a senior direct‑response copywriter. Using PRODUCT_INFO and ANGLE, write 2 persuasive Meta primary texts that are multi‑line, include tasteful and relevant emojis, and maximize conversion with clear value, social proof (if implied), and a strong CTA. Each copy can be 2–4 short lines with line breaks. Provide English versions and faithful French and Arabic translations.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "primaries_en": ["...multi\nline\nA...", "...multi\nline\nB..."], "primaries_fr": ["...A FR...", "...B FR..."], "primaries_ar": ["...A AR...", "...B AR..."] } ] }'
+  const recommendedHeadlinesPrompt = 'You are a senior direct‑response copywriter and conversion strategist. Using PRODUCT_INFO and ANGLE, write 8 unique, high‑converting ad headlines for Meta in three languages: English ("en"), Arabic Modern Standard ("ar"), and French ("fr"). Rules: ≤12 words each, concrete, specific, benefit‑led, no emojis, minimal punctuation, avoid spammy claims, no ALL CAPS.\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "headlines": { "en": ["h1","h2","h3","h4","h5","h6","h7","h8"], "ar": ["h1","h2","h3","h4","h5","h6","h7","h8"], "fr": ["h1","h2","h3","h4","h5","h6","h7","h8"] } } ] }'
+  const recommendedCopiesPrompt = 'You are a senior direct‑response copywriter. Using PRODUCT_INFO and ANGLE, write 2 persuasive Meta primary texts per language that are multi‑line, include tasteful and relevant emojis, and maximize conversion with clear value, social proof (if implied), and a strong CTA. Each copy can be 2–4 short lines with line breaks. Provide English ("en"), Arabic Modern Standard ("ar"), and French ("fr").\n\nReturn ONE valid JSON object ONLY:\n{ "angles": [ { "primaries": { "en": ["...multi\nline\nA...", "...multi\nline\nB..."], "ar": ["...A AR...", "...B AR..."], "fr": ["...A FR...", "...B FR..."] } } ] }'
   const [headlinesPrompt,setHeadlinesPrompt]=useState<string>(recommendedHeadlinesPrompt)
   const [copiesPrompt,setCopiesPrompt]=useState<string>(recommendedCopiesPrompt)
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>('Create a high‑quality ad image from this product photo. No text, premium look.')
@@ -683,13 +683,24 @@ export default function AdsClient(){
     const headlines:string[] = []
     const primaries:string[] = []
     for(const a of (arr||[])){
-      const hs = Array.isArray(a?.headlines)? a.headlines : []
+      // Headlines: support array, or object with languages
+      let hs:string[] = []
+      try{
+        if(Array.isArray(a?.headlines)) hs = a.headlines
+        else if(a?.headlines && typeof a.headlines==='object') hs = Array.isArray(a.headlines.en)? a.headlines.en : []
+      }catch{}
+      // Primaries: support array, old {short,medium,long}, or object with languages
       let ps:string[] = []
-      if(Array.isArray(a?.primaries)) ps = a.primaries
-      else if(a?.primaries && typeof a.primaries==='object'){
-        const cand = [a.primaries.short, a.primaries.medium, a.primaries.long]
-        ps = cand.filter((x:any)=> typeof x==='string' && x)
-      }
+      try{
+        if(Array.isArray(a?.primaries)) ps = a.primaries
+        else if(a?.primaries && typeof a.primaries==='object'){
+          if(Array.isArray(a.primaries.en)) ps = a.primaries.en
+          else{
+            const cand = [a.primaries.short, a.primaries.medium, a.primaries.long]
+            ps = cand.filter((x:any)=> typeof x==='string' && x)
+          }
+        }
+      }catch{}
       for(const h of hs){ if(typeof h==='string' && h && headlines.length<12) headlines.push(h) }
       for(const p of ps){ if(typeof p==='string' && p && primaries.length<12) primaries.push(p) }
     }
@@ -718,9 +729,24 @@ export default function AdsClient(){
       const out = await llmGenerateAngles({ product:{ audience, benefits:benefitsArr, pain_points:painsArr, title: title||undefined } as any, num_angles: 1, prompt: formatted||undefined, model })
       const arr = Array.isArray((out as any)?.angles)? (out as any).angles : []
       const a0 = arr[0] || {}
-      const h_en = Array.isArray((a0 as any).headlines_en)? (a0 as any).headlines_en : (Array.isArray((a0 as any).headlines)? (a0 as any).headlines : [])
-      const h_fr = Array.isArray((a0 as any).headlines_fr)? (a0 as any).headlines_fr : []
-      const h_ar = Array.isArray((a0 as any).headlines_ar)? (a0 as any).headlines_ar : []
+      let h_en:string[] = []
+      let h_fr:string[] = []
+      let h_ar:string[] = []
+      try{
+        if(Array.isArray((a0 as any).headlines_en)) h_en = (a0 as any).headlines_en
+        if(Array.isArray((a0 as any).headlines_fr)) h_fr = (a0 as any).headlines_fr
+        if(Array.isArray((a0 as any).headlines_ar)) h_ar = (a0 as any).headlines_ar
+        const nested:any = (a0 as any).headlines
+        if(!h_en.length || !h_fr.length || !h_ar.length){
+          if(nested && typeof nested==='object'){
+            if(!h_en.length && Array.isArray(nested.en)) h_en = nested.en
+            if(!h_fr.length && Array.isArray(nested.fr)) h_fr = nested.fr
+            if(!h_ar.length && Array.isArray(nested.ar)) h_ar = nested.ar
+          }else if(Array.isArray((a0 as any).headlines) && !h_en.length){
+            h_en = (a0 as any).headlines
+          }
+        }
+      }catch{}
       const outNode = createChildNode('headlines_out', genNode, { headlines_en: (h_en||[]).slice(0,8), headlines_fr: (h_fr||[]).slice(0,8), headlines_ar: (h_ar||[]).slice(0,8), headlines: (h_en||[]).slice(0,8), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       // If a Review node already exists for this angle, connect this output to it
       const angleId = String(genNode.data?.angleId||genNode.id)
@@ -759,9 +785,22 @@ export default function AdsClient(){
         if(Array.isArray(prim)) basePrimaries = prim
         else if(prim && typeof prim==='object') basePrimaries = [prim.short, prim.medium, prim.long].filter((x:any)=> typeof x==='string' && x)
       }catch{}
-      const p_en = Array.isArray((a0 as any).primaries_en)? (a0 as any).primaries_en : basePrimaries
-      const p_fr = Array.isArray((a0 as any).primaries_fr)? (a0 as any).primaries_fr : []
-      const p_ar = Array.isArray((a0 as any).primaries_ar)? (a0 as any).primaries_ar : []
+      let p_en:string[] = []
+      let p_fr:string[] = []
+      let p_ar:string[] = []
+      try{
+        if(Array.isArray((a0 as any).primaries_en)) p_en = (a0 as any).primaries_en
+        if(Array.isArray((a0 as any).primaries_fr)) p_fr = (a0 as any).primaries_fr
+        if(Array.isArray((a0 as any).primaries_ar)) p_ar = (a0 as any).primaries_ar
+        const nested:any = (a0 as any).primaries
+        if(nested && typeof nested==='object' && !Array.isArray(nested)){
+          if(!p_en.length && Array.isArray(nested.en)) p_en = nested.en
+          if(!p_fr.length && Array.isArray(nested.fr)) p_fr = nested.fr
+          if(!p_ar.length && Array.isArray(nested.ar)) p_ar = nested.ar
+        }
+        if(!p_en.length && Array.isArray((a0 as any).primaries)) p_en = (a0 as any).primaries
+        if(!p_en.length) p_en = basePrimaries
+      }catch{}
       const outNode = createChildNode('copies_out', genNode, { primaries_en: (p_en||[]).slice(0,2), primaries_fr: (p_fr||[]).slice(0,2), primaries_ar: (p_ar||[]).slice(0,2), primaries: (p_en||[]).slice(0,2), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       // Create Review node now and connect all existing outputs
       const meta = getOrCreateReviewForAngle(String(genNode.data?.angleId||genNode.id), genNode)
@@ -795,7 +834,13 @@ export default function AdsClient(){
       const angleSuffix = a && a.name? ` Angle: ${String(a.name)}` : ''
       const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}${angleSuffix}`
       const resp = await geminiGenerateAdImages({ image_url: src, prompt, num_images: 4, neutral_background: true })
-      const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
+      let imgs:string[] = []
+      try{
+        const r:any = resp||{}
+        if(Array.isArray(r.images)) imgs = r.images
+        else if(Array.isArray(r.urls)) imgs = r.urls
+        else if(Array.isArray(r.items)) imgs = r.items.map((it:any)=> it?.image||it?.url).filter((x:any)=> typeof x==='string' && x)
+      }catch{}
       setAdImages(imgs)
       const outNode = createChildNode('images_out', genNode, { images: imgs.slice(0,4), angleId: genNode.data?.angleId||genNode.id }, 0, 1)
       // If a Review node already exists for this angle, connect this output to it
@@ -910,7 +955,13 @@ export default function AdsClient(){
       const offerText = (offers||'').trim()
       const prompt = `${geminiAdPrompt || 'Create a high‑quality ad image from this product photo. No text, premium look.'}${offerText? ` Emphasize the offer/promotion: ${offerText}.`: ''}`
       const resp = await geminiGenerateAdImages({ image_url: sourceImage, prompt, num_images: 4, neutral_background: true })
-      const imgs = Array.isArray((resp as any)?.images)? (resp as any).images : []
+      let imgs:string[] = []
+      try{
+        const r:any = resp||{}
+        if(Array.isArray(r.images)) imgs = r.images
+        else if(Array.isArray(r.urls)) imgs = r.urls
+        else if(Array.isArray(r.items)) imgs = r.items.map((it:any)=> it?.image||it?.url).filter((x:any)=> typeof x==='string' && x)
+      }catch{}
       setAdImages(imgs)
       const landing = nodes.find(n=> n.type==='landing') || nodes[0]
       const imgBuilder = ensureGenerator('gemini_images', landing, 2, 3)
@@ -981,8 +1032,22 @@ export default function AdsClient(){
   },[flowId, selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus, countries, savedAudienceId, candidateImages, adImages, audience, benefits, pains, title, analyzePrompt, headlinesPrompt, copiesPrompt, geminiAdPrompt, nodes, edges, zoom, pan, selectedNodeId, activeLeftTab, model])
 
   const angle = angles[selectedAngleIdx]||null
-  const headlines: string[] = useMemo(()=> Array.isArray(angle?.headlines)? angle.headlines : [], [angle])
-  const primaries: string[] = useMemo(()=> Array.isArray(angle?.primaries)? angle.primaries : Array.isArray(angle?.primaries?.short)? [angle.primaries.short, angle.primaries.medium, angle.primaries.long].filter(Boolean) : [], [angle])
+  const headlines: string[] = useMemo(()=> {
+    const h:any = angle?.headlines
+    if(Array.isArray(h)) return h
+    if(h && typeof h==='object') return Array.isArray(h.en)? h.en : []
+    return []
+  }, [angle])
+  const primaries: string[] = useMemo(()=> {
+    const p:any = angle?.primaries
+    if(Array.isArray(p)) return p
+    if(p && typeof p==='object'){
+      if(Array.isArray(p.en)) return p.en
+      const cand = [p.short, p.medium, p.long].filter((x:any)=> typeof x==='string' && x)
+      if(cand.length) return cand
+    }
+    return []
+  }, [angle])
   const selectedNode = useMemo(()=> nodes.find(n=> n.id===selectedNodeId) || null, [nodes, selectedNodeId])
 
   function expandPrompt(template:string){
@@ -1061,10 +1126,10 @@ export default function AdsClient(){
                   <div className="font-medium">{String(selectedNode.data?.angle?.name||'')}</div>
                   <div>Big idea: {String(selectedNode.data?.angle?.big_idea||'')}</div>
                   <div>Promise: {String(selectedNode.data?.angle?.promise||'')}</div>
-                  {Array.isArray(selectedNode.data?.angle?.headlines) && selectedNode.data.angle.headlines.length>0 && (
+                  {(()=>{ const ah:any = selectedNode.data?.angle?.headlines; const arr = Array.isArray(ah)? ah : (ah && typeof ah==='object' && Array.isArray(ah.en)? ah.en : []); return Array.isArray(arr) && arr.length>0 })() && (
                     <div>
                       <div className="text-slate-500">Headlines</div>
-                      <ul className="list-disc pl-4">{selectedNode.data.angle.headlines.slice(0,8).map((h:string,i:number)=> (<li key={i}>{h}</li>))}</ul>
+                      <ul className="list-disc pl-4">{(()=>{ const ah:any = selectedNode.data?.angle?.headlines; const arr = Array.isArray(ah)? ah : (ah && typeof ah==='object' && Array.isArray(ah.en)? ah.en : []); return arr.slice(0,8) })().map((h:string,i:number)=> (<li key={i}>{h}</li>))}</ul>
                     </div>
                   )}
                   {(()=>{ const anglesNode = nodes.find(n=> n.type==='angles'); const run:any = (anglesNode?.data?.meta||{}).lastRun; return run? (
