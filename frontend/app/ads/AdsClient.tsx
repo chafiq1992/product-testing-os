@@ -216,9 +216,9 @@ export default function AdsClient(){
     }catch{}
     // Local click-through automation
     ;(async()=>{
-      // Wait until landing URL is set and a proper source image is chosen (prefer 2nd image)
+      // Wait until landing URL is set and only then choose a source image if needed
       while(autoRun && (!landingUrl || !sourceImage)){
-        if(!sourceImage && candidateImages.length>1){ setSourceImage(candidateImages[1]) }
+        if(landingUrl && !sourceImage && candidateImages.length>1){ setSourceImage(candidateImages[1]) }
         await new Promise(r=> setTimeout(r, 400))
       }
       if(!autoRun) return
@@ -295,13 +295,13 @@ export default function AdsClient(){
       try{
         const f = await getFlow(internalFlowId)
         const ads:any = (f as any)?.ads||{}
-        // Merge candidate images from analysis
+        // Merge candidate images from analysis (only after a landing URL is provided)
         try{
           const imgs = Array.isArray(ads?.analyze?.images)? ads.analyze.images : []
           const filtered = (imgs||[]).filter((u:string)=> typeof u==='string' && u)
           const skipped = filtered.slice(1)
           const final = skipped.length>0? skipped : filtered
-          if(final.length>0 && candidateImages.length===0){ setCandidateImages(final.slice(0,10)); if(!sourceImage) setSourceImage(final[0]) }
+          if(landingUrl && final.length>0 && candidateImages.length===0){ setCandidateImages(final.slice(0,10)); if(!sourceImage) setSourceImage(final[0]) }
         }catch{}
         // Merge ad images from per_angle
         try{
@@ -396,9 +396,7 @@ export default function AdsClient(){
         if(Array.isArray(p?.settings?.countries)) setCountries((p.settings.countries||[]).join(','))
         if(typeof p?.settings?.advantage_plus==='boolean') setAdvantagePlus(!!p.settings.advantage_plus)
         if(typeof p?.settings?.model==='string') setModel(p.settings.model)
-        if(typeof p?.title==='string' && !title) setTitle(p.title)
-        const imgs = Array.isArray(p?.uploaded_images)? p.uploaded_images : []
-        if(imgs.length>0){ setCandidateImages(imgs); if(!sourceImage) setSourceImage(imgs[0]) }
+        // Intentionally avoid pre-filling title or images for a clean start
       }
     }catch{}
   },[])
@@ -471,7 +469,9 @@ export default function AdsClient(){
   const nodesRef = useRef<FlowNode[]>([])
   useEffect(()=>{ nodesRef.current = nodes },[nodes])
   useEffect(()=>{
-    setNodes(ns=> ns.map(n=> n.type==='landing'? ({...n, data:{ ...n.data, url: landingUrl, image: (candidateImages||[])[0]||n.data.image, title } }): n))
+    setNodes(ns=> ns.map(n=> n.type==='landing'
+      ? ({...n, data:{ ...n.data, url: landingUrl, image: (landingUrl && (candidateImages||[])[0])? (candidateImages||[])[0] : n.data.image, title } })
+      : n))
   },[landingUrl,candidateImages,title])
 
   function addOrGetNode(type:NodeType, near:{x:number,y:number}, data:any={}, pos?:{x:number,y:number}){
