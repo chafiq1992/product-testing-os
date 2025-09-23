@@ -1598,6 +1598,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
           <Badge className="bg-blue-100 text-blue-700">New UI</Badge>
         </div>
         <div className="flex items-center gap-2">
+          <a href="/" className="text-sm rounded-xl font-semibold inline-flex items-center justify-center px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white">Home</a>
           <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run flow</Button>
           <Button variant="outline" size="sm" onClick={onSaveDraft}><Save className="w-4 h-4 mr-1"/>Save draft</Button>
           <Button size="sm" onClick={()=>alert('Published (wire CI/CD)')}><CirclePlay className="w-4 h-4 mr-1"/>Publish</Button>

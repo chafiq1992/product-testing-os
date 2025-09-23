@@ -624,44 +624,8 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
         # Perform upload step and prefer returned Shopify CDN URLs
         shopify_image_urls = upload_images_to_product(pdata["id"], requested_images, alt_texts)
 
-    # Build landing page body with sections matched to images (by index)
-    sections = (landing_copy or {}).get("sections") or []
-    headline = (landing_copy or {}).get("headline") or title
-    subheadline = (landing_copy or {}).get("subheadline") or ""
-    body_parts = [
-        f"<section style=\"text-align:center;padding:16px 0;\"><h2 style=\"margin:0 0 8px;\">{headline}</h2>"
-        + (f"<p style=\"margin:0;color:#555;\">{subheadline}</p>" if subheadline else "")
-        + "</section>"
-    ]
-    if sections:
-        for idx, sec in enumerate(sections):
-            sec_title = sec.get("title") or ""
-            sec_body = sec.get("body") or ""
-            # Allow LLM to specify an image per section; else fall back by index
-            specified_img = (sec.get("image_url") or "").strip()
-            effective_images = shopify_image_urls or requested_images
-            img_url = specified_img or (effective_images[idx % len(effective_images)] if effective_images else "")
-            alt = alt_texts[idx % len(alt_texts)] if alt_texts else title
-            img_tag = (
-                f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
-                if img_url else ""
-            )
-            body_parts.append(
-                "<section style=\"padding:16px 0;\">"
-                + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")
-                + (img_tag or "")
-                + (f"<p style=\"margin:8px 0 0;line-height:1.5;color:#333;\">{sec_body}</p>" if sec_body else "")
-                + "</section>"
-            )
-    else:
-        # Fallback: description HTML followed by a simple gallery
-        body_parts.append(desc_html)
-        effective_images = shopify_image_urls or requested_images
-        if effective_images:
-            gallery = "".join([f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>" for u in effective_images])
-            body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
-
-    page_body_html = "".join(body_parts)
+    # Build landing page body using the common responsive builder (ensures only provided images are embedded)
+    page_body_html = _build_page_body_html(title, landing_copy, shopify_image_urls or requested_images, alt_texts)
 
     handle = f"offer-{pdata['id'].split('/')[-1]}"
     page_in = {
@@ -720,17 +684,37 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
     sections = (landing_copy or {}).get("sections") or []
     headline = (landing_copy or {}).get("headline") or title
     subheadline = (landing_copy or {}).get("subheadline") or ""
-    body_parts = [
-        f"<section style=\"text-align:center;padding:16px 0;\"><h2 style=\"margin:0 0 8px;\">{headline}</h2>"
-        + (f"<p style=\"margin:0;color:#555;\">{subheadline}</p>" if subheadline else "")
+
+    # Responsive CSS (embedded). Keep minimal classes and mobile-first layout.
+    style_block = (
+        "<style>"
+        ".lp-container{max-width:1200px;margin:0 auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;}"
+        ".lp-hero{padding:24px 0;text-align:center;}"
+        ".lp-hero h2{margin:0 0 8px;font-size:28px;line-height:1.2;}"
+        ".lp-hero p{margin:0;color:#555;}"
+        ".lp-section{display:grid;grid-template-columns:1fr;gap:16px;align-items:center;padding:16px 0;}"
+        ".lp-section h3{margin:0 0 8px;}"
+        ".lp-img img{width:100%;height:auto;border-radius:12px;display:block;}"
+        ".lp-grid{display:grid;grid-template-columns:1fr;gap:12px;}"
+        ".cols-2{grid-template-columns:1fr 1fr;}"
+        ".cols-3{grid-template-columns:1fr 1fr 1fr;}"
+        "@media(min-width:768px){.lp-hero h2{font-size:34px;}}"
+        "@media(min-width:1024px){.lp-section{grid-template-columns:1fr 1fr;}.lp-section.alt .lp-img{order:2;}}"
+        "</style>"
+    )
+
+    body_parts: list[str] = [style_block, "<div class=\"lp-container\">", (
+        f"<section class=\"lp-hero\"><h2>{headline}</h2>"
+        + (f"<p>{subheadline}</p>" if subheadline else "")
         + "</section>"
-    ]
+    )]
+
     if sections:
+        effective_images = requested_images or []
         for idx, sec in enumerate(sections):
             sec_title = sec.get("title") or ""
             sec_body = sec.get("body") or ""
             specified_img = (sec.get("image_url") or "").strip()
-            effective_images = requested_images or []
             # Prefer Shopify CDN URLs over any non-Shopify URLs specified by the model
             if specified_img and ("cdn.shopify.com" in specified_img):
                 img_url = specified_img
@@ -739,32 +723,30 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
             else:
                 img_url = ""
             alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
-            img_tag = (
-                f"<img src=\"{img_url}\" alt=\"{alt}\" style=\"width:100%;max-width:720px;display:block;margin:12px auto;border-radius:8px;\"/>"
-                if img_url else ""
+            img_html = f"<div class=\"lp-img\"><img src=\"{img_url}\" alt=\"{alt}\" loading=\"lazy\"/></div>" if img_url else ""
+            text_html = (
+                "<div class=\"lp-text\">"
+                + (f"<h3>{sec_title}</h3>" if sec_title else "")
+                + (f"<p style=\"margin:8px 0 0;line-height:1.6;color:#334155;\">{sec_body}</p>" if sec_body else "")
+                + "</div>"
             )
-            body_parts.append(
-                "<section style=\"padding:16px 0;\">"
-                + (f"<h3 style=\"margin:0 0 8px;\">{sec_title}</h3>" if sec_title else "")
-                + (img_tag or "")
-                + (f"<p style=\"margin:8px 0 0;line-height:1.5;color:#333;\">{sec_body}</p>" if sec_body else "")
-                + "</section>"
-            )
+            alt_class = " alt" if (idx % 2 == 1) else ""
+            body_parts.append(f"<section class=\"lp-section{alt_class}\">{img_html}{text_html}</section>")
     else:
-        # No sections structured. Use model HTML if provided, but strip any <img ...> tags
+        # No sections structured. Use model HTML if provided, but strip any <img ...> tags, then append a responsive gallery
         html_override = (landing_copy or {}).get("html") if landing_copy else None
         if html_override:
             import re
-            # Remove all image tags to avoid leaking non-provided URLs
             desc_html = re.sub(r"<img\b[^>]*>", "", str(html_override), flags=re.IGNORECASE)
             body_parts.append(desc_html)
         effective_images = (requested_images or [])[:10]
         if effective_images:
-            gallery = "".join([
-                f"<img src=\"{u}\" alt=\"{title}\" style=\"width:100%;max-width:320px;margin:8px;border-radius:8px;\"/>"
-                for u in effective_images
+            imgs = "".join([
+                f"<img src=\"{u}\" alt=\"{title}\" loading=\"lazy\" />" for u in effective_images
             ])
-            body_parts.append(f"<div style=\"display:flex;flex-wrap:wrap;justify-content:center;\">{gallery}</div>")
+            body_parts.append(f"<div class=\"lp-grid cols-3 lp-gallery\">{imgs}</div>")
+
+    body_parts.append("</div>")  # close .lp-container
     return "".join(body_parts)
 
 

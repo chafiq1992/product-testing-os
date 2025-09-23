@@ -55,6 +55,7 @@ export default function HomePage(){
           <h1 className="font-semibold text-lg">Product Testing OS — Flows</h1>
         </div>
         <div className="flex items-center gap-2">
+          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
           <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
           </button>

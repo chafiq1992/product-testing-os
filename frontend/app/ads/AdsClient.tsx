@@ -1089,6 +1089,7 @@ export default function AdsClient(){
           </nav>
         </div>
         <div className="flex items-center gap-3 text-sm">
+          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={autoRun} onChange={async (e)=>{
               const v = e.target.checked
