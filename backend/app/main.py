@@ -35,21 +35,6 @@ from urllib.parse import urlparse
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
-# Best-effort startup migrations for external services (e.g., WhatsApp conversations)
-try:
-    from app.startup_migrations import ensure_conversations_server_ts
-
-    @app.on_event("startup")
-    async def _startup_migrations():
-        try:
-            ensure_conversations_server_ts()
-        except Exception:
-            # Non-fatal; continue startup
-            pass
-except Exception:
-    # If migration module is unavailable, continue silently
-    pass
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
