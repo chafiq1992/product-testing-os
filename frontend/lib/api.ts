@@ -237,7 +237,8 @@ export async function shopifyCreatePageFromCopy(payload:{
   product_gid?: string,
 }){
   const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, { ...payload, store: selectedStore() })
-  return data as { page_url?: string }
+  const page_url = (data as any)?.page_url ?? (data as any)?.url ?? undefined
+  return { page_url } as { page_url?: string }
 }
 
 export async function shopifyConfigureVariants(payload:{ product_gid:string, base_price?:number, sizes?:string[], colors?:string[], track_quantity?: boolean, quantity?: number, variants?: any[] }){
