@@ -6,8 +6,6 @@ import {
   Play,
   Save,
   CirclePlay,
-  AlertCircle,
-  CheckCircle2,
   FileText,
   Megaphone,
   Image as ImageIcon,
@@ -489,8 +487,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
 
   const selectedNode = flow.nodes.find(n=>n.id===selected)||null
   const [previewImage,setPreviewImage]=useState<string|null>(null)
-  const [showLeaveProtect,setShowLeaveProtect]=useState<boolean>(false)
-  const [pendingHref,setPendingHref]=useState<string|undefined>(undefined)
+  
 
   function log(level:'info'|'error', msg:string, nodeId?:string){ setRunLog(l=>[...l,{time:now(),level,msg,nodeId}]) }
 
@@ -505,16 +502,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
   // Persist last draft id for cross-tab navigation (e.g., return from Ads)
   useEffect(()=>{ try{ if(testId){ sessionStorage.setItem('ptos_last_test_id', testId) } }catch{} },[testId])
 
-  // Exit protection: warn on unload/navigate away
-  useEffect(()=>{
-    const handler = (e: BeforeUnloadEvent)=>{
-      e.preventDefault()
-      e.returnValue = ''
-      return ''
-    }
-    window.addEventListener('beforeunload', handler)
-    return ()=> window.removeEventListener('beforeunload', handler)
-  },[])
+  
 
   // Helper: Save draft then navigate to Ads, ensuring state is in DB when leaving
   async function handleGoToAds(){
@@ -1587,8 +1575,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
   }
 
   function handleExternalNav(href:string){
-    setPendingHref(href)
-    setShowLeaveProtect(true)
+    try{ window.location.href = href }catch{}
   }
 
   return (
@@ -1638,10 +1625,11 @@ Return the JSON object with all required keys and the complete HTML in the html 
               <CardTitle className="text-base flex items-center gap-2"><ImageIcon className="w-4 h-4"/>Product inputs</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              
               {/* New: analyze image to prefill inputs */}
               <div className="space-y-2">
                 <div className="text-xs text-slate-500 mb-1">Analyze product image to prefill</div>
-                <input className="w-full rounded-xl border px-3 py-2" placeholder="Paste image URL (or upload below)" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
+                <input className="w-full rounded-xl border px-3 py-2" placeholder="Paste image URL (or upload above)" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
                 {analysisImageUrl && (
                   <div className="w-full bg-slate-50 border rounded-xl overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1978,7 +1966,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
                   selected={selected===n.id}
                   onMouseDown={onNodeMouseDown}
                   onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))}
-                  active={running && activeNodeId===n.id}
+                  active={(running && activeNodeId===n.id) || n.run.status==='running'}
                   trace={(latestStatus as any)?.result?.trace||[]}
                   payload={(latestStatus as any)?.payload||null}
                   onUpdateNode={(patch)=> setFlow(f=>({...f, nodes:f.nodes.map(x=> x.id===n.id? ({...x, data:{...x.data, ...patch}}) : x)}))}
@@ -2051,40 +2039,12 @@ Return the JSON object with all required keys and the complete HTML in the html 
         </div>
       )}
 
-      {showLeaveProtect && (
-        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center" onClick={()=> setShowLeaveProtect(false)}>
-          <div className="bg-white rounded-xl shadow-lg p-4 w-[92vw] max-w-md" onClick={(e)=> e.stopPropagation()}>
-            <div className="font-semibold mb-2">Leave this flow?</div>
-            <div className="text-sm text-slate-600 mb-4">You have unsaved changes. Save your draft before leaving.</div>
-            <div className="flex justify-end gap-2">
-              <button className="rounded-xl px-3 py-1.5 border" onClick={()=>{ setShowLeaveProtect(false); setPendingHref(undefined) }}>Stay</button>
-              <button className="rounded-xl px-3 py-1.5 border" onClick={async()=>{ try{ await onSaveDraft() }catch{}; const href=pendingHref; setShowLeaveProtect(false); setPendingHref(undefined); if(href){ try{ window.location.href = href }catch{} } }}>Save & leave</button>
-              <button className="rounded-xl px-3 py-1.5 bg-rose-600 text-white" onClick={()=>{ const href=pendingHref; setShowLeaveProtect(false); setPendingHref(undefined); if(href){ try{ window.location.href = href }catch{} } }}>Leave without saving</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <footer className="fixed bottom-3 left-0 right-0 flex justify-center">
-        <div className="flex items-center gap-2 bg-white/80 backdrop-blur rounded-full shadow px-3 py-2 border">
-          <StatusBadge nodes={flow.nodes} />
-          <Separator className="mx-1 w-px h-5"/>
-          <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run</Button>
-          <Button variant="outline" size="sm" onClick={onSaveDraft}><Save className="w-4 h-4 mr-1"/>Save</Button>
-          <Button size="sm" onClick={()=>alert('Published!')}><CirclePlay className="w-4 h-4 mr-1"/>Publish</Button>
-        </div>
-      </footer>
+      
     </div>
   )
 }
 
-function StatusBadge({ nodes }:{nodes:FlowNode[]}){
-  const hasErr = nodes.some(n=>n.run.status==='error')
-  const allOk = nodes.every(n=> n.run.status==='idle' || n.run.status==='success')
-  if (hasErr) return <Badge className="bg-rose-100 text-rose-700"><AlertCircle className="w-3 h-3"/>Errors</Badge>
-  if (allOk) return <Badge className="bg-emerald-100 text-emerald-700"><CheckCircle2 className="w-3 h-3"/>Ready</Badge>
-  return <Badge className="bg-amber-100 text-amber-700">Running…</Badge>
-}
+ 
 
 function NodeShell({ node, selected, onMouseDown, onDelete, active, trace, payload, onUpdateNode, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onGalleryApprove, onSuggestPrompts, onApplyAdPrompt, onOfferGenerateImage, onOffersGenerate, onOfferGenerateFull }:{ node:FlowNode, selected:boolean, onMouseDown:(e:React.MouseEvent<HTMLDivElement>, n:FlowNode)=>void, onDelete:(id:string)=>void, active:boolean, trace:any[], payload:any, onUpdateNode:(patch:any)=>void, onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onGalleryApprove:(id:string)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onOfferGenerateImage:(id:string)=>void, onOffersGenerate:()=>void, onOfferGenerateFull:(id:string)=>void }){
   const style = { left: node.x, top: node.y } as React.CSSProperties
