@@ -96,6 +96,8 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const mode = forcedMode || params.get('mode')
   const isPromotionMode = mode==='promotion'
   const testParam = params.get('id')
+  const storeParam = params.get('store')
+  useEffect(()=>{ try{ if(storeParam) localStorage.setItem('ptos_store', storeParam) }catch{} },[storeParam])
 
   const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(isPromotionMode? defaultPromotionFlow() : defaultFlow())
   const [selected,setSelected]=useState<string|null>(null)

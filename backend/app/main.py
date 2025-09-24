@@ -938,11 +938,11 @@ async def api_get_flow(flow_id: str):
 
 
 @app.get("/api/flows")
-async def api_list_flows(limit: int | None = None):
+async def api_list_flows(limit: int | None = None, store: str | None = None):
     try:
         # When no limit provided, return all flows; otherwise cap to 200
         eff = None if (limit is None) else min(max(limit, 1), 200)
-        items = db.list_flows_light(limit=eff)
+        items = db.list_flows_light(limit=eff, store=store)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
@@ -1001,6 +1001,7 @@ class ShopifyCreateRequest(BaseModel):
     description: str
     landing_copy: dict
     image_urls: Optional[List[str]] = None
+    store: Optional[str] = None
 
 @app.post("/api/shopify/create_from_copy")
 async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
@@ -1012,7 +1013,7 @@ async def api_shopify_create_from_copy(req: ShopifyCreateRequest):
         payload["uploaded_images"] = req.image_urls
     angles = [req.angle] if req.angle else []
     creatives = []
-    page = create_product_and_page(payload, angles, creatives, req.landing_copy)
+    page = create_product_and_page(payload, angles, creatives, req.landing_copy, store=req.store)
     # persist minimal row for convenience
     test_id = str(uuid4())
     db.create_test_row(test_id, payload)
@@ -1026,6 +1027,7 @@ class ShopifyProductCreateRequest(BaseModel):
     angle: Optional[dict] = None
     title: str
     description: Optional[str] = None
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/product_create_from_title_desc")
@@ -1046,6 +1048,7 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
             track_quantity=payload.get("track_quantity"),
             quantity=payload.get("quantity"),
             variants=payload.get("variants"),
+            store=req.store,
         )
         prod = (result or {}).get("product") or {}
         report = (result or {}).get("report") or {"ok": True}
@@ -1057,22 +1060,24 @@ async def api_shopify_product_create_from_title_desc(req: ShopifyProductCreateRe
 class ShopifyUpdateDescriptionRequest(BaseModel):
     product_gid: str
     description_html: str
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/update_description")
 async def api_shopify_update_description(req: ShopifyUpdateDescriptionRequest):
-    prod = update_product_description(req.product_gid, req.description_html)
+    prod = update_product_description(req.product_gid, req.description_html, store=req.store)
     return {"product_gid": prod.get("id"), "handle": prod.get("handle")}
 
 
 class ShopifyUpdateTitleRequest(BaseModel):
     product_gid: str
     title: str
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/update_title")
 async def api_shopify_update_title(req: ShopifyUpdateTitleRequest):
-    prod = update_product_title(req.product_gid, req.title)
+    prod = update_product_title(req.product_gid, req.title, store=req.store)
     return {"product_gid": prod.get("id"), "handle": prod.get("handle")}
 
 
@@ -1081,6 +1086,7 @@ class ShopifyCreatePageFromCopyRequest(BaseModel):
     landing_copy: dict
     image_urls: Optional[List[str]] = None
     product_gid: Optional[str] = None
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/create_page_from_copy")
@@ -1097,7 +1103,7 @@ async def api_shopify_create_page_from_copy(req: ShopifyCreatePageFromCopyReques
     # Build the same HTML body that will be used on the page for optional product description update
     body_html = _build_page_body_html(req.title, req.landing_copy, req.image_urls or [], alt_texts)
     # Pass precomputed body_html to avoid rebuilding large HTML twice
-    page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts, body_html_override=body_html)
+    page = create_page_from_copy(req.title, req.landing_copy, req.image_urls or [], alt_texts, body_html_override=body_html, store=req.store)
     # Optionally update product description to match landing body
     try:
         if req.product_gid:
@@ -1114,6 +1120,7 @@ class ShopifyUploadImagesRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     landing_copy: Optional[dict] = None
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/upload_images")
@@ -1128,13 +1135,13 @@ async def api_shopify_upload_images(req: ShopifyUploadImagesRequest):
         sec_title = sec.get("title") or "Product image"
         sec_body = sec.get("body") or base_desc
         alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
-    verbose = upload_images_to_product_verbose(req.product_gid, req.image_urls or [], alt_texts)
+    verbose = upload_images_to_product_verbose(req.product_gid, req.image_urls or [], alt_texts, store=req.store)
     # Poll for images for a short time to allow Shopify to fetch/process
     images = []
     try:
         import time
         for _ in range(6):  # ~6 seconds total
-            images = list_product_images(req.product_gid)
+            images = list_product_images(req.product_gid, store=req.store)
             if images:
                 break
             time.sleep(1)
@@ -1160,6 +1167,7 @@ async def api_shopify_upload_files(
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     landing_copy: Optional[str] = Form(None),  # JSON string (optional)
+    store: Optional[str] = Form(None),
 ):
     sections = []
     try:
@@ -1182,14 +1190,14 @@ async def api_shopify_upload_files(
     for f in (files or []):
         blobs.append((f.filename, await f.read()))
 
-    verbose = upload_image_attachments_to_product(product_gid, blobs, alt_texts)
+    verbose = upload_image_attachments_to_product(product_gid, blobs, alt_texts, store=store)
 
     # Poll for images
     images = []
     try:
         import time
         for _ in range(8):  # ~8s
-            images = list_product_images(product_gid)
+            images = list_product_images(product_gid, store=store)
             if images:
                 break
             time.sleep(1)
@@ -1344,6 +1352,7 @@ class ShopifyConfigureVariantsRequest(BaseModel):
     track_quantity: Optional[bool] = None
     quantity: Optional[int] = None
     variants: Optional[List[VariantInput]] = None
+    store: Optional[str] = None
 
 
 @app.post("/api/shopify/configure_variants")
@@ -1357,6 +1366,7 @@ async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
         req.quantity,
         # Pydantic models serialize to dicts when dumped by FastAPI
         [v.model_dump() for v in (req.variants or [])] if isinstance(req.variants, list) else None,
+        store=req.store,
     )
     return res
 

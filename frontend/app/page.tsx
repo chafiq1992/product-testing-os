@@ -15,6 +15,7 @@ export default function HomePage(){
   const [loading,setLoading]=useState(true)
   const [showNew,setShowNew]=useState(false)
   const [creating,setCreating]=useState(false)
+  const [store,setStore]=useState<string>('irrakids')
   const router = useRouter()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ''
   function toDisplayUrl(u: string){
@@ -30,20 +31,31 @@ export default function HomePage(){
       return ok? u : `${apiBase}/proxy/image?url=${encodeURIComponent(u)}`
     }catch{ return u }
   }
-  useEffect(()=>{ (async()=>{ try{ const res=await listFlows(); setItems((res as any)?.data||[]) } finally{ setLoading(false) } })() },[])
+  useEffect(()=>{
+    (async()=>{
+      try{
+        let s = 'irrakids'
+        try{ s = (localStorage.getItem('ptos_store')||'irrakids') }catch{}
+        setStore(s)
+        const res=await listFlows(undefined, s)
+        setItems((res as any)?.data||[])
+      } finally{ setLoading(false) }
+    })()
+  },[])
   const studioBase = process.env.NEXT_PUBLIC_STUDIO_URL || ''
   async function startFlow(kind:'product'|'ads'|'promotion'){
     try{
       setCreating(true)
       const res = await saveDraft({
         product: { audience:'', benefits:[], pain_points:[] },
-        settings: { flow_type: kind },
+        settings: { flow_type: kind, store },
       })
       const id = (res as any)?.id
       if(!id){ setCreating(false); setShowNew(false); return }
-      if(kind==='ads') router.push(`/ads/?id=${id}`)
-      else if(kind==='promotion') router.push(`/promotion/?id=${id}`)
-      else router.push(`/studio/?id=${id}`)
+      const sfx = `&store=${encodeURIComponent(store)}`
+      if(kind==='ads') router.push(`/ads/?id=${id}${sfx}`)
+      else if(kind==='promotion') router.push(`/promotion/?id=${id}${sfx}`)
+      else router.push(`/studio/?id=${id}${sfx}`)
     }catch{
     }finally{ setCreating(false); setShowNew(false) }
   }
@@ -55,6 +67,16 @@ export default function HomePage(){
           <h1 className="font-semibold text-lg">Product Testing OS — Flows</h1>
         </div>
         <div className="flex items-center gap-2">
+          <select value={store} onChange={async (e)=>{
+            const val = e.target.value
+            setStore(val)
+            try{ localStorage.setItem('ptos_store', val) }catch{}
+            setLoading(true)
+            try{ const res=await listFlows(undefined, val); setItems((res as any)?.data||[]) } finally{ setLoading(false) }
+          }} className="rounded-xl border px-2 py-1 text-sm">
+            <option value="irrakids">irrakids</option>
+            <option value="irranova">irranova</option>
+          </select>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
           <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
@@ -69,7 +91,8 @@ export default function HomePage(){
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {items.map(it=> {
             const badge = (it as any).flow_type||'product'
-            const href = badge==='ads'? `/ads/?id=${it.id}` : badge==='promotion'? `/promotion/?id=${it.id}` : (studioBase? `${studioBase}?id=${it.id}` : `/studio/?id=${it.id}`)
+            const sfx = `&store=${encodeURIComponent(store)}`
+            const href = badge==='ads'? `/ads/?id=${it.id}${sfx}` : badge==='promotion'? `/promotion/?id=${it.id}${sfx}` : (studioBase? `${studioBase}?id=${it.id}${sfx}` : `/studio/?id=${it.id}${sfx}`)
             const badgeColor = badge==='ads'? 'bg-emerald-100 text-emerald-700' : badge==='promotion'? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-blue-100 text-blue-700'
             const badgeText = badge==='ads'? 'Create Ads' : badge==='promotion'? 'Create Promotion' : 'Create Product'
             async function onDelete(e: React.MouseEvent){

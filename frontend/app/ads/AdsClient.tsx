@@ -28,6 +28,8 @@ function Separator({ className='' }:{className?:string}){ return <div className=
 export default function AdsClient(){
   const params = useSearchParams()
   const flowId = params.get('id') || params.get('flow') || ''
+  const storeParam = params.get('store')
+  useEffect(()=>{ try{ if(storeParam) localStorage.setItem('ptos_store', storeParam) }catch{} },[storeParam])
   const [landingUrl,setLandingUrl]=useState<string>('')
   const [audience,setAudience]=useState<string>('Shoppers likely to buy this product')
   const [title,setTitle]=useState<string>('')

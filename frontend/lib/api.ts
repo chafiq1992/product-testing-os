@@ -1,6 +1,9 @@
 import axios from 'axios'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+function selectedStore(){
+  try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_store')||undefined) : undefined }catch{ return undefined }
+}
 export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string, sizes?:string[], colors?:string[] }){
   const form = new FormData()
   form.append('audience', payload.audience)
@@ -44,11 +47,12 @@ export async function saveDraft(payload:{
   flow?: any,
   ui?: any,
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
-  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
+  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string, store?: string },
   ads?: any,
   card_image?: string,
 }){
-  const {data} = await axios.post(`${base}/api/flows/draft`, payload)
+  const body = { ...payload, settings: { ...(payload.settings||{}), store: (payload as any)?.settings?.store ?? selectedStore() } }
+  const {data} = await axios.post(`${base}/api/flows/draft`, body)
   return data as { id:string, status:string }
 }
 
@@ -58,11 +62,12 @@ export async function updateDraft(id: string, payload:{
   flow?: any,
   ui?: any,
   prompts?: { angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string },
-  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string },
+  settings?: { flow_type?: 'product'|'ads'|'promotion', model?:string, advantage_plus?:boolean, adset_budget?:number, targeting?:any, countries?:string[], saved_audience_id?:string, store?: string },
   ads?: any,
   card_image?: string,
 }){
-  const {data} = await axios.put(`${base}/api/flows/draft/${id}`, payload)
+  const body = { ...payload, settings: { ...(payload.settings||{}), store: (payload as any)?.settings?.store ?? selectedStore() } }
+  const {data} = await axios.put(`${base}/api/flows/draft/${id}`, body)
   return data as { id:string, status:string }
 }
 
@@ -71,10 +76,14 @@ export async function getFlow(id: string){
   const {data} = await axios.get(`${base}/api/flows/${id}`)
   return data as { id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, product?:any, flow?:any, ui?:any, prompts?:any, settings?:any, ads?:any, created_at?:string }
 }
-export async function listFlows(limit?: number){
-  const q = typeof limit==='number'? `?limit=${limit}` : ''
+export async function listFlows(limit?: number, store?: string){
+  const parts: string[] = []
+  if(typeof limit==='number') parts.push(`limit=${limit}`)
+  const s = (store||selectedStore())
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
+  const q = parts.length? `?${parts.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/flows${q}`)
-  return data as { data: Array<{ id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, created_at?:string, flow_type?: 'product'|'ads'|'promotion' }>, error?:string }
+  return data as { data: Array<{ id:string, status:string, title?:string|null, card_image?:string|null, page_url?:string|null, created_at?:string, flow_type?: 'product'|'ads'|'promotion', store?: string }>, error?:string }
 }
 
 export async function deleteFlow(id: string){
@@ -150,7 +159,7 @@ export async function shopifyCreateFromCopy(payload:{
   landing_copy:any,
   image_urls?:string[]
 }){
-  const {data} = await axios.post(`${base}/api/shopify/create_from_copy`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/create_from_copy`, { ...payload, store: selectedStore() })
   return data as { page_url?:string|null, test_id?:string }
 }
 
@@ -197,7 +206,7 @@ export async function shopifyUploadProductImages(payload:{
   description?: string,
   landing_copy?: any
 }){
-  const {data} = await axios.post(`${base}/api/shopify/upload_images`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/upload_images`, { ...payload, store: selectedStore() })
   return data as { urls: string[], images?: any[] }
 }
 
@@ -207,17 +216,17 @@ export async function shopifyCreateProductFromTitleDesc(payload:{
   title: string,
   description?: string
 }){
-  const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/product_create_from_title_desc`, { ...payload, store: selectedStore() })
   return data as { product_gid?: string, handle?: string, report?: { ok?: boolean, options_updated?:{size_count:number,color_count:number}, variants_created?: number, inventory_items_updated?: number, skipped?: {field:string, reason:string}[], errors?: string[] }, error?: string }
 }
 
 export async function shopifyUpdateDescription(payload:{ product_gid:string, description_html:string }){
-  const {data} = await axios.post(`${base}/api/shopify/update_description`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/update_description`, { ...payload, store: selectedStore() })
   return data as { product_gid?: string, handle?: string }
 }
 
 export async function shopifyUpdateTitle(payload:{ product_gid:string, title:string }){
-  const {data} = await axios.post(`${base}/api/shopify/update_title`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/update_title`, { ...payload, store: selectedStore() })
   return data as { product_gid?: string, handle?: string }
 }
 
@@ -227,12 +236,12 @@ export async function shopifyCreatePageFromCopy(payload:{
   image_urls?: string[],
   product_gid?: string,
 }){
-  const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/create_page_from_copy`, { ...payload, store: selectedStore() })
   return data as { page_url?: string }
 }
 
 export async function shopifyConfigureVariants(payload:{ product_gid:string, base_price?:number, sizes?:string[], colors?:string[], track_quantity?: boolean, quantity?: number, variants?: any[] }){
-  const {data} = await axios.post(`${base}/api/shopify/configure_variants`, payload)
+  const {data} = await axios.post(`${base}/api/shopify/configure_variants`, { ...payload, store: selectedStore() })
   return data as { ok?: boolean, options_updated?:{size_count:number,color_count:number}, variants_created?: number, inventory_items_updated?: number, skipped?: {field:string, reason:string}[], errors?: string[] }
 }
 
@@ -248,6 +257,7 @@ export async function shopifyUploadProductFiles(payload:{
   if(payload.title) form.append('title', payload.title)
   if(payload.description) form.append('description', payload.description)
   if(payload.landing_copy) form.append('landing_copy', JSON.stringify(payload.landing_copy))
+  const s = selectedStore(); if(s) form.append('store', s)
   for(const f of (payload.files||[])) form.append('files', f)
   const {data} = await axios.post(`${base}/api/shopify/upload_files`, form, { headers:{'Content-Type':'multipart/form-data'} })
   return data as { urls: string[], images?: any[], per_image?: any[] }

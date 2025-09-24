@@ -178,7 +178,7 @@ def get_flow(flow_id: str) -> Optional[Dict[str, Any]]:
         }
 
 
-def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
+def list_flows_light(limit: int | None = None, store: str | None = None) -> list[Dict[str, Any]]:
     with SessionLocal() as session:
         # Include settings_json to derive flow_type without heavy loads
         q = session.query(
@@ -197,15 +197,30 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
         rows = q.all()
         out: list[Dict[str, Any]] = []
         for r in rows:
+            # Derive store from settings; default to 'irrakids' when missing for backwards compatibility
+            eff_store = "irrakids"
             flow_type = "product"
             try:
                 if r.settings_json:
                     sj = json.loads(r.settings_json)
+                    # Store affinity (multi-store support)
+                    s = (sj or {}).get("store")
+                    if isinstance(s, str) and s.strip():
+                        eff_store = s.strip()
                     t = (sj or {}).get("flow_type")
                     if isinstance(t, str) and t:
                         flow_type = t
             except Exception:
                 flow_type = "product"
+                eff_store = "irrakids"
+            # Optional server-side filter by store
+            try:
+                if isinstance(store, str) and store.strip():
+                    wanted = store.strip().lower()
+                    if (eff_store or "").strip().lower() != wanted:
+                        continue
+            except Exception:
+                pass
             # Derive a fallback card image if not explicitly set
             card_image = r.card_image
             if not card_image:
@@ -237,7 +252,8 @@ def list_flows_light(limit: int | None = None) -> list[Dict[str, Any]]:
                 "page_url": r.page_url,
                 "created_at": r.created_at.isoformat() + "Z",
                 "updated_at": r.updated_at.isoformat() + "Z",
-                "flow_type": flow_type,
+                    "flow_type": flow_type,
+                    "store": eff_store,
             })
         return out
 
