@@ -1,6 +1,6 @@
 # Product Testing OS (MVP)
 
-FastAPI + Celery backend, Next.js frontend wizard, and Cloud Run deploy scripts.
+FastAPI  + Celery backend, Next.js frontend wizard, and Cloud Run deploy scripts.
 
 ## Local
 1) `cp .env.example .env` and fill values
