@@ -273,7 +273,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
     + "From the given ANGLE and PRODUCT_INFO, write 5 HIGH‑CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra‑short option ≤30 characters. Include the primary keyword, one concrete benefit/outcome, and one unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
     + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand‑safe, concrete, and benefit‑led."
   )
-  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a CRO specialist and landing‑page copy engineer.
+  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a top-tier CRO marketer, market analyst, and web design expert. You are a CRO specialist and landing‑page copy engineer.
 
 GOAL
 Return ONE valid JSON object (no markdown, no prose) that contains persuasive copy AND a fully self‑contained HTML page styled with the ELEGANT MINIMAL design system below. The HTML MUST be a complete document (<!DOCTYPE html><html>…</html>) with one <style> block using only inline CSS. DO NOT return loose <section> fragments.
@@ -303,29 +303,31 @@ AUDIENCE & COPY
 - Match requested language if specified ("ar" for Fus’ha, "fr", or "en").
 
 ELEGANT MINIMAL — REQUIRED DESIGN SYSTEM (implement in <style>)
-Use these tokens, classes, and layout primitives exactly so pages render with the desired elegance:
+Use these tokens, classes, and layout primitives exactly so pages render with the desired elegance. Do not shrink desktop width and do not let hero overlays touch or overlap the feature gallery. Include a separate horizontal image slider section in addition to the feature gallery:
 :root { --brand:#004AAD; --ink:#222; --muted:#666; --bg:#fafafa; --card:#fff; --pill:#f1f7ff; --shadow:0 8px 28px rgba(0,0,0,.08); }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5} a{color:inherit;text-decoration:none} img{display:block;width:100%;height:auto;border-radius:12px} .container{max-width:1080px;margin:0 auto;padding:20px} .grid{display:grid;gap:18px} .g-2{grid-template-columns:repeat(2,minmax(0,1fr))} .g-3{grid-template-columns:repeat(3,minmax(0,1fr))} @media(max-width:840px){.g-2,.g-3{grid-template-columns:1fr}} .section{padding:34px 0} .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:18px} .pill{background:var(--pill);border-radius:999px;padding:10px 14px;font-weight:600;color:var(--brand);display:inline-block} .badge{background:#eef4ff;border:1px solid #dfe9ff;color:var(--brand);border-radius:10px;padding:10px 12px;font-weight:700;display:inline-block} h1{font-size:clamp(28px,4vw,42px);margin:0 0 8px} h2.section-title{font-size:clamp(22px,3.2vw,30px);margin:0 0 12px} p.section-sub{margin:0 0 18px;color:var(--muted)} header{position:sticky;top:0;background:#fff;border-bottom:1px solid #eee;z-index:10} header .bar{display:flex;align-items:center;gap:12px;height:64px} .brand{width:40px;height:40px;border-radius:10px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700} .hero{padding:40px 0;background:linear-gradient(135deg,#fef9f9,#f1f7ff)} .cta-row{display:flex;gap:12px;flex-wrap:wrap} .btn{padding:14px 22px;border-radius:999px;font-weight:700;border:0;cursor:pointer} .btn-primary{background:var(--brand);color:#fff} .btn-secondary{background:#ffd700;color:#333} .kpis{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))} @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}} .kpi{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:16px;display:flex;gap:12px;align-items:center} .kpi-icon{width:36px;height:36px;border-radius:10px;background:var(--pill);display:grid;place-items:center;color:var(--brand);font-weight:900} .shape{position:absolute;inset:auto auto -20px -20px;width:120px;height:120px;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.12),transparent 60%);filter:blur(2px);border-radius:50%} .specs{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))} @media(max-width:760px){.specs{grid-template-columns:1fr}} .spec{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:14px} .review{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:16px} .footer{color:#888;border-top:1px solid #eee;padding:24px 0;margin-top:24px;text-align:center}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5} a{color:inherit;text-decoration:none} img{display:block;width:100%;height:auto;border-radius:12px} .container{max-width:1200px;margin:0 auto;padding:20px} .grid{display:grid;gap:18px} .g-2{grid-template-columns:repeat(2,minmax(0,1fr))} .g-3{grid-template-columns:repeat(3,minmax(0,1fr))} @media(max-width:840px){.g-2,.g-3{grid-template-columns:1fr}} .section{padding:34px 0} .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:18px} .pill{background:var(--pill);border-radius:999px;padding:10px 14px;font-weight:600;color:var(--brand);display:inline-block} .badge{background:#eef4ff;border:1px solid #dfe9ff;color:var(--brand);border-radius:10px;padding:10px 12px;font-weight:700;display:inline-block} h1{font-size:clamp(28px,4vw,42px);margin:0 0 8px} h2.section-title{font-size:clamp(22px,3.2vw,30px);margin:0 0 12px} p.section-sub{margin:0 0 18px;color:var(--muted)} header{position:sticky;top:0;background:#fff;border-bottom:1px solid #eee;z-index:10} header .bar{display:flex;align-items:center;gap:12px;height:64px} .brand{width:40px;height:40px;border-radius:10px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700} .hero{padding:40px 0;background:linear-gradient(135deg,#fef9f9,#f1f7ff)} .cta-row{display:flex;gap:12px;flex-wrap:wrap} .btn{padding:14px 22px;border-radius:999px;font-weight:700;border:0;cursor:pointer} .btn-primary{background:var(--brand);color:#fff} .btn-secondary{background:#ffd700;color:#333} .kpis{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))} @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}} .kpi{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:16px;display:flex;gap:12px;align-items:center} .kpi-icon{width:36px;height:36px;border-radius:10px;background:var(--pill);display:grid;place-items:center;color:var(--brand);font-weight:900} .shape{position:absolute;inset:auto auto -20px -20px;width:120px;height:120px;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.12),transparent 60%);filter:blur(2px);border-radius:50%} .specs{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))} @media(max-width:760px){.specs{grid-template-columns:1fr}} .spec{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:14px} .review{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:16px} .footer{color:#888;border-top:1px solid #eee;padding:24px 0;margin-top:24px;text-align:center} .slider{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding-bottom:6px} .slide{flex:0 0 auto;width:clamp(180px,24vw,280px);scroll-snap-align:start} .slide img{border-radius:12px}
 
 HTML LAYOUT ORDER (must follow)
 1) Hero: gradient background, big headline + subhead, CTA buttons (primary+secondary), optional hero image inside .card with a .shape overlay.
 2) Highlights: 4–6 benefit "KPIs" using .kpi items with minimalist text icons (use glyphs: ◎, ✓, ↺, ≡; NO external icon files).
 3) Colors (optional): render color name pills (.pill).
 4) Feature Gallery: up to 10 .card items each with <img> (loading="lazy") + short copy (h3 + p.section-sub).
-5) Quick Specs: two‑column grid using .specs and .spec.
-6) Trust Badges: 3–5 .badge items (Cash on Delivery, 24–48h City Delivery, Easy Returns, WhatsApp Support).
-7) Reviews: 2–3 .review cards (use generic labels if names missing).
-8) CTA Block: strong headline + buttons.
-9) Footer: small print + contact.
+5) Horizontal Image Slider: separate .slider with .slide items using the same images; horizontal scroll with snap, no overlap with the gallery.
+6) Quick Specs: two‑column grid using .specs and .spec.
+7) Trust Badges: 3–5 .badge items (Cash on Delivery, 24–48h City Delivery, Easy Returns, WhatsApp Support).
+8) Reviews: 2–3 .review cards (use generic labels if names missing).
+9) CTA Block: strong headline + buttons.
+10) Footer: small print + contact.
 
 ACCESSIBILITY & SEO
 - Provide <title> from headline and a concise <meta name="description"> from subheadline.
 - All images MUST have alt text describing the content.
 - Buttons are <a> links styled as buttons; use CTA URLs (fallback "#").
 
-STRICT VALIDATION
+STRICT VALIDATION & AUTO-REPAIR
 - The html string MUST include: <!DOCTYPE html>, <html>, <head> with <style>, and <body>.
 - Do NOT return raw <section> blocks. If your draft begins with <section>, REBUILD as a full document.
+- If any style="…" attributes appear, remove them and use the design classes above instead.
 - Use only provided image URLs.
 - Return exactly ONE JSON object and nothing else.
 
