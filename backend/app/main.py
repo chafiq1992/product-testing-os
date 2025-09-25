@@ -14,7 +14,7 @@ from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
-from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product
+from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
@@ -1107,7 +1107,12 @@ async def api_shopify_create_page_from_copy(req: ShopifyCreatePageFromCopyReques
     # Optionally update product description to match landing body
     try:
         if req.product_gid:
-            update_product_description(req.product_gid, body_html)
+            update_product_description(req.product_gid, body_html, store=req.store)
+            try:
+                # Link landing page to product via product metafield for visibility in admin
+                _link_product_landing_page(req.product_gid, page.get("page_gid"), store=req.store)
+            except Exception:
+                pass
     except Exception:
         pass
     return {"page_url": page.get("url")}

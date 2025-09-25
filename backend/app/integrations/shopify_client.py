@@ -130,6 +130,26 @@ mutation PublishProduct($id: ID!, $publicationIds: [ID!]!) {
 }
 """
 
+# Set metafields on owners (e.g., product)
+METAFIELDS_SET = """
+mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+  metafieldsSet(metafields: $metafields) {
+    metafields { id key namespace owner { id } }
+    userErrors { field message }
+  }
+}
+"""
+
+# Create a metafield definition so it appears in Admin UI
+METAFIELD_DEFINITION_CREATE = """
+mutation MetafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
+  metafieldDefinitionCreate(definition: $definition) {
+    createdDefinition { id name namespace key type ownerType }
+    userErrors { field message }
+  }
+}
+"""
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _gql(query: str, variables: dict):
     if not SHOP:
@@ -243,6 +263,8 @@ def _gql_store(store: str | None, query: str, variables: dict):
         or (data or {}).get("pageCreate", {}).get("userErrors")
         or (data or {}).get("productUpdate", {}).get("userErrors")
         or (data or {}).get("publishablePublish", {}).get("userErrors")
+        or (data or {}).get("metafieldsSet", {}).get("userErrors")
+        or (data or {}).get("metafieldDefinitionCreate", {}).get("userErrors")
     )
     if ue:
         raise RuntimeError(f"GraphQL userErrors: {ue}")
@@ -659,6 +681,21 @@ def publish_product_all_channels(product_gid: str, *, store: str | None = None) 
         return {"ok": False, "error": str(e)}
 
 
+def publish_page_all_channels(page_gid: str, *, store: str | None = None) -> dict:
+    """Publish a page to all available sales channels (publications)."""
+    try:
+        pubs = _gql_store(store, PUBLICATIONS_QUERY, {})
+        nodes = ((pubs or {}).get("publications") or {}).get("nodes") or []
+        pids = [n.get("id") for n in nodes if isinstance(n, dict) and n.get("id")]
+        if not pids:
+            return {"ok": True, "published": 0}
+        _gql_store(store, PUBLISH_PRODUCT, {"id": page_gid, "publicationIds": pids})
+        return {"ok": True, "published": len(pids)}
+    except Exception as e:
+        # best-effort; return error but do not raise
+        return {"ok": False, "error": str(e)}
+
+
 def configure_variants_for_product(
     product_gid: str,
     base_price: float | None,
@@ -801,6 +838,18 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
     except Exception:
         pass
 
+    # Try to link landing page to product via a product metafield (best-effort)
+    try:
+        _link_product_landing_page(pdata["id"], page["id"], store=store)
+    except Exception:
+        pass
+
+    # Publish page to all sales channels (best-effort)
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
+
     # Include Shopify CDN image URLs used/attached so the UI can display them later
     return {
         "product_gid": pdata["id"],
@@ -911,7 +960,53 @@ def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] 
             raise
     cfg = _get_store_config(store)
     page_url = f"https://{cfg['SHOP']}/pages/{page['handle']}"
+    # Best-effort publish page so it's visible in Online Store
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
     return {"page_gid": page["id"], "url": page_url}
+
+
+def _link_product_landing_page(product_gid: str, page_gid: str, *, store: str | None = None) -> None:
+    """Link a page to a product using a product metafield custom.landing_page (type: page_reference)."""
+    try:
+        _gql_store(store, METAFIELDS_SET, {
+            "metafields": [{
+                "ownerId": product_gid,
+                "namespace": "custom",
+                "key": "landing_page",
+                "type": "page_reference",
+                "value": page_gid,
+            }]
+        })
+        return
+    except RuntimeError as e:
+        msg = str(e)
+        # If definition missing, create and retry once
+        if "definition" in msg.lower():
+            _gql_store(store, METAFIELD_DEFINITION_CREATE, {
+                "definition": {
+                    "name": "Landing page",
+                    "namespace": "custom",
+                    "key": "landing_page",
+                    "type": "page_reference",
+                    "ownerType": "PRODUCT",
+                    "description": "Landing page associated with this product",
+                    "visibleToStorefront": True,
+                }
+            })
+            _gql_store(store, METAFIELDS_SET, {
+                "metafields": [{
+                    "ownerId": product_gid,
+                    "namespace": "custom",
+                    "key": "landing_page",
+                    "type": "page_reference",
+                    "value": page_gid,
+                }]
+            })
+            return
+        raise
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
