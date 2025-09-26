@@ -1274,7 +1274,7 @@ Return the JSON object with all required keys and the complete HTML in the html 
       }
       const lc = sanitizeLandingCopy(lcRaw, finalAllImagesForPage, vTitle)
       // Create landing page and also update product description server-side with full landing body
-      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: finalAllImagesForPage, product_gid })
+      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: [], product_gid })
       // Append Create Landing and Meta nodes to show path
       let landingNodeId:string|undefined
       setFlow(f=>{

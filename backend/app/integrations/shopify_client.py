@@ -875,16 +875,20 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
     style_block = (
         "<style>"
         ".lp-container{max-width:1200px;margin:0 auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;}"
-        ".lp-hero{padding:24px 0;text-align:center;}"
-        ".lp-hero h2{margin:0 0 8px;font-size:28px;line-height:1.2;}"
-        ".lp-hero p{margin:0;color:#555;}"
-        ".lp-section{display:grid;grid-template-columns:1fr;gap:16px;align-items:center;padding:16px 0;}"
-        ".lp-section h3{margin:0 0 8px;}"
-        ".lp-img img{width:100%;height:auto;border-radius:12px;display:block;}"
+        ".lp-hero{padding:32px 0;text-align:center;background:linear-gradient(90deg,#ff7e5f,#feb47b);border-radius:16px;color:#fff;margin-top:12px;}"
+        ".lp-hero h1,.lp-hero h2{margin:0 0 8px;font-size:30px;line-height:1.2;}"
+        ".lp-hero p{margin:0;color:#fffbe8;}"
+        ".lp-section{display:grid;grid-template-columns:1fr;gap:18px;align-items:center;padding:18px 0;}"
+        ".lp-section h3{margin:0 0 8px;font-size:18px;}"
+        ".lp-text p{margin:8px 0 0;line-height:1.6;color:#334155;}"
+        ".lp-img{position:relative;}"
+        ".lp-img img{width:100%;height:auto;border-radius:12px;display:block;box-shadow:0 6px 20px rgba(0,0,0,0.12);}"
+        ".lp-img.placeholder{border:1px dashed #cbd5e1;border-radius:12px;min-height:160px;display:flex;align-items:center;justify-content:center;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.06),transparent 60%);}"
+        ".lp-img.placeholder .lp-ph{font-size:12px;color:#64748b;padding:8px 10px;background:#fff;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.08);}"
         ".lp-grid{display:grid;grid-template-columns:1fr;gap:12px;}"
         ".cols-2{grid-template-columns:1fr 1fr;}"
         ".cols-3{grid-template-columns:1fr 1fr 1fr;}"
-        "@media(min-width:768px){.lp-hero h2{font-size:34px;}}"
+        "@media(min-width:768px){.lp-hero h1,.lp-hero h2{font-size:36px;}}"
         "@media(min-width:1024px){.lp-section{grid-template-columns:1fr 1fr;}.lp-section.alt .lp-img{order:2;}}"
         "</style>"
     )
@@ -909,7 +913,11 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
             else:
                 img_url = ""
             alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
-            img_html = f"<div class=\"lp-img\"><img src=\"{img_url}\" alt=\"{alt}\" loading=\"lazy\"/></div>" if img_url else ""
+            img_html = (
+                f"<div class=\"lp-img\"><img src=\"{img_url}\" alt=\"{alt}\" loading=\"lazy\"/></div>"
+                if img_url else
+                "<div class=\"lp-img placeholder\"><div class=\"lp-ph\">Click to add image</div></div>"
+            )
             text_html = (
                 "<div class=\"lp-text\">"
                 + (f"<h3>{sec_title}</h3>" if sec_title else "")
@@ -931,6 +939,10 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
                 f"<img src=\"{u}\" alt=\"{title}\" loading=\"lazy\" />" for u in effective_images
             ])
             body_parts.append(f"<div class=\"lp-grid cols-3 lp-gallery\">{imgs}</div>")
+        else:
+            # No images provided → show a row of placeholders to indicate slots
+            ph = "".join(["<div class=\"lp-img placeholder\"><div class=\"lp-ph\">Add image</div></div>" for _ in range(3)])
+            body_parts.append(f"<div class=\"lp-grid cols-3 lp-gallery\">{ph}</div>")
 
     body_parts.append("</div>")  # close .lp-container
     return "".join(body_parts)
