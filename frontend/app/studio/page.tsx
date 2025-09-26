@@ -14,7 +14,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle, getFlow } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 // Resolve displayable image URLs: avoid proxy for same-origin and trusted hosts
@@ -200,6 +200,27 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
         const p = (t as any)?.payload||{}
         hydrateFromPayload(p)
         setTestId((t as any)?.id)
+        // 2b) If legacy tests payload is missing flow or nodes, try structured flow as fallback
+        try{
+          const hasNodes = !!(p && p.flow && Array.isArray(p.flow.nodes) && (p.flow.nodes.length>0))
+          if(!hasNodes){
+            const f = await getFlow(testParam)
+            if(f && (f as any)?.flow && Array.isArray((f as any).flow?.nodes)){
+              const prod = ((f as any)?.product)||{}
+              const payload2 = {
+                ...(prod||{}),
+                uploaded_images: Array.isArray((prod as any)?.uploaded_images)? (prod as any).uploaded_images : [],
+                flow: (f as any).flow,
+                ui: (f as any).ui,
+                prompts: (f as any).prompts,
+                settings: (f as any).settings,
+                ...(typeof (f as any)?.card_image==='string'? { card_image: (f as any).card_image } : {}),
+              }
+              hydrateFromPayload(payload2)
+              try{ sessionStorage.setItem(`flow_cache_${(t as any)?.id}`, JSON.stringify(payload2)) }catch{}
+            }
+          }
+        }catch{}
         // Persist to cache for instant subsequent opens
         try{ sessionStorage.setItem(`flow_cache_${(t as any)?.id}`, JSON.stringify(p)) }catch{}
       }catch{}

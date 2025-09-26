@@ -4,6 +4,9 @@ set -euo pipefail
 PROJECT_ID="your-gcp-project"
 REGION="europe-west1"
 REPO="pto-repo"
+# Optional: name of the GCS bucket to persist /app/uploads (set to empty to skip mounting)
+# Example: UPLOADS_BUCKET="ptos-uploads-yourid"
+UPLOADS_BUCKET=""
 
 CELERY_BROKER_URL="rediss://:<password>@<host>:<port>"
 CELERY_RESULT_BACKEND="$CELERY_BROKER_URL"
@@ -42,7 +45,24 @@ YAML
 # Secrets must exist with latest versions:
 # OPENAI_API_KEY, SHOPIFY_ACCESS_TOKEN, META_ACCESS_TOKEN
 
-gcloud run deploy "$API_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$API_IMG" --platform managed --allow-unauthenticated --port 8000  --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest  --min-instances=0 --max-instances=5
+API_FLAGS=(
+  --project "$PROJECT_ID" --region "$REGION" --image "$API_IMG" --platform managed
+  --allow-unauthenticated --port 8000
+  --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND"
+  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
+  --min-instances=0 --max-instances=5
+)
+
+# If a bucket is provided, mount it at /app/uploads via Cloud Storage FUSE
+if [ -n "$UPLOADS_BUCKET" ]; then
+  echo "[INFO] Mounting GCS bucket gs://$UPLOADS_BUCKET at /app/uploads"
+  API_FLAGS+=(
+    --add-volume name=uploads,type=cloud-storage,bucket=$UPLOADS_BUCKET
+    --add-volume-mount volume=uploads,mount-path=/app/uploads
+  )
+fi
+
+gcloud run deploy "$API_SVC" "${API_FLAGS[@]}"
 
 API_URL=$(gcloud run services describe "$API_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "API deployed at: $API_URL"
