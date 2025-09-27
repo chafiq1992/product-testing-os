@@ -2048,6 +2048,7 @@ Return ONLY the JSON object described in Output Contract.`)
                   onOfferGenerateFull={(id)=> offerGenerateFull(id)}
                   onAppendToGallery={(urls)=> appendImagesToGalleryAuto(urls)}
                   productColors={colors}
+                  globalLandingPrompt={landingCopyPrompt}
                 />
               )}
             </CardContent>
@@ -2269,7 +2270,7 @@ function traceForNode(node:FlowNode, trace:any[]){
   return []
 }
 
-function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull, onAppendToGallery, productColors }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void, onAppendToGallery:(urls:string[])=>void, productColors: string[] }){
+function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUpdateRun, savedAudiences, onAngleGenerate, onAngleApprove, onTitleContinue, onGeminiGenerate, onSuggestPrompts, onApplyAdPrompt, onGalleryApprove, onExternalNav, onOfferGenerateFull, onAppendToGallery, productColors, globalLandingPrompt }:{ node:FlowNode, latestTrace:any[], onPreview:(url:string)=>void, onUpdateNodeData:(id:string, patch:any)=>void, onUpdateRun:(id:string, patch:Partial<RunState>)=>void, savedAudiences:{id:string,name:string}[], onAngleGenerate:(id:string)=>void, onAngleApprove:(id:string)=>void, onTitleContinue:(id:string)=>void, onGeminiGenerate:(id:string, opts?: any)=>void, onSuggestPrompts:(id:string)=>void, onApplyAdPrompt:(id:string)=>void, onGalleryApprove:(id:string)=>void, onExternalNav:(href:string)=>void, onOfferGenerateFull:(id:string)=>void, onAppendToGallery:(urls:string[])=>void, productColors: string[], globalLandingPrompt: string }){
   const [productGid,setProductGid]=useState<string>('')
   const [selectedUrls,setSelectedUrls]=useState<Record<string,boolean>>({})
   const [landingInspectorMode,setLandingInspectorMode] = useState<'preview'|'html'>('preview')
@@ -2551,9 +2552,26 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             try{
               const url = String((node.run?.output||{} as any)?.url||'')
               const lc = ((node.run?.output||{} as any)?.landing_copy)||null
+              const promptText = String(((node.run?.output||{} as any)?.prompt)||'')
               const html = String((lc||{} as any)?.html||'')
               return (
                 <div className="space-y-2">
+                  {/* Prompt sent to LLM */}
+                  {promptText && (
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Prompt sent</div>
+                      <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto border rounded-lg max-h-[180px] bg-slate-50">{promptText}</pre>
+                    </div>
+                  )}
+
+                  {/* Raw JSON output from LLM */}
+                  {lc && (
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-slate-500">Output (JSON)</div>
+                      <pre className="text-[11px] p-3 whitespace-pre overflow-auto border rounded-lg max-h-[220px] bg-slate-50">{JSON.stringify(lc, null, 2)}</pre>
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-2 justify-between">
                     <div className="flex items-center gap-1">
                       <button onClick={()=> setLandingInspectorMode('preview')} className={`text-[11px] px-2 py-0.5 rounded ${landingInspectorMode==='preview'?'bg-white border':'border-transparent'}`}>Preview</button>
@@ -2633,6 +2651,14 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               </div>
               <div className="flex items-center gap-2 justify-end mt-2">
                 <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean)}>Approve</Button>
+              </div>
+              <div className="mt-3 space-y-1">
+                <div className="text-[11px] text-slate-500">Landing prompt override</div>
+                <Textarea rows={6} value={String(node.data?.landing_prompt||'')} onChange={e=> onUpdateNodeData(node.id,{ landing_prompt: e.target.value })} />
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] text-slate-500">If empty, the app default prompt will be used.</div>
+                  <Button size="sm" variant="outline" onClick={()=> onUpdateNodeData(node.id,{ landing_prompt: globalLandingPrompt })}>Use app default</Button>
+                </div>
               </div>
             </div>
           ) : (
