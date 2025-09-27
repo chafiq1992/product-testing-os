@@ -860,13 +860,18 @@ def create_product_and_page(payload: dict, angles: list, creatives: list, landin
 
 
 def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:
-    """Build final page HTML ensuring that only provided images are embedded.
+    """Build final page HTML.
 
-    Preference order:
-    1) If structured sections are provided, render them and map images from requested_images by index.
-    2) Otherwise, if model provided an HTML blob, strip any <img> tags and append a gallery of provided images (up to 10).
-    3) Fallback to a simple gallery if nothing else is available.
+    Updated preference order (to honor rich HTML produced by the model):
+    1) If model provided an HTML blob (landing_copy.html), return it as-is (assumed self-contained per contract).
+    2) Else, if structured sections are provided, render them and map images from requested_images by index.
+    3) Else, fallback to a simple gallery if nothing else is available.
     """
+    html_override = (landing_copy or {}).get("html") if landing_copy else None
+    if html_override:
+        # Trust the model's HTML when provided (prompt requires self-contained, accessible HTML)
+        return str(html_override)
+
     sections = (landing_copy or {}).get("sections") or []
     headline = (landing_copy or {}).get("headline") or title
     subheadline = (landing_copy or {}).get("subheadline") or ""
@@ -927,12 +932,7 @@ def _build_page_body_html(title: str, landing_copy: dict | None, requested_image
             alt_class = " alt" if (idx % 2 == 1) else ""
             body_parts.append(f"<section class=\"lp-section{alt_class}\">{img_html}{text_html}</section>")
     else:
-        # No sections structured. Use model HTML if provided, but strip any <img ...> tags, then append a responsive gallery
-        html_override = (landing_copy or {}).get("html") if landing_copy else None
-        if html_override:
-            import re
-            desc_html = re.sub(r"<img\b[^>]*>", "", str(html_override), flags=re.IGNORECASE)
-            body_parts.append(desc_html)
+        # No sections structured. Fallback to responsive gallery only
         effective_images = (requested_images or [])[:10]
         if effective_images:
             imgs = "".join([
