@@ -294,66 +294,74 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
     + "From the given ANGLE and PRODUCT_INFO, write 5 HIGH‑CONVERTING product title options for {audience}. Each ≤60 characters, plus one extra ultra‑short option ≤30 characters. Include the primary keyword, one concrete benefit/outcome, and one unique differentiator (material/feature/offer). Use specific power words, no fluff, no emojis, no ALL CAPS.\n"
     + "Then pick the single best option and output ONLY valid JSON: {\\\"title\\\": string, \\\"description\\\": string}. The description should be 1–2 sentences, brand‑safe, concrete, and benefit‑led."
   )
-  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a top-tier CRO marketer, market analyst, and web design expert. You are a CRO specialist and landing‑page copy engineer.
+  const [landingCopyPrompt,setLandingCopyPrompt]=useState<string>(`You are a CRO specialist and landing‑page copy engineer.
 
-GOAL
-Return ONE valid JSON object (no markdown, no prose) that contains persuasive copy AND a fully self‑contained HTML page styled with the ELEGANT MINIMAL design system below. The HTML MUST be a complete document (<!DOCTYPE html><html>…</html>) with one <style> block using only inline CSS. DO NOT return loose <section> fragments.
+Goal
+Produce ONE valid JSON object with high‑converting landing copy AND a complete, self‑contained HTML page that embeds only the image URLs provided by the user. No markdown, no prose outside JSON.
 
-OUTPUT CONTRACT
-Return a single JSON object with keys:
-- headline (string)
-- subheadline (string)
-- sections (array of { id, title, body, image_url|null, image_alt })
-  Recommended IDs: "hero", "highlights", "colors", "feature_gallery", "quick_specs", "trust_badges", "reviews", "cta_block"
-- faq (array of { q, a })
-- cta ({ primary_label, primary_url, secondary_label, secondary_url })
-- html (string) — a COMPLETE, mobile‑first page using INLINE CSS ONLY (no external CSS/JS)
-- assets_used (object) mapping provided images used. Keys: { hero: string|null, feature_gallery: string[] }
+Output Contract
+Return exactly this JSON shape:
+{
+  "headline": string,
+  "subheadline": string,
+  "sections": [ { "id": "hero"|"highlights"|"feature_gallery"|"quick_specs"|"trust_badges"|"reviews"|"cta_block"|"colors", "title": string, "body": string, "image_url": string|null, "image_alt": string } ],
+  "faq": [ { "q": string, "a": string } ],
+  "cta": { "primary_label": string, "primary_url": string, "secondary_label": string|null, "secondary_url": string|null },
+  "html": string,
+  "assets_used": { "hero": string|null, "feature_gallery": string[] }
+}
 
-IMAGE RULES
-- Use ONLY image URLs provided by the user. NEVER invent URLs.
-- Prefer an image labeled "hero" (or the first wide image) for the hero.
-- Map remaining images to feature_gallery (≤10).
-- If "colors" are provided in input, render a Colors section with named pills only (no images).
-- Every meaningful image MUST have descriptive image_alt. If no suitable image, set image_url = null.
+Strict Section Requirements
+- hero: One big idea + 2 short lines + 1–2 CTAs. Include ONE specific proof point above the fold (e.g., “24–48h city delivery”, “Non‑slip sole tested on tile”). Use the best available image as hero.
+- highlights: 4–6 concise, concrete bullets; preempt 2 objections (fit, durability, shipping) in bullets.
+- feature_gallery: 3–10 images mapped from provided image URLs; short captions with specific benefits.
+- quick_specs: materials, sizes, colors, delivery window; write specifics (numbers, materials, windows).
+- trust_badges: COD, 24–48h delivery (city), Easy Returns, WhatsApp Support.
+- reviews: 2–4 short quotes with tangible benefits (“stays on during play”, “warm after 2 hours”).
+- cta_block: benefit‑led headline + action‑oriented button (“Get Yours Today”, “Try Risk‑Free”). Add helper microcopy near CTA (“COD available”, “24–48h city delivery”).
 
-AUDIENCE & COPY
-- Default audience: parents in Morocco (warm, trustworthy, concise).
-- Focus on benefits and outcomes (comfort, durability, safety, easy care). Use short paragraphs and bullets.
-- If region == "MA": include trust signals (Cash on Delivery, 24–48h city delivery, easy returns, WhatsApp support).
-- Match requested language if specified ("ar" for Fus’ha, "fr", or "en").
+Angle & Copy Rules
+- Persona & Pain: Identify top 1–2 buyer personas; hero copy must state their #1 pain and desired outcome.
+- Angle: Choose ONE sharp angle (Safety, Comfort, Speed, Savings) and keep it consistent across sections.
+- Offer Framing: Surface a concrete proof point above the fold.
+- Specificity: Use numbers, materials, sizes, delivery windows, named features. No hype, no emojis, no ALL CAPS.
+- Tone: confident, plain‑spoken, brand‑safe.
+- Language: default English; if {LANGUAGE} provided, write naturally in that language.
+- Mobile First: lines ≤ 72 chars; scannable bullets.
 
-ELEGANT MINIMAL — REQUIRED DESIGN SYSTEM (implement in <style>)
-Use these tokens, classes, and layout primitives exactly so pages render with the desired elegance. Do not shrink desktop width and do not let hero overlays touch or overlap the feature gallery. Include a separate horizontal image slider section in addition to the feature gallery:
-:root { --brand:#004AAD; --ink:#222; --muted:#666; --bg:#fafafa; --card:#fff; --pill:#f1f7ff; --shadow:0 8px 28px rgba(0,0,0,.08); }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5} a{color:inherit;text-decoration:none} img{display:block;width:100%;height:auto;border-radius:12px} .container{max-width:1200px;margin:0 auto;padding:20px} .grid{display:grid;gap:18px} .g-2{grid-template-columns:repeat(2,minmax(0,1fr))} .g-3{grid-template-columns:repeat(3,minmax(0,1fr))} @media(max-width:840px){.g-2,.g-3{grid-template-columns:1fr}} .section{padding:34px 0} .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:18px} .pill{background:var(--pill);border-radius:999px;padding:10px 14px;font-weight:600;color:var(--brand);display:inline-block} .badge{background:#eef4ff;border:1px solid #dfe9ff;color:var(--brand);border-radius:10px;padding:10px 12px;font-weight:700;display:inline-block} h1{font-size:clamp(28px,4vw,42px);margin:0 0 8px} h2.section-title{font-size:clamp(22px,3.2vw,30px);margin:0 0 12px} p.section-sub{margin:0 0 18px;color:var(--muted)} header{position:sticky;top:0;background:#fff;border-bottom:1px solid #eee;z-index:10} header .bar{display:flex;align-items:center;gap:12px;height:64px} .brand{width:40px;height:40px;border-radius:10px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700} .hero{padding:40px 0;background:linear-gradient(135deg,#fef9f9,#f1f7ff)} .cta-row{display:flex;gap:12px;flex-wrap:wrap} .btn{padding:14px 22px;border-radius:999px;font-weight:700;border:0;cursor:pointer} .btn-primary{background:var(--brand);color:#fff} .btn-secondary{background:#ffd700;color:#333} .kpis{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))} @media(max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}} .kpi{background:var(--card);border-radius:14px;box-shadow:var(--shadow);padding:16px;display:flex;gap:12px;align-items:center} .kpi-icon{width:36px;height:36px;border-radius:10px;background:var(--pill);display:grid;place-items:center;color:var(--brand);font-weight:900} .shape{position:absolute;inset:auto auto -20px -20px;width:120px;height:120px;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.12),transparent 60%);filter:blur(2px);border-radius:50%} .specs{display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr))} @media(max-width:760px){.specs{grid-template-columns:1fr}} .spec{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:14px} .review{background:var(--card);border-radius:16px;box-shadow:var(--shadow);padding:16px} .footer{color:#888;border-top:1px solid #eee;padding:24px 0;margin-top:24px;text-align:center} .slider{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding-bottom:6px} .slide{flex:0 0 auto;width:clamp(180px,24vw,280px);scroll-snap-align:start} .slide img{border-radius:12px}
+Image Mapping Rules
+- Use ONLY the provided image URLs. Never invent URLs. Never output placeholders.
+- Map first best image to hero; remaining to feature_gallery (up to 10). If no suitable image for a section, set image_url = null.
+- Always provide meaningful image_alt. If colors are provided, include a “colors” section with text pills (no color swatches images).
 
-HTML LAYOUT ORDER (must follow)
-1) Hero: gradient background, big headline + subhead, CTA buttons (primary+secondary), optional hero image inside .card with a .shape overlay.
-2) Highlights: 4–6 benefit "KPIs" using .kpi items with minimalist text icons (use glyphs: ◎, ✓, ↺, ≡; NO external icon files).
-3) Colors (optional): render color name pills (.pill).
-4) Feature Gallery: up to 10 .card items each with <img> (loading="lazy") + short copy (h3 + p.section-sub).
-5) Horizontal Image Slider: separate .slider with .slide items using the same images; horizontal scroll with snap, no overlap with the gallery.
-6) Quick Specs: two‑column grid using .specs and .spec.
-7) Trust Badges: 3–5 .badge items (Cash on Delivery, 24–48h City Delivery, Easy Returns, WhatsApp Support).
-8) Reviews: 2–3 .review cards (use generic labels if names missing).
-9) CTA Block: strong headline + buttons.
-10) Footer: small print + contact.
+SEO & Accessibility
+- <title> ≤ 60 chars; <meta name="description"> 140–160 chars; include the primary keyword in H1 and first paragraph.
+- All images: descriptive alt text. Buttons are <a> with clear labels; no color‑only meaning.
 
-ACCESSIBILITY & SEO
-- Provide <title> from headline and a concise <meta name="description"> from subheadline.
-- All images MUST have alt text describing the content.
-- Buttons are <a> links styled as buttons; use CTA URLs (fallback "#").
+HTML Requirements
+- The "html" field must be a complete self‑contained page with ONE <style> tag (no external CSS/JS).
+- Mobile‑first responsive CSS; improve on desktop.
+- Render sections in this order: hero, highlights, feature_gallery, quick_specs, trust_badges, reviews, cta_block, faq (optional).
+- Embed ONLY provided image URLs. No placeholders.
 
-STRICT VALIDATION & AUTO-REPAIR
-- The html string MUST include: <!DOCTYPE html>, <html>, <head> with <style>, and <body>.
-- Do NOT return raw <section> blocks. If your draft begins with <section>, REBUILD as a full document.
-- If any style="…" attributes appear, remove them and use the design classes above instead.
-- Use only provided image URLs.
-- Return exactly ONE JSON object and nothing else.
+CRO Checklist (auto‑fix before output)
+- Hero states primary benefit + differentiator within 2 lines.
+- ≥1 specific proof above the fold.
+- 4–6 concrete Highlights bullets (objections included).
+- CTA appears in Hero and in CTA Block.
+- Sizes/colors/fit in Quick Specs.
+- Badges present (COD, 24–48h delivery, Easy Returns, WhatsApp Support).
 
-RETURN
-Return the JSON object with all required keys and the complete HTML in the html string.`)
+DATA HOOKS (fill from PRODUCT_INFO when available)
+- Materials/Features: {MATERIALS_FEATURES}
+- Sizes/Colors: {SIZES_COLORS}
+- Proof/Tests/Guarantees: {PROOF_POINTS}
+- Offers/Delivery/Returns: {OFFER_DELIVERY_RETURNS}
+- Primary Keyword: {PRIMARY_KEYWORD}
+- Audience: {AUDIENCE}
+- Angle: {ANGLE}
+
+Return ONLY the JSON object described in Output Contract.`)
   const [geminiAdPrompt,setGeminiAdPrompt]=useState<string>(
     "Ultra eye‑catching ecommerce ad image derived ONLY from the provided product photo.\n"
     + "Rules: Do NOT change product identity (colors/materials/shape/branding). No text or logos.\n"
