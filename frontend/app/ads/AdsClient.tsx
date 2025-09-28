@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Rocket, FileText, Image as ImageIcon, Megaphone, Trash } from 'lucide-react'
-import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, getFlow, updateDraft, llmAnalyzeLandingPage, fetchSavedAudiences, saveDraft, launchAdsAutomation } from '@/lib/api'
+import { llmGenerateAngles, geminiGenerateAdImages, metaDraftImageCampaign, metaDraftCarouselCampaign, getFlow, updateDraft, llmAnalyzeLandingPage, fetchSavedAudiences, saveDraft, launchAdsAutomation } from '@/lib/api'
 
 // Flow graph types used by canvas helpers
 export type NodeType = 'landing'|'angles'|'angle_variant'|'headlines'|'copies'|'gemini_images'|'headlines_out'|'copies_out'|'images_out'|'meta_ad'
@@ -72,6 +72,7 @@ export default function AdsClient(){
   const [selectedHeadline,setSelectedHeadline]=useState<string>('')
   const [selectedPrimary,setSelectedPrimary]=useState<string>('')
   const [selectedImage,setSelectedImage]=useState<string>('')
+  const [selectedImages,setSelectedImages]=useState<string[]>([])
   const [cta,setCta]=useState<string>('SHOP_NOW')
   const [budget,setBudget]=useState<number>(9)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
@@ -194,7 +195,7 @@ export default function AdsClient(){
     if(!internalFlowId) return
     try{
       const ads:any = {
-        selectedHeadline, selectedPrimary, selectedImage, cta, budget, advantagePlus,
+        selectedHeadline, selectedPrimary, selectedImage, selectedImages, cta, budget, advantagePlus,
         countries, savedAudienceId, candidateImages, adImages,
         ...buildAdsSnapshotFromNodes(),
         ...(extraAds||{}),
@@ -939,32 +940,60 @@ export default function AdsClient(){
 
   async function approveAndDraft(){
     try{
-      if(!landingUrl || !selectedHeadline || !selectedPrimary || !selectedImage){ alert('Select headline, primary text, image, and landing URL.'); return }
+      if(!landingUrl || !selectedHeadline || !selectedPrimary){ alert('Select headline, primary text, and landing URL.'); return }
       // Basic URL validations to avoid Meta fetch errors
       try{
         const u = new URL(landingUrl)
         if(!(u.protocol==='http:' || u.protocol==='https:')) throw new Error('Invalid scheme')
       }catch{ alert('Landing URL must be a valid http(s) URL.'); return }
-      try{
-        const iu = new URL(selectedImage)
-        if(!(iu.protocol==='http:' || iu.protocol==='https:')) throw new Error('Invalid scheme')
-      }catch{ alert('Image URL must be a valid public http(s) URL.'); return }
+      const uniqueImages = Array.from(new Set(selectedImages.filter(u=> typeof u==='string' && u)))
+      if(uniqueImages.length >= 2){
+        // Validate all selected images for carousel
+        for(const u of uniqueImages){
+          try{ const iu = new URL(u); if(!(iu.protocol==='http:' || iu.protocol==='https:')) throw new Error('Invalid scheme') }catch{ alert('All selected carousel image URLs must be valid http(s).'); return }
+        }
+      }else{
+        if(!selectedImage){ alert('Select an image or choose 2+ images for carousel.'); return }
+        try{
+          const iu = new URL(selectedImage)
+          if(!(iu.protocol==='http:' || iu.protocol==='https:')) throw new Error('Invalid scheme')
+        }catch{ alert('Image URL must be a valid public http(s) URL.'); return }
+      }
       setRunning(true)
-      const payload:any = {
-        headline: selectedHeadline,
-        primary_text: selectedPrimary,
-        description: '',
-        image_url: selectedImage,
-        landing_url: landingUrl,
-        call_to_action: cta,
-        adset_budget: budget,
-        title: selectedHeadline,
-      }
+      const baseTargeting:any = {}
       if(!advantagePlus){
-        if(savedAudienceId){ payload.saved_audience_id = savedAudienceId }
-        else if(countries){ payload.targeting = { geo_locations: { countries: countries.split(',').map(c=>c.trim().toUpperCase()).filter(Boolean) } } }
+        if(savedAudienceId){ baseTargeting.saved_audience_id = savedAudienceId }
+        else if(countries){ baseTargeting.targeting = { geo_locations: { countries: countries.split(',').map(c=>c.trim().toUpperCase()).filter(Boolean) } } }
       }
-      const res = await metaDraftImageCampaign(payload)
+      let res:any
+      if(uniqueImages.length >= 2){
+        const cards = uniqueImages.map(u=> ({ image_url: u, headline: selectedHeadline, description: '', link: landingUrl, call_to_action: cta }))
+        const body:any = {
+          primary_text: selectedPrimary,
+          landing_url: landingUrl,
+          cards,
+          call_to_action: cta,
+          adset_budget: budget,
+          title: selectedHeadline,
+          ...(baseTargeting.saved_audience_id? { saved_audience_id: baseTargeting.saved_audience_id }: {}),
+          ...(baseTargeting.targeting? { targeting: baseTargeting.targeting }: {}),
+        }
+        res = await metaDraftCarouselCampaign(body)
+      }else{
+        const payload:any = {
+          headline: selectedHeadline,
+          primary_text: selectedPrimary,
+          description: '',
+          image_url: selectedImage,
+          landing_url: landingUrl,
+          call_to_action: cta,
+          adset_budget: budget,
+          title: selectedHeadline,
+          ...(baseTargeting.saved_audience_id? { saved_audience_id: baseTargeting.saved_audience_id }: {}),
+          ...(baseTargeting.targeting? { targeting: baseTargeting.targeting }: {}),
+        }
+        res = await metaDraftImageCampaign(payload)
+      }
       if((res as any)?.error){ throw new Error((res as any).error) }
       alert('Meta draft created successfully.')
     }catch(e:any){ alert('Meta draft failed: '+ String(e?.message||e)) }
@@ -1782,6 +1811,27 @@ export default function AdsClient(){
                                   </button>
                                 ))}
                               </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 mb-1">Carousel images (select 2+)</div>
+                              <div className="grid grid-cols-2 gap-2 max-h-48 overflow-auto">
+                                {Array.from(new Set([
+                                  ...imgs.slice(0,24),
+                                  ...candidateImages.slice(0,24)
+                                ])).map((u:string,i:number)=> {
+                                  const checked = selectedImages.includes(u)
+                                  return (
+                                    <label key={i} className={`relative border rounded overflow-hidden ${checked? 'ring-2 ring-blue-500':'ring-1 ring-slate-200'}`}>
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                                      <img src={toDisplayUrl(u)} alt={`ad-${i}`} className="w-full h-20 object-cover" />
+                                      <input type="checkbox" className="absolute top-1 left-1 bg-white/80" checked={checked} onChange={()=>{
+                                        setSelectedImages(prev=> checked? prev.filter(x=>x!==u) : Array.from(new Set([...prev, u])))
+                                      }} />
+                                    </label>
+                                  )
+                                })}
+                              </div>
+                              <div className="text-[11px] text-slate-500 mt-1">Selected: {selectedImages.length}</div>
                             </div>
                           </div>
                         )
