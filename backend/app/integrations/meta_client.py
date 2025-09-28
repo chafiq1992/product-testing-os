@@ -10,6 +10,7 @@ PIXEL_ID = os.getenv("META_PIXEL_ID", "")
 OBJECTIVE = os.getenv("META_OBJECTIVE", "TRAFFIC").upper()  # TRAFFIC (default) or CONVERSIONS/SALES
 COUNTRIES = [c.strip().upper() for c in (os.getenv("META_COUNTRIES", "US").split(",")) if c.strip()]
 API_VERSION = os.getenv("META_API_VERSION", "v20.0")
+BASE = f"https://graph.facebook.com/{API_VERSION}"
 
 
 def _redact_url(url: str) -> str:
@@ -306,6 +307,136 @@ def create_draft_image_campaign(ad: dict) -> dict:
 
     ad_payload = {
         "name": ad.get("ad_name") or "Image Ad",
+        "adset_id": adset["id"],
+        "creative": json.dumps({"creative_id": creative["id"]}),
+        "status": "PAUSED",
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/ads", "payload": ad_payload})
+    ad_obj = _post(f"act_{AD_ACCOUNT_ID}/ads", ad_payload)
+    requests_log[-1]["response"] = ad_obj
+
+    results["adsets"].append({
+        "adset_id": adset["id"],
+        "ad_id": ad_obj["id"],
+        "creative_id": creative["id"],
+    })
+    results["requests"] = requests_log
+    return results
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def create_draft_carousel_campaign(ad: dict) -> dict:
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    if not AD_ACCOUNT_ID:
+        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+    if not PAGE_ID:
+        raise RuntimeError("META_PAGE_ID is not set.")
+
+    requests_log: list[dict] = []
+
+    # Preflight: verify ad account is accessible by the token
+    _get(f"act_{AD_ACCOUNT_ID}", {"fields": "id,account_status,name"})
+
+    campaign_payload = {
+        "name": ad.get("campaign_name") or f"Test {ad.get('title','Product')}",
+        "objective": "OUTCOME_TRAFFIC" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OUTCOME_SALES",
+        "status": "PAUSED",
+        "buying_type": "AUCTION",
+        "special_ad_categories": ["NONE"],
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/campaigns", "payload": campaign_payload})
+    camp = _post(f"act_{AD_ACCOUNT_ID}/campaigns", campaign_payload)
+    requests_log[-1]["response"] = camp
+
+    results = {"campaign_id": camp["id"], "adsets": [], "requests": requests_log}
+
+    # Budget
+    try:
+        budget_major = float(ad.get("adset_budget", 9))
+    except Exception:
+        budget_major = 9.0
+    daily_budget_minor = max(100, int(round(budget_major * 100)))
+
+    # Targeting: allow saved audience or explicit geo
+    targeting_spec = ad.get("targeting")
+    saved_audience_id = ad.get("saved_audience_id")
+    if saved_audience_id and not targeting_spec:
+        targeting_spec = {"saved_audience_id": saved_audience_id}
+    if not targeting_spec:
+        targeting_spec = {"geo_locations": {"countries": COUNTRIES}}
+    targeting_json = json.dumps(targeting_spec) if not isinstance(targeting_spec, str) else targeting_spec
+
+    adset_payload = {
+        "name": ad.get("adset_name") or "Carousel AdSet",
+        "campaign_id": camp["id"],
+        "daily_budget": daily_budget_minor,
+        "status": "PAUSED",
+        "billing_event": "IMPRESSIONS",
+        "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        "optimization_goal": "LINK_CLICKS" if OBJECTIVE not in ("CONVERSIONS", "SALES") else "OFFSITE_CONVERSIONS",
+        "targeting": targeting_json,
+    }
+    if OBJECTIVE in ("CONVERSIONS", "SALES"):
+        if not PIXEL_ID:
+            raise RuntimeError("META_PIXEL_ID is required for conversions objective.")
+        adset_payload["promoted_object"] = json.dumps({"pixel_id": PIXEL_ID, "custom_event_type": "PURCHASE"})
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adsets", "payload": adset_payload})
+    adset = _post(f"act_{AD_ACCOUNT_ID}/adsets", adset_payload)
+    requests_log[-1]["response"] = adset
+
+    cards = ad.get("cards") or []
+    if not isinstance(cards, list) or len(cards) < 2:
+        raise RuntimeError("Provide at least 2 cards for a carousel (cards: [{ image_url, headline?, description?, link?, call_to_action? }]).")
+
+    landing_url = ad.get("landing_url")
+    if not landing_url:
+        raise RuntimeError("landing_url is required.")
+
+    primary_text = ad.get("primary_text") or ad.get("text") or ""
+    default_cta = (ad.get("call_to_action") or "SHOP_NOW").upper()
+
+    child_attachments = []
+    for idx, card in enumerate(cards):
+        image_url = card.get("image_url") if isinstance(card, dict) else None
+        if not image_url:
+            raise RuntimeError(f"cards[{idx}].image_url is required")
+        image_hash = _upload_image(image_url)
+        requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adimages", "payload": {"url": image_url}, "response": {"image_hash": image_hash}})
+
+        headline = card.get("headline") or ad.get("headline") or ""
+        description = card.get("description") or ad.get("description") or ""
+        card_link = card.get("link") or landing_url
+        cta_type = (card.get("call_to_action") or default_cta).upper()
+
+        child_attachments.append({
+            "image_hash": image_hash,
+            "link": card_link,
+            "name": headline,
+            "description": description,
+            "call_to_action": {"type": cta_type, "value": {"link": card_link}},
+        })
+
+    story_spec = {
+        "page_id": PAGE_ID,
+        "link_data": {
+            "message": primary_text,
+            "link": landing_url,
+            "child_attachments": child_attachments,
+            "multi_share_optimized": True,
+        },
+    }
+
+    creative_payload = {
+        "name": ad.get("creative_name") or "Carousel Ad Creative",
+        "object_story_spec": json.dumps(story_spec),
+    }
+    requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adcreatives", "payload": creative_payload})
+    creative = _post(f"act_{AD_ACCOUNT_ID}/adcreatives", creative_payload)
+    requests_log[-1]["response"] = creative
+
+    ad_payload = {
+        "name": ad.get("ad_name") or "Carousel Ad",
         "adset_id": adset["id"],
         "creative": json.dumps({"creative_id": creative["id"]}),
         "status": "PAUSED",

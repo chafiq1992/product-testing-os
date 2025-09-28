@@ -22,6 +22,7 @@ from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import create_draft_image_campaign
+from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR
 from app import db
@@ -1336,6 +1337,34 @@ class MetaDraftImageCampaignRequest(BaseModel):
 async def api_meta_draft_image_campaign(req: MetaDraftImageCampaignRequest):
     try:
         res = create_draft_image_campaign(req.model_dump())
+        return {
+            "campaign_id": res.get("campaign_id"),
+            "adsets": res.get("adsets"),
+            "requests": res.get("requests"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class MetaDraftCarouselCampaignRequest(BaseModel):
+    primary_text: str
+    landing_url: str
+    cards: List[dict]  # [{ image_url, headline?, description?, link?, call_to_action? }]
+    call_to_action: Optional[str] = "SHOP_NOW"
+    adset_budget: Optional[float] = 9.0
+    targeting: Optional[dict] = None
+    saved_audience_id: Optional[str] = None
+    campaign_name: Optional[str] = None
+    adset_name: Optional[str] = None
+    ad_name: Optional[str] = None
+    creative_name: Optional[str] = None
+    title: Optional[str] = None
+
+
+@app.post("/api/meta/draft_carousel_campaign")
+async def api_meta_draft_carousel_campaign(req: MetaDraftCarouselCampaignRequest):
+    try:
+        res = create_draft_carousel_campaign(req.model_dump())
         return {
             "campaign_id": res.get("campaign_id"),
             "adsets": res.get("adsets"),

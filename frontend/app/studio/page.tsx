@@ -14,7 +14,7 @@ import {
 
 import Dropzone from '@/components/Dropzone'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle, getFlow } from '@/lib/api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, metaDraftCarouselCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle, getFlow } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 // Resolve displayable image URLs: avoid proxy for same-origin and trusted hosts
@@ -2392,7 +2392,30 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         if(savedId){ payload.saved_audience_id = savedId }
         else if(countries.length>0){ payload.targeting = { geo_locations: { countries: countries.map((c:string)=> String(c||'').toUpperCase()) } } }
       }
-      const res = await metaDraftImageCampaign(payload)
+      // Determine if we should create a carousel (2+ selected images)
+      const candidates: string[] = Array.isArray(node.data?.candidate_images)? node.data.candidate_images : []
+      const selectedImages: string[] = Array.isArray(node.data?.selected_images)? node.data.selected_images : []
+      const normalizedSelected = selectedImages.filter(u=> typeof u==='string' && u)
+      let res: any
+      if(normalizedSelected.length >= 2){
+        const cards = normalizedSelected.map((u:string)=> ({ image_url: u, headline: payload.headline, description: payload.description, link: payload.landing_url, call_to_action: payload.call_to_action }))
+        const body:any = {
+          primary_text: payload.primary_text,
+          landing_url: payload.landing_url,
+          cards,
+          call_to_action: payload.call_to_action,
+          adset_budget: payload.adset_budget,
+          title: payload.title,
+        }
+        if(payload.saved_audience_id) body.saved_audience_id = payload.saved_audience_id
+        if(payload.targeting) body.targeting = payload.targeting
+        res = await metaDraftCarouselCampaign(body)
+      }else{
+        // If user checked exactly one image in selected_images, prefer it over dropdown
+        const single = normalizedSelected[0]
+        if(single){ payload.image_url = single }
+        res = await metaDraftImageCampaign(payload)
+      }
       if((res as any)?.error){ throw new Error((res as any).error) }
       onUpdateRun(node.id, { status:'success', output:{ campaign_id: res.campaign_id||null, adsets: res.adsets||[], requests: res.requests||[] }, finishedAt: now(), ms: 1 })
     }catch(e:any){
@@ -2447,6 +2470,27 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                 <option value="">Select image…</option>
                 {(Array.isArray(node.data?.candidate_images)? node.data.candidate_images : []).map((u:string,i:number)=> (<option key={i} value={u}>{u}</option>))}
               </select>
+            </div>
+            {/* Carousel selection */}
+            <div>
+              <div className="text-[11px] text-slate-500 mb-1">Carousel images (select 2+ to create a carousel ad)</div>
+              <div className="max-h-40 overflow-auto border rounded-xl p-2 space-y-1">
+                {(Array.isArray(node.data?.candidate_images)? node.data.candidate_images : []).map((u:string,i:number)=> {
+                  const sel: string[] = Array.isArray(node.data?.selected_images)? node.data.selected_images : []
+                  const checked = sel.includes(u)
+                  return (
+                    <label key={i} className="flex items-center gap-2 text-xs">
+                      <input type="checkbox" checked={checked} onChange={()=>{
+                        const current: string[] = Array.isArray(node.data?.selected_images)? node.data.selected_images : []
+                        const next = checked ? current.filter(x=>x!==u) : Array.from(new Set([...current, u]))
+                        onUpdateNodeData(node.id, { selected_images: next })
+                      }} />
+                      <span className="truncate">{u}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">Selected: {Array.isArray(node.data?.selected_images)? node.data.selected_images.length:0}</div>
             </div>
             <Separator/>
             <div>
