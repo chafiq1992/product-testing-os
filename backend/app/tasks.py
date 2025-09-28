@@ -1,6 +1,6 @@
 from celery import Celery
 import os
-from app.integrations.openai_client import gen_angles_and_copy, gen_images, IMAGE_PROMPT, LANDING_COPY_PROMPT, gen_landing_copy
+from app.integrations.openai_client import gen_angles_and_copy, gen_images, IMAGE_PROMPT, LANDING_COPY_PROMPT, gen_landing_copy, DEFAULT_LLM_MODEL
 from app.integrations.shopify_client import create_product_and_page
 from app.integrations.meta_client import create_campaign_with_ads
 from app.config import CELERY_BROKER_URL, CELERY_RESULT_BACKEND
@@ -37,7 +37,7 @@ def run_pipeline_sync(test_id: str, payload: dict):
         trace.append({
             "step": "generate_copy",
             "provider": "openai",
-            "request": {"model": model or "gpt-4o-mini", "prompt": angles_prompt},
+            "request": {"model": model or DEFAULT_LLM_MODEL, "prompt": angles_prompt},
             "response": {"angles": angles},
         })
 
@@ -75,7 +75,7 @@ def run_pipeline_sync(test_id: str, payload: dict):
         trace.append({
             "step": "landing_copy",
             "provider": "openai",
-            "request": {"model": model or "gpt-4o-mini", "prompt": LANDING_COPY_PROMPT, "context": {"angles": angles[:3]}},
+            "request": {"model": model or DEFAULT_LLM_MODEL, "prompt": LANDING_COPY_PROMPT, "context": {"angles": angles[:3]}},
             "response": landing_copy,
         })
 

@@ -8,7 +8,7 @@ import os
 
 # Initialize OpenAI client (reads OPENAI_API_KEY from env)
 client = OpenAI()
-DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 
 ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 

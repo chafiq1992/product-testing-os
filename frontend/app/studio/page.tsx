@@ -261,7 +261,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [promotionOfferText,setPromotionOfferText]=useState<string>('')
   const [variantDescriptions,setVariantDescriptions]=useState<{name:string, description?:string}[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
-  const [model,setModel]=useState<string>('gpt-4o-mini')
+  const [model,setModel]=useState<string>('gpt-5')
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
   const [anglesPrompt,setAnglesPrompt]=useState<string>(
     "You are a marketing products strategist and market expert. Focus on how to sell this product and to whom; pinpoint the ideal audience and deliver exactly two high‑converting angles.\n"

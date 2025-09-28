@@ -76,7 +76,7 @@ export default function AdsClient(){
   const [cta,setCta]=useState<string>('SHOP_NOW')
   const [budget,setBudget]=useState<number>(9)
   const [advantagePlus,setAdvantagePlus]=useState<boolean>(true)
-  const [model,setModel]=useState<string>('gpt-4o-mini')
+  const [model,setModel]=useState<string>('gpt-5')
   const [countries,setCountries]=useState<string>('')
   const [savedAudienceId,setSavedAudienceId]=useState<string>('')
   const [savedAudiences,setSavedAudiences]=useState<Array<{id:string,name:string,description?:string}>>([])
