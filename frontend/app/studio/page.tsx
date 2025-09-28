@@ -154,6 +154,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
         if(typeof p.prompts.landing_copy_prompt==='string') setLandingCopyPrompt(p.prompts.landing_copy_prompt)
         if(typeof (p.prompts as any).gemini_ad_prompt==='string') setGeminiAdPrompt((p.prompts as any).gemini_ad_prompt)
         if(typeof (p.prompts as any).gemini_variant_style_prompt==='string') setGeminiVariantStylePrompt((p.prompts as any).gemini_variant_style_prompt)
+        if(typeof (p.prompts as any).gemini_street_prompt==='string') setGeminiStreetScenePrompt((p.prompts as any).gemini_street_prompt)
       }
       if(p?.settings){
         if(typeof p.settings.model==='string') setModel(p.settings.model)
@@ -368,6 +369,16 @@ Return ONLY the JSON object described in Output Contract.`)
     + "Look: premium, high-contrast hero lighting, subtle rim light, soft gradient background, tasteful glow,\n"
     + "clean reflections/shadow, product-first composition (rule of thirds/center), social-feed ready."
   )
+  const [geminiStreetScenePrompt,setGeminiStreetScenePrompt]=useState<string>(
+    "Instruction\n"
+    + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring exactly ONE model wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
+    + "Ad style (must follow):\n\n"
+    + "Look & pose: Professional yet spontaneous; elegant and stylish but natural (mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
+    + "Wardrobe: Product is the hero; pair with neutral basics only (no logos).\n\n"
+    + "Environment (choose one and keep consistent across variants): quiet school corridor, residential street sidewalk, or cozy home interior. Shallow depth-of-field, uncluttered.\n\n"
+    + "Lighting & color: Soft, realistic lighting, even exposure, minimal shadows, true color; no color cast.\n\n"
+    + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
+  )
   async function dataUrlToFileSimple(dataUrl:string, filename:string): Promise<File>{
     const res = await fetch(dataUrl)
     const blob = await res.blob()
@@ -439,6 +450,19 @@ Return ONLY the JSON object described in Output Contract.`)
   const [geminiVariantStylePrompt,setGeminiVariantStylePrompt]=useState<string>(
     'Professional, clean background, soft studio lighting, crisp focus, 45° angle'
   )
+  // Audience-specific prompt editor state (Prompts tab)
+  const [audPromptAudience,setAudPromptAudience]=useState<string>('unisex')
+  const [audAdPromptEdit,setAudAdPromptEdit]=useState<string>('')
+  const [audStreetPromptEdit,setAudStreetPromptEdit]=useState<string>('')
+  const [audVariantStyleEdit,setAudVariantStyleEdit]=useState<string>('')
+  useEffect(()=>{
+    try{
+      const key = String(audPromptAudience||'unisex').toLowerCase()
+      setAudAdPromptEdit(localStorage.getItem(`ptos_prompts_gemini_ad__${key}`) || geminiAdPrompt)
+      setAudStreetPromptEdit(localStorage.getItem(`ptos_prompts_gemini_street__${key}`) || geminiStreetScenePrompt)
+      setAudVariantStyleEdit(localStorage.getItem(`ptos_prompts_gemini_variant_style__${key}`) || geminiVariantStylePrompt)
+    }catch{}
+  },[audPromptAudience])
   const [landingPreview,setLandingPreview]=useState<{ html?:string, json?:any, error?:string }|null>(null)
   const [landingPreviewMode,setLandingPreviewMode]=useState<'preview'|'html'>('preview')
   const [landingPreviewLoading,setLandingPreviewLoading]=useState<boolean>(false)
@@ -459,6 +483,7 @@ Return ONLY the JSON object described in Output Contract.`)
       const l = localStorage.getItem('ptos_prompts_landing_copy'); if(l) setLandingCopyPrompt(l)
       const gA = localStorage.getItem('ptos_prompts_gemini_ad'); if(gA) setGeminiAdPrompt(gA)
       const gV = localStorage.getItem('ptos_prompts_gemini_variant_style'); if(gV) setGeminiVariantStylePrompt(gV)
+      const gS = localStorage.getItem('ptos_prompts_gemini_street'); if(gS) setGeminiStreetScenePrompt(gS)
     }catch{}
   },[])
   // Load app-wide defaults from server and apply to state (and persist to localStorage)
@@ -482,6 +507,21 @@ Return ONLY the JSON object described in Output Contract.`)
   useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_landing_copy', landingCopyPrompt) }catch{} },[landingCopyPrompt])
   useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} },[geminiAdPrompt])
   useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} },[geminiVariantStylePrompt])
+  useEffect(()=>{ try{ localStorage.setItem('ptos_prompts_gemini_street', geminiStreetScenePrompt) }catch{} },[geminiStreetScenePrompt])
+
+  // When target category changes, apply any audience-specific defaults (local) if present
+  useEffect(()=>{
+    try{
+      const cat = String(targetCategory||'').toLowerCase() || 'unisex'
+      const key = (cat==='girl'||cat==='boy'||cat==='unisex_kids'||cat==='men'||cat==='women'||cat==='unisex')? cat : 'unisex'
+      const audAd = localStorage.getItem(`ptos_prompts_gemini_ad__${key}`)
+      if(audAd){ setGeminiAdPrompt(audAd) }
+      const audStreet = localStorage.getItem(`ptos_prompts_gemini_street__${key}`)
+      if(audStreet){ setGeminiStreetScenePrompt(audStreet) }
+      const audStyle = localStorage.getItem(`ptos_prompts_gemini_variant_style__${key}`)
+      if(audStyle){ setGeminiVariantStylePrompt(audStyle) }
+    }catch{}
+  },[targetCategory])
 
   // Keep Gemini nodes in sync with Prompts tab unless explicitly overridden on node
   useEffect(()=>{
@@ -683,7 +723,7 @@ Return ONLY the JSON object described in Output Contract.`)
         image_urls: urls||[],
         flow: flowSnap,
         ui: uiSnap,
-        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
+        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt, gemini_street_prompt: geminiStreetScenePrompt },
         settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
         ...(cardImage? { card_image: cardImage } : {})
       }
@@ -736,7 +776,7 @@ Return ONLY the JSON object described in Output Contract.`)
           image_urls: uploadedUrls||[],
           flow: flowSnap,
           ui: uiSnap,
-        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt },
+        prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt, gemini_street_prompt: geminiStreetScenePrompt },
         settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, ...(productGidRef.current? { product_gid: productGidRef.current } : {}), ...(productHandle? { product_handle: productHandle } : {}) },
         ...(cardImage? { card_image: cardImage } : {}),
         }
@@ -915,18 +955,12 @@ Return ONLY the JSON object described in Output Contract.`)
               if(cat==='women') return 'adult woman'
               return 'person'
             })()
+            const baseStreet = String(geminiStreetScenePrompt||'')
             const promptStreet = (
-              "Instruction\n"
-              + "From the provided source image, detect every distinct visible variant (color/pattern/material) and generate exactly one ad image per variant featuring exactly ONE child (no groups) wearing the product. Do not redesign the product—match silhouette, seams, textures, prints, and colors precisely.\n\n"
+              `${baseStreet}\n\n`
               + `Source: ${sourceUrl}\n`
               + `Product type: ${title? String(title) : 'from the source image'}\n`
-              + `Model: ${modelSubject}. Only one character in frame.\n\n`
-              + "Ad style (must follow):\n\n"
-              + "Look & pose: Professional yet spontaneous; elegant and stylish but natural (mid-step, slight turn, tying laces, casual smile). No exaggerated poses.\n\n"
-              + "Wardrobe: Product is the hero; pair with neutral basics only (no logos).\n\n"
-              + "Environment (choose one and keep consistent across variants): quiet school corridor, residential street sidewalk, or cozy home interior. Shallow depth-of-field, uncluttered.\n\n"
-              + "Lighting & color: Soft, realistic lighting, even exposure, minimal shadows, true color; no color cast.\n\n"
-              + "Global constraints: No added text, watermarks, or logos. Keep framing consistent across variants. Skin tones and lighting must be photorealistic."
+              + `Model: ${modelSubject}. Only one character in frame.`
             )
             const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
             const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gn2.id, 'in')]
@@ -1952,12 +1986,57 @@ Return ONLY the JSON object described in Output Contract.`)
                 </div>
               </div>
               <div>
+                <div className="text-xs text-slate-500 mb-1">Gemini street scene prompt</div>
+                <Textarea rows={3} value={geminiStreetScenePrompt} onChange={e=>setGeminiStreetScenePrompt(e.target.value)} />
+                <div className="text-[11px] text-slate-500 mt-1">Used for the natural street/home scene ad image card.</div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={async()=>{ try{ localStorage.setItem('ptos_prompts_gemini_street', geminiStreetScenePrompt) }catch{} }}>Make default (local)</Button>
+                </div>
+              </div>
+              <div>
                 <div className="text-xs text-slate-500 mb-1">Gemini variant style prompt</div>
                 <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
                 <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
                 <div className="mt-1 flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_variant_style_prompt: geminiVariantStylePrompt }); localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make app default</Button>
                 </div>
+              </div>
+              <Separator/>
+              <div className="space-y-2">
+                <div className="text-xs text-slate-500">Audience-specific prompts</div>
+                <div>
+                  <select value={audPromptAudience} onChange={e=>setAudPromptAudience(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                    <option value="girl">Girl</option>
+                    <option value="boy">Boy</option>
+                    <option value="unisex_kids">Unisex Kids</option>
+                    <option value="men">Men</option>
+                    <option value="women">Women</option>
+                    <option value="unisex">Unisex</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Ad image prompt (neutral background)</div>
+                  <Textarea rows={3} value={audAdPromptEdit} onChange={e=> setAudAdPromptEdit(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Street scene prompt</div>
+                  <Textarea rows={3} value={audStreetPromptEdit} onChange={e=> setAudStreetPromptEdit(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-1">Variant style prompt</div>
+                  <Textarea rows={2} value={audVariantStyleEdit} onChange={e=> setAudVariantStyleEdit(e.target.value)} />
+                </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={()=>{
+                    try{
+                      const key = String(audPromptAudience||'unisex').toLowerCase()
+                      localStorage.setItem(`ptos_prompts_gemini_ad__${key}`, audAdPromptEdit||'')
+                      localStorage.setItem(`ptos_prompts_gemini_street__${key}`, audStreetPromptEdit||'')
+                      localStorage.setItem(`ptos_prompts_gemini_variant_style__${key}`, audVariantStyleEdit||'')
+                    }catch{}
+                  }}>Make default for this audience</Button>
+                </div>
+                <div className="text-[11px] text-slate-500">When you change Target category, the matching audience defaults are auto-applied.</div>
               </div>
             </CardContent>
           </Card>
