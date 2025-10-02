@@ -330,6 +330,12 @@ export async function geminiSuggestPrompts(payload:{
   return data as { input_image_url: string, ad_prompt: string, variant_prompts: { name:string, description?:string, prompt:string }[], feature_prompts: string[], error?: string }
 }
 
+// Agent SDK (experimental). Execute a tool-calling loop with chat messages.
+export async function agentExecute(payload:{ messages: any[], model?: string }){
+  const {data} = await axios.post(`${base}/api/agent/execute`, payload)
+  return data as { text?: string, messages?: any[], error?: string }
+}
+
 // Extract product inputs from a single product image (OpenAI multimodal)
 export async function productFromImage(payload:{ image_url:string, model?:string, target_category?: string }){
   const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)

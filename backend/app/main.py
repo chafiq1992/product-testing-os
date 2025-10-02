@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
+from app.agent import run_agent_until_final
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
@@ -391,6 +392,20 @@ async def api_llm_analyze_landing_page(req: AnalyzeLandingRequest):
     except Exception as e:
         return {"error": str(e), "url": req.url}
  
+# ---------------- Agent SDK (experimental, promotion-only) ----------------
+class AgentRequest(BaseModel):
+    messages: list
+    model: Optional[str] = None
+
+
+@app.post("/api/agent/execute")
+async def api_agent_execute(req: AgentRequest):
+    try:
+        out = run_agent_until_final(req.messages, model=req.model)
+        return out
+    except Exception as e:
+        return {"error": str(e)}
+
 # ---------------- Gemini image generation ----------------
 class GeminiAdImageRequest(BaseModel):
     image_url: str
