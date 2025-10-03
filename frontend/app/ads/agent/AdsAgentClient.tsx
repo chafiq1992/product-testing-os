@@ -38,6 +38,9 @@ export default function AdsAgentClient(){
   const [selectedIdx, setSelectedIdx] = useState<number>(0)
   const [titleDesc, setTitleDesc] = useState<{title?:string, description?:string}|null>(null)
   const [landingCopy, setLandingCopy] = useState<any|null>(null)
+  const [goal, setGoal] = useState<'angles'|'headlines'|'copies'|'title_desc'|'landing_copy'|'full'>('full')
+  const [headlines, setHeadlines] = useState<string[]>([])
+  const [copies, setCopies] = useState<string[]>([])
   const [numAngles, setNumAngles] = useState<number>(3)
   const [runAnalyze, setRunAnalyze] = useState<boolean>(true)
   const [runTD, setRunTD] = useState<boolean>(true)
@@ -71,7 +74,7 @@ export default function AdsAgentClient(){
         `SETTINGS: num_angles=${Math.max(1, Math.min(5, Number(numAngles)||3))}; run_analyze=${runAnalyze}; run_title_desc=${runTD}; run_landing_copy=${runLC}`,
         (analyzePrompt||anglesPrompt||titleDescPrompt||landingCopyPrompt||variation)? `PROMPT_OVERRIDES: ${JSON.stringify({ analyze: analyzePrompt||undefined, angles: anglesPrompt||undefined, title_desc: titleDescPrompt||undefined, landing_copy: landingCopyPrompt||undefined, variation: variation||undefined })}` : undefined,
       ].filter(Boolean)
-      const thread: Message[] = [system, { role:'user', content: parts.join('\n') }]
+      const thread: Message[] = [system, { role:'user', content: `GOAL: ${goal}\n` + parts.join('\n') }]
       const res = await agentAdsExecute({ messages: thread, model: model || undefined })
       if(res?.error){ setError(res.error) }
       else{
@@ -83,8 +86,27 @@ export default function AdsAgentClient(){
         if((!arr || !arr.length) && Array.isArray(analyzeAngles?.angles)){
           arr = analyzeAngles.angles
         }
-        if(arr && arr.length){ setAngles(arr); setSelectedIdx(0) }
-        if(arr && arr.length && runTD){ await runTitleDesc(arr[0], res?.messages||thread, product) }
+        if(arr && arr.length){
+          setAngles(arr); setSelectedIdx(0)
+          // Collect headlines/copies if goal is headlines/copies
+          if(goal==='headlines' || goal==='copies' || goal==='full'){
+            const hs: string[] = []
+            const ps: string[] = []
+            for(const it of arr){
+              if(Array.isArray(it.headlines)) hs.push(...it.headlines.slice(0,8))
+              const prim = it.primaries
+              if(Array.isArray(prim)) ps.push(...prim.slice(0,4))
+              else if(prim && typeof prim==='object'){
+                if(typeof prim.short==='string') ps.push(prim.short)
+                if(typeof prim.medium==='string') ps.push(prim.medium)
+                if(typeof prim.long==='string') ps.push(prim.long)
+              }
+            }
+            setHeadlines(hs)
+            setCopies(ps)
+          }
+        }
+        if(arr && arr.length && runTD && (goal==='title_desc' || goal==='full')){ await runTitleDesc(arr[0], res?.messages||thread, product) }
       }
     }catch(e:any){ setError(String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -148,6 +170,15 @@ export default function AdsAgentClient(){
           </div>
           <input className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Model (optional)" value={model} onChange={e=>setModel(e.target.value)} />
           <div className="border-t border-slate-200 dark:border-slate-700 my-2"/>
+          <div className="font-medium">Goal</div>
+          <select className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={goal} onChange={e=>setGoal(e.target.value as any)}>
+            <option value="angles">Angles only</option>
+            <option value="headlines">Angles + Headlines</option>
+            <option value="copies">Angles + Ad Copies</option>
+            <option value="title_desc">Title & Description</option>
+            <option value="landing_copy">Landing Copy</option>
+            <option value="full">Full Flow</option>
+          </select>
           <div className="font-medium">Advanced</div>
           <div className="flex items-center gap-2">
             <label className="text-xs">Num angles</label>
@@ -184,6 +215,30 @@ export default function AdsAgentClient(){
                 </div>
               </div>
             ))}
+          </div>
+        ) : null}
+        {(goal==='headlines' || goal==='full') && headlines.length? (
+          <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
+            <div className="text-sm font-semibold mb-2">Headlines</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {headlines.map((h, idx)=>(
+                <input key={idx} className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={h} onChange={e=>{
+                  const copy = headlines.slice(); copy[idx]=e.target.value; setHeadlines(copy)
+                }}/>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {(goal==='copies' || goal==='full') && copies.length? (
+          <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
+            <div className="text-sm font-semibold mb-2">Primary Texts</div>
+            <div className="grid grid-cols-1 gap-2">
+              {copies.map((c, idx)=>(
+                <textarea key={idx} className="border rounded px-2 py-1 text-xs min-h-[64px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={c} onChange={e=>{
+                  const copy = copies.slice(); copy[idx]=e.target.value; setCopies(copy)
+                }}/>
+              ))}
+            </div>
           </div>
         ) : null}
         {titleDesc? (
