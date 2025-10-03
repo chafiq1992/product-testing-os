@@ -6,6 +6,7 @@ type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
 
 export default function AdsAgentClient(){
   const [url, setUrl] = useState<string>("")
+  const [imageUrl, setImageUrl] = useState<string>("")
   const [audience, setAudience] = useState<string>("")
   const [benefits, setBenefits] = useState<string>("")
   const [pains, setPains] = useState<string>("")
@@ -31,6 +32,7 @@ export default function AdsAgentClient(){
       if(language.trim()) product.language = language.trim()
       const parts = [
         url? `URL: ${url.trim()}` : undefined,
+        imageUrl? `IMAGE_URL: ${imageUrl.trim()}` : undefined,
         Object.keys(product).length? `PRODUCT: ${JSON.stringify(product)}` : undefined,
         budget? `BUDGET: ${budget}` : undefined,
       ].filter(Boolean)
@@ -48,6 +50,7 @@ export default function AdsAgentClient(){
         <div className="text-sm font-medium mb-2">Create Ads (Agent)</div>
         <div className="flex flex-col gap-2 text-sm">
           <input className="border rounded px-2 py-1" placeholder="Landing page URL" value={url} onChange={e=>setUrl(e.target.value)} />
+          <input className="border rounded px-2 py-1" placeholder="Image URL (optional)" value={imageUrl} onChange={e=>setImageUrl(e.target.value)} />
           <textarea className="border rounded px-2 py-1 min-h-[56px]" placeholder="Audience" value={audience} onChange={e=>setAudience(e.target.value)} />
           <textarea className="border rounded px-2 py-1 min-h-[80px]" placeholder="Benefits (one per line)" value={benefits} onChange={e=>setBenefits(e.target.value)} />
           <textarea className="border rounded px-2 py-1 min-h-[80px]" placeholder="Pain points (one per line)" value={pains} onChange={e=>setPains(e.target.value)} />

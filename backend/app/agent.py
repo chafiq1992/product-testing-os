@@ -6,6 +6,9 @@ from openai import OpenAI
 from app.integrations.openai_client import (
     analyze_landing_page,
     gen_angles_and_copy_full,
+    gen_title_and_description,
+    gen_landing_copy,
+    gen_product_from_image,
     DEFAULT_LLM_MODEL,
 )
 
@@ -48,6 +51,59 @@ TOOLS: List[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_title_desc_tool",
+            "description": "Generate product title and short description from an angle and product payload.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product": {"type": "object"},
+                    "angle": {"type": "object"},
+                    "model": {"type": "string", "nullable": True},
+                    "prompt_override": {"type": "string", "nullable": True},
+                    "image_urls": {"type": "array", "items": {"type": "string"}, "nullable": True},
+                },
+                "required": ["product", "angle"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_landing_copy_tool",
+            "description": "Generate landing copy JSON and HTML from product + angles.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product": {"type": "object"},
+                    "angles": {"type": "array", "items": {"type": "object"}},
+                    "model": {"type": "string", "nullable": True},
+                    "prompt_override": {"type": "string", "nullable": True},
+                    "image_urls": {"type": "array", "items": {"type": "string"}, "nullable": True},
+                    "product_url": {"type": "string", "nullable": True},
+                },
+                "required": ["product"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "product_from_image_tool",
+            "description": "Extract structured product inputs from a single image URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_url": {"type": "string"},
+                    "model": {"type": "string", "nullable": True},
+                    "target_category": {"type": "string", "nullable": True}
+                },
+                "required": ["image_url"],
+            },
+        },
+    },
 ]
 
 
@@ -70,6 +126,34 @@ def _dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception:
                     pass
             return {"angles": full.get("angles", []), "raw": full}
+        if name == "gen_title_desc_tool":
+            data = gen_title_and_description(
+                args.get("product") or {},
+                args.get("angle") or {},
+                prompt_override=args.get("prompt_override"),
+                model=args.get("model"),
+                image_urls=args.get("image_urls") or [],
+            )
+            return data
+        if name == "gen_landing_copy_tool":
+            product = args.get("product") or {}
+            angles = args.get("angles") or []
+            data = gen_landing_copy(
+                product,
+                angles,
+                model=args.get("model"),
+                image_urls=args.get("image_urls") or [],
+                prompt_override=args.get("prompt_override"),
+                product_url=args.get("product_url"),
+            )
+            return data
+        if name == "product_from_image_tool":
+            out = gen_product_from_image(
+                args.get("image_url"),
+                model=args.get("model"),
+                target_category=args.get("target_category"),
+            )
+            return out
         return {"error": f"unknown tool {name}"}
     except Exception as e:
         return {"error": str(e)}
@@ -134,8 +218,13 @@ def run_agent_until_final(
 ADS_AGENT_SYSTEM = {
     "role": "system",
     "content": (
-        "You are the Ads Agent. Use tools to analyze landing pages and generate 2–3 ad angles. "
-        "Return concise outputs; avoid free-form prose unless summarizing results."
+        "You are the Ads Agent. Always prefer tools when available. Typical flow: "
+        "(1) If a URL is provided, call analyze_landing_page_tool. "
+        "(2) Use gen_angles_tool (num_angles=2 or 3). "
+        "(3) Optionally refine with gen_title_desc_tool (pick best angle). "
+        "(4) Optionally prepare gen_landing_copy_tool using title/desc and a few image_urls. "
+        "(5) If an image_url is provided without product info, call product_from_image_tool first. "
+        "Keep outputs concise and structured."
     ),
 }
 
