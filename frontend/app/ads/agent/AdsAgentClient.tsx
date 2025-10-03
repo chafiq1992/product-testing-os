@@ -66,7 +66,11 @@ export default function AdsAgentClient(){
         setMessages(res?.messages||null)
         setResult(res?.text || JSON.stringify(res, null, 2))
         const toolAngles = getLatestToolContent(res?.messages, 'gen_angles_tool')
-        const arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
+        const analyzeAngles = getLatestToolContent(res?.messages, 'analyze_landing_page_tool')
+        let arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
+        if((!arr || !arr.length) && Array.isArray(analyzeAngles?.angles)){
+          arr = analyzeAngles.angles
+        }
         if(arr && arr.length){ setAngles(arr); setSelectedIdx(0) }
         if(arr && arr.length){ await runTitleDesc(arr[0], res?.messages||thread, product) }
       }
