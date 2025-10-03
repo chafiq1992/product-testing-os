@@ -38,6 +38,16 @@ export default function AdsAgentClient(){
   const [selectedIdx, setSelectedIdx] = useState<number>(0)
   const [titleDesc, setTitleDesc] = useState<{title?:string, description?:string}|null>(null)
   const [landingCopy, setLandingCopy] = useState<any|null>(null)
+  const [numAngles, setNumAngles] = useState<number>(3)
+  const [runAnalyze, setRunAnalyze] = useState<boolean>(true)
+  const [runTD, setRunTD] = useState<boolean>(true)
+  const [runLC, setRunLC] = useState<boolean>(true)
+  const [analyzePrompt, setAnalyzePrompt] = useState<string>("")
+  const [anglesPrompt, setAnglesPrompt] = useState<string>("")
+  const [titleDescPrompt, setTitleDescPrompt] = useState<string>("")
+  const [landingCopyPrompt, setLandingCopyPrompt] = useState<string>("")
+  const [variation, setVariation] = useState<string>("")
+  const [showHtmlPreview, setShowHtmlPreview] = useState<boolean>(true)
 
   const system = useMemo<Message>(()=>({
     role:'system',
@@ -58,6 +68,8 @@ export default function AdsAgentClient(){
         imageUrl? `IMAGE_URL: ${imageUrl.trim()}` : undefined,
         Object.keys(product).length? `PRODUCT: ${JSON.stringify(product)}` : undefined,
         budget? `BUDGET: ${budget}` : undefined,
+        `SETTINGS: num_angles=${Math.max(1, Math.min(5, Number(numAngles)||3))}; run_analyze=${runAnalyze}; run_title_desc=${runTD}; run_landing_copy=${runLC}`,
+        (analyzePrompt||anglesPrompt||titleDescPrompt||landingCopyPrompt||variation)? `PROMPT_OVERRIDES: ${JSON.stringify({ analyze: analyzePrompt||undefined, angles: anglesPrompt||undefined, title_desc: titleDescPrompt||undefined, landing_copy: landingCopyPrompt||undefined, variation: variation||undefined })}` : undefined,
       ].filter(Boolean)
       const thread: Message[] = [system, { role:'user', content: parts.join('\n') }]
       const res = await agentAdsExecute({ messages: thread, model: model || undefined })
@@ -72,7 +84,7 @@ export default function AdsAgentClient(){
           arr = analyzeAngles.angles
         }
         if(arr && arr.length){ setAngles(arr); setSelectedIdx(0) }
-        if(arr && arr.length){ await runTitleDesc(arr[0], res?.messages||thread, product) }
+        if(arr && arr.length && runTD){ await runTitleDesc(arr[0], res?.messages||thread, product) }
       }
     }catch(e:any){ setError(String(e?.message||e)) }
     finally{ setRunning(false) }
@@ -80,15 +92,15 @@ export default function AdsAgentClient(){
 
   const runTitleDesc = useCallback(async (angle: any, baseMessages: any[], product: any)=>{
     try{
-      const prompt = `Using this ANGLE, generate product title and short description. Use gen_title_desc_tool.\nANGLE:\n${JSON.stringify(angle)}`
+      const prompt = `Using this ANGLE, generate product title and short description. Use gen_title_desc_tool. ${titleDescPrompt? `OVERRIDE: ${titleDescPrompt}`:''}\nANGLE:\n${JSON.stringify(angle)}`
       const next = [...baseMessages, { role:'user', content: prompt }]
       const res = await agentAdsExecute({ messages: next, model: model || undefined })
       setMessages(res?.messages||next)
       const td = getLatestToolContent(res?.messages, 'gen_title_desc_tool')
       if(td && (td.title || td.description)) setTitleDesc({ title: td.title, description: td.description })
-      await runLandingCopy(angle, res?.messages||next, product, td)
+      if(runLC){ await runLandingCopy(angle, res?.messages||next, product, td) }
     }catch(e:any){ /* ignore */ }
-  },[model])
+  },[model, titleDescPrompt, runLC])
 
   const runLandingCopy = useCallback(async (angle: any, baseMessages: any[], product: any, td?: any)=>{
     try{
@@ -96,7 +108,7 @@ export default function AdsAgentClient(){
       if(td?.title) withTD.title = td.title
       if(td?.description) withTD.description = td.description
       const images: string[] = imageUrl? [imageUrl] : []
-      const prompt = `Generate landing copy using gen_landing_copy_tool. Include image_urls when helpful.`
+      const prompt = `Generate landing copy using gen_landing_copy_tool. Include image_urls when helpful. ${landingCopyPrompt? `OVERRIDE: ${landingCopyPrompt}`:''}`
       const ctx = { product: withTD, angles: [angle], image_urls: images }
       const next = [...baseMessages, { role:'user', content: `${prompt}\nCONTEXT:\n${JSON.stringify(ctx)}` }]
       const res = await agentAdsExecute({ messages: next, model: model || undefined })
@@ -104,7 +116,7 @@ export default function AdsAgentClient(){
       const lc = getLatestToolContent(res?.messages, 'gen_landing_copy_tool')
       if(lc && (lc.headline || lc.html || lc.sections)) setLandingCopy(lc)
     }catch(e:any){ /* ignore */ }
-  },[imageUrl, model])
+  },[imageUrl, model, landingCopyPrompt])
 
   const onSelectAngle = useCallback(async (idx: number)=>{
     setSelectedIdx(idx)
@@ -122,20 +134,37 @@ export default function AdsAgentClient(){
 
   return (
     <div className="flex gap-4 p-4">
-      <div className="w-[320px] shrink-0 border rounded p-3 bg-white">
+      <div className="w-[360px] shrink-0 border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700">
         <div className="text-sm font-medium mb-2">Create Ads (Agent)</div>
         <div className="flex flex-col gap-2 text-sm">
-          <input className="border rounded px-2 py-1" placeholder="Landing page URL" value={url} onChange={e=>setUrl(e.target.value)} />
-          <input className="border rounded px-2 py-1" placeholder="Image URL (optional)" value={imageUrl} onChange={e=>setImageUrl(e.target.value)} />
-          <textarea className="border rounded px-2 py-1 min-h-[56px]" placeholder="Audience" value={audience} onChange={e=>setAudience(e.target.value)} />
-          <textarea className="border rounded px-2 py-1 min-h-[80px]" placeholder="Benefits (one per line)" value={benefits} onChange={e=>setBenefits(e.target.value)} />
-          <textarea className="border rounded px-2 py-1 min-h-[80px]" placeholder="Pain points (one per line)" value={pains} onChange={e=>setPains(e.target.value)} />
+          <input className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Landing page URL" value={url} onChange={e=>setUrl(e.target.value)} />
+          <input className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Image URL (optional)" value={imageUrl} onChange={e=>setImageUrl(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[56px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Audience" value={audience} onChange={e=>setAudience(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[80px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Benefits (one per line)" value={benefits} onChange={e=>setBenefits(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[80px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Pain points (one per line)" value={pains} onChange={e=>setPains(e.target.value)} />
           <div className="flex gap-2">
-            <input className="border rounded px-2 py-1 w-1/2" placeholder="Budget (MAD)" value={budget} onChange={e=>setBudget(e.target.value)} />
-            <input className="border rounded px-2 py-1 w-1/2" placeholder="Language (e.g., ar, fr, en)" value={language} onChange={e=>setLanguage(e.target.value)} />
+            <input className="border rounded px-2 py-1 w-1/2 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Budget (MAD)" value={budget} onChange={e=>setBudget(e.target.value)} />
+            <input className="border rounded px-2 py-1 w-1/2 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Language (e.g., ar, fr, en)" value={language} onChange={e=>setLanguage(e.target.value)} />
           </div>
-          <input className="border rounded px-2 py-1" placeholder="Model (optional)" value={model} onChange={e=>setModel(e.target.value)} />
-          <button className="bg-black text-white px-3 py-1 rounded disabled:opacity-50" disabled={running} onClick={onRun}>{running? 'Running…':'Generate Angles'}</button>
+          <input className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Model (optional)" value={model} onChange={e=>setModel(e.target.value)} />
+          <div className="border-t border-slate-200 dark:border-slate-700 my-2"/>
+          <div className="font-medium">Advanced</div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs">Num angles</label>
+            <input type="number" min={1} max={5} className="border rounded px-2 py-1 w-20 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={numAngles} onChange={e=>setNumAngles(parseInt(e.target.value||'3')||3)} />
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={runAnalyze} onChange={e=>setRunAnalyze(e.target.checked)} />Run Analyze</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={runTD} onChange={e=>setRunTD(e.target.checked)} />Run Title/Desc</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={runLC} onChange={e=>setRunLC(e.target.checked)} />Run Landing Copy</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={showHtmlPreview} onChange={e=>setShowHtmlPreview(e.target.checked)} />HTML Preview</label>
+          </div>
+          <textarea className="border rounded px-2 py-1 min-h-[52px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Angles prompt override (optional)" value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[52px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Title/Desc prompt override (optional)" value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[52px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Landing copy prompt override (optional)" value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
+          <textarea className="border rounded px-2 py-1 min-h-[52px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Analyze prompt override (optional)" value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
+          <input className="border rounded px-2 py-1 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Variation (type to vary results)" value={variation} onChange={e=>setVariation(e.target.value)} />
+          <button className="bg-black text-white px-3 py-1 rounded disabled:opacity-50" disabled={running} onClick={onRun}>{running? 'Running…':'Run Agent'}</button>
         </div>
       </div>
       <div className="flex-1">
@@ -145,7 +174,7 @@ export default function AdsAgentClient(){
         {angles && angles.length? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
             {angles.map((a, i)=> (
-              <div key={i} className={`border rounded p-3 bg-white ${i===selectedIdx? 'ring-2 ring-black':''}`}>
+              <div key={i} className={`border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 ${i===selectedIdx? 'ring-2 ring-black':''}`}>
                 <div className="text-sm font-semibold">{a.name||'Angle'}</div>
                 {Array.isArray(a.headlines)? <ul className="list-disc ml-5 text-xs mt-1">
                   {a.headlines.slice(0,4).map((h:string, idx:number)=>(<li key={idx}>{h}</li>))}
@@ -158,22 +187,26 @@ export default function AdsAgentClient(){
           </div>
         ) : null}
         {titleDesc? (
-          <div className="border rounded p-3 bg-white mb-3">
+          <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
             <div className="text-sm font-semibold">Title & Description</div>
             <div className="text-sm mt-1">{titleDesc.title}</div>
             <div className="text-xs text-slate-700 mt-1 whitespace-pre-wrap">{titleDesc.description}</div>
           </div>
         ) : null}
         {landingCopy? (
-          <div className="border rounded p-3 bg-white mb-3">
+          <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
             <div className="text-sm font-semibold">Landing Copy</div>
             {landingCopy.headline? <div className="text-sm mt-1">{landingCopy.headline}</div> : null}
-            {landingCopy.html? <div className="text-xs mt-2 border rounded p-2 bg-slate-50 overflow-auto" dangerouslySetInnerHTML={{__html: landingCopy.html}}/> : (
+            {landingCopy.html && showHtmlPreview? (
+              <iframe className="w-full min-h-[360px] mt-2 border rounded bg-white" sandbox="allow-same-origin" srcDoc={landingCopy.html} />
+            ) : landingCopy.html? (
+              <div className="text-xs mt-2 border rounded p-2 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 overflow-auto" dangerouslySetInnerHTML={{__html: landingCopy.html}}/>
+            ) : (
               <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(landingCopy, null, 2)}</pre>
             )}
           </div>
         ) : null}
-        {result? <pre className="text-xs whitespace-pre-wrap bg-white border rounded p-3 min-h-[120px]">{result}</pre> : <div className="text-xs text-slate-500">No result yet</div>}
+        {result? <pre className="text-xs whitespace-pre-wrap bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border rounded p-3 min-h-[120px]">{result}</pre> : <div className="text-xs text-slate-500">No result yet</div>}
       </div>
     </div>
   )
