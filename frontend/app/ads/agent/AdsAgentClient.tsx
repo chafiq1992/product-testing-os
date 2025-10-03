@@ -1,6 +1,6 @@
 "use client"
 import { useCallback, useMemo, useState } from 'react'
-import { agentAdsExecute } from '../../../lib/api'
+import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages } from '../../../lib/api'
 import AdsAgentCanvas from './AdsAgentCanvas'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
@@ -41,6 +41,11 @@ export default function AdsAgentClient(){
   const [goal, setGoal] = useState<'angles'|'headlines'|'copies'|'title_desc'|'landing_copy'|'full'>('full')
   const [headlines, setHeadlines] = useState<string[]>([])
   const [copies, setCopies] = useState<string[]>([])
+  // Image generation
+  const [adImagePrompt, setAdImagePrompt] = useState<string>("")
+  const [adImageCount, setAdImageCount] = useState<number>(2)
+  const [adImages, setAdImages] = useState<string[]>([])
+  const [appendImages, setAppendImages] = useState<boolean>(true)
   const [numAngles, setNumAngles] = useState<number>(3)
   const [runAnalyze, setRunAnalyze] = useState<boolean>(true)
   const [runTD, setRunTD] = useState<boolean>(true)
@@ -112,6 +117,54 @@ export default function AdsAgentClient(){
     finally{ setRunning(false) }
   },[system, url, imageUrl, audience, benefits, pains, budget, model, language])
 
+  // Re-run specific steps
+  const runAnalyze = useCallback(async ()=>{
+    if(!url && !imageUrl) return
+    try{
+      const base = messages||[system]
+      const prompt = `Run analyze_landing_page_tool${analyzePrompt? ` OVERRIDE: ${analyzePrompt}`:''}`
+      const next = [...base, { role:'user', content: prompt }]
+      const res = await agentAdsExecute({ messages: next, model: model || undefined })
+      setMessages(res?.messages||next)
+    }catch{}
+  },[messages, system, analyzePrompt, model, url, imageUrl])
+
+  const runAngles = useCallback(async ()=>{
+    try{
+      const product: any = {}
+      if(audience.trim()) product.audience = audience.trim()
+      if(benefits.trim()) product.benefits = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      if(pains.trim()) product.pain_points = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      if(language.trim()) product.language = language.trim()
+      const base = messages||[system]
+      const prompt = `Generate ${Math.max(1, Math.min(5, Number(numAngles)||3))} angles using gen_angles_tool${anglesPrompt? ` OVERRIDE: ${anglesPrompt}`:''}\nCONTEXT:\n${JSON.stringify({product})}`
+      const next = [...base, { role:'user', content: prompt }]
+      const res = await agentAdsExecute({ messages: next, model: model || undefined })
+      setMessages(res?.messages||next)
+      const toolAngles = getLatestToolContent(res?.messages, 'gen_angles_tool')
+      const analyzeAngles = getLatestToolContent(res?.messages, 'analyze_landing_page_tool')
+      let arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
+      if((!arr || !arr.length) && Array.isArray(analyzeAngles?.angles)){
+        arr = analyzeAngles.angles
+      }
+      if(arr && arr.length){
+        setAngles(arr); setSelectedIdx(0)
+        const hs: string[] = []; const ps: string[] = []
+        for(const it of arr){
+          if(Array.isArray(it.headlines)) hs.push(...it.headlines.slice(0,8))
+          const prim = it.primaries
+          if(Array.isArray(prim)) ps.push(...prim.slice(0,4))
+          else if(prim && typeof prim==='object'){
+            if(typeof prim.short==='string') ps.push(prim.short)
+            if(typeof prim.medium==='string') ps.push(prim.medium)
+            if(typeof prim.long==='string') ps.push(prim.long)
+          }
+        }
+        setHeadlines(hs); setCopies(ps)
+      }
+    }catch{}
+  },[messages, system, numAngles, anglesPrompt, model, audience, benefits, pains, language])
+
   const runTitleDesc = useCallback(async (angle: any, baseMessages: any[], product: any)=>{
     try{
       const prompt = `Using this ANGLE, generate product title and short description. Use gen_title_desc_tool. ${titleDescPrompt? `OVERRIDE: ${titleDescPrompt}`:''}\nANGLE:\n${JSON.stringify(angle)}`
@@ -153,6 +206,30 @@ export default function AdsAgentClient(){
       await runTitleDesc(angles[idx], messages, product)
     }
   },[angles, messages, runTitleDesc, audience, benefits, pains, language])
+
+  // Image prompt suggest and generation (Gemini)
+  const proposeAdImagePrompt = useCallback(async ()=>{
+    try{
+      const product: any = {}
+      if(audience.trim()) product.audience = audience.trim()
+      if(benefits.trim()) product.benefits = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
+      if(pains.trim()) product.pain_points = pains.split('\n').map(s=>s.trim()).filter(Boolean)
+      const res = await geminiSuggestPrompts({ product, image_url: imageUrl || (url||'') })
+      const p = (res as any)?.ad_prompt || ''
+      if(p) setAdImagePrompt(p)
+    }catch{}
+  },[audience, benefits, pains, imageUrl, url])
+
+  const generateAdImages = useCallback(async ()=>{
+    if(!adImagePrompt) return
+    try{
+      const res = await geminiGenerateAdImages({ image_url: imageUrl || (url||''), prompt: adImagePrompt, num_images: Math.max(1, Math.min(6, Number(adImageCount)||2)) })
+      const imgs = (res as any)?.images || []
+      if(Array.isArray(imgs)){
+        setAdImages(prev=> appendImages? [...prev, ...imgs] : imgs)
+      }
+    }catch{}
+  },[adImagePrompt, imageUrl, url, adImageCount, appendImages])
 
   return (
     <div className="flex gap-4 p-4">
@@ -202,6 +279,13 @@ export default function AdsAgentClient(){
         <div className="text-sm font-medium mb-2">Result</div>
         {error? <div className="text-xs text-red-600 whitespace-pre-wrap">{error}</div> : null}
         <AdsAgentCanvas messages={messages||[]}/>
+        {/* Step controls */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          <button className="text-xs px-2 py-1 border rounded" onClick={runAnalyze}>Re-run Analyze</button>
+          <button className="text-xs px-2 py-1 border rounded" onClick={runAngles}>Re-run Angles</button>
+          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ if(angles && angles[selectedIdx]) runTitleDesc(angles[selectedIdx], messages||[], {}) }}>Re-run Title/Desc</button>
+          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ if(angles && angles[selectedIdx]) runLandingCopy(angles[selectedIdx], messages||[], {}, titleDesc||undefined) }}>Re-run Landing Copy</button>
+        </div>
         {angles && angles.length? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
             {angles.map((a, i)=> (
@@ -261,6 +345,32 @@ export default function AdsAgentClient(){
             )}
           </div>
         ) : null}
+        {/* Ad Images (Gemini) */}
+        <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
+          <div className="text-sm font-semibold">Ad Images (Gemini)</div>
+          <div className="text-xs text-slate-600 dark:text-slate-300 mb-2">The agent proposes a prompt; you can edit then generate images. Regeneration can append.</div>
+          <div className="flex flex-col gap-2 text-sm">
+            <div className="flex gap-2">
+              <button className="text-xs px-2 py-1 border rounded" onClick={proposeAdImagePrompt}>Propose Image Prompt</button>
+              <button className="text-xs px-2 py-1 border rounded" onClick={generateAdImages}>Generate Images</button>
+            </div>
+            <textarea className="border rounded px-2 py-1 min-h-[80px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Ad image prompt" value={adImagePrompt} onChange={e=>setAdImagePrompt(e.target.value)} />
+            <div className="flex items-center gap-2">
+              <label className="text-xs">Count</label>
+              <input type="number" min={1} max={6} className="border rounded px-2 py-1 w-20 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={adImageCount} onChange={e=>setAdImageCount(parseInt(e.target.value||'2')||2)} />
+              <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={appendImages} onChange={e=>setAppendImages(e.target.checked)} />Append</label>
+            </div>
+            {adImages.length? (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {adImages.map((src, idx)=> (
+                  <div key={idx} className="border rounded overflow-hidden bg-white dark:bg-slate-950">
+                    <img src={src} alt="ad" className="w-full h-32 object-cover" />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
         {result? <pre className="text-xs whitespace-pre-wrap bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border rounded p-3 min-h-[120px]">{result}</pre> : <div className="text-xs text-slate-500">No result yet</div>}
       </div>
     </div>
