@@ -1,6 +1,7 @@
 "use client"
 import { useCallback, useMemo, useState } from 'react'
 import { agentAdsExecute } from '../../../lib/api'
+import AdsAgentCanvas from './AdsAgentCanvas'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
 
@@ -136,6 +137,7 @@ export default function AdsAgentClient(){
       <div className="flex-1">
         <div className="text-sm font-medium mb-2">Result</div>
         {error? <div className="text-xs text-red-600 whitespace-pre-wrap">{error}</div> : null}
+        <AdsAgentCanvas messages={messages||[]}/>
         {angles && angles.length? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
             {angles.map((a, i)=> (
