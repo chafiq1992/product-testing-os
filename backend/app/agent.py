@@ -130,3 +130,19 @@ def run_agent_until_final(
     return {"error": "max_iters_exceeded", "messages": working}
 
 
+# Opinionated Ads Agent: system prompt steers towards ads-specific tools/structure
+ADS_AGENT_SYSTEM = {
+    "role": "system",
+    "content": (
+        "You are the Ads Agent. Use tools to analyze landing pages and generate 2–3 ad angles. "
+        "Return concise outputs; avoid free-form prose unless summarizing results."
+    ),
+}
+
+
+def run_ads_agent(messages: List[Dict[str, Any]], *, model: Optional[str] = None) -> Dict[str, Any]:
+    if not messages or messages[0].get("role") != "system":
+        messages = [ADS_AGENT_SYSTEM] + list(messages)
+    return run_agent_until_final(messages, model=model)
+
+

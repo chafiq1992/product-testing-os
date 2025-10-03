@@ -336,6 +336,12 @@ export async function agentExecute(payload:{ messages: any[], model?: string }){
   return data as { text?: string, messages?: any[], error?: string }
 }
 
+// Ads Agent (separate endpoint)
+export async function agentAdsExecute(payload:{ messages: any[], model?: string }){
+  const {data} = await axios.post(`${base}/api/agent/ads/execute`, payload)
+  return data as { text?: string, messages?: any[], error?: string }
+}
+
 // Extract product inputs from a single product image (OpenAI multimodal)
 export async function productFromImage(payload:{ image_url:string, model?:string, target_category?: string }){
   const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)
