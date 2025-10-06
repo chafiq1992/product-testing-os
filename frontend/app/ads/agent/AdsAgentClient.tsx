@@ -118,7 +118,7 @@ export default function AdsAgentClient(){
   },[system, url, imageUrl, audience, benefits, pains, budget, model, language])
 
   // Re-run specific steps
-  const runAnalyze = useCallback(async ()=>{
+  const rerunAnalyze = useCallback(async ()=>{
     if(!url && !imageUrl) return
     try{
       const base = messages||[system]
@@ -281,7 +281,7 @@ export default function AdsAgentClient(){
         <AdsAgentCanvas messages={messages||[]}/>
         {/* Step controls */}
         <div className="flex flex-wrap gap-2 mb-3">
-          <button className="text-xs px-2 py-1 border rounded" onClick={runAnalyze}>Re-run Analyze</button>
+          <button className="text-xs px-2 py-1 border rounded" onClick={rerunAnalyze}>Re-run Analyze</button>
           <button className="text-xs px-2 py-1 border rounded" onClick={runAngles}>Re-run Angles</button>
           <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ if(angles && angles[selectedIdx]) runTitleDesc(angles[selectedIdx], messages||[], {}) }}>Re-run Title/Desc</button>
           <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ if(angles && angles[selectedIdx]) runLandingCopy(angles[selectedIdx], messages||[], {}, titleDesc||undefined) }}>Re-run Landing Copy</button>
