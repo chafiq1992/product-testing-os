@@ -1,6 +1,8 @@
 "use client"
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts, llmAnalyzeLandingPage, llmGenerateAngles } from '../../../lib/api'
+import AdsAgentCanvas from './AdsAgentCanvas'
+import { Settings } from 'lucide-react'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
 
@@ -54,11 +56,71 @@ export default function AdsAgentClient(){
   // Translate settings
   const [translateLocale, setTranslateLocale] = useState<string>('MA')
   const [autoTranslate, setAutoTranslate] = useState<boolean>(true)
+  // Agent instruction (editable)
+  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always output in English. Only generate ad headlines, primary texts, and ad image prompts. Do not produce product titles, descriptions, or landing copy.'
+  const [systemInstruction, setSystemInstruction] = useState<string>(defaultInstruction)
+  const [showSettings, setShowSettings] = useState<boolean>(false)
+
+  useEffect(()=>{
+    try{
+      const saved = localStorage.getItem('ads_agent_instruction')
+      if(saved && typeof saved==='string' && saved.trim()){
+        setSystemInstruction(saved)
+      }
+    }catch{}
+  },[])
+
+  // Helpers for image source & display (mirror Studio page behavior)
+  const __API_BASE = (typeof process!=='undefined'? (process.env as any).NEXT_PUBLIC_API_BASE_URL : '') || ''
+  function toDisplayUrl(u: string){
+    try{
+      if(!u) return u
+      if(u.startsWith('data:')) return u
+      if(u.startsWith('/')) return u
+      if(!/^https?:\/\//i.test(u)) return u
+      const urlHost = new URL(u).host
+      let ownHost = ''
+      try{ ownHost = __API_BASE? new URL(__API_BASE).host : (typeof window!=='undefined'? window.location.host : '') }catch{}
+      const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
+      const isAllowed = allowed.some(d=> urlHost===d || urlHost.endsWith('.'+d))
+      const isOwn = !!ownHost && urlHost===ownHost
+      return (isAllowed || isOwn)? u : `${__API_BASE}/proxy/image?url=${encodeURIComponent(u)}`
+    }catch{ return u }
+  }
+  function isProbablyImageUrl(u:string){
+    try{
+      if(!u) return false
+      if(u.startsWith('data:image/')) return true
+      const low = u.toLowerCase()
+      if(low.endsWith('.jpg')||low.endsWith('.jpeg')||low.endsWith('.png')||low.endsWith('.webp')||low.endsWith('.gif')) return true
+      if(low.includes('cdn.shopify.com')) return true
+      return false
+    }catch{ return false }
+  }
+  function resolveSourceImage(): string | ''{
+    // 1) Prefer user-provided imageUrl if it looks like an image
+    if(isProbablyImageUrl(imageUrl)) return imageUrl
+    // 2) Try to pull from latest analyze_landing_page_tool images
+    try{
+      const a = getLatestToolContent(messages||[], 'analyze_landing_page_tool') as any
+      if(a && Array.isArray(a.images) && a.images[0] && isProbablyImageUrl(a.images[0])){
+        return a.images[0]
+      }
+    }catch{}
+    // 3) Try product_from_image_tool output
+    try{
+      const pfi = getLatestToolContent(messages||[], 'product_from_image_tool') as any
+      if(pfi && typeof pfi.image_url==='string' && isProbablyImageUrl(pfi.image_url)){
+        return pfi.image_url
+      }
+    }catch{}
+    return ''
+  }
 
   const system = useMemo<Message>(()=>({
     role:'system',
-    content: 'You are the Ads Agent specialized in digital ads. Always output in English. Only generate ad headlines, primary texts, and ad image prompts. Do not produce product titles, descriptions, or landing copy.',
-  }),[])
+    content: systemInstruction,
+  }),[systemInstruction])
 
   const onRun = useCallback(async ()=>{
     setRunning(true); setResult(""); setError("")
@@ -162,8 +224,8 @@ export default function AdsAgentClient(){
             setAdImagePrompt(bannerPrompt)
             // Generate exactly 2 images at the end if imageUrl/url is present
             try{
-              const baseImg = imageUrl || (url||'')
-              if(baseImg){
+              const baseImg = resolveSourceImage()
+              if(baseImg && isProbablyImageUrl(baseImg)){
                 const gen = await geminiGenerateAdImages({ image_url: baseImg, prompt: bannerPrompt, num_images: 2, neutral_background: false })
                 const imgs = (gen as any)?.images || []
                 if(Array.isArray(imgs)) setAdImages(imgs)
@@ -195,7 +257,9 @@ export default function AdsAgentClient(){
   const generateAdImages = useCallback(async ()=>{
     if(!adImagePrompt) return
     try{
-      const res = await geminiGenerateAdImages({ image_url: imageUrl || (url||''), prompt: adImagePrompt, num_images: Math.max(1, Math.min(6, Number(adImageCount)||2)) })
+      const src = resolveSourceImage()
+      if(!src || !isProbablyImageUrl(src)) return
+      const res = await geminiGenerateAdImages({ image_url: src, prompt: adImagePrompt, num_images: Math.max(1, Math.min(6, Number(adImageCount)||2)) })
       const imgs = (res as any)?.images || []
       if(Array.isArray(imgs)){
         setAdImages(prev=> appendImages? [...prev, ...imgs] : imgs)
@@ -222,12 +286,38 @@ export default function AdsAgentClient(){
     }catch{}
   },[copies, headlines, translateLocale])
 
+  // Reasoning/events extracted from messages (tool usage and assistant turns)
+  const reasoning = useMemo(()=>{
+    const items: { type: 'tool'|'assistant', label: string, detail?: string }[] = []
+    const arr = Array.isArray(messages)? messages : []
+    for(const m of arr){
+      try{
+        if(m && Array.isArray(m.tool_calls) && m.tool_calls.length){
+          for(const tc of m.tool_calls){
+            const nm = tc?.function?.name || 'tool'
+            items.push({ type:'tool', label: `Calling ${nm}`, detail: (tc?.function?.arguments||'').slice(0,160) })
+          }
+        }
+        if(m && m.role==='tool' && typeof m.name==='string'){
+          items.push({ type:'tool', label: `Completed ${m.name}`, detail: String(m.content||'').slice(0,180) })
+        }
+        if(m && m.role==='assistant' && m.content && !m.tool_calls){
+          items.push({ type:'assistant', label: 'Assistant', detail: String(m.content||'').slice(0,180) })
+        }
+      }catch{}
+    }
+    return items.slice(-12)
+  },[messages])
+
   return (
     <div className="flex gap-6 p-6 text-slate-800">
       {/* Left: Agent cards */}
       <div className="w-[380px] shrink-0 space-y-4">
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
-          <div className="text-base font-semibold mb-3">Ads Agent Settings</div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-base font-semibold">Ads Agent Settings</div>
+            <button className="p-2 rounded-lg hover:bg-slate-100" title="Agent settings" onClick={()=>setShowSettings(true)}><Settings className="w-5 h-5 text-slate-600"/></button>
+          </div>
           <div className="flex flex-col gap-3 text-base">
             <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Landing page URL" value={url} onChange={e=>setUrl(e.target.value)} />
             <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Image URL (optional)" value={imageUrl} onChange={e=>setImageUrl(e.target.value)} />
@@ -264,11 +354,21 @@ export default function AdsAgentClient(){
           <label className="flex items-center gap-2 text-sm text-slate-700 mb-3"><input type="checkbox" checked={autoTranslate} onChange={e=>setAutoTranslate(e.target.checked)} />Auto-translate outputs</label>
           <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={retranslate}>Translate Now</button>
         </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+          <div className="text-base font-semibold mb-3">Gemini Ad Image Generator</div>
+          <div className="flex gap-2 mb-2">
+            <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={proposeAdImagePrompt}>Suggest Different Style</button>
+            <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={generateAdImages}>Generate (2)</button>
+          </div>
+          <textarea className="border border-slate-200 rounded-lg px-3 py-2 min-h-[96px] w-full bg-white" placeholder="Ad image prompt" value={adImagePrompt} onChange={e=>setAdImagePrompt(e.target.value)} />
+        </div>
       </div>
 
-      {/* Right: Outputs */}
+      {/* Middle: Canvas + Outputs */}
       <div className="flex-1 space-y-6">
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
+          <AdsAgentCanvas messages={messages||[]}/>
           <div className="text-lg font-semibold mb-4">English Outputs</div>
           {angles && angles.length? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
@@ -305,15 +405,7 @@ export default function AdsAgentClient(){
                 </div>
               ) : null}
 
-              {/* Ad Image Prompt */}
-              <div>
-                <div className="text-base font-medium mb-2">Ad Image Prompt (English)</div>
-                <div className="flex gap-2 mb-2">
-                  <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={proposeAdImagePrompt}>Suggest Different Style</button>
-                  <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={generateAdImages}>Re-Generate (2)</button>
-                </div>
-                <textarea className="border border-slate-200 rounded-lg px-3 py-2 min-h-[96px] w-full bg-white" placeholder="Ad image prompt" value={adImagePrompt} onChange={e=>setAdImagePrompt(e.target.value)} />
-              </div>
+              {/* Image prompt moved to left panel */}
             </div>
           ) : null}
         </div>
@@ -352,13 +444,43 @@ export default function AdsAgentClient(){
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {adImages.map((src, idx)=>(
                 <div key={idx} className="border border-slate-200 rounded-lg overflow-hidden bg-white">
-                  <img src={src} alt="ad" className="w-full h-40 object-cover" />
+                  <img src={toDisplayUrl(src)} alt="ad" className="w-full h-40 object-cover" />
                 </div>
               ))}
             </div>
           </div>
         ) : null}
       </div>
+
+      {/* Right: Reasoning panel */}
+      <div className="w-[340px] shrink-0 space-y-4">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 sticky top-20 max-h-[80vh] overflow-auto">
+          <div className="text-base font-semibold mb-3">Agent Activity</div>
+          <div className="space-y-2">
+            {reasoning.length? reasoning.map((ev, idx)=> (
+              <div key={idx} className="border border-slate-200 rounded-lg p-3 bg-white">
+                <div className="text-sm font-medium text-slate-800">{ev.label}</div>
+                {ev.detail? <div className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{ev.detail}</div> : null}
+              </div>
+            )) : <div className="text-sm text-slate-500">No activity yet</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Settings modal */}
+      {showSettings? (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={()=>setShowSettings(false)}>
+          <div className="w-full max-w-xl bg-white rounded-xl shadow-xl p-5" onClick={(e)=>e.stopPropagation()}>
+            <div className="text-lg font-semibold mb-2">Agent Instructions</div>
+            <div className="text-sm text-slate-600 mb-3">Edit the system instructions for the Ads Agent. Changes can be saved as default.</div>
+            <textarea className="w-full min-h-[200px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
+            <div className="flex items-center justify-end gap-2 mt-3">
+              <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ setSystemInstruction(defaultInstruction); localStorage.setItem('ads_agent_instruction', defaultInstruction) }}>Reset</button>
+              <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem('ads_agent_instruction', systemInstruction||defaultInstruction) }catch{}; setShowSettings(false) }}>Save as Default</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
