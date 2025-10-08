@@ -7,16 +7,16 @@ const AdsAgentClient = dynamic(()=>import('./AdsAgentClient'), { ssr: false })
 export default function AdsAgentPage(){
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
-      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
+      <header className="h-16 px-5 md:px-8 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
-          <h1 className="font-semibold text-lg">Product Testing OS — Ads Agent</h1>
+          <h1 className="font-semibold text-xl tracking-tight">Ads Agent</h1>
         </div>
         <div className="flex items-center gap-2">
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
         </div>
       </header>
-      <div className="p-4 md:p-6">
+      <div className="p-6 md:p-8">
         <AdsAgentClient/>
       </div>
     </div>
