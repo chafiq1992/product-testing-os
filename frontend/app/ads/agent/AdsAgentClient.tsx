@@ -1,6 +1,6 @@
 "use client"
 import { useCallback, useMemo, useState } from 'react'
-import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages } from '../../../lib/api'
+import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts } from '../../../lib/api'
 import AdsAgentCanvas from './AdsAgentCanvas'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
@@ -41,6 +41,11 @@ export default function AdsAgentClient(){
   const [goal, setGoal] = useState<'angles'|'headlines'|'copies'|'title_desc'|'landing_copy'|'full'>('full')
   const [headlines, setHeadlines] = useState<string[]>([])
   const [copies, setCopies] = useState<string[]>([])
+  // Translations
+  const [arHeadlines, setArHeadlines] = useState<string[]>([])
+  const [frHeadlines, setFrHeadlines] = useState<string[]>([])
+  const [arCopies, setArCopies] = useState<string[]>([])
+  const [frCopies, setFrCopies] = useState<string[]>([])
   // Image generation
   const [adImagePrompt, setAdImagePrompt] = useState<string>("")
   const [adImageCount, setAdImageCount] = useState<number>(2)
@@ -65,6 +70,7 @@ export default function AdsAgentClient(){
   const onRun = useCallback(async ()=>{
     setRunning(true); setResult(""); setError("")
     setMessages(null); setAngles(null); setSelectedIdx(0); setTitleDesc(null); setLandingCopy(null)
+    setHeadlines([]); setCopies([]); setArHeadlines([]); setFrHeadlines([]); setArCopies([]); setFrCopies([])
     try{
       const product: any = {}
       if(audience.trim()) product.audience = audience.trim()
@@ -98,17 +104,63 @@ export default function AdsAgentClient(){
             const hs: string[] = []
             const ps: string[] = []
             for(const it of arr){
-              if(Array.isArray(it.headlines)) hs.push(...it.headlines.slice(0,8))
+              if(Array.isArray(it.headlines)){
+                for(const h of it.headlines){ if(typeof h==='string' && h.trim()) hs.push(h.trim()) }
+              }
               const prim = it.primaries
-              if(Array.isArray(prim)) ps.push(...prim.slice(0,4))
-              else if(prim && typeof prim==='object'){
-                if(typeof prim.short==='string') ps.push(prim.short)
-                if(typeof prim.medium==='string') ps.push(prim.medium)
-                if(typeof prim.long==='string') ps.push(prim.long)
+              if(Array.isArray(prim)){
+                for(const p of prim){ if(typeof p==='string' && p.trim()) ps.push(p.trim()) }
+              } else if(prim && typeof prim==='object'){
+                if(typeof prim.short==='string' && prim.short.trim()) ps.push(prim.short.trim())
+                if(typeof prim.medium==='string' && prim.medium.trim()) ps.push(prim.medium.trim())
+                if(typeof prim.long==='string' && prim.long.trim()) ps.push(prim.long.trim())
               }
             }
-            setHeadlines(hs)
-            setCopies(ps)
+            const topHeadlines = hs.slice(0,8)
+            const topCopies = ps.slice(0,3)
+            setHeadlines(topHeadlines)
+            setCopies(topCopies)
+            // Run translations (AR/FR) in parallel
+            try{
+              const [arH, frH] = await Promise.all([
+                translateTexts({ texts: topHeadlines, target: 'ar', locale: 'MA', domain: 'ads' }),
+                translateTexts({ texts: topHeadlines, target: 'fr', locale: 'MA', domain: 'ads' }),
+              ])
+              setArHeadlines(Array.isArray((arH as any)?.translations)? (arH as any).translations : [])
+              setFrHeadlines(Array.isArray((frH as any)?.translations)? (frH as any).translations : [])
+            }catch{}
+            try{
+              const [arC, frC] = await Promise.all([
+                translateTexts({ texts: topCopies, target: 'ar', locale: 'MA', domain: 'ads' }),
+                translateTexts({ texts: topCopies, target: 'fr', locale: 'MA', domain: 'ads' }),
+              ])
+              setArCopies(Array.isArray((arC as any)?.translations)? (arC as any).translations : [])
+              setFrCopies(Array.isArray((frC as any)?.translations)? (frC as any).translations : [])
+            }catch{}
+            // Build image prompt with banners based on first pairs
+            const h1 = topHeadlines[0] || ''
+            const c1 = topCopies[0] || ''
+            const h2 = topHeadlines[1] || h1
+            const c2 = topCopies[1] || c1
+            const bannerPrompt = [
+              'Create two high‑impact ecommerce ad images from the provided product photo.',
+              'Design both with bold, clean banners and overlay text for social-feed legibility (4:5 crop).',
+              'Rules: keep product identity exact (colors/materials/shape/branding). Premium lighting. Crisp edges. High contrast.',
+              'Each image must include one headline and one short supporting line as vector text (sharp, no artifacts).',
+              `Image A banner text: Headline: "${h1}" | Subtext: "${c1}"`,
+              `Image B banner text: Headline: "${h2}" | Subtext: "${c2}"`,
+              'Use tasteful brand-neutral colors, ensure strong readability, and avoid covering key product details.',
+            ].join('\n')
+            setAdImagePrompt(bannerPrompt)
+            // Generate exactly 2 images at the end if imageUrl/url is present
+            try{
+              const baseImg = imageUrl || (url||'')
+              if(baseImg){
+                const gen = await geminiGenerateAdImages({ image_url: baseImg, prompt: bannerPrompt, num_images: 2, neutral_background: false })
+                const imgs = (gen as any)?.images || []
+                if(Array.isArray(imgs)) setAdImages(imgs)
+              }
+            }catch{}
           }
         }
         if(arr && arr.length && runTD && (goal==='title_desc' || goal==='full')){ await runTitleDesc(arr[0], res?.messages||thread, product) }
@@ -301,28 +353,31 @@ export default function AdsAgentClient(){
             ))}
           </div>
         ) : null}
-        {(goal==='headlines' || goal==='full') && headlines.length? (
+        {(headlines.length || copies.length)? (
           <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
-            <div className="text-sm font-semibold mb-2">Headlines</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {headlines.map((h, idx)=>(
-                <input key={idx} className="border rounded px-2 py-1 text-xs bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={h} onChange={e=>{
-                  const copy = headlines.slice(); copy[idx]=e.target.value; setHeadlines(copy)
-                }}/>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        {(goal==='copies' || goal==='full') && copies.length? (
-          <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
-            <div className="text-sm font-semibold mb-2">Primary Texts</div>
-            <div className="grid grid-cols-1 gap-2">
-              {copies.map((c, idx)=>(
-                <textarea key={idx} className="border rounded px-2 py-1 text-xs min-h-[64px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={c} onChange={e=>{
-                  const copy = copies.slice(); copy[idx]=e.target.value; setCopies(copy)
-                }}/>
-              ))}
-            </div>
+            <div className="text-sm font-semibold mb-2">Outputs (EN / AR / FR)</div>
+            {/* Headlines */}
+            {headlines.length? (
+              <div className="mb-3">
+                <div className="text-xs font-medium mb-1">Headlines</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <div className="text-xs space-y-1">{headlines.map((t,i)=>(<div key={i} className="border rounded px-2 py-1">{t}</div>))}</div>
+                  <div className="text-xs space-y-1">{(arHeadlines.length? arHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(<div key={i} className="border rounded px-2 py-1">{t}</div>))}</div>
+                  <div className="text-xs space-y-1">{(frHeadlines.length? frHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(<div key={i} className="border rounded px-2 py-1">{t}</div>))}</div>
+                </div>
+              </div>
+            ) : null}
+            {/* Primary Texts */}
+            {copies.length? (
+              <div>
+                <div className="text-xs font-medium mb-1">Primary Texts</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <div className="text-xs space-y-1">{copies.map((t,i)=>(<div key={i} className="border rounded px-2 py-2 whitespace-pre-wrap">{t}</div>))}</div>
+                  <div className="text-xs space-y-1">{(arCopies.length? arCopies: new Array(copies.length).fill('…')).map((t,i)=>(<div key={i} className="border rounded px-2 py-2 whitespace-pre-wrap">{t}</div>))}</div>
+                  <div className="text-xs space-y-1">{(frCopies.length? frCopies: new Array(copies.length).fill('…')).map((t,i)=>(<div key={i} className="border rounded px-2 py-2 whitespace-pre-wrap">{t}</div>))}</div>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {titleDesc? (
@@ -347,19 +402,14 @@ export default function AdsAgentClient(){
         ) : null}
         {/* Ad Images (Gemini) */}
         <div className="border rounded p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-slate-200 dark:border-slate-700 mb-3">
-          <div className="text-sm font-semibold">Ad Images (Gemini)</div>
-          <div className="text-xs text-slate-600 dark:text-slate-300 mb-2">The agent proposes a prompt; you can edit then generate images. Regeneration can append.</div>
+          <div className="text-sm font-semibold">Gemini Ad Images</div>
+          <div className="text-xs text-slate-600 dark:text-slate-300 mb-2">Images are generated at the final step from the prompt below. You can edit and re-generate (2 images).</div>
           <div className="flex flex-col gap-2 text-sm">
             <div className="flex gap-2">
-              <button className="text-xs px-2 py-1 border rounded" onClick={proposeAdImagePrompt}>Propose Image Prompt</button>
-              <button className="text-xs px-2 py-1 border rounded" onClick={generateAdImages}>Generate Images</button>
+              <button className="text-xs px-2 py-1 border rounded" onClick={generateAdImages}>Re-Generate (2)</button>
+              <button className="text-xs px-2 py-1 border rounded" onClick={proposeAdImagePrompt}>Suggest Different Style</button>
             </div>
             <textarea className="border rounded px-2 py-1 min-h-[80px] bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" placeholder="Ad image prompt" value={adImagePrompt} onChange={e=>setAdImagePrompt(e.target.value)} />
-            <div className="flex items-center gap-2">
-              <label className="text-xs">Count</label>
-              <input type="number" min={1} max={6} className="border rounded px-2 py-1 w-20 bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700" value={adImageCount} onChange={e=>setAdImageCount(parseInt(e.target.value||'2')||2)} />
-              <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={appendImages} onChange={e=>setAppendImages(e.target.checked)} />Append</label>
-            </div>
             {adImages.length? (
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                 {adImages.map((src, idx)=> (

@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from app.tasks import pipeline_launch, run_pipeline_sync
-from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page
+from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page, translate_texts
 from app.agent import run_agent_until_final, run_ads_agent
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
@@ -414,6 +414,23 @@ async def api_agent_ads_execute(req: AgentRequest):
         return out
     except Exception as e:
         return {"error": str(e)}
+
+# ---------------- Translation API ----------------
+class TranslateRequest(BaseModel):
+    texts: list[str]
+    target: str  # e.g., 'ar', 'fr'
+    locale: Optional[str] = None
+    domain: Optional[str] = "ads"
+    model: Optional[str] = None
+
+
+@app.post("/api/translate")
+async def api_translate(req: TranslateRequest):
+    try:
+        out = translate_texts(req.texts or [], req.target, locale=req.locale, domain=req.domain, model=req.model)
+        return {"translations": out, "target": req.target}
+    except Exception as e:
+        return {"translations": [], "error": str(e), "target": req.target}
 
 # ---------------- Gemini image generation ----------------
 class GeminiAdImageRequest(BaseModel):

@@ -79,6 +79,90 @@ def gen_angles_and_copy(payload: dict, model: str | None = None, prompt_override
     data = gen_angles_and_copy_full(payload, model=model, prompt_override=prompt_override)
     return data.get("angles", [])
 
+# ---------------- Translation ----------------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def translate_texts(items: list[str], target_language: str, *, locale: str | None = None, domain: str | None = None, model: str | None = None) -> list[str]:
+    """Translate a list of strings to the target language, preserving marketing tone and terminology.
+
+    Args:
+        items: list of source strings.
+        target_language: e.g., "ar" for Arabic (Fus'ha), "fr" for French.
+        locale: optional locale hint like "MA" for Morocco to bias terminology.
+        domain: optional domain like "ads" to bias translation style.
+        model: override model.
+
+    Returns:
+        A list of translated strings of equal length.
+    """
+    try:
+        src_items = [str(x)[:2000] for x in (items or [])]
+    except Exception:
+        src_items = []
+    lang = (target_language or "").strip().lower()
+    loc = (locale or "").strip().upper()
+    dom = (domain or "").strip().lower()
+
+    instructions = (
+        "Translate each item accurately, preserving intent, clarity, and persuasive marketing tone.\n"
+        "- Return ONLY a JSON array of strings (no explanations).\n"
+        "- Use consistent terminology appropriate for digital ads.\n"
+        "- Avoid literal translations when a common marketing phrase exists.\n"
+        "- Keep brand/product names in the original language.\n"
+        "- Respect punctuation and line breaks.\n"
+    )
+    if lang == "ar":
+        instructions += "- Use Modern Standard Arabic (Fus'ha), clear and neutral.\n"
+    if lang == "fr":
+        instructions += "- Use standard French; if Morocco context applies, keep terms familiar locally.\n"
+    if loc:
+        instructions += f"- Optimize word choice for locale: {loc}.\n"
+    if dom:
+        instructions += f"- Domain emphasis: {dom}.\n"
+
+    messages = [
+        {"role": "system", "content": "You are a professional marketing translator. Output JSON only."},
+        {
+            "role": "user",
+            "content": (
+                instructions
+                + f"\nTarget language: {lang or 'fr'}\n"
+                + "Items to translate (JSON array):\n"
+                + json.dumps(src_items, ensure_ascii=False)
+            ),
+        },
+    ]
+    resp = client.chat.completions.create(
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
+    )
+    text = resp.choices[0].message.content or "[]"
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            out = [str(x) for x in parsed]
+        elif isinstance(parsed, dict) and isinstance(parsed.get("translations"), list):
+            out = [str(x) for x in parsed.get("translations")]
+        else:
+            out = []
+    except Exception:
+        out = []
+    if len(out) != len(src_items):
+        out = []
+        for s in src_items:
+            try:
+                r = client.chat.completions.create(
+                    model=(model or DEFAULT_LLM_MODEL),
+                    messages=[
+                        {"role": "system", "content": "Translate the following text. Output only the translation."},
+                        {"role": "user", "content": f"Target: {lang}\n{s}"},
+                    ],
+                )
+                tr = (r.choices[0].message.content or "").strip()
+            except Exception:
+                tr = s
+            out.append(tr)
+    return out
+
 IMAGE_PROMPT = (
     "High-converting ecommerce ad image for {title}. Angle: {angle}. "
     "Clean, product-first, bright neutral backdrop, subtle shadow, crisp edges, retail-ready, 4:5 safe crop."
