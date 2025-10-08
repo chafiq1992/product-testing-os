@@ -60,16 +60,12 @@ export default function AdsAgentCanvas({ messages }: { messages: any[]|null }){
   const data = useMemo(()=>{
     const analyze = getLatestToolContent(messages||[], 'analyze_landing_page_tool')
     const angles = getLatestToolContent(messages||[], 'gen_angles_tool')
-    const titleDesc = getLatestToolContent(messages||[], 'gen_title_desc_tool')
-    const landingCopy = getLatestToolContent(messages||[], 'gen_landing_copy_tool')
     const pfi = getLatestToolContent(messages||[], 'product_from_image_tool')
     const steps = [
       { key:'user', title:'User Input', done: !!(messages&&messages.length), summary: '' },
       { key:'pfi', title:'Product From Image', done: !!pfi, summary: summarizePfi(pfi) },
       { key:'analyze', title:'Analyze Landing', done: !!analyze, summary: summarizeAnalyze(analyze) },
       { key:'angles', title:'Generate Angles', done: !!(angles && (Array.isArray(angles.angles)? angles.angles.length: (angles.raw?.angles||[]).length)), summary: summarizeAngles(angles) },
-      { key:'td', title:'Title & Description', done: !!(titleDesc && (titleDesc.title||titleDesc.description)), summary: summarizeTitleDesc(titleDesc) },
-      { key:'lc', title:'Landing Copy', done: !!(landingCopy && (landingCopy.headline||landingCopy.sections||landingCopy.html)), summary: summarizeLandingCopy(landingCopy) },
     ]
     const activeIndex = steps.findIndex(s=>!s.done)
     return { steps, activeIndex }

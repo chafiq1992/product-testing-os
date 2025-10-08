@@ -50,6 +50,18 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
+# Serve a minimal favicon to avoid 404 noise
+@app.get("/favicon.ico")
+async def favicon():
+    # 1x1 PNG (transparent)
+    import base64
+    png_b64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQAB"
+        "J9mXqQAAAABJRU5ErkJggg=="
+    )
+    data = base64.b64decode(png_b64)
+    return Response(content=data, media_type="image/png")
+
 class VariantInput(BaseModel):
     size: Optional[str] = None
     color: Optional[str] = None

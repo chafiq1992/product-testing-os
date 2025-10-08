@@ -1,6 +1,6 @@
 "use client"
 import { useCallback, useMemo, useState } from 'react'
-import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts } from '../../../lib/api'
+import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts, llmAnalyzeLandingPage, llmGenerateAngles } from '../../../lib/api'
 import AdsAgentCanvas from './AdsAgentCanvas'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
@@ -64,7 +64,7 @@ export default function AdsAgentClient(){
 
   const system = useMemo<Message>(()=>({
     role:'system',
-    content: 'You are the Ads Agent. Use tools to analyze the landing page and produce 2–3 ad angles. Avoid free-form text; return concise summaries.',
+    content: 'You are the Ads Agent. Focus on ad headlines, primary texts, and image prompts only. No title/description or landing copy.',
   }),[])
 
   const onRun = useCallback(async ()=>{
@@ -72,6 +72,14 @@ export default function AdsAgentClient(){
     setMessages(null); setAngles(null); setSelectedIdx(0); setTitleDesc(null); setLandingCopy(null)
     setHeadlines([]); setCopies([]); setArHeadlines([]); setFrHeadlines([]); setArCopies([]); setFrCopies([])
     try{
+      // Auto-fill benefits & pain points from landing analysis when available
+      if(runAnalyze && (url || imageUrl)){
+        try{
+          const a = await llmAnalyzeLandingPage({ url: url || imageUrl, model: model || undefined, prompt: analyzePrompt || undefined })
+          if(Array.isArray((a as any)?.benefits) && !benefits){ setBenefits((a as any).benefits.join('\n')) }
+          if(Array.isArray((a as any)?.pain_points) && !pains){ setPains((a as any).pain_points.join('\n')) }
+        }catch{}
+      }
       const product: any = {}
       if(audience.trim()) product.audience = audience.trim()
       if(benefits.trim()) product.benefits = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
@@ -96,6 +104,13 @@ export default function AdsAgentClient(){
         let arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
         if((!arr || !arr.length) && Array.isArray(analyzeAngles?.angles)){
           arr = analyzeAngles.angles
+        }
+        // Fallback: call direct angles endpoint if agent returned nothing
+        if((!arr || !arr.length)){
+          try{
+            const direct = await llmGenerateAngles({ product, num_angles: Math.max(1, Math.min(5, Number(numAngles)||3)), model: model || undefined, prompt: anglesPrompt || undefined })
+            arr = (direct as any)?.angles || []
+          }catch{}
         }
         if(arr && arr.length){
           setAngles(arr); setSelectedIdx(0)
