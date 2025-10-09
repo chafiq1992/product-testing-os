@@ -30,7 +30,7 @@ export default function AgentsHomePage(){
       setShowNew(false)
       setNewName(''); setNewDesc('')
       try{ const list = await agentsList(); setAgents((list as any)?.data||[]) }catch{}
-      router.push(`/agents/${encodeURIComponent(effId)}`)
+      router.push(`/agents/view?id=${encodeURIComponent(effId)}`)
     } finally{ setCreating(false) }
   }
 
@@ -64,7 +64,7 @@ export default function AgentsHomePage(){
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {adsTile}
           {agents.map(a=> (
-            <Link key={a.id} href={`/agents/${encodeURIComponent(a.id)}`} className="group border border-slate-200 rounded-xl bg-white hover:shadow-md transition p-4 flex flex-col text-slate-800">
+            <Link key={a.id} href={`/agents/view?id=${encodeURIComponent(a.id)}`} className="group border border-slate-200 rounded-xl bg-white hover:shadow-md transition p-4 flex flex-col text-slate-800">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <div className="w-10 h-10 rounded-lg bg-indigo-50 border border-indigo-100 grid grid-cols-2 grid-rows-2 gap-0.5 p-1">

@@ -1,25 +1,24 @@
 "use client"
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { Settings, Rocket, ChevronDown } from 'lucide-react'
-import { useParams } from 'next/navigation'
+import { Settings, Rocket } from 'lucide-react'
+import { useSearchParams } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import { agentGet, agentRunsList, agentRunGet } from '@/lib/api'
 
 const AdsAgentClient = dynamic(()=>import('../../ads/agent/AdsAgentClient'), { ssr: false })
 
-
-export default function AgentDynamicPage(){
-  const params = useParams() as { id?: string }
-  const id = String(params?.id||'')
+export default function AgentViewPage(){
+  const params = useSearchParams()
+  const id = String(params.get('id')||'')
   const [meta, setMeta] = useState<{id:string,name:string,description?:string, instruction?:string, output_pref?:string}>({ id, name: id })
   const [runs, setRuns] = useState<Array<{id:string,title?:string,status?:string,created_at?:string}>>([])
   const [selectedRunId, setSelectedRunId] = useState<string | ''>('')
   const [selectedRun, setSelectedRun] = useState<any>(null)
+  const instructionKey = useMemo(()=> `agent_${id}_instruction`, [id])
+
   useEffect(()=>{ (async()=>{ if(!id) return; try{ const a = await agentGet(id); setMeta(a as any) }catch{}; try{ const rs = await agentRunsList(id, 20); setRuns((rs as any)?.data||[]) }catch{} })() },[id])
   useEffect(()=>{ (async()=>{ if(!id || !selectedRunId) return; try{ const r = await agentRunGet(id, selectedRunId); setSelectedRun(r) }catch{} })() },[id, selectedRunId])
-
-  const instructionKey = useMemo(()=> `agent_${id}_instruction`, [id])
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
