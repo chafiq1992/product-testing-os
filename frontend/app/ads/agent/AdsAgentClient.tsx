@@ -1,6 +1,6 @@
 "use client"
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts, llmAnalyzeLandingPage, llmGenerateAngles } from '../../../lib/api'
+import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts, llmAnalyzeLandingPage, llmGenerateAngles, agentRunCreate, agentRunUpdate, agentUpdate } from '../../../lib/api'
 import AdsAgentCanvas from './AdsAgentCanvas'
 import { Settings } from 'lucide-react'
 
@@ -22,7 +22,7 @@ function getLatestToolContent(messages: any[]|undefined, toolName: string): Tool
   return undefined
 }
 
-export default function AdsAgentClient(){
+export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction', initialInstruction, enableOutputField = true, agentId }: { instructionKey?: string, initialInstruction?: string, enableOutputField?: boolean, agentId?: string }){
   const [url, setUrl] = useState<string>("")
   const [imageUrl, setImageUrl] = useState<string>("")
   const [audience, setAudience] = useState<string>("")
@@ -55,14 +55,20 @@ export default function AdsAgentClient(){
   const [autoTranslate, setAutoTranslate] = useState<boolean>(true)
   // Agent instruction (editable)
   const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always prefer tools when available. Typical flow: (1) If a URL is provided, call analyze_landing_page_tool. (2) Use gen_angles_tool (num_angles=2 or 3). (3) Optionally refine with gen_title_desc_tool. (4) Optionally prepare gen_landing_copy_tool. (5) If an image_url is provided without product info, call product_from_image_tool first. Output in English. By default, only generate ad angles, headlines, primary texts, and ad image prompts. Keep outputs concise and structured.'
-  const [systemInstruction, setSystemInstruction] = useState<string>(defaultInstruction)
+  const [systemInstruction, setSystemInstruction] = useState<string>(initialInstruction ?? defaultInstruction)
+  const [agentOutput, setAgentOutput] = useState<string>("")
   const [showSettings, setShowSettings] = useState<boolean>(false)
+  const [activeRunId, setActiveRunId] = useState<string | null>(null)
 
   useEffect(()=>{
     try{
-      const savedInstr = localStorage.getItem('ads_agent_instruction')
+      const savedInstr = localStorage.getItem(instructionKey)
       if(savedInstr && typeof savedInstr==='string' && savedInstr.trim()){
         setSystemInstruction(savedInstr)
+      }
+      const savedOut = localStorage.getItem(`${instructionKey}__output`)
+      if(savedOut && typeof savedOut==='string'){
+        setAgentOutput(savedOut)
       }
     }catch{}
   },[])
@@ -124,6 +130,21 @@ export default function AdsAgentClient(){
     setMessages(null); setAngles(null); setSelectedIdx(0)
     setHeadlines([]); setCopies([]); setArHeadlines([]); setFrHeadlines([]); setArCopies([]); setFrCopies([])
     try{
+      // Prepare input snapshot for persistence
+      const inputSnapshot: any = {
+        url, imageUrl, audience, benefits, pains, budget, model,
+        numAngles, runAnalyze, translateLocale, autoTranslate,
+        systemInstruction,
+      }
+      // Ensure a run exists if agentId provided
+      if(agentId && !activeRunId){
+        try{
+          const created = await agentRunCreate(agentId, { title: `Run ${new Date().toLocaleString()}`, status: 'running', input: inputSnapshot })
+          if((created as any)?.id){ setActiveRunId((created as any).id) }
+        }catch{}
+      } else if(agentId && activeRunId){
+        try{ await agentRunUpdate(agentId, activeRunId, { status: 'running', input: inputSnapshot }) }catch{}
+      }
       // Auto-fill benefits & pain points from landing analysis when available
       if(runAnalyze && (url || imageUrl)){
         try{
@@ -149,6 +170,13 @@ export default function AdsAgentClient(){
       else{
         setMessages(res?.messages||null)
         setResult(res?.text || JSON.stringify(res, null, 2))
+        // Persist output/messages to run if present
+        if(agentId && (activeRunId || true)){
+          try{
+            const runId = activeRunId || ''
+            if(runId){ await agentRunUpdate(agentId, runId, { status: 'completed', output: { text: res?.text }, messages: (res as any)?.messages || [] }) }
+          }catch{}
+        }
         const toolAngles = getLatestToolContent(res?.messages, 'gen_angles_tool')
         const analyzeAngles = getLatestToolContent(res?.messages, 'analyze_landing_page_tool')
         let arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
@@ -488,12 +516,23 @@ export default function AdsAgentClient(){
       {showSettings? (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={()=>setShowSettings(false)}>
           <div className="w-full max-w-xl bg-white rounded-xl shadow-xl p-5" onClick={(e)=>e.stopPropagation()}>
-            <div className="text-lg font-semibold mb-2">Agent Instruction</div>
-            <div className="text-sm text-slate-600 mb-3">Edit the single system instruction for the Ads Agent.</div>
-            <textarea className="w-full min-h-[180px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
+            <div className="text-lg font-semibold mb-2">Agent Settings</div>
+            <div className="text-sm text-slate-600 mb-3">Edit the system instruction and optional output notes for this agent.</div>
+            <div className="space-y-3">
+              <div>
+                <div className="text-sm font-medium mb-1">Instruction</div>
+                <textarea className="w-full min-h-[180px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
+              </div>
+              {enableOutputField? (
+                <div>
+                  <div className="text-sm font-medium mb-1">Agent Output (optional)</div>
+                  <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" placeholder="Describe desired final output or constraints" value={agentOutput} onChange={e=>setAgentOutput(e.target.value)} />
+                </div>
+              ) : null}
+            </div>
             <div className="flex items-center justify-end gap-2 mt-3">
-              <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ setSystemInstruction(defaultInstruction); try{ localStorage.setItem('ads_agent_instruction', defaultInstruction) }catch{} }}>Reset</button>
-              <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem('ads_agent_instruction', systemInstruction||defaultInstruction) }catch{}; setShowSettings(false) }}>Save</button>
+              <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ const v = initialInstruction ?? defaultInstruction; setSystemInstruction(v); try{ localStorage.setItem(instructionKey, v) }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: v }) }catch{} } }}>Reset</button>
+              <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem(instructionKey, systemInstruction||''); localStorage.setItem(`${instructionKey}__output`, agentOutput||'') }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: systemInstruction||'', output_pref: agentOutput||'' }) }catch{} } setShowSettings(false) }}>Save</button>
             </div>
           </div>
         </div>

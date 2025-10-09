@@ -871,6 +871,112 @@ async def api_ads_launch(req: AdsAutomationLaunchRequest):
         return {"flow_id": req.flow_id, "status": "queued"}
     except Exception as e:
         return {"error": str(e)}
+
+
+# ---------------- Agents API ----------------
+class AgentCreateRequest(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    instruction: Optional[str] = None
+    output_pref: Optional[str] = None
+
+
+@app.post("/api/agents")
+async def api_create_agent(req: AgentCreateRequest):
+    try:
+        db.create_agent(req.id, req.name, req.description, req.instruction, req.output_pref)
+        return {"ok": True, "id": req.id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/agents")
+async def api_list_agents(limit: int | None = None):
+    try:
+        return {"data": db.list_agents(limit=limit)}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/agents/{agent_id}")
+async def api_get_agent(agent_id: str):
+    try:
+        a = db.get_agent(agent_id)
+        if not a:
+            return {"error": "not_found"}
+        return a
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class AgentUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instruction: Optional[str] = None
+    output_pref: Optional[str] = None
+
+
+@app.put("/api/agents/{agent_id}")
+async def api_update_agent(agent_id: str, req: AgentUpdateRequest):
+    try:
+        ok = db.update_agent(agent_id, name=req.name, description=req.description, instruction=req.instruction, output_pref=req.output_pref)
+        return {"ok": ok}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class AgentRunCreateRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    input: Optional[dict] = None
+
+
+@app.post("/api/agents/{agent_id}/runs")
+async def api_create_agent_run(agent_id: str, req: AgentRunCreateRequest):
+    from uuid import uuid4 as _uuid4
+    try:
+        run_id = str(_uuid4())
+        db.create_agent_run(agent_id, run_id, title=req.title, status=(req.status or "draft"), input=(req.input or {}))
+        return {"id": run_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class AgentRunUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    input: Optional[dict] = None
+    output: Optional[dict] = None
+    messages: Optional[list] = None
+
+
+@app.put("/api/agents/{agent_id}/runs/{run_id}")
+async def api_update_agent_run(agent_id: str, run_id: str, req: AgentRunUpdateRequest):
+    try:
+        ok = db.update_agent_run(agent_id, run_id, title=req.title, status=req.status, input=req.input, output=req.output, messages=req.messages)
+        return {"ok": ok}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/agents/{agent_id}/runs")
+async def api_list_agent_runs(agent_id: str, limit: int | None = None):
+    try:
+        return {"data": db.list_agent_runs(agent_id, limit=limit)}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/agents/{agent_id}/runs/{run_id}")
+async def api_get_agent_run(agent_id: str, run_id: str):
+    try:
+        r = db.get_agent_run(agent_id, run_id)
+        if not r:
+            return {"error": "not_found"}
+        return r
+    except Exception as e:
+        return {"error": str(e)}
 # ---------------- Flows/Drafts ----------------
 class DraftSaveRequest(BaseModel):
     product: ProductInput

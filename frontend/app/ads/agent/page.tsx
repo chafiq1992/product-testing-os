@@ -13,7 +13,7 @@ export default function AdsAgentPage(){
           <h1 className="font-semibold text-xl tracking-tight">Ads Agent</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
+          <Link href="/agents" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Agents</Link>
         </div>
       </header>
       <div className="p-6 md:p-8">

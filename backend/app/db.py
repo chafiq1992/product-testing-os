@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from sqlalchemy import create_engine, Column, String, DateTime, Text, desc, Index
+from sqlalchemy import create_engine, Column, String, DateTime, Text, desc, Index, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Support external database via DATABASE_URL (e.g., Supabase Postgres). Fallback to SQLite.
@@ -438,3 +438,175 @@ def update_test_payload(test_id: str, payload: Dict[str, Any]) -> bool:
         t.updated_at = _now()
         session.commit()
         return True
+
+
+# ---------------- Agents & Runs ----------------
+class Agent(Base):
+    __tablename__ = "agents"
+
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    instruction = Column(Text, nullable=True)
+    output_pref = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id = Column(String, primary_key=True)
+    agent_id = Column(String, ForeignKey("agents.id"), nullable=False)
+    status = Column(String, nullable=False, default="draft")
+    title = Column(String, nullable=True)
+    input_json = Column(Text, nullable=True)
+    output_json = Column(Text, nullable=True)
+    messages_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+Index('ix_agents_created_at', Agent.created_at)
+Index('ix_agent_runs_agent_id_created_at', AgentRun.agent_id, AgentRun.created_at)
+
+Base.metadata.create_all(engine)
+
+
+def create_agent(agent_id: str, name: str, description: str | None = None, instruction: str | None = None, output_pref: str | None = None):
+    with SessionLocal() as session:
+        a = Agent(
+            id=agent_id,
+            name=name,
+            description=description,
+            instruction=instruction,
+            output_pref=output_pref,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        session.add(a)
+        session.commit()
+
+
+def update_agent(agent_id: str, *, name: str | None = None, description: str | None = None, instruction: str | None = None, output_pref: str | None = None) -> bool:
+    with SessionLocal() as session:
+        a = session.get(Agent, agent_id)
+        if not a:
+            return False
+        if name is not None:
+            a.name = name
+        if description is not None:
+            a.description = description
+        if instruction is not None:
+            a.instruction = instruction
+        if output_pref is not None:
+            a.output_pref = output_pref
+        a.updated_at = _now()
+        session.commit()
+        return True
+
+
+def get_agent(agent_id: str) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        a = session.get(Agent, agent_id)
+        if not a:
+            return None
+        return {
+            "id": a.id,
+            "name": a.name,
+            "description": a.description,
+            "instruction": a.instruction,
+            "output_pref": a.output_pref,
+            "created_at": a.created_at.isoformat() + "Z",
+            "updated_at": a.updated_at.isoformat() + "Z",
+        }
+
+
+def list_agents(limit: int | None = None) -> list[Dict[str, Any]]:
+    with SessionLocal() as session:
+        q = session.query(Agent).order_by(desc(Agent.created_at))
+        if limit:
+            q = q.limit(limit)
+        items = q.all()
+        out: list[Dict[str, Any]] = []
+        for a in items:
+            out.append({
+                "id": a.id,
+                "name": a.name,
+                "description": a.description,
+                "created_at": a.created_at.isoformat() + "Z",
+                "updated_at": a.updated_at.isoformat() + "Z",
+            })
+        return out
+
+
+def create_agent_run(agent_id: str, run_id: str, *, title: str | None = None, status: str = "draft", input: Dict[str, Any] | None = None):
+    with SessionLocal() as session:
+        r = AgentRun(
+            id=run_id,
+            agent_id=agent_id,
+            status=status,
+            title=title,
+            input_json=json.dumps(input, ensure_ascii=False) if input is not None else None,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        session.add(r)
+        session.commit()
+
+
+def update_agent_run(agent_id: str, run_id: str, *, status: str | None = None, title: str | None = None, input: Dict[str, Any] | None = None, output: Dict[str, Any] | None = None, messages: list[Dict[str, Any]] | None = None) -> bool:
+    with SessionLocal() as session:
+        r = session.get(AgentRun, run_id)
+        if not r or r.agent_id != agent_id:
+            return False
+        if status is not None:
+            r.status = status
+        if title is not None:
+            r.title = title
+        if input is not None:
+            r.input_json = json.dumps(input, ensure_ascii=False)
+        if output is not None:
+            r.output_json = json.dumps(output, ensure_ascii=False)
+        if messages is not None:
+            r.messages_json = json.dumps(messages, ensure_ascii=False)
+        r.updated_at = _now()
+        session.commit()
+        return True
+
+
+def get_agent_run(agent_id: str, run_id: str) -> Optional[Dict[str, Any]]:
+    with SessionLocal() as session:
+        r = session.get(AgentRun, run_id)
+        if not r or r.agent_id != agent_id:
+            return None
+        return {
+            "id": r.id,
+            "agent_id": r.agent_id,
+            "status": r.status,
+            "title": r.title,
+            "input": json.loads(r.input_json) if r.input_json else None,
+            "output": json.loads(r.output_json) if r.output_json else None,
+            "messages": json.loads(r.messages_json) if r.messages_json else None,
+            "created_at": r.created_at.isoformat() + "Z",
+            "updated_at": r.updated_at.isoformat() + "Z",
+        }
+
+
+def list_agent_runs(agent_id: str, limit: int | None = None) -> list[Dict[str, Any]]:
+    with SessionLocal() as session:
+        q = session.query(AgentRun).filter(AgentRun.agent_id == agent_id).order_by(desc(AgentRun.created_at))
+        if limit:
+            q = q.limit(limit)
+        rows = q.all()
+        out: list[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "agent_id": r.agent_id,
+                "status": r.status,
+                "title": r.title,
+                "created_at": r.created_at.isoformat() + "Z",
+                "updated_at": r.updated_at.isoformat() + "Z",
+            })
+        return out

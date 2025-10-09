@@ -348,6 +348,49 @@ export async function translateTexts(payload:{ texts: string[], target: 'ar'|'fr
   return data as { translations: string[], target: string, error?: string }
 }
 
+// -------- Agents & Runs --------
+export async function agentsList(limit?: number){
+  const q = typeof limit==='number'? `?limit=${limit}` : ''
+  const {data} = await axios.get(`${base}/api/agents${q}`)
+  return data as { data: Array<{ id:string, name:string, description?:string, created_at?:string }>, error?: string }
+}
+
+export async function agentCreate(payload:{ id:string, name:string, description?:string, instruction?:string, output_pref?:string }){
+  const {data} = await axios.post(`${base}/api/agents`, payload)
+  return data as { ok?: boolean, id?: string, error?: string }
+}
+
+export async function agentGet(agent_id: string){
+  const {data} = await axios.get(`${base}/api/agents/${agent_id}`)
+  return data as { id:string, name:string, description?:string, instruction?:string, output_pref?:string }
+}
+
+export async function agentUpdate(agent_id: string, payload:{ name?:string, description?:string, instruction?:string, output_pref?:string }){
+  const {data} = await axios.put(`${base}/api/agents/${agent_id}`, payload)
+  return data as { ok?: boolean, error?: string }
+}
+
+export async function agentRunsList(agent_id: string, limit?: number){
+  const q = typeof limit==='number'? `?limit=${limit}` : ''
+  const {data} = await axios.get(`${base}/api/agents/${agent_id}/runs${q}`)
+  return data as { data: Array<{ id:string, title?:string, status?:string, created_at?:string }>, error?: string }
+}
+
+export async function agentRunCreate(agent_id: string, payload:{ title?:string, status?:string, input?: any }){
+  const {data} = await axios.post(`${base}/api/agents/${agent_id}/runs`, payload)
+  return data as { id?: string, error?: string }
+}
+
+export async function agentRunUpdate(agent_id: string, run_id: string, payload:{ title?:string, status?:string, input?: any, output?: any, messages?: any[] }){
+  const {data} = await axios.put(`${base}/api/agents/${agent_id}/runs/${run_id}`, payload)
+  return data as { ok?: boolean, error?: string }
+}
+
+export async function agentRunGet(agent_id: string, run_id: string){
+  const {data} = await axios.get(`${base}/api/agents/${agent_id}/runs/${run_id}`)
+  return data as { id:string, agent_id:string, status?:string, title?:string, input?: any, output?: any, messages?: any[] }
+}
+
 // Extract product inputs from a single product image (OpenAI multimodal)
 export async function productFromImage(payload:{ image_url:string, model?:string, target_category?: string }){
   const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)
