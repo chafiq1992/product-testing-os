@@ -29,7 +29,7 @@ export default function AdsAgentClient(){
   const [benefits, setBenefits] = useState<string>("")
   const [pains, setPains] = useState<string>("")
   const [budget, setBudget] = useState<string>("9")
-  const [model, setModel] = useState<string>("")
+  const [model, setModel] = useState<string>("gpt-5")
   const [running, setRunning] = useState<boolean>(false)
   const [result, setResult] = useState<string>("")
   const [error, setError] = useState<string>("")
@@ -52,21 +52,34 @@ export default function AdsAgentClient(){
   const [runAnalyze, setRunAnalyze] = useState<boolean>(true)
   const [analyzePrompt, setAnalyzePrompt] = useState<string>("")
   const [anglesPrompt, setAnglesPrompt] = useState<string>("")
+  const [titleDescPrompt, setTitleDescPrompt] = useState<string>("")
+  const [landingCopyPrompt, setLandingCopyPrompt] = useState<string>("")
+  const [targetCategory, setTargetCategory] = useState<string>("")
   const [variation, setVariation] = useState<string>("")
   // Translate settings
   const [translateLocale, setTranslateLocale] = useState<string>('MA')
   const [autoTranslate, setAutoTranslate] = useState<boolean>(true)
   // Agent instruction (editable)
-  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always output in English. Only generate ad headlines, primary texts, and ad image prompts. Do not produce product titles, descriptions, or landing copy.'
+  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always output in English. Prefer calling tools. Use provided PROMPT_OVERRIDES for each tool (analyze_landing_page_tool, gen_angles_tool, gen_title_desc_tool, gen_landing_copy_tool). Only generate ad angles, headlines, primary texts, and ad image prompts unless explicitly asked to generate titles/descriptions or landing copy.'
   const [systemInstruction, setSystemInstruction] = useState<string>(defaultInstruction)
   const [showSettings, setShowSettings] = useState<boolean>(false)
 
   useEffect(()=>{
     try{
-      const saved = localStorage.getItem('ads_agent_instruction')
-      if(saved && typeof saved==='string' && saved.trim()){
-        setSystemInstruction(saved)
+      const savedInstr = localStorage.getItem('ads_agent_instruction')
+      if(savedInstr && typeof savedInstr==='string' && savedInstr.trim()){
+        setSystemInstruction(savedInstr)
       }
+      const savedAngles = localStorage.getItem('ads_agent_angles_prompt')
+      if(savedAngles && typeof savedAngles==='string') setAnglesPrompt(savedAngles)
+      const savedAnalyze = localStorage.getItem('ads_agent_analyze_prompt')
+      if(savedAnalyze && typeof savedAnalyze==='string') setAnalyzePrompt(savedAnalyze)
+      const savedTD = localStorage.getItem('ads_agent_title_desc_prompt')
+      if(savedTD && typeof savedTD==='string') setTitleDescPrompt(savedTD)
+      const savedLC = localStorage.getItem('ads_agent_landing_copy_prompt')
+      if(savedLC && typeof savedLC==='string') setLandingCopyPrompt(savedLC)
+      const savedCat = localStorage.getItem('ads_agent_target_category')
+      if(savedCat && typeof savedCat==='string') setTargetCategory(savedCat)
     }catch{}
   },[])
 
@@ -144,8 +157,9 @@ export default function AdsAgentClient(){
         imageUrl? `IMAGE_URL: ${imageUrl.trim()}` : undefined,
         Object.keys(product).length? `PRODUCT: ${JSON.stringify(product)}` : undefined,
         budget? `BUDGET: ${budget}` : undefined,
+        targetCategory? `TARGET_CATEGORY: ${targetCategory}` : undefined,
         `SETTINGS: num_angles=${Math.max(1, Math.min(5, Number(numAngles)||3))}; run_analyze=${runAnalyze}`,
-        (analyzePrompt||anglesPrompt||variation)? `PROMPT_OVERRIDES: ${JSON.stringify({ analyze: analyzePrompt||undefined, angles: anglesPrompt||undefined, variation: variation||undefined })}` : undefined,
+        (analyzePrompt||anglesPrompt||titleDescPrompt||landingCopyPrompt||variation||targetCategory)? `PROMPT_OVERRIDES: ${JSON.stringify({ analyze: analyzePrompt||undefined, angles: anglesPrompt||undefined, title_desc: titleDescPrompt||undefined, landing_copy: landingCopyPrompt||undefined, variation: variation||undefined, target_category: targetCategory||undefined })}` : undefined,
       ].filter(Boolean)
       const thread: Message[] = [system, { role:'user', content: `GOAL: angles_headlines_copies_only\n` + parts.join('\n') }]
       const res = await agentAdsExecute({ messages: thread, model: model || undefined })
@@ -235,7 +249,7 @@ export default function AdsAgentClient(){
       }
     }catch(e:any){ setError(String(e?.message||e)) }
     finally{ setRunning(false) }
-  },[system, url, imageUrl, audience, benefits, pains, budget, model, analyzePrompt, anglesPrompt, numAngles, runAnalyze, translateLocale, autoTranslate])
+  },[system, url, imageUrl, audience, benefits, pains, budget, model, analyzePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt, targetCategory, numAngles, runAnalyze, translateLocale, autoTranslate])
 
   const onSelectAngle = useCallback(async (idx: number)=>{
     setSelectedIdx(idx)
@@ -335,6 +349,9 @@ export default function AdsAgentClient(){
             <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={runAnalyze} onChange={e=>setRunAnalyze(e.target.checked)} />Auto analyze landing</label>
             <textarea className="border rounded-lg px-3 py-2 min-h-[56px] bg-white border-slate-200" placeholder="Angles prompt override (optional)" value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
             <textarea className="border rounded-lg px-3 py-2 min-h-[56px] bg-white border-slate-200" placeholder="Analyze prompt override (optional)" value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
+            <textarea className="border rounded-lg px-3 py-2 min-h-[56px] bg-white border-slate-200" placeholder="Title & Description prompt override (optional)" value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
+            <textarea className="border rounded-lg px-3 py-2 min-h-[56px] bg-white border-slate-200" placeholder="Landing Copy prompt override (optional)" value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
+            <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Target Category (e.g., women, men, unisex, girl, boy, unisex_kids)" value={targetCategory} onChange={e=>setTargetCategory(e.target.value)} />
             <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Variation (type to vary results)" value={variation} onChange={e=>setVariation(e.target.value)} />
             <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg disabled:opacity-50" disabled={running} onClick={onRun}>{running? 'Running…':'Generate Ads'}</button>
             {error? <div className="text-sm text-red-600 whitespace-pre-wrap">{error}</div> : null}
@@ -369,12 +386,13 @@ export default function AdsAgentClient(){
       <div className="flex-1 space-y-6">
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
           <AdsAgentCanvas messages={messages||[]}/>
-          <div className="text-lg font-semibold mb-4">English Outputs</div>
+          <div className="text-lg font-semibold mb-1">Outputs</div>
+          <div className="text-sm text-slate-600 mb-3">Sections: Angles, Ad Headlines (EN), Primary Texts (EN)</div>
           {angles && angles.length? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
               {angles.map((a, i)=> (
                 <div key={i} className={`border border-slate-200 rounded-lg p-3 bg-white ${i===selectedIdx? 'ring-2 ring-blue-600':''}`}>
-                  <div className="text-base font-medium">{a.name||'Angle'}</div>
+                  <div className="text-base font-medium">Angle: {a.name||'Untitled Angle'}</div>
                   {Array.isArray(a.headlines)? <ul className="list-disc ml-5 text-sm mt-1 text-slate-700">
                     {a.headlines.slice(0,4).map((h:string, idx:number)=>(<li key={idx}>{h}</li>))}
                   </ul> : null}
@@ -390,7 +408,7 @@ export default function AdsAgentClient(){
             <div className="space-y-5">
               {headlines.length? (
                 <div>
-                  <div className="text-base font-medium mb-2">Ad Headlines</div>
+                  <div className="text-base font-medium mb-2">Ad Headlines (EN)</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {headlines.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">{t}</div>))}
                   </div>
@@ -398,7 +416,7 @@ export default function AdsAgentClient(){
               ) : null}
               {copies.length? (
                 <div>
-                  <div className="text-base font-medium mb-2">Primary Texts</div>
+                  <div className="text-base font-medium mb-2">Primary Texts (EN)</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-3 text-sm whitespace-pre-wrap">{t}</div>))}
                   </div>
@@ -452,17 +470,39 @@ export default function AdsAgentClient(){
         ) : null}
       </div>
 
-      {/* Right: Reasoning panel */}
+      {/* Right: Chat-style transcript */}
       <div className="w-[340px] shrink-0 space-y-4">
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 sticky top-20 max-h-[80vh] overflow-auto">
-          <div className="text-base font-semibold mb-3">Agent Activity</div>
-          <div className="space-y-2">
-            {reasoning.length? reasoning.map((ev, idx)=> (
-              <div key={idx} className="border border-slate-200 rounded-lg p-3 bg-white">
-                <div className="text-sm font-medium text-slate-800">{ev.label}</div>
-                {ev.detail? <div className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{ev.detail}</div> : null}
-              </div>
-            )) : <div className="text-sm text-slate-500">No activity yet</div>}
+          <div className="text-base font-semibold mb-3">Agent Transcript</div>
+          <div className="space-y-3">
+            {Array.isArray(messages) && messages.length? messages.map((m:any, idx:number)=>{
+              const role = m?.role || 'assistant'
+              const hasTools = Array.isArray(m?.tool_calls) && m.tool_calls.length>0
+              const isTool = role==='tool'
+              const bubbleColor = isTool? 'bg-slate-50' : (role==='user'? 'bg-blue-50' : (role==='system'? 'bg-violet-50' : 'bg-white'))
+              const title = isTool? (m?.name? `Tool: ${m.name}`:'Tool') : (role.charAt(0).toUpperCase()+role.slice(1))
+              let body: string = ''
+              try{
+                if(isTool){
+                  body = typeof m.content==='string'? m.content : JSON.stringify(m.content, null, 2)
+                } else if(hasTools){
+                  const calls = m.tool_calls.map((tc:any)=>{
+                    const nm = tc?.function?.name || 'tool'
+                    const args = tc?.function?.arguments || ''
+                    return `${nm}(${args})`
+                  }).join('\n')
+                  body = calls
+                } else {
+                  body = typeof m.content==='string'? m.content : JSON.stringify(m.content||'', null, 2)
+                }
+              }catch{ body = String(m?.content||'') }
+              return (
+                <div key={idx} className={`border border-slate-200 rounded-lg p-3 ${bubbleColor}`}>
+                  <div className="text-xs font-semibold text-slate-700 mb-1">{title}</div>
+                  <pre className="text-xs text-slate-700 whitespace-pre-wrap">{body}</pre>
+                </div>
+              )
+            }) : <div className="text-sm text-slate-500">No transcript yet</div>}
           </div>
         </div>
       </div>
@@ -471,12 +511,74 @@ export default function AdsAgentClient(){
       {showSettings? (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={()=>setShowSettings(false)}>
           <div className="w-full max-w-xl bg-white rounded-xl shadow-xl p-5" onClick={(e)=>e.stopPropagation()}>
-            <div className="text-lg font-semibold mb-2">Agent Instructions</div>
-            <div className="text-sm text-slate-600 mb-3">Edit the system instructions for the Ads Agent. Changes can be saved as default.</div>
-            <textarea className="w-full min-h-[200px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
-            <div className="flex items-center justify-end gap-2 mt-3">
-              <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ setSystemInstruction(defaultInstruction); localStorage.setItem('ads_agent_instruction', defaultInstruction) }}>Reset</button>
-              <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem('ads_agent_instruction', systemInstruction||defaultInstruction) }catch{}; setShowSettings(false) }}>Save as Default</button>
+            <div className="text-lg font-semibold mb-2">Agent Settings & Prompts</div>
+            <div className="text-sm text-slate-600 mb-4">View and edit all prompts the Ads Agent may use. These serve as overrides for tool calls.</div>
+            <div className="space-y-3">
+              <div>
+                <div className="text-sm font-medium mb-1">System Instruction</div>
+                <textarea className="w-full min-h-[120px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Angles Prompt Override</div>
+                <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" value={anglesPrompt} onChange={e=>setAnglesPrompt(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Analyze Landing Prompt Override</div>
+                <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" value={analyzePrompt} onChange={e=>setAnalyzePrompt(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Title & Description Prompt Override</div>
+                <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" value={titleDescPrompt} onChange={e=>setTitleDescPrompt(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Landing Copy Prompt Override</div>
+                <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" value={landingCopyPrompt} onChange={e=>setLandingCopyPrompt(e.target.value)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">Target Category</div>
+                <input className="w-full border border-slate-200 rounded-lg px-3 py-2" placeholder="e.g., women, men, unisex, girl, boy, unisex_kids" value={targetCategory} onChange={e=>setTargetCategory(e.target.value)} />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{
+                  setSystemInstruction(defaultInstruction)
+                  setAnglesPrompt('')
+                  setAnalyzePrompt('')
+                  setTitleDescPrompt('')
+                  setLandingCopyPrompt('')
+                  setTargetCategory('')
+                  try{
+                    localStorage.setItem('ads_agent_instruction', defaultInstruction)
+                    localStorage.removeItem('ads_agent_angles_prompt')
+                    localStorage.removeItem('ads_agent_analyze_prompt')
+                    localStorage.removeItem('ads_agent_title_desc_prompt')
+                    localStorage.removeItem('ads_agent_landing_copy_prompt')
+                    localStorage.removeItem('ads_agent_target_category')
+                  }catch{}
+                }}>Reset All</button>
+                <div className="flex items-center gap-2">
+                  <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{
+                    const suggestedAngles = 'You are a senior CRO & direct-response strategist. From PRODUCT_INFO, generate 2–5 distinct ad angles with big_idea, promise, 5–8 headlines, and short/medium/long primary texts. Be concrete, proof-led, no hype. Return ONLY JSON.'
+                    const suggestedAnalyze = 'You are a senior direct-response marketer. Analyze the landing page HTML to extract: title, benefits, pain_points, offers, emotions, and propose 3–5 marketing angles with headlines and primary texts. Return ONLY compact JSON.'
+                    const suggestedTD = 'You are a CRO copywriter. From ANGLE and PRODUCT_INFO, propose 5 title candidates (≤60 chars) plus 1 ultra-short (≤30), then choose the best and write a concise 1–2 sentence description. Return ONLY JSON with title and description.'
+                    const suggestedLC = 'You are a CRO specialist and landing-page copy engineer. Produce ONE JSON object with landing copy and a full HTML page based on PRODUCT_INFO and top angles. Return ONLY the JSON.'
+                    setAnglesPrompt(suggestedAngles)
+                    setAnalyzePrompt(suggestedAnalyze)
+                    setTitleDescPrompt(suggestedTD)
+                    setLandingCopyPrompt(suggestedLC)
+                  }}>Load Suggested</button>
+                  <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{
+                    try{
+                      localStorage.setItem('ads_agent_instruction', systemInstruction||defaultInstruction)
+                      localStorage.setItem('ads_agent_angles_prompt', anglesPrompt||'')
+                      localStorage.setItem('ads_agent_analyze_prompt', analyzePrompt||'')
+                      localStorage.setItem('ads_agent_title_desc_prompt', titleDescPrompt||'')
+                      localStorage.setItem('ads_agent_landing_copy_prompt', landingCopyPrompt||'')
+                      localStorage.setItem('ads_agent_target_category', targetCategory||'')
+                    }catch{}
+                    setShowSettings(false)
+                  }}>Save as Default</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
