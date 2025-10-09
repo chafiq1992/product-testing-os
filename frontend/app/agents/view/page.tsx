@@ -3,12 +3,20 @@ import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { Settings, Rocket } from 'lucide-react'
 import { useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import { agentGet, agentRunsList, agentRunGet } from '@/lib/api'
 
 const AdsAgentClient = dynamic(()=>import('../../ads/agent/AdsAgentClient'), { ssr: false })
 
 export default function AgentViewPage(){
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-slate-500">Loading…</div>}>
+      <AgentViewInner/>
+    </Suspense>
+  )
+}
+
+function AgentViewInner(){
   const params = useSearchParams()
   const id = String(params.get('id')||'')
   const [meta, setMeta] = useState<{id:string,name:string,description?:string, instruction?:string, output_pref?:string}>({ id, name: id })
