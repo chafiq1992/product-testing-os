@@ -54,7 +54,7 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
   const [translateLocale, setTranslateLocale] = useState<string>('MA')
   const [autoTranslate, setAutoTranslate] = useState<boolean>(true)
   // Agent instruction (editable)
-  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always prefer tools when available. Typical flow: (1) If a URL is provided, call analyze_landing_page_tool. (2) Use gen_angles_tool (num_angles=2 or 3). (3) Optionally refine with gen_title_desc_tool. (4) Optionally prepare gen_landing_copy_tool. (5) If an image_url is provided without product info, call product_from_image_tool first. Output in English. By default, only generate ad angles, headlines, primary texts, and ad image prompts. Keep outputs concise and structured.'
+  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always prefer tools when available. Typical flow: (1) If a URL is provided, call analyze_landing_page_tool. (2) Use gen_angles_tool (num_angles=3 ONLY). (3) Optionally refine with gen_title_desc_tool. (4) Optionally prepare gen_landing_copy_tool. (5) If an image_url is provided without product info, call product_from_image_tool first. Output in English. Style constraints: angles must be benefit-led and ultra-focused; headlines must include emojis and start with a short HOOK; ad copies must include emojis, a strong HOOK in the first 2–3 words, a clear benefit layout, and an explicit CTA at the end. If the product targets kids/parents, emphasize comfort, beauty, distinction, delight, education, and improvement. Keep outputs concise and structured.'
   const [systemInstruction, setSystemInstruction] = useState<string>(initialInstruction ?? defaultInstruction)
   const [agentOutput, setAgentOutput] = useState<string>(initialOutput ?? "")
   const [showSettings, setShowSettings] = useState<boolean>(false)
@@ -167,7 +167,8 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
         imageUrl? `IMAGE_URL: ${imageUrl.trim()}` : undefined,
         Object.keys(product).length? `PRODUCT: ${JSON.stringify(product)}` : undefined,
         budget? `BUDGET: ${budget}` : undefined,
-        `SETTINGS: num_angles=${Math.max(1, Math.min(5, Number(numAngles)||3))}; run_analyze=${runAnalyze}`,
+        // Enforce exactly 3 angles for Ads Agent
+        `SETTINGS: num_angles=3; run_analyze=${runAnalyze}`,
       ].filter(Boolean)
       const thread: Message[] = [system, { role:'user', content: `GOAL: angles_headlines_copies_only\n` + parts.join('\n') }]
       const res = await agentAdsExecute({ messages: thread, model: model || undefined })
@@ -191,7 +192,7 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
         // Fallback: call direct angles endpoint if agent returned nothing
         if((!arr || !arr.length)){
           try{
-            const direct = await llmGenerateAngles({ product, num_angles: Math.max(1, Math.min(5, Number(numAngles)||3)), model: model || undefined })
+            const direct = await llmGenerateAngles({ product, num_angles: 3, model: model || undefined })
             arr = (direct as any)?.angles || []
           }catch{}
         }
@@ -357,9 +358,10 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
               <input className="border rounded-lg px-3 py-2 w-1/2 bg-white border-slate-200" placeholder="Budget (MAD)" value={budget} onChange={e=>setBudget(e.target.value)} />
               <input className="border rounded-lg px-3 py-2 w-1/2 bg-white border-slate-200" placeholder="Model (optional)" value={model} onChange={e=>setModel(e.target.value)} />
             </div>
+            {/* Fixed to 3 angles by product requirement */}
             <div className="flex items-center justify-between">
               <label className="text-sm text-slate-600">Num angles</label>
-              <input type="number" min={1} max={5} className="border rounded-lg px-3 py-2 w-24 bg-white border-slate-200" value={numAngles} onChange={e=>setNumAngles(parseInt(e.target.value||'3')||3)} />
+              <input disabled type="number" min={3} max={3} className="border rounded-lg px-3 py-2 w-24 bg-white border-slate-200 opacity-60" value={3} onChange={()=>{}} />
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={runAnalyze} onChange={e=>setRunAnalyze(e.target.checked)} />Auto analyze landing</label>
             
@@ -420,7 +422,17 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
                 <div>
                   <div className="text-base font-medium mb-2">Ad Headlines (EN)</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {headlines.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">{t}</div>))}
+                    {headlines.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(headlines[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <input className="w-full text-sm outline-none" value={headlines[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setHeadlines(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
+                        }} />
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : null}
@@ -428,7 +440,17 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
                 <div>
                   <div className="text-base font-medium mb-2">Primary Texts (EN)</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-3 text-sm whitespace-pre-wrap">{t}</div>))}
+                    {copies.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copies[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={copies[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setCopies(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
+                        }} />
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : null}
@@ -446,9 +468,39 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
               <div className="mb-5">
                 <div className="text-base font-medium mb-2">Headlines (EN / AR / FR)</div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="text-sm space-y-2">{headlines.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{t}</div>))}</div>
-                  <div className="text-sm space-y-2">{(arHeadlines.length? arHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{t}</div>))}</div>
-                  <div className="text-sm space-y-2">{(frHeadlines.length? frHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{t}</div>))}</div>
+                  <div className="text-sm space-y-2">{headlines.map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 mb-2">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(headlines[i]||'') }catch{} }}>Copy</button>
+                      </div>
+                      <input className="w-full text-sm outline-none" value={headlines[i]} onChange={(e)=>{
+                        const v = e.target.value
+                        setHeadlines(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
+                  <div className="text-sm space-y-2">{(arHeadlines.length? arHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2" dir="rtl">
+                      <div className="flex items-center gap-2 mb-2 justify-end">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((arHeadlines[i]||'')) }catch{} }}>Copy</button>
+                      </div>
+                      <input className="w-full text-sm outline-none text-right" dir="rtl" value={arHeadlines[i]||''} onChange={(e)=>{
+                        const v = e.target.value
+                        setArHeadlines(prev=>{ const arr = [...(prev.length? prev: new Array(headlines.length).fill(''))]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
+                  <div className="text-sm space-y-2">{(frHeadlines.length? frHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 mb-2">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((frHeadlines[i]||'')) }catch{} }}>Copy</button>
+                      </div>
+                      <input className="w-full text-sm outline-none" value={frHeadlines[i]||''} onChange={(e)=>{
+                        const v = e.target.value
+                        setFrHeadlines(prev=>{ const arr = [...(prev.length? prev: new Array(headlines.length).fill(''))]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
                 </div>
               </div>
             ) : null}
@@ -456,9 +508,39 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
               <div>
                 <div className="text-base font-medium mb-2">Primary Texts (EN / AR / FR)</div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="text-sm space-y-2">{copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-3 whitespace-pre-wrap">{t}</div>))}</div>
-                  <div className="text-sm space-y-2">{(arCopies.length? arCopies: new Array(copies.length).fill('…')).map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-3 whitespace-pre-wrap">{t}</div>))}</div>
-                  <div className="text-sm space-y-2">{(frCopies.length? frCopies: new Array(copies.length).fill('…')).map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-3 whitespace-pre-wrap">{t}</div>))}</div>
+                  <div className="text-sm space-y-2">{copies.map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 mb-2">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copies[i]||'') }catch{} }}>Copy</button>
+                      </div>
+                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={copies[i]} onChange={(e)=>{
+                        const v = e.target.value
+                        setCopies(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
+                  <div className="text-sm space-y-2">{(arCopies.length? arCopies: new Array(copies.length).fill('…')).map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2" dir="rtl">
+                      <div className="flex items-center gap-2 mb-2 justify-end">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((arCopies[i]||'')) }catch{} }}>Copy</button>
+                      </div>
+                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap text-right" dir="rtl" value={arCopies[i]||''} onChange={(e)=>{
+                        const v = e.target.value
+                        setArCopies(prev=>{ const arr = [...(prev.length? prev: new Array(copies.length).fill(''))]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
+                  <div className="text-sm space-y-2">{(frCopies.length? frCopies: new Array(copies.length).fill('…')).map((t,i)=>(
+                    <div key={i} className="border border-slate-200 rounded-lg p-2">
+                      <div className="flex items-center gap-2 mb-2">
+                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((frCopies[i]||'')) }catch{} }}>Copy</button>
+                      </div>
+                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={frCopies[i]||''} onChange={(e)=>{
+                        const v = e.target.value
+                        setFrCopies(prev=>{ const arr = [...(prev.length? prev: new Array(copies.length).fill(''))]; arr[i] = v; return arr })
+                      }} />
+                    </div>
+                  ))}</div>
                 </div>
               </div>
             ) : null}

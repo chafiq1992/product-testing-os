@@ -120,11 +120,12 @@ def _dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 prompt_override=args.get("prompt_override"),
             )
             k = args.get("num_angles")
-            if isinstance(k, int) and k > 0:
-                try:
-                    full["angles"] = (full.get("angles") or [])[:k]
-                except Exception:
-                    pass
+            # Enforce exactly 3 angles by default for Ads Agent use-cases
+            eff_k = 3 if not (isinstance(k, int) and k > 0) else k
+            try:
+                full["angles"] = (full.get("angles") or [])[:eff_k]
+            except Exception:
+                pass
             return {"angles": full.get("angles", []), "raw": full}
         if name == "gen_title_desc_tool":
             data = gen_title_and_description(
@@ -220,11 +221,11 @@ ADS_AGENT_SYSTEM = {
     "content": (
         "You are the Ads Agent. Always prefer tools when available. Typical flow: "
         "(1) If a URL is provided, call analyze_landing_page_tool. "
-        "(2) Use gen_angles_tool (num_angles=2 or 3). "
+        "(2) Use gen_angles_tool (num_angles=3 ONLY). "
         "(3) Optionally refine with gen_title_desc_tool (pick best angle). "
         "(4) Optionally prepare gen_landing_copy_tool using title/desc and a few image_urls. "
         "(5) If an image_url is provided without product info, call product_from_image_tool first. "
-        "Keep outputs concise and structured."
+        "Style constraints: angles must be benefit-led and ultra-focused; headlines must include emojis and start with a short HOOK; ad copies must include emojis, a strong HOOK in the first 2–3 words, a clear benefit layout, and an explicit CTA at the end. If the product targets kids/parents, emphasize comfort, beauty, distinction, delight, education, and improvement. Keep outputs concise and structured."
     ),
 }
 

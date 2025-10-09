@@ -1,6 +1,6 @@
 "use client"
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { agentExecute, translateTexts, agentRunCreate, agentRunUpdate, agentUpdate } from '@/lib/api'
+import { agentExecute, translateTexts, agentRunCreate, agentRunUpdate, agentUpdate, llmAnalyzeLandingPage, geminiGenerateAdImages } from '@/lib/api'
 
 type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
 
@@ -9,10 +9,15 @@ type Promotion = {
   type?: string
   mechanic?: string
   assets?: {
-    headlines?: { en?: string[] }
-    primaries?: { en?: { short?: string, medium?: string, long?: string } }
+    headlines?: { en?: string[], fr?: string[], ar?: string[] }
+    primaries?: {
+      en?: { short?: string, medium?: string, long?: string },
+      fr?: { short?: string, medium?: string, long?: string },
+      ar?: { short?: string, medium?: string, long?: string }
+    }
     image_prompts?: string[]
   }
+  generated_image?: string
 }
 
 export default function PromotionAgentClient({ instructionKey = 'promotion_agent_instruction', initialInstruction, agentId }: { instructionKey?: string, initialInstruction?: string, agentId?: string }){
@@ -21,8 +26,7 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
   const [running, setRunning] = useState<boolean>(false)
   const [error, setError] = useState<string>("")
   const [promotions, setPromotions] = useState<Promotion[]>([])
-  const [frMap, setFrMap] = useState<Record<string, string>>({})
-  const [arMap, setArMap] = useState<Record<string, string>>({})
+  const [landingImage, setLandingImage] = useState<string>("")
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
 
   const defaultSystem = useMemo(()=>{
@@ -99,6 +103,17 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
         'CURRENCY: MAD',
         'TASK: Generate EXACTLY 3 promotions. For each promotion include exactly 6 English headlines and 3 English primary texts (short/medium/long). Include at least 1 image_prompts entry that fits the offer. Output ONE valid JSON object per the simplified contract.'
       ].filter(Boolean).join('\n') }
+      // Analyze landing page first to extract a source image (if URL provided)
+      let firstImage: string | '' = ''
+      try{
+        if(url && url.trim()){
+          const analysis = await llmAnalyzeLandingPage({ url: url.trim(), model: model || undefined })
+          const imgs = Array.isArray((analysis as any)?.images)? (analysis as any).images : []
+          firstImage = (imgs && imgs.length)? imgs[0] : ''
+        }
+      }catch{}
+      setLandingImage(firstImage)
+
       const res = await agentExecute({ messages: [sys, reqUser], model: model || undefined })
       const text = (res as any)?.text || ''
       let obj: any = {}
@@ -125,9 +140,8 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
         }catch{}
       }
       const finalPromos = promos.slice(0,3)
-      setPromotions(finalPromos)
 
-      // Collect all strings for translation
+      // Collect all English strings and translate
       const enStrings: string[] = []
       finalPromos.forEach(p=>{
         const hs = p.assets?.headlines?.en || []
@@ -136,18 +150,50 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
         ;['short','medium','long'].forEach(k=>{ const v = (pr as any)[k]; if(typeof v==='string' && v.trim()) enStrings.push(v) })
       })
       const uniq = Array.from(new Set(enStrings.filter(s=>s && s.trim())))
+      let fMap: Record<string,string> = {}
+      let aMap: Record<string,string> = {}
       if(uniq.length){
-        const [fr, ar] = await Promise.all([
-          translateTexts({ texts: uniq, target: 'fr', locale: 'MA', domain: 'ads' }),
-          translateTexts({ texts: uniq, target: 'ar', locale: 'MA', domain: 'ads' }),
-        ])
-        const frs = (fr as any)?.translations || []
-        const ars = (ar as any)?.translations || []
-        const fMap: Record<string,string> = {}
-        const aMap: Record<string,string> = {}
-        uniq.forEach((s, i)=>{ fMap[s] = frs[i] || ''; aMap[s] = ars[i] || '' })
-        setFrMap(fMap); setArMap(aMap)
+        try{
+          const [fr, ar] = await Promise.all([
+            translateTexts({ texts: uniq, target: 'fr', locale: 'MA', domain: 'ads' }),
+            translateTexts({ texts: uniq, target: 'ar', locale: 'MA', domain: 'ads' }),
+          ])
+          const frs = (fr as any)?.translations || []
+          const ars = (ar as any)?.translations || []
+          uniq.forEach((s, i)=>{ fMap[s] = frs[i] || ''; aMap[s] = ars[i] || '' })
+        }catch{}
       }
+
+      // Assign per-promotion FR/AR arrays and auto-generate one image per promo
+      for(const p of finalPromos){
+        try{
+          const hs = p.assets?.headlines?.en || []
+          const hsFr = hs.map(h=> fMap[h] || '')
+          const hsAr = hs.map(h=> aMap[h] || '')
+          p.assets = p.assets || {}
+          p.assets.headlines = p.assets.headlines || {}
+          p.assets.headlines.fr = hsFr
+          p.assets.headlines.ar = hsAr
+          const pr = p.assets.primaries?.en || {}
+          const enShort = String((pr as any).short||'')
+          const enMedium = String((pr as any).medium||'')
+          const enLong = String((pr as any).long||'')
+          p.assets.primaries = p.assets.primaries || {}
+          p.assets.primaries.fr = { short: fMap[enShort] || '', medium: fMap[enMedium] || '', long: fMap[enLong] || '' }
+          p.assets.primaries.ar = { short: aMap[enShort] || '', medium: aMap[enMedium] || '', long: aMap[enLong] || '' }
+        }catch{}
+        try{
+          const prompt = (p.assets?.image_prompts||[])[0] || ''
+          if(prompt && (firstImage||landingImage)){
+            const base = firstImage || landingImage
+            const gen = await geminiGenerateAdImages({ image_url: base, prompt, num_images: 1, neutral_background: false })
+            const imgs = (gen as any)?.images || []
+            p.generated_image = Array.isArray(imgs) && imgs[0]? imgs[0] : ''
+          }
+        }catch{}
+      }
+
+      setPromotions(finalPromos)
 
       if(agentId && (activeRunId || true)){
         try{
@@ -183,8 +229,14 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
       <div className="flex-1 space-y-6">
         {promotions.length? promotions.map((p, idx)=>{
           const hs = p.assets?.headlines?.en || []
+          const hsFr = p.assets?.headlines?.fr || new Array(hs.length).fill('')
+          const hsAr = p.assets?.headlines?.ar || new Array(hs.length).fill('')
           const pr = p.assets?.primaries?.en || {}
           const copies = [pr.short||'', pr.medium||'', pr.long||''].filter(Boolean)
+          const prFr = p.assets?.primaries?.fr || {}
+          const copiesFr = [prFr.short||'', prFr.medium||'', prFr.long||''].filter(Boolean)
+          const prAr = p.assets?.primaries?.ar || {}
+          const copiesAr = [prAr.short||'', prAr.medium||'', prAr.long||''].filter(Boolean)
           return (
             <div key={idx} className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
               <div className="text-lg font-semibold mb-1">{p.name || 'Promotion'}</div>
@@ -193,9 +245,69 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
                 <div className="mb-4">
                   <div className="text-base font-medium mb-2">Headlines (EN / FR / AR)</div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                    <div className="space-y-2">{hs.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{t}</div>))}</div>
-                    <div className="space-y-2">{hs.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{frMap[t]||'…'}</div>))}</div>
-                    <div className="space-y-2">{hs.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2">{arMap[t]||'…'}</div>))}</div>
+                    <div className="space-y-2">{hs.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(hs[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <input className="w-full text-sm outline-none" value={hs[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            pp.assets = pp.assets||{}
+                            pp.assets.headlines = pp.assets.headlines||{}
+                            const arr = [...(pp.assets.headlines.en||[])]
+                            arr[i] = v
+                            pp.assets.headlines.en = arr
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
+                    <div className="space-y-2">{hsFr.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(hsFr[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <input className="w-full text-sm outline-none" value={hsFr[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            pp.assets = pp.assets||{}
+                            pp.assets.headlines = pp.assets.headlines||{}
+                            const arr = [...(pp.assets.headlines.fr||new Array(hs.length).fill(''))]
+                            arr[i] = v
+                            pp.assets.headlines.fr = arr
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
+                    <div className="space-y-2">{hsAr.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white" dir="rtl">
+                        <div className="flex items-center gap-2 mb-2 justify-end">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(hsAr[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <input className="w-full text-sm outline-none text-right" dir="rtl" value={hsAr[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            pp.assets = pp.assets||{}
+                            pp.assets.headlines = pp.assets.headlines||{}
+                            const arr = [...(pp.assets.headlines.ar||new Array(hs.length).fill(''))]
+                            arr[i] = v
+                            pp.assets.headlines.ar = arr
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
                   </div>
                 </div>
               ) : null}
@@ -203,15 +315,100 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
                 <div className="mb-2">
                   <div className="text-base font-medium mb-2">Ad Copies (EN / FR / AR)</div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                    <div className="space-y-2">{copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2 whitespace-pre-wrap">{t}</div>))}</div>
-                    <div className="space-y-2">{copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2 whitespace-pre-wrap">{frMap[t]||'…'}</div>))}</div>
-                    <div className="space-y-2">{copies.map((t,i)=>(<div key={i} className="border border-slate-200 rounded-lg px-3 py-2 whitespace-pre-wrap">{arMap[t]||'…'}</div>))}</div>
+                    <div className="space-y-2">{copies.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copies[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <textarea className="w-full text-sm outline-none min-h-[60px]" value={copies[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            const en = pp.assets?.primaries?.en || {}
+                            const arr = [String((en as any).short||''), String((en as any).medium||''), String((en as any).long||'')]
+                            arr[i] = v
+                            pp.assets = pp.assets||{}
+                            pp.assets.primaries = pp.assets.primaries||{}
+                            pp.assets.primaries.en = { short: arr[0]||'', medium: arr[1]||'', long: arr[2]||'' }
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
+                    <div className="space-y-2">{copiesFr.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white">
+                        <div className="flex items-center gap-2 mb-2">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copiesFr[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <textarea className="w-full text-sm outline-none min-h-[60px]" value={copiesFr[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            pp.assets = pp.assets||{}
+                            pp.assets.primaries = pp.assets.primaries||{}
+                            const fr = pp.assets.primaries.fr || { short:'', medium:'', long:'' }
+                            const arr = [String(fr.short||''), String(fr.medium||''), String(fr.long||'')]
+                            arr[i] = v
+                            pp.assets.primaries.fr = { short: arr[0]||'', medium: arr[1]||'', long: arr[2]||'' }
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
+                    <div className="space-y-2">{copiesAr.map((t,i)=>(
+                      <div key={i} className="border border-slate-200 rounded-lg p-2 bg-white" dir="rtl">
+                        <div className="flex items-center gap-2 mb-2 justify-end">
+                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copiesAr[i]||'') }catch{} }}>Copy</button>
+                        </div>
+                        <textarea className="w-full text-sm outline-none min-h-[60px] text-right" dir="rtl" value={copiesAr[i]} onChange={(e)=>{
+                          const v = e.target.value
+                          setPromotions(prev=>{
+                            const nxt = [...prev]
+                            const pp = { ...(nxt[idx]||{}) }
+                            pp.assets = pp.assets||{}
+                            pp.assets.primaries = pp.assets.primaries||{}
+                            const ar = pp.assets.primaries.ar || { short:'', medium:'', long:'' }
+                            const arr = [String(ar.short||''), String(ar.medium||''), String(ar.long||'')]
+                            arr[i] = v
+                            pp.assets.primaries.ar = { short: arr[0]||'', medium: arr[1]||'', long: arr[2]||'' }
+                            nxt[idx] = pp as any
+                            return nxt as Promotion[]
+                          })
+                        }} />
+                      </div>
+                    ))}</div>
                   </div>
                 </div>
               ) : null}
               <div className="mt-3 text-sm">
                 <div className="text-slate-600 mb-1">Image Prompt</div>
-                <div className="border border-slate-200 rounded-lg px-3 py-2">{p.assets?.image_prompts?.[0]||''}</div>
+                <div className="border border-slate-200 rounded-lg p-2 bg-white">
+                  <div className="flex items-center gap-2 mb-2">
+                    <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((p.assets?.image_prompts?.[0]||'')) }catch{} }}>Copy</button>
+                  </div>
+                  <textarea className="w-full text-sm outline-none min-h-[60px]" value={p.assets?.image_prompts?.[0]||''} onChange={(e)=>{
+                    const v = e.target.value
+                    setPromotions(prev=>{
+                      const nxt = [...prev]
+                      const pp = { ...(nxt[idx]||{}) }
+                      pp.assets = pp.assets||{}
+                      const arr = [...(pp.assets.image_prompts||[''])]
+                      arr[0] = v
+                      pp.assets.image_prompts = arr
+                      nxt[idx] = pp as any
+                      return nxt as Promotion[]
+                    })
+                  }} />
+                </div>
+                {p.generated_image? (
+                  <div className="mt-3">
+                    <img src={p.generated_image} alt="promo" className="w-full max-w-md rounded border" />
+                  </div>
+                ) : null}
               </div>
             </div>
           )
