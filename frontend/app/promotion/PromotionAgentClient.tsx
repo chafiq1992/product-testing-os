@@ -86,7 +86,7 @@ export default function PromotionAgentClient({ instructionKey = 'promotion_agent
   },[instructionKey])
 
   const onRun = useCallback(async ()=>{
-    setRunning(true); setError(""); setPromotions([]); setFrMap({}); setArMap({})
+    setRunning(true); setError(""); setPromotions([])
     try{
       const inputSnapshot = { url, model, systemInstruction }
       if(agentId && !activeRunId){
