@@ -20,7 +20,7 @@ export default function AgentsHomePage(){
 
   useEffect(()=>{ (async()=>{ try{ const res = await agentsList(); setAgents((res as any)?.data||[]) }catch{} })() },[])
 
-  function onCreate(){
+  async function onCreate(){
     if(!newName.trim()) return
     setCreating(true)
     try{
