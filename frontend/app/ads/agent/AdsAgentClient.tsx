@@ -22,7 +22,7 @@ function getLatestToolContent(messages: any[]|undefined, toolName: string): Tool
   return undefined
 }
 
-export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction', initialInstruction, enableOutputField = true, agentId }: { instructionKey?: string, initialInstruction?: string, enableOutputField?: boolean, agentId?: string }){
+export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction', initialInstruction, initialOutput, enableOutputField = true, agentId }: { instructionKey?: string, initialInstruction?: string, initialOutput?: string, enableOutputField?: boolean, agentId?: string }){
   const [url, setUrl] = useState<string>("")
   const [imageUrl, setImageUrl] = useState<string>("")
   const [audience, setAudience] = useState<string>("")
@@ -56,7 +56,7 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
   // Agent instruction (editable)
   const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always prefer tools when available. Typical flow: (1) If a URL is provided, call analyze_landing_page_tool. (2) Use gen_angles_tool (num_angles=2 or 3). (3) Optionally refine with gen_title_desc_tool. (4) Optionally prepare gen_landing_copy_tool. (5) If an image_url is provided without product info, call product_from_image_tool first. Output in English. By default, only generate ad angles, headlines, primary texts, and ad image prompts. Keep outputs concise and structured.'
   const [systemInstruction, setSystemInstruction] = useState<string>(initialInstruction ?? defaultInstruction)
-  const [agentOutput, setAgentOutput] = useState<string>("")
+  const [agentOutput, setAgentOutput] = useState<string>(initialOutput ?? "")
   const [showSettings, setShowSettings] = useState<boolean>(false)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
 
@@ -65,13 +65,17 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
       const savedInstr = localStorage.getItem(instructionKey)
       if(savedInstr && typeof savedInstr==='string' && savedInstr.trim()){
         setSystemInstruction(savedInstr)
+      } else if(typeof initialInstruction==='string' && initialInstruction.trim()){
+        setSystemInstruction(initialInstruction)
       }
       const savedOut = localStorage.getItem(`${instructionKey}__output`)
       if(savedOut && typeof savedOut==='string'){
         setAgentOutput(savedOut)
+      } else if(typeof initialOutput==='string'){
+        setAgentOutput(initialOutput)
       }
     }catch{}
-  },[])
+  },[instructionKey, initialInstruction, initialOutput])
 
   // Helpers for image source & display (mirror Studio page behavior)
   const __API_BASE = (typeof process!=='undefined'? (process.env as any).NEXT_PUBLIC_API_BASE_URL : '') || ''
@@ -120,10 +124,11 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
     return ''
   }
 
-  const system = useMemo<Message>(()=>({
-    role:'system',
-    content: systemInstruction,
-  }),[systemInstruction])
+  const system = useMemo<Message>(()=>{
+    const trimmedOutput = (agentOutput||'').trim()
+    const combined = trimmedOutput? `${systemInstruction}\n\nOutput format (STRICT):\n${trimmedOutput}` : systemInstruction
+    return { role:'system', content: combined }
+  },[systemInstruction, agentOutput])
 
   const onRun = useCallback(async ()=>{
     setRunning(true); setResult(""); setError("")
@@ -134,7 +139,7 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
       const inputSnapshot: any = {
         url, imageUrl, audience, benefits, pains, budget, model,
         numAngles, runAnalyze, translateLocale, autoTranslate,
-        systemInstruction,
+        systemInstruction, agentOutput,
       }
       // Ensure a run exists if agentId provided
       if(agentId && !activeRunId){
@@ -530,7 +535,18 @@ export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction
                 </div>
               ) : null}
             </div>
-            <div className="flex items-center justify-end gap-2 mt-3">
+            <div className="flex items-center justify-between gap-2 mt-3">
+              {enableOutputField? (
+                <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{
+                  const example = `{
+  "angles": [
+    { "name": "string", "headlines": ["string"], "primaries": ["string"] }
+  ],
+  "image_prompts": ["string"]
+}`
+                  setAgentOutput(example)
+                }}>Insert example output schema</button>
+              ) : <div/>}
               <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ const v = initialInstruction ?? defaultInstruction; setSystemInstruction(v); try{ localStorage.setItem(instructionKey, v) }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: v }) }catch{} } }}>Reset</button>
               <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem(instructionKey, systemInstruction||''); localStorage.setItem(`${instructionKey}__output`, agentOutput||'') }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: systemInstruction||'', output_pref: agentOutput||'' }) }catch{} } setShowSettings(false) }}>Save</button>
             </div>
