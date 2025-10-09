@@ -47,6 +47,28 @@ export default function AgentsHomePage(){
     </Link>
   ),[])
 
+  const promotionTile = useMemo(()=> (
+    <button onClick={async()=>{
+      try{
+        // Ensure a canonical promotion agent exists, then navigate
+        const id = 'promotion-agent'
+        await agentCreate({ id, name: 'Promotion Agent', description: 'Generates multi-offer promotions with FR/AR translations' })
+        router.push(`/agents/view?id=${encodeURIComponent(id)}`)
+      }catch{
+        router.push(`/agents/view?id=promotion-agent`)
+      }
+    }} className="group border border-slate-200 rounded-xl bg-white hover:shadow-md transition p-4 flex flex-col items-center justify-center text-center">
+      <div className="w-16 h-16 rounded-lg bg-amber-50 border border-amber-100 grid grid-cols-2 grid-rows-2 gap-1 p-1 mb-3">
+        <div className="bg-white border border-slate-200 rounded"/>
+        <div className="bg-white border border-slate-200 rounded"/>
+        <div className="bg-white border border-slate-200 rounded"/>
+        <div className="bg-white border border-slate-200 rounded"/>
+      </div>
+      <div className="text-sm font-semibold text-slate-800">Promotion Agent</div>
+      <div className="text-xs text-slate-500">3 offers + FR/AR</div>
+    </button>
+  ),[router])
+
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-16 px-5 md:px-8 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
@@ -63,6 +85,7 @@ export default function AgentsHomePage(){
       <div className="p-6 md:p-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {adsTile}
+          {promotionTile}
           {agents.map(a=> (
             <Link key={a.id} href={`/agents/view?id=${encodeURIComponent(a.id)}`} className="group border border-slate-200 rounded-xl bg-white hover:shadow-md transition p-4 flex flex-col text-slate-800">
               <div className="flex items-center justify-between mb-2">

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { agentGet, agentRunsList, agentRunGet } from '@/lib/api'
 
 const AdsAgentClient = dynamic(()=>import('../../ads/agent/AdsAgentClient'), { ssr: false })
+const PromotionAgentClient = dynamic(()=>import('../../promotion/PromotionAgentClient'), { ssr: false })
 
 export default function AgentViewClient(){
   const params = useSearchParams()
@@ -38,7 +39,11 @@ export default function AgentViewClient(){
         </div>
       </header>
       <div className="p-6 md:p-8">
-        <AdsAgentClient instructionKey={instructionKey} initialInstruction={meta?.instruction} initialOutput={meta?.output_pref} enableOutputField={true} agentId={id} />
+        {id==='promotion-agent'? (
+          <PromotionAgentClient instructionKey={instructionKey} initialInstruction={meta?.instruction} agentId={id} />
+        ) : (
+          <AdsAgentClient instructionKey={instructionKey} initialInstruction={meta?.instruction} initialOutput={meta?.output_pref} enableOutputField={true} agentId={id} />
+        )}
         {selectedRun? (
           <div className="mt-6 rounded-xl border border-slate-200 bg-white shadow-sm p-5">
             <div className="text-lg font-semibold mb-2">Previous Run</div>
