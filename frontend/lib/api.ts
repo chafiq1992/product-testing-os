@@ -391,6 +391,12 @@ export async function agentRunGet(agent_id: string, run_id: string){
   return data as { id:string, agent_id:string, status?:string, title?:string, input?: any, output?: any, messages?: any[] }
 }
 
+// Generate angles from url/text using server aggregation
+export async function agentAnglesGenerate(payload:{ url?: string, text?: string, model?: string }){
+  const { data } = await axios.post(`${base}/api/agent/angles`, payload)
+  return data as { angles: { angle_title:string, headlines:string[], ad_copies:string[] }[], error?: string }
+}
+
 // Extract product inputs from a single product image (OpenAI multimodal)
 export async function productFromImage(payload:{ image_url:string, model?:string, target_category?: string }){
   const {data} = await axios.post(`${base}/api/llm/product_from_image`, payload)

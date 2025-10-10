@@ -610,3 +610,13 @@ def list_agent_runs(agent_id: str, limit: int | None = None) -> list[Dict[str, A
                 "updated_at": r.updated_at.isoformat() + "Z",
             })
         return out
+
+
+def delete_all_agents() -> int:
+    """Delete all agents and their runs. Returns number of agents deleted."""
+    with SessionLocal() as session:
+        # Delete runs first due to FK
+        session.query(AgentRun).delete()
+        count = session.query(Agent).delete()
+        session.commit()
+        return int(count or 0)

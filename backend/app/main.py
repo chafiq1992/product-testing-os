@@ -25,7 +25,7 @@ from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
-from app.config import BASE_URL, UPLOADS_DIR
+from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app import db
 import re
 import threading
@@ -426,6 +426,68 @@ async def api_agent_ads_execute(req: AgentRequest):
         return out
     except Exception as e:
         return {"error": str(e)}
+
+# ---------------- Angles Aggregation (URL/Text -> AgentOutput shape) ----------------
+class AgentAnglesRequest(BaseModel):
+    url: Optional[str] = None
+    text: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/agent/angles")
+async def api_agent_angles(req: AgentAnglesRequest):
+    try:
+        result: list[dict] = []
+
+        # If URL provided, analyze landing page to get angles with headlines/primaries
+        if isinstance(req.url, str) and req.url.strip():
+            analyzed = analyze_landing_page(req.url.strip(), model=req.model)
+            for a in (analyzed.get("angles") or []):
+                try:
+                    name = (a or {}).get("name") or "Angle"
+                    heads = (a or {}).get("headlines") or []
+                    prims = (a or {}).get("primaries") or []
+                    if isinstance(prims, dict):
+                        prims = [prims.get("short"), prims.get("medium"), prims.get("long")]
+                    prims = [p for p in prims if isinstance(p, str) and p.strip()]
+                    result.append({
+                        "angle_title": str(name),
+                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
+                        "ad_copies": prims,
+                    })
+                except Exception:
+                    continue
+
+        # If free-text provided (product description/notes), generate angles/copy
+        if isinstance(req.text, str) and req.text.strip():
+            payload = {
+                "audience": "shoppers",
+                "benefits": [],
+                "pain_points": [],
+                "description": req.text.strip(),
+                "title": None,
+            }
+            full = gen_angles_and_copy_full(payload, model=req.model)
+            for a in (full.get("angles") or []):
+                try:
+                    name = (a or {}).get("name") or "Angle"
+                    heads = (a or {}).get("headlines") or []
+                    primaries = (a or {}).get("primaries") or []
+                    if isinstance(primaries, dict):
+                        primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                    primaries = [p for p in primaries if isinstance(p, str) and p.strip()]
+                    result.append({
+                        "angle_title": str(name),
+                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
+                        "ad_copies": primaries,
+                    })
+                except Exception:
+                    continue
+
+        # If nothing produced, return empty default
+        return {"angles": result}
+    except Exception as e:
+        return {"angles": [], "error": str(e)}
 
 # ---------------- Translation API ----------------
 class TranslateRequest(BaseModel):
@@ -1535,6 +1597,38 @@ async def api_meta_draft_carousel_campaign(req: MetaDraftCarouselCampaignRequest
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+# ---------------- ChatKit (OpenAI-hosted) session endpoint ----------------
+class ChatKitSessionRequest(BaseModel):
+    workflow_id: Optional[str] = None
+    user: Optional[str] = None
+
+
+@app.post("/api/chatkit/session")
+async def create_chatkit_session(req: ChatKitSessionRequest):
+    try:
+        from openai import OpenAI as _OpenAI
+        import os as _os
+        wf = (req.workflow_id or CHATKIT_WORKFLOW_ID or "").strip()
+        if not wf:
+            return {"error": "missing_workflow_id"}
+        _client = _OpenAI(api_key=_os.environ.get("OPENAI_API_KEY"))
+        session = _client.chatkit.sessions.create({
+            "workflow": {"id": wf},
+            "user": (req.user or str(uuid4())),
+        })
+        return {"client_secret": session.client_secret}
+    except Exception as e:
+        return {"error": str(e)}
+
+# Bulk delete all agents (cleanup)
+@app.delete("/api/agents")
+async def api_delete_all_agents():
+    try:
+        n = db.delete_all_agents()
+        return {"ok": True, "deleted": n}
+    except Exception as e:
+        return {"error": str(e)}
 
 # Utility endpoint to (re)configure Shopify product variants and inventory
 class ShopifyConfigureVariantsRequest(BaseModel):
