@@ -42,7 +42,7 @@ export default function AgentViewClient(){
         {id==='promotion-agent'? (
           <PromotionAgentClient instructionKey={instructionKey} initialInstruction={meta?.instruction} agentId={id} />
         ) : (
-          <AdsAgentClient instructionKey={instructionKey} initialInstruction={meta?.instruction} initialOutput={meta?.output_pref} enableOutputField={true} agentId={id} />
+          <AdsAgentClient defaultEndpoint="/api/chatkit/run" />
         )}
         {selectedRun? (
           <div className="mt-6 rounded-xl border border-slate-200 bg-white shadow-sm p-5">
