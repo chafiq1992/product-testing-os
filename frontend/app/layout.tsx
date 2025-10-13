@@ -1,4 +1,5 @@
 import './globals.css'
+import ToasterProvider from '../components/ToasterProvider'
 export const metadata = { title: 'Product Testing OS', description: 'Generate angles, creatives, landing & ads' }
 export default function RootLayout({children}:{children:React.ReactNode}){
   return (
@@ -6,7 +7,10 @@ export default function RootLayout({children}:{children:React.ReactNode}){
       <head>
         <script src="https://cdn.platform.openai.com/deployments/chatkit/chatkit.js" async></script>
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <ToasterProvider />
+      </body>
     </html>
   )
 }

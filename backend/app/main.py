@@ -489,6 +489,76 @@ async def api_agent_angles(req: AgentAnglesRequest):
     except Exception as e:
         return {"angles": [], "error": str(e)}
 
+# ---------------- ChatKit headless run (UI integration) ----------------
+class ChatKitRunRequest(BaseModel):
+    mode: Optional[str] = None  # 'url' | 'text'
+    url: Optional[str] = None
+    text: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/chatkit/run")
+async def api_chatkit_run(req: ChatKitRunRequest):
+    """Headless trigger compatible with the Ads UI.
+
+    For now, normalize to AgentOutput shape by leveraging existing analysis/generation.
+    This can be swapped to a true ChatKit Workflows run once headless API bindings are finalized.
+    """
+    try:
+        # Reuse the same logic as /api/agent/angles to build AgentOutput
+        result: list[dict] = []
+
+        if (req.mode == "url" and isinstance(req.url, str) and req.url.strip()) or (
+            not req.mode and isinstance(req.url, str) and req.url.strip()
+        ):
+            analyzed = analyze_landing_page(req.url.strip(), model=req.model)
+            for a in (analyzed.get("angles") or []):
+                try:
+                    name = (a or {}).get("name") or "Angle"
+                    heads = (a or {}).get("headlines") or []
+                    prims = (a or {}).get("primaries") or []
+                    if isinstance(prims, dict):
+                        prims = [prims.get("short"), prims.get("medium"), prims.get("long")]
+                    prims = [p for p in prims if isinstance(p, str) and p.strip()]
+                    result.append({
+                        "angle_title": str(name),
+                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
+                        "ad_copies": prims,
+                    })
+                except Exception:
+                    continue
+
+        if (req.mode == "text" and isinstance(req.text, str) and req.text.strip()) or (
+            not req.mode and isinstance(req.text, str) and req.text.strip()
+        ):
+            payload = {
+                "audience": "shoppers",
+                "benefits": [],
+                "pain_points": [],
+                "description": req.text.strip(),
+                "title": None,
+            }
+            full = gen_angles_and_copy_full(payload, model=req.model)
+            for a in (full.get("angles") or []):
+                try:
+                    name = (a or {}).get("name") or "Angle"
+                    heads = (a or {}).get("headlines") or []
+                    primaries = (a or {}).get("primaries") or []
+                    if isinstance(primaries, dict):
+                        primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                    primaries = [p for p in primaries if isinstance(p, str) and p.strip()]
+                    result.append({
+                        "angle_title": str(name),
+                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
+                        "ad_copies": primaries,
+                    })
+                except Exception:
+                    continue
+
+        return {"angles": result}
+    except Exception as e:
+        return {"angles": [], "error": str(e)}
+
 # ---------------- Translation API ----------------
 class TranslateRequest(BaseModel):
     texts: list[str]

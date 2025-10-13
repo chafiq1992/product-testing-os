@@ -1,642 +1,435 @@
 "use client"
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { agentAdsExecute, geminiSuggestPrompts, geminiGenerateAdImages, translateTexts, llmAnalyzeLandingPage, llmGenerateAngles, agentRunCreate, agentRunUpdate, agentUpdate } from '../../../lib/api'
-import AdsAgentCanvas from './AdsAgentCanvas'
-import { Settings } from 'lucide-react'
+import React, { useMemo, useState, useEffect } from "react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { toast } from "sonner"
+import { Check, Clipboard, Download, FileJson, Smartphone, Wand2, Upload, Sparkles, ChevronDown, CopyCheck, Filter, Loader2, Globe2, NotebookText } from "lucide-react"
 
-type Message = { role: 'system'|'user'|'assistant'|'tool', content: any }
+const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF", accent: "#0ea5e9", ok: "#16a34a" }
 
-type ToolPayload = any
+type AgentOutput = { angles: { angle_title: string; headlines: string[]; ad_copies: string[] }[] }
 
-function getLatestToolContent(messages: any[]|undefined, toolName: string): ToolPayload | undefined{
-  try{
-    const arr = Array.isArray(messages)? messages : []
-    for(let i=arr.length-1;i>=0;i--){
-      const m = arr[i]
-      if(m && m.role==='tool' && m.name===toolName){
-        const c = typeof m.content==='string'? m.content : (m.content? JSON.stringify(m.content) : '{}')
-        return JSON.parse(c)
-      }
-    }
-  }catch{}
-  return undefined
+const SAMPLE: AgentOutput = {
+  angles: [
+    {
+      angle_title: "Elegant Warmth, Zero Itch",
+      headlines: [
+        "Stand-out warmth, soft on skin",
+        "Light yet cozy—morning smiles",
+        "One set, endless compliments",
+        "Breathe easy, stay toasty",
+        "Unisex style that just works",
+        "Layer now, love all season",
+      ],
+      ad_copies: [
+        `Elegant. Comfy. Warm.\n\nHe’ll look sharp and feel snug—without the sweat. This fleece-lined three-piece (hoodie, joggers, zip vest) gives breathable warmth that’s light for class and cozy for the ride home. Soft on delicate skin, no itch. The zip vest makes dressing easy, and the modern cut keeps him looking uniquely put‑together on chilly days. Parents love the easy coordination—no more mismatched layers. Made for school, playdates, and weekend outings. Sizes 9m–10y with colors that pair effortlessly. Unisex-friendly styling that’s simple to share across siblings. Not bulky, not thin—just right.\n\nFast 24–48h delivery + Cash on Delivery.`,
+        `Elegant. Comfy. Warm.\n\nYour little one stays warm, looks distinct, and moves free. This plush‑lined hoodie set with a thickened zip vest balances heat so he won’t overheat in class, yet won’t feel cold outside. Touchably soft inside, zero scratchy seams. Easy zip = quick mornings. Clean, modern lines mean compliments at school and smiles in photos. Effortless to match; colors designed to mix with sneakers and backpacks. Unisex styling and a full size range 9m–10y so siblings can share. Layer over tees in autumn and under coats in winter—without bulk.\n\nFast 24–48h delivery + Cash on Delivery.`,
+      ],
+    },
+    {
+      angle_title: "Confident Style, Everyday Ease",
+      headlines: [
+        "Watch him walk in confident",
+        "Cozy layers, cooler class",
+        "Three pieces, zero hassle",
+        "Warmth that breathes",
+        "Cute today, comfy all day",
+        "Style that keeps up",
+      ],
+      ad_copies: [
+        `Elegant. Comfy. Warm.\n\nGive him the winter set that feels as good as it looks. Plush “plus‑velvet” lining brings real warmth—without the heavy, sweaty bulk. The zip vest layers easily for bus rides, classrooms, and playground runs. It’s soft and itch‑free against sensitive skin, with durable fabric that holds shape. Unisex-friendly styling, trendy colors, and sizes 9m–10y make outfit planning simple. Not too thin, not too hot—just right for school, playdates, and weekend outings. Parents feel proud, kids feel confident.\n\nFast 24–48h delivery + Cash on Delivery.`,
+        `Elegant. Comfy. Warm.\n\nA coordinated hoodie + jogger + thickened vest set that solves winter dressing: breathable warmth, zero itch, and no bulky overheating. The clean design looks polished for school and fun for play. Easy zip saves time; smart colors mix with everything. Unisex fit works across siblings, with sizes 9m–10y. Perfect for autumn layering and winter warmth—light on the move, cozy at rest. You’ll love the compliments; he’ll love the comfort.\n\nFast 24–48h delivery + Cash on Delivery.`,
+      ],
+    },
+  ],
 }
 
-export default function AdsAgentClient({ instructionKey = 'ads_agent_instruction', initialInstruction, initialOutput, enableOutputField = true, agentId }: { instructionKey?: string, initialInstruction?: string, initialOutput?: string, enableOutputField?: boolean, agentId?: string }){
-  const [url, setUrl] = useState<string>("")
-  const [imageUrl, setImageUrl] = useState<string>("")
-  const [audience, setAudience] = useState<string>("")
-  const [benefits, setBenefits] = useState<string>("")
-  const [pains, setPains] = useState<string>("")
-  const [budget, setBudget] = useState<string>("9")
-  const [model, setModel] = useState<string>("gpt-5")
-  const [running, setRunning] = useState<boolean>(false)
-  const [result, setResult] = useState<string>("")
-  const [error, setError] = useState<string>("")
-  const [messages, setMessages] = useState<any[]|null>(null)
-  const [angles, setAngles] = useState<any[]|null>(null)
-  const [selectedIdx, setSelectedIdx] = useState<number>(0)
-  const [headlines, setHeadlines] = useState<string[]>([])
-  const [copies, setCopies] = useState<string[]>([])
-  // Translations
-  const [arHeadlines, setArHeadlines] = useState<string[]>([])
-  const [frHeadlines, setFrHeadlines] = useState<string[]>([])
-  const [arCopies, setArCopies] = useState<string[]>([])
-  const [frCopies, setFrCopies] = useState<string[]>([])
-  // Image generation
-  const [adImagePrompt, setAdImagePrompt] = useState<string>("")
-  const [adImageCount, setAdImageCount] = useState<number>(2)
-  const [adImages, setAdImages] = useState<string[]>([])
-  const [appendImages, setAppendImages] = useState<boolean>(true)
-  const [numAngles, setNumAngles] = useState<number>(3)
-  const [runAnalyze, setRunAnalyze] = useState<boolean>(true)
-  // Translate settings
-  const [translateLocale, setTranslateLocale] = useState<string>('MA')
-  const [autoTranslate, setAutoTranslate] = useState<boolean>(true)
-  // Agent instruction (editable)
-  const defaultInstruction = 'You are the Ads Agent specialized in digital ads. Always prefer tools when available. Typical flow: (1) If a URL is provided, call analyze_landing_page_tool. (2) Use gen_angles_tool (num_angles=3 ONLY). (3) Optionally refine with gen_title_desc_tool. (4) Optionally prepare gen_landing_copy_tool. (5) If an image_url is provided without product info, call product_from_image_tool first. Output in English. Style constraints: angles must be benefit-led and ultra-focused; headlines must include emojis and start with a short HOOK; ad copies must include emojis, a strong HOOK in the first 2–3 words, a clear benefit layout, and an explicit CTA at the end. If the product targets kids/parents, emphasize comfort, beauty, distinction, delight, education, and improvement. Keep outputs concise and structured.'
-  const [systemInstruction, setSystemInstruction] = useState<string>(initialInstruction ?? defaultInstruction)
-  const [agentOutput, setAgentOutput] = useState<string>(initialOutput ?? "")
-  const [showSettings, setShowSettings] = useState<boolean>(false)
-  const [activeRunId, setActiveRunId] = useState<string | null>(null)
+const cls = (...c: (string | false | undefined)[]) => c.filter(Boolean).join(" ")
+const copy = async (text: string) => { await navigator.clipboard.writeText(text); toast.success("Copied to clipboard") }
 
-  useEffect(()=>{
-    try{
-      const savedInstr = localStorage.getItem(instructionKey)
-      if(savedInstr && typeof savedInstr==='string' && savedInstr.trim()){
-        setSystemInstruction(savedInstr)
-      } else if(typeof initialInstruction==='string' && initialInstruction.trim()){
-        setSystemInstruction(initialInstruction)
-      }
-      const savedOut = localStorage.getItem(`${instructionKey}__output`)
-      if(savedOut && typeof savedOut==='string'){
-        setAgentOutput(savedOut)
-      } else if(typeof initialOutput==='string'){
-        setAgentOutput(initialOutput)
-      }
-    }catch{}
-  },[instructionKey, initialInstruction, initialOutput])
+function isAgentOutput(x: any): x is AgentOutput {
+  return x && Array.isArray(x.angles) && x.angles.every((a: any) => typeof a.angle_title === "string" && Array.isArray(a.headlines) && a.headlines.every((h: any) => typeof h === "string") && Array.isArray(a.ad_copies) && a.ad_copies.every((c: any) => typeof c === "string"))
+}
 
-  // Helpers for image source & display (mirror Studio page behavior)
-  const __API_BASE = (typeof process!=='undefined'? (process.env as any).NEXT_PUBLIC_API_BASE_URL : '') || ''
-  function toDisplayUrl(u: string){
-    try{
-      if(!u) return u
-      if(u.startsWith('data:')) return u
-      if(u.startsWith('/')) return u
-      if(!/^https?:\/\//i.test(u)) return u
-      const urlHost = new URL(u).host
-      let ownHost = ''
-      try{ ownHost = __API_BASE? new URL(__API_BASE).host : (typeof window!=='undefined'? window.location.host : '') }catch{}
-      const allowed = ['cdn.shopify.com','images.openai.com','oaidalleapiprodscus.blob.core.windows.net']
-      const isAllowed = allowed.some(d=> urlHost===d || urlHost.endsWith('.'+d))
-      const isOwn = !!ownHost && urlHost===ownHost
-      return (isAllowed || isOwn)? u : `${__API_BASE}/proxy/image?url=${encodeURIComponent(u)}`
-    }catch{ return u }
-  }
-  function isProbablyImageUrl(u:string){
-    try{
-      if(!u) return false
-      if(u.startsWith('data:image/')) return true
-      const low = u.toLowerCase()
-      if(low.endsWith('.jpg')||low.endsWith('.jpeg')||low.endsWith('.png')||low.endsWith('.webp')||low.endsWith('.gif')) return true
-      if(low.includes('cdn.shopify.com')) return true
-      return false
-    }catch{ return false }
-  }
-  function resolveSourceImage(): string | ''{
-    // 1) Prefer user-provided imageUrl if it looks like an image
-    if(isProbablyImageUrl(imageUrl)) return imageUrl
-    // 2) Try to pull from latest analyze_landing_page_tool images
-    try{
-      const a = getLatestToolContent(messages||[], 'analyze_landing_page_tool') as any
-      if(a && Array.isArray(a.images) && a.images[0] && isProbablyImageUrl(a.images[0])){
-        return a.images[0]
-      }
-    }catch{}
-    // 3) Try product_from_image_tool output
-    try{
-      const pfi = getLatestToolContent(messages||[], 'product_from_image_tool') as any
-      if(pfi && typeof pfi.image_url==='string' && isProbablyImageUrl(pfi.image_url)){
-        return pfi.image_url
-      }
-    }catch{}
-    return ''
-  }
-
-  const system = useMemo<Message>(()=>{
-    const trimmedOutput = (agentOutput||'').trim()
-    const combined = trimmedOutput? `${systemInstruction}\n\nOutput format (STRICT):\n${trimmedOutput}` : systemInstruction
-    return { role:'system', content: combined }
-  },[systemInstruction, agentOutput])
-
-  const onRun = useCallback(async ()=>{
-    setRunning(true); setResult(""); setError("")
-    setMessages(null); setAngles(null); setSelectedIdx(0)
-    setHeadlines([]); setCopies([]); setArHeadlines([]); setFrHeadlines([]); setArCopies([]); setFrCopies([])
-    try{
-      // Prepare input snapshot for persistence
-      const inputSnapshot: any = {
-        url, imageUrl, audience, benefits, pains, budget, model,
-        numAngles, runAnalyze, translateLocale, autoTranslate,
-        systemInstruction, agentOutput,
-      }
-      // Ensure a run exists if agentId provided
-      if(agentId && !activeRunId){
-        try{
-          const created = await agentRunCreate(agentId, { title: `Run ${new Date().toLocaleString()}`, status: 'running', input: inputSnapshot })
-          if((created as any)?.id){ setActiveRunId((created as any).id) }
-        }catch{}
-      } else if(agentId && activeRunId){
-        try{ await agentRunUpdate(agentId, activeRunId, { status: 'running', input: inputSnapshot }) }catch{}
-      }
-      // Auto-fill benefits & pain points from landing analysis when available
-      if(runAnalyze && (url || imageUrl)){
-        try{
-          const a = await llmAnalyzeLandingPage({ url: url || imageUrl, model: model || undefined })
-          if(Array.isArray((a as any)?.benefits) && !benefits){ setBenefits((a as any).benefits.join('\n')) }
-          if(Array.isArray((a as any)?.pain_points) && !pains){ setPains((a as any).pain_points.join('\n')) }
-        }catch{}
-      }
-      const product: any = {}
-      if(audience.trim()) product.audience = audience.trim()
-      if(benefits.trim()) product.benefits = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
-      if(pains.trim()) product.pain_points = pains.split('\n').map(s=>s.trim()).filter(Boolean)
-      const parts = [
-        url? `URL: ${url.trim()}` : undefined,
-        imageUrl? `IMAGE_URL: ${imageUrl.trim()}` : undefined,
-        Object.keys(product).length? `PRODUCT: ${JSON.stringify(product)}` : undefined,
-        budget? `BUDGET: ${budget}` : undefined,
-        // Enforce exactly 3 angles for Ads Agent
-        `SETTINGS: num_angles=3; run_analyze=${runAnalyze}`,
-      ].filter(Boolean)
-      const thread: Message[] = [system, { role:'user', content: `GOAL: angles_headlines_copies_only\n` + parts.join('\n') }]
-      const res = await agentAdsExecute({ messages: thread, model: model || undefined })
-      if(res?.error){ setError(res.error) }
-      else{
-        setMessages(res?.messages||null)
-        setResult(res?.text || JSON.stringify(res, null, 2))
-        // Persist output/messages to run if present
-        if(agentId && (activeRunId || true)){
-          try{
-            const runId = activeRunId || ''
-            if(runId){ await agentRunUpdate(agentId, runId, { status: 'completed', output: { text: res?.text }, messages: (res as any)?.messages || [] }) }
-          }catch{}
-        }
-        const toolAngles = getLatestToolContent(res?.messages, 'gen_angles_tool')
-        const analyzeAngles = getLatestToolContent(res?.messages, 'analyze_landing_page_tool')
-        let arr = (toolAngles?.angles && Array.isArray(toolAngles.angles))? toolAngles.angles : (toolAngles?.raw?.angles||[])
-        if((!arr || !arr.length) && Array.isArray(analyzeAngles?.angles)){
-          arr = analyzeAngles.angles
-        }
-        // Fallback: call direct angles endpoint if agent returned nothing
-        if((!arr || !arr.length)){
-          try{
-            const direct = await llmGenerateAngles({ product, num_angles: 3, model: model || undefined })
-            arr = (direct as any)?.angles || []
-          }catch{}
-        }
-        if(arr && arr.length){
-          setAngles(arr); setSelectedIdx(0)
-          // Collect headlines/copies
-            const hs: string[] = []
-            const ps: string[] = []
-            for(const it of arr){
-              if(Array.isArray(it.headlines)){
-                for(const h of it.headlines){ if(typeof h==='string' && h.trim()) hs.push(h.trim()) }
-              }
-              const prim = it.primaries
-              if(Array.isArray(prim)){
-                for(const p of prim){ if(typeof p==='string' && p.trim()) ps.push(p.trim()) }
-              } else if(prim && typeof prim==='object'){
-                if(typeof prim.short==='string' && prim.short.trim()) ps.push(prim.short.trim())
-                if(typeof prim.medium==='string' && prim.medium.trim()) ps.push(prim.medium.trim())
-                if(typeof prim.long==='string' && prim.long.trim()) ps.push(prim.long.trim())
-              }
-            }
-            const topHeadlines = hs.slice(0,8)
-            const topCopies = ps.slice(0,3)
-            setHeadlines(topHeadlines)
-            setCopies(topCopies)
-            // Run translations (AR/FR) in parallel
-            if(autoTranslate){
-              try{
-                const [arH, frH] = await Promise.all([
-                  translateTexts({ texts: topHeadlines, target: 'ar', locale: translateLocale, domain: 'ads' }),
-                  translateTexts({ texts: topHeadlines, target: 'fr', locale: translateLocale, domain: 'ads' }),
-                ])
-                setArHeadlines(Array.isArray((arH as any)?.translations)? (arH as any).translations : [])
-                setFrHeadlines(Array.isArray((frH as any)?.translations)? (frH as any).translations : [])
-              }catch{}
-              try{
-                const [arC, frC] = await Promise.all([
-                  translateTexts({ texts: topCopies, target: 'ar', locale: translateLocale, domain: 'ads' }),
-                  translateTexts({ texts: topCopies, target: 'fr', locale: translateLocale, domain: 'ads' }),
-                ])
-                setArCopies(Array.isArray((arC as any)?.translations)? (arC as any).translations : [])
-                setFrCopies(Array.isArray((frC as any)?.translations)? (frC as any).translations : [])
-              }catch{}
-            }
-            // Build image prompt with banners based on first pairs
-            const h1 = topHeadlines[0] || ''
-            const c1 = topCopies[0] || ''
-            const h2 = topHeadlines[1] || h1
-            const c2 = topCopies[1] || c1
-            const bannerPrompt = [
-              'Create two high‑impact ecommerce ad images from the provided product photo.',
-              'Design both with bold, clean banners and overlay text for social-feed legibility (4:5 crop).',
-              'Rules: keep product identity exact (colors/materials/shape/branding). Premium lighting. Crisp edges. High contrast.',
-              'Each image must include one headline and one short supporting line as vector text (sharp, no artifacts).',
-              `Image A banner text: Headline: "${h1}" | Subtext: "${c1}"`,
-              `Image B banner text: Headline: "${h2}" | Subtext: "${c2}"`,
-              'Use tasteful brand-neutral colors, ensure strong readability, and avoid covering key product details.',
-            ].join('\n')
-            setAdImagePrompt(bannerPrompt)
-            // Generate exactly 2 images at the end if imageUrl/url is present
-            try{
-              const baseImg = resolveSourceImage()
-              if(baseImg && isProbablyImageUrl(baseImg)){
-                const gen = await geminiGenerateAdImages({ image_url: baseImg, prompt: bannerPrompt, num_images: 2, neutral_background: false })
-                const imgs = (gen as any)?.images || []
-                if(Array.isArray(imgs)) setAdImages(imgs)
-              }
-            }catch{}
-        }
-      }
-    }catch(e:any){ setError(String(e?.message||e)) }
-    finally{ setRunning(false) }
-  },[system, url, imageUrl, audience, benefits, pains, budget, model, numAngles, runAnalyze, translateLocale, autoTranslate])
-
-  const onSelectAngle = useCallback(async (idx: number)=>{
-    setSelectedIdx(idx)
-  },[])
-
-  // Image prompt suggest and generation (Gemini)
-  const proposeAdImagePrompt = useCallback(async ()=>{
-    try{
-      const product: any = {}
-      if(audience.trim()) product.audience = audience.trim()
-      if(benefits.trim()) product.benefits = benefits.split('\n').map(s=>s.trim()).filter(Boolean)
-      if(pains.trim()) product.pain_points = pains.split('\n').map(s=>s.trim()).filter(Boolean)
-      const res = await geminiSuggestPrompts({ product, image_url: imageUrl || (url||'') })
-      const p = (res as any)?.ad_prompt || ''
-      if(p) setAdImagePrompt(p)
-    }catch{}
-  },[audience, benefits, pains, imageUrl, url])
-
-  const generateAdImages = useCallback(async ()=>{
-    if(!adImagePrompt) return
-    try{
-      const src = resolveSourceImage()
-      if(!src || !isProbablyImageUrl(src)) return
-      const res = await geminiGenerateAdImages({ image_url: src, prompt: adImagePrompt, num_images: Math.max(1, Math.min(6, Number(adImageCount)||2)) })
-      const imgs = (res as any)?.images || []
-      if(Array.isArray(imgs)){
-        setAdImages(prev=> appendImages? [...prev, ...imgs] : imgs)
-      }
-    }catch{}
-  },[adImagePrompt, imageUrl, url, adImageCount, appendImages])
-
-  const retranslate = useCallback(async ()=>{
-    try{
-      const [arH, frH] = await Promise.all([
-        translateTexts({ texts: headlines, target: 'ar', locale: translateLocale, domain: 'ads' }),
-        translateTexts({ texts: headlines, target: 'fr', locale: translateLocale, domain: 'ads' }),
-      ])
-      setArHeadlines(Array.isArray((arH as any)?.translations)? (arH as any).translations : [])
-      setFrHeadlines(Array.isArray((frH as any)?.translations)? (frH as any).translations : [])
-    }catch{}
-    try{
-      const [arC, frC] = await Promise.all([
-        translateTexts({ texts: copies, target: 'ar', locale: translateLocale, domain: 'ads' }),
-        translateTexts({ texts: copies, target: 'fr', locale: translateLocale, domain: 'ads' }),
-      ])
-      setArCopies(Array.isArray((arC as any)?.translations)? (arC as any).translations : [])
-      setFrCopies(Array.isArray((frC as any)?.translations)? (frC as any).translations : [])
-    }catch{}
-  },[copies, headlines, translateLocale])
-
-  // Reasoning/events extracted from messages (tool usage and assistant turns)
-  const reasoning = useMemo(()=>{
-    const items: { type: 'tool'|'assistant', label: string, detail?: string }[] = []
-    const arr = Array.isArray(messages)? messages : []
-    for(const m of arr){
-      try{
-        if(m && Array.isArray(m.tool_calls) && m.tool_calls.length){
-          for(const tc of m.tool_calls){
-            const nm = tc?.function?.name || 'tool'
-            items.push({ type:'tool', label: `Calling ${nm}`, detail: (tc?.function?.arguments||'').slice(0,160) })
-          }
-        }
-        if(m && m.role==='tool' && typeof m.name==='string'){
-          items.push({ type:'tool', label: `Completed ${m.name}`, detail: String(m.content||'').slice(0,180) })
-        }
-        if(m && m.role==='assistant' && m.content && !m.tool_calls){
-          items.push({ type:'assistant', label: 'Assistant', detail: String(m.content||'').slice(0,180) })
-        }
-      }catch{}
-    }
-    return items.slice(-12)
-  },[messages])
-
+function MobileAd({ title, headline, body }: { title: string; headline: string; body: string }) {
   return (
-    <div className="flex gap-6 p-6 text-slate-800">
-      {/* Left: Agent cards */}
-      <div className="w-[380px] shrink-0 space-y-4">
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="text-base font-semibold">Ads Agent Settings</div>
-            <button className="p-2 rounded-lg hover:bg-slate-100" title="Agent settings" onClick={()=>setShowSettings(true)}><Settings className="w-5 h-5 text-slate-600"/></button>
-          </div>
-          <div className="flex flex-col gap-3 text-base">
-            <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Landing page URL" value={url} onChange={e=>setUrl(e.target.value)} />
-            <input className="border rounded-lg px-3 py-2 bg-white border-slate-200" placeholder="Image URL (optional)" value={imageUrl} onChange={e=>setImageUrl(e.target.value)} />
-            <textarea className="border rounded-lg px-3 py-2 min-h-[64px] bg-white border-slate-200" placeholder="Audience" value={audience} onChange={e=>setAudience(e.target.value)} />
-            <textarea className="border rounded-lg px-3 py-2 min-h-[96px] bg-white border-slate-200" placeholder="Benefits (one per line)" value={benefits} onChange={e=>setBenefits(e.target.value)} />
-            <textarea className="border rounded-lg px-3 py-2 min-h-[96px] bg-white border-slate-200" placeholder="Pain points (one per line)" value={pains} onChange={e=>setPains(e.target.value)} />
-            <div className="flex gap-3">
-              <input className="border rounded-lg px-3 py-2 w-1/2 bg-white border-slate-200" placeholder="Budget (MAD)" value={budget} onChange={e=>setBudget(e.target.value)} />
-              <input className="border rounded-lg px-3 py-2 w-1/2 bg-white border-slate-200" placeholder="Model (optional)" value={model} onChange={e=>setModel(e.target.value)} />
-            </div>
-            {/* Fixed to 3 angles by product requirement */}
-            <div className="flex items-center justify-between">
-              <label className="text-sm text-slate-600">Num angles</label>
-              <input disabled type="number" min={3} max={3} className="border rounded-lg px-3 py-2 w-24 bg-white border-slate-200 opacity-60" value={3} onChange={()=>{}} />
-            </div>
-            <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" checked={runAnalyze} onChange={e=>setRunAnalyze(e.target.checked)} />Auto analyze landing</label>
-            
-            <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg disabled:opacity-50" disabled={running} onClick={onRun}>{running? 'Running…':'Generate Ads'}</button>
-            {error? <div className="text-sm text-red-600 whitespace-pre-wrap">{error}</div> : null}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
-          <div className="text-base font-semibold mb-3">Translate Agent Settings</div>
-          <div className="flex items-center justify-between mb-3">
-            <label className="text-sm text-slate-600">Locale</label>
-            <select className="border rounded-lg px-3 py-2 bg-white border-slate-200" value={translateLocale} onChange={e=>setTranslateLocale(e.target.value)}>
-              <option value="MA">MA</option>
-              <option value="FR">FR</option>
-              <option value="SA">SA</option>
-            </select>
-          </div>
-          <label className="flex items-center gap-2 text-sm text-slate-700 mb-3"><input type="checkbox" checked={autoTranslate} onChange={e=>setAutoTranslate(e.target.checked)} />Auto-translate outputs</label>
-          <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={retranslate}>Translate Now</button>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
-          <div className="text-base font-semibold mb-3">Gemini Ad Image Generator</div>
-          <div className="flex gap-2 mb-2">
-            <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={proposeAdImagePrompt}>Suggest Different Style</button>
-            <button className="text-sm px-3 py-2 border border-slate-200 rounded-lg" onClick={generateAdImages}>Generate (2)</button>
-          </div>
-          <textarea className="border border-slate-200 rounded-lg px-3 py-2 min-h-[96px] w-full bg-white" placeholder="Ad image prompt" value={adImagePrompt} onChange={e=>setAdImagePrompt(e.target.value)} />
+    <div className="w-full max-w-[380px] rounded-2xl border bg-white shadow-sm overflow-hidden">
+      <div className="h-40 bg-gradient-to-br from-[#004AAD] to-[#2563eb]" />
+      <div className="p-4">
+        <div className="text-xs uppercase tracking-wide text-slate-500">Sponsored · Irrakids</div>
+        <h3 className="mt-1 text-lg font-semibold text-slate-900">{title}</h3>
+        <p className="mt-2 text-sm font-medium text-slate-800">{headline}</p>
+        <p className="mt-2 text-sm text-slate-600 line-clamp-5 whitespace-pre-line">{body}</p>
+        <div className="mt-4 flex items-center gap-2">
+          <Button className="rounded-xl" style={{ backgroundColor: BRAND.primary }}>Shop Now</Button>
+          <Button variant="outline" className="rounded-xl">Learn More</Button>
         </div>
       </div>
-
-      {/* Middle: Canvas + Outputs */}
-      <div className="flex-1 space-y-6">
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
-          <AdsAgentCanvas messages={messages||[]}/>
-          <div className="text-lg font-semibold mb-1">Outputs</div>
-          <div className="text-sm text-slate-600 mb-3">Sections: Angles, Ad Headlines (EN), Primary Texts (EN)</div>
-          {angles && angles.length? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-5">
-              {angles.map((a, i)=> (
-                <div key={i} className={`border border-slate-200 rounded-lg p-3 bg-white ${i===selectedIdx? 'ring-2 ring-blue-600':''}`}>
-                  <div className="text-base font-medium">Angle: {a.name||'Untitled Angle'}</div>
-                  {Array.isArray(a.headlines)? <ul className="list-disc ml-5 text-sm mt-1 text-slate-700">
-                    {a.headlines.slice(0,4).map((h:string, idx:number)=>(<li key={idx}>{h}</li>))}
-                  </ul> : null}
-                  <div className="mt-2">
-                    <button className="text-sm px-2 py-1 border rounded-lg" onClick={()=>onSelectAngle(i)}>Select</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {(headlines.length || copies.length)? (
-            <div className="space-y-5">
-              {headlines.length? (
-                <div>
-                  <div className="text-base font-medium mb-2">Ad Headlines (EN)</div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {headlines.map((t,i)=>(
-                      <div key={i} className="border border-slate-200 rounded-lg p-2">
-                        <div className="flex items-center gap-2 mb-2">
-                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(headlines[i]||'') }catch{} }}>Copy</button>
-                        </div>
-                        <input className="w-full text-sm outline-none" value={headlines[i]} onChange={(e)=>{
-                          const v = e.target.value
-                          setHeadlines(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
-                        }} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {copies.length? (
-                <div>
-                  <div className="text-base font-medium mb-2">Primary Texts (EN)</div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {copies.map((t,i)=>(
-                      <div key={i} className="border border-slate-200 rounded-lg p-2">
-                        <div className="flex items-center gap-2 mb-2">
-                          <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copies[i]||'') }catch{} }}>Copy</button>
-                        </div>
-                        <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={copies[i]} onChange={(e)=>{
-                          const v = e.target.value
-                          setCopies(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
-                        }} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Image prompt moved to left panel */}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Translation Panel */}
-        {(headlines.length || copies.length)? (
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
-            <div className="text-lg font-semibold mb-4">Translate Agent</div>
-            {headlines.length? (
-              <div className="mb-5">
-                <div className="text-base font-medium mb-2">Headlines (EN / AR / FR)</div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="text-sm space-y-2">{headlines.map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2">
-                      <div className="flex items-center gap-2 mb-2">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(headlines[i]||'') }catch{} }}>Copy</button>
-                      </div>
-                      <input className="w-full text-sm outline-none" value={headlines[i]} onChange={(e)=>{
-                        const v = e.target.value
-                        setHeadlines(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                  <div className="text-sm space-y-2">{(arHeadlines.length? arHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2" dir="rtl">
-                      <div className="flex items-center gap-2 mb-2 justify-end">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((arHeadlines[i]||'')) }catch{} }}>Copy</button>
-                      </div>
-                      <input className="w-full text-sm outline-none text-right" dir="rtl" value={arHeadlines[i]||''} onChange={(e)=>{
-                        const v = e.target.value
-                        setArHeadlines(prev=>{ const arr = [...(prev.length? prev: new Array(headlines.length).fill(''))]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                  <div className="text-sm space-y-2">{(frHeadlines.length? frHeadlines: new Array(headlines.length).fill('…')).map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2">
-                      <div className="flex items-center gap-2 mb-2">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((frHeadlines[i]||'')) }catch{} }}>Copy</button>
-                      </div>
-                      <input className="w-full text-sm outline-none" value={frHeadlines[i]||''} onChange={(e)=>{
-                        const v = e.target.value
-                        setFrHeadlines(prev=>{ const arr = [...(prev.length? prev: new Array(headlines.length).fill(''))]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                </div>
-              </div>
-            ) : null}
-            {copies.length? (
-              <div>
-                <div className="text-base font-medium mb-2">Primary Texts (EN / AR / FR)</div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="text-sm space-y-2">{copies.map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2">
-                      <div className="flex items-center gap-2 mb-2">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText(copies[i]||'') }catch{} }}>Copy</button>
-                      </div>
-                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={copies[i]} onChange={(e)=>{
-                        const v = e.target.value
-                        setCopies(prev=>{ const arr = [...prev]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                  <div className="text-sm space-y-2">{(arCopies.length? arCopies: new Array(copies.length).fill('…')).map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2" dir="rtl">
-                      <div className="flex items-center gap-2 mb-2 justify-end">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((arCopies[i]||'')) }catch{} }}>Copy</button>
-                      </div>
-                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap text-right" dir="rtl" value={arCopies[i]||''} onChange={(e)=>{
-                        const v = e.target.value
-                        setArCopies(prev=>{ const arr = [...(prev.length? prev: new Array(copies.length).fill(''))]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                  <div className="text-sm space-y-2">{(frCopies.length? frCopies: new Array(copies.length).fill('…')).map((t,i)=>(
-                    <div key={i} className="border border-slate-200 rounded-lg p-2">
-                      <div className="flex items-center gap-2 mb-2">
-                        <button className="text-xs px-2 py-1 border rounded" onClick={()=>{ try{ navigator.clipboard.writeText((frCopies[i]||'')) }catch{} }}>Copy</button>
-                      </div>
-                      <textarea className="w-full text-sm outline-none min-h-[60px] whitespace-pre-wrap" value={frCopies[i]||''} onChange={(e)=>{
-                        const v = e.target.value
-                        setFrCopies(prev=>{ const arr = [...(prev.length? prev: new Array(copies.length).fill(''))]; arr[i] = v; return arr })
-                      }} />
-                    </div>
-                  ))}</div>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* Ad Images (Gemini) */}
-        {adImages.length? (
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-5">
-            <div className="text-lg font-semibold mb-4">Gemini Ad Images</div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {adImages.map((src, idx)=>(
-                <div key={idx} className="border border-slate-200 rounded-lg overflow-hidden bg-white">
-                  <img src={toDisplayUrl(src)} alt="ad" className="w-full h-40 object-cover" />
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-      {/* Right: Chat-style transcript */}
-      <div className="w-[340px] shrink-0 space-y-4">
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 sticky top-20 max-h-[80vh] overflow-auto">
-          <div className="text-base font-semibold mb-3">Agent Transcript</div>
-          <div className="space-y-3">
-            {Array.isArray(messages) && messages.length? messages.map((m:any, idx:number)=>{
-              const role = m?.role || 'assistant'
-              const hasTools = Array.isArray(m?.tool_calls) && m.tool_calls.length>0
-              const isTool = role==='tool'
-              const bubbleColor = isTool? 'bg-slate-50' : (role==='user'? 'bg-blue-50' : (role==='system'? 'bg-violet-50' : 'bg-white'))
-              const title = isTool? (m?.name? `Tool: ${m.name}`:'Tool') : (role.charAt(0).toUpperCase()+role.slice(1))
-              let body: string = ''
-              try{
-                if(isTool){
-                  body = typeof m.content==='string'? m.content : JSON.stringify(m.content, null, 2)
-                } else if(hasTools){
-                  const calls = m.tool_calls.map((tc:any)=>{
-                    const nm = tc?.function?.name || 'tool'
-                    const args = tc?.function?.arguments || ''
-                    return `${nm}(${args})`
-                  }).join('\n')
-                  body = calls
-                } else {
-                  body = typeof m.content==='string'? m.content : JSON.stringify(m.content||'', null, 2)
-                }
-              }catch{ body = String(m?.content||'') }
-              return (
-                <div key={idx} className={`border border-slate-200 rounded-lg p-3 ${bubbleColor}`}>
-                  <div className="text-xs font-semibold text-slate-700 mb-1">{title}</div>
-                  <pre className="text-xs text-slate-700 whitespace-pre-wrap">{body}</pre>
-                </div>
-              )
-            }) : <div className="text-sm text-slate-500">No transcript yet</div>}
-          </div>
-        </div>
-      </div>
-
-      {/* Settings modal */}
-      {showSettings? (
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-[60]" onClick={()=>setShowSettings(false)}>
-          <div className="w-full max-w-xl bg-white rounded-xl shadow-xl p-5" onClick={(e)=>e.stopPropagation()}>
-            <div className="text-lg font-semibold mb-2">Agent Settings</div>
-            <div className="text-sm text-slate-600 mb-3">Edit the system instruction and optional output notes for this agent.</div>
-            <div className="space-y-3">
-              <div>
-                <div className="text-sm font-medium mb-1">Instruction</div>
-                <textarea className="w-full min-h-[180px] border border-slate-200 rounded-lg px-3 py-2" value={systemInstruction} onChange={e=>setSystemInstruction(e.target.value)} />
-              </div>
-              {enableOutputField? (
-                <div>
-                  <div className="text-sm font-medium mb-1">Agent Output (optional)</div>
-                  <textarea className="w-full min-h-[96px] border border-slate-200 rounded-lg px-3 py-2" placeholder="Describe desired final output or constraints" value={agentOutput} onChange={e=>setAgentOutput(e.target.value)} />
-                </div>
-              ) : null}
-            </div>
-            <div className="flex items-center justify-between gap-2 mt-3">
-              {enableOutputField? (
-                <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{
-                  const example = `{
-  "angles": [
-    { "name": "string", "headlines": ["string"], "primaries": ["string"] }
-  ],
-  "image_prompts": ["string"]
-}`
-                  setAgentOutput(example)
-                }}>Insert example output schema</button>
-              ) : <div/>}
-              <button className="px-3 py-2 text-sm border border-slate-200 rounded-lg" onClick={()=>{ const v = initialInstruction ?? defaultInstruction; setSystemInstruction(v); try{ localStorage.setItem(instructionKey, v) }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: v }) }catch{} } }}>Reset</button>
-              <button className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg" onClick={()=>{ try{ localStorage.setItem(instructionKey, systemInstruction||''); localStorage.setItem(`${instructionKey}__output`, agentOutput||'') }catch{}; if(agentId){ try{ agentUpdate(agentId, { instruction: systemInstruction||'', output_pref: agentOutput||'' }) }catch{} } setShowSettings(false) }}>Save</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
 
+function HeadlineChip({ text, active, onClick }: { text: string; active: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={cls("px-3 py-2 rounded-full text-sm border transition shadow-sm", active ? "border-transparent text-slate-900" : "bg-white hover:bg-slate-50 border-slate-200 text-slate-700")} style={active ? { backgroundColor: BRAND.primarySoft } : undefined}>
+      {text}
+    </button>
+  )
+}
 
+export default function AdsAgentClient({ initial, defaultEndpoint }: { initial?: AgentOutput; defaultEndpoint?: string }) {
+  const [data, setData] = useState<AgentOutput>(initial ?? SAMPLE)
+  const [selected, setSelected] = useState(0)
+  const [headlineIdx, setHeadlineIdx] = useState(0)
+  const [copyIdx, setCopyIdx] = useState(0)
+  const [raw, setRaw] = useState("")
+
+  const [endpoint, setEndpoint] = useState(defaultEndpoint ?? "/api/chatkit/run")
+  const [mode, setMode] = useState<"url" | "text">("url")
+  const [url, setUrl] = useState("")
+  const [text, setText] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState<"idle" | "sending" | "processing" | "received" | "error">("idle")
+
+  type TestResult = { name: string; pass: boolean; message?: string }
+  const [tests, setTests] = useState<TestResult[]>([])
+
+  const current = data.angles[selected]
+  const currentHeadline = current.headlines[headlineIdx] ?? ""
+  const currentCopy = current.ad_copies[copyIdx] ?? ""
+
+  useEffect(() => { setHeadlineIdx(0); setCopyIdx(0) }, [selected])
+
+  const stats = useMemo(() => {
+    const totalHeadlines = data.angles.reduce((sum, a) => sum + a.headlines.length, 0)
+    const totalCopies = data.angles.reduce((sum, a) => sum + a.ad_copies.length, 0)
+    return { angles: data.angles.length, totalHeadlines, totalCopies }
+  }, [data])
+
+  const importJSON = () => {
+    try {
+      const parsed = JSON.parse(raw)
+      if (!isAgentOutput(parsed)) throw new Error("JSON does not match expected shape { angles:[{ angle_title, headlines[], ad_copies[] }] }")
+      setData(parsed)
+      toast.success("Agent output loaded")
+    } catch (e: any) {
+      toast.error(`Invalid JSON: ${e.message}`)
+    }
+  }
+
+  const downloadJSON = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `ad-angles-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const copyAllHeadlines = () => { const txt = current.headlines.map((h, i) => `${i + 1}. ${h}`).join("\n"); copy(txt) }
+  const copyAllCopies = () => { const txt = current.ad_copies.map((c, i) => `Copy ${i + 1}:\n${c}`).join("\n\n---\n\n"); copy(txt) }
+
+  const runAgent = async () => {
+    if (!endpoint) { toast.error("Please provide an agent endpoint URL"); return }
+    if (mode === "url" && !url) { toast.error("Please paste a product/landing page URL"); return }
+    if (mode === "text" && !text.trim()) { toast.error("Please enter product text"); return }
+    setLoading(true)
+    setProgress("sending")
+    try {
+      const payload: any = { mode }
+      if (mode === "url") payload.url = url
+      if (mode === "text") payload.text = text
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      setProgress("processing")
+      const json = await res.json()
+      const mapped = mapToAgentOutput(json)
+      if (!isAgentOutput(mapped)) throw new Error("Agent response missing required fields.")
+      setData(mapped)
+      setSelected(0); setHeadlineIdx(0); setCopyIdx(0)
+      toast.success("Agent output received")
+      setProgress("received")
+    } catch (err: any) {
+      console.error(err)
+      toast.error(`Agent call failed: ${err.message ?? err}`)
+      setProgress("error")
+    } finally { setLoading(false) }
+  }
+
+  function mapToAgentOutput(resp: any): AgentOutput {
+    if (isAgentOutput(resp)) return resp
+    if (resp?.angles) {
+      const norm = resp.angles.map((a: any) => ({
+        angle_title: a.angle_title ?? a.title ?? a.angle ?? "Untitled Angle",
+        headlines: Array.isArray(a.headlines) ? a.headlines : Array.isArray(a.titles) ? a.titles : [],
+        ad_copies: Array.isArray(a.ad_copies) ? a.ad_copies : Array.isArray(a.copies) ? a.copies : Array.isArray(a.descriptions) ? a.descriptions : [],
+      }))
+      return { angles: norm } as AgentOutput
+    }
+    if (resp?.angle_title || resp?.headlines || resp?.ad_copies) {
+      return { angles: [{ angle_title: resp.angle_title ?? resp.title ?? resp.angle ?? "Untitled Angle", headlines: Array.isArray(resp.headlines) ? resp.headlines : Array.isArray(resp.titles) ? resp.titles : [], ad_copies: Array.isArray(resp.ad_copies) ? resp.ad_copies : Array.isArray(resp.copies) ? resp.copies : Array.isArray(resp.descriptions) ? resp.descriptions : [] }] }
+    }
+    return SAMPLE
+  }
+
+  const runDevTests = () => {
+    const results: TestResult[] = []
+    try { const ok = isAgentOutput(SAMPLE); results.push({ name: "T1: SAMPLE matches AgentOutput", pass: ok, message: ok ? "OK" : "Shape mismatch" }) } catch (e: any) { results.push({ name: "T1: SAMPLE matches AgentOutput", pass: false, message: e.message }) }
+    try {
+      const near = { angles: [{ title: "Angle A", titles: ["H1"], descriptions: ["C1"] }, { angle: "Angle B", headlines: ["H2"], copies: ["C2"] }] }
+      const mapped = mapToAgentOutput(near)
+      const ok2 = isAgentOutput(mapped) && mapped.angles.length === 2 && mapped.angles[0].headlines[0] === "H1" && mapped.angles[1].ad_copies[0] === "C2"
+      results.push({ name: "T2: map variant shapes", pass: ok2, message: ok2 ? "OK" : "Mapping failed" })
+    } catch (e: any) { results.push({ name: "T2: map variant shapes", pass: false, message: e.message }) }
+    try { const single = { angle_title: "Solo", headlines: ["H"], ad_copies: ["C"] }; const mapped = mapToAgentOutput(single); const ok3 = isAgentOutput(mapped) && mapped.angles.length === 1 && mapped.angles[0].angle_title === "Solo"; results.push({ name: "T3: wrap single angle", pass: ok3, message: ok3 ? "OK" : "Wrap failed" }) } catch (e: any) { results.push({ name: "T3: wrap single angle", pass: false, message: e.message }) }
+    try { const bad = { nope: true }; const mapped = mapToAgentOutput(bad); const ok4 = isAgentOutput(mapped) && mapped.angles.length === SAMPLE.angles.length; results.push({ name: "T4: fallback to SAMPLE on invalid", pass: ok4, message: ok4 ? "OK" : "Fallback failed" }) } catch (e: any) { results.push({ name: "T4: fallback to SAMPLE on invalid", pass: false, message: e.message }) }
+    try { const minimal = { angles: [{ angle_title: "A", headlines: [], ad_copies: [] }] }; const ok5 = isAgentOutput(minimal); results.push({ name: "T5: minimal valid payload", pass: ok5, message: ok5 ? "OK" : "Rejected minimal" }) } catch (e: any) { results.push({ name: "T5: minimal valid payload", pass: false, message: e.message }) }
+    try { const tricky = { angles: [{ angle_title: "A", headlines: "H1", ad_copies: "C1" }] } as any; const mapped = mapToAgentOutput(tricky); const ok6 = isAgentOutput(mapped); results.push({ name: "T6: non-arrays become []", pass: ok6, message: ok6 ? "OK" : "Did not coerce" }) } catch (e: any) { results.push({ name: "T6: non-arrays become []", pass: false, message: e.message }) }
+    setTests(results)
+    toast.success("Tests executed")
+  }
+
+  return (
+    <div className="min-h-screen w-full bg-gradient-to-b from-white to-slate-50">
+      <div className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur">
+        <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl" style={{ background: BRAND.primary }} />
+            <div>
+              <div className="text-sm text-slate-500">Irrakids Creative</div>
+              <h1 className="text-xl font-bold tracking-tight">Ad Angles Studio</h1>
+            </div>
+            <Badge className="ml-3" style={{ backgroundColor: BRAND.primarySoft, color: BRAND.primary }}>v1.5</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="rounded-xl" onClick={downloadJSON}><Download className="h-4 w-4 mr-2" /> Export JSON</Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button className="rounded-xl" style={{ backgroundColor: BRAND.primary }}>
+                  <Sparkles className="h-4 w-4 mr-2" /> Actions <ChevronDown className="h-4 w-4 ml-2" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => copy(JSON.stringify(current, null, 2))}><FileJson className="h-4 w-4 mr-2" /> Copy current angle JSON</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyAllHeadlines()}><CopyCheck className="h-4 w-4 mr-2" /> Copy all headlines</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => copyAllCopies()}><CopyCheck className="h-4 w-4 mr-2" /> Copy all ad copies</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-4 space-y-6">
+          <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">Agent input</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <label className="text-xs text-slate-500">Agent Endpoint</label>
+                <div className="flex gap-2">
+                  <Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://your-agent-endpoint/run" className="rounded-xl" />
+                </div>
+                <Tabs value={mode} onValueChange={(v) => setMode(v as any)} className="mt-2">
+                  <TabsList className="grid w-full grid-cols-2 rounded-xl">
+                    <TabsTrigger value="url" className="rounded-xl"><Globe2 className="h-4 w-4 mr-2" /> URL</TabsTrigger>
+                    <TabsTrigger value="text" className="rounded-xl"><NotebookText className="h-4 w-4 mr-2" /> Text</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="url" className="mt-3">
+                    <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://your-landing-page" className="rounded-xl" onKeyDown={(e) => { if ((e as any).key === 'Enter') runAgent() }} />
+                  </TabsContent>
+                  <TabsContent value="text" className="mt-3">
+                    <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Paste product details, features, sizes, offers…" className="min-h-[120px] rounded-xl" />
+                  </TabsContent>
+                </Tabs>
+                {/* Inline progress animation */}
+                <div className="mt-2 min-h-[48px]">
+                  {progress !== "idle" && (
+                    <div className="rounded-xl border border-slate-200 bg-white p-3 overflow-hidden">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-slate-600 truncate">
+                          {mode === 'url' && url ? url : (mode === 'text' ? 'Text input' : '')}
+                        </div>
+                        <div className="text-xs font-medium text-slate-700">
+                          {progress === 'sending' && 'Sending'}
+                          {progress === 'processing' && 'Processing'}
+                          {progress === 'received' && 'Received'}
+                          {progress === 'error' && 'Error'}
+                        </div>
+                      </div>
+                      <div className="mt-2 h-1.5 rounded-full bg-slate-100">
+                        <div className={"h-1.5 rounded-full transition-all duration-700 " + (
+                          progress === 'sending' ? 'w-1/3 bg-sky-400 animate-pulse' :
+                          progress === 'processing' ? 'w-2/3 bg-indigo-500 animate-pulse' :
+                          progress === 'received' ? 'w-full bg-emerald-500' :
+                          progress === 'error' ? 'w-full bg-rose-500' : 'w-0')}></div>
+                      </div>
+                      {progress === 'processing' && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="relative h-5 w-5">
+                            <span className="absolute inset-0 rounded-full border-2 border-indigo-500/30"></span>
+                            <span className="absolute inset-0 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"></span>
+                          </div>
+                          <div className="text-xs text-slate-500">Agent is analyzing and generating outputs…</div>
+                        </div>
+                      )}
+                      {progress === 'received' && (
+                        <div className="mt-2 text-xs text-emerald-600">Outputs returned successfully</div>
+                      )}
+                      {progress === 'error' && (
+                        <div className="mt-2 text-xs text-rose-600">There was an error running the agent</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <Button className="rounded-xl" style={{ backgroundColor: BRAND.primary }} onClick={runAgent} disabled={loading}>
+                    {loading ? (<><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Running…</>) : (<><Sparkles className="h-4 w-4 mr-2" /> Run Agent</>)}
+                  </Button>
+                  <Button variant="outline" className="rounded-xl" onClick={() => { setUrl(""); setText("") }}>Clear</Button>
+                </div>
+                <div className="text-xs text-slate-500">Expects response shape: {'{'} angles: [{'{'} angle_title, headlines[], ad_copies[] {'}'}] {'}'}</div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">Angles ({stats.angles})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-2">
+                {data.angles.map((a, i) => (
+                  <button key={i} onClick={() => setSelected(i)} className={cls("w-full text-left p-3 rounded-xl border transition", i === selected ? "bg-white border-transparent shadow-sm ring-2" : "bg-slate-50 hover:bg-white border-slate-200")} style={i === selected ? { boxShadow: `0 0 0 2px ${BRAND.primarySoft}` } : {}}>
+                    <div className="text-sm font-semibold">{a.angle_title}</div>
+                    <div className="mt-1 text-xs text-slate-500 line-clamp-2">{a.headlines[0]}</div>
+                  </button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl mt-6">
+            <CardHeader>
+              <CardTitle className="text-base">Import agent output</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Textarea value={raw} onChange={(e) => setRaw(e.target.value)} placeholder='Paste JSON {"angles": [...]}' className="min-h-[140px] rounded-xl" />
+              <div className="mt-3 flex gap-2">
+                <Button className="rounded-xl" onClick={importJSON}><Upload className="h-4 w-4 mr-2" /> Load JSON</Button>
+                <Button variant="outline" className="rounded-xl" onClick={() => setRaw("")}>Clear</Button>
+              </div>
+              <div className="mt-4 text-xs text-slate-500">Headlines total: {stats.totalHeadlines} · Copies total: {stats.totalCopies}</div>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl mt-6 border-slate-200 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">Dev Tests</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-slate-600">Quick runtime checks for mapping & shape validation.</p>
+              <div className="mt-3 flex gap-2"><Button className="rounded-xl" variant="outline" onClick={runDevTests}><Check className="h-4 w-4 mr-2" /> Run Tests</Button></div>
+              {tests.length > 0 && (
+                <ul className="mt-4 space-y-2">
+                  {tests.map((t, i) => (
+                    <li key={i} className="flex items-center justify-between rounded-xl border p-2">
+                      <span className="text-sm">{t.name}</span>
+                      <Badge style={{ backgroundColor: t.pass ? BRAND.primarySoft : "#fee2e2", color: t.pass ? BRAND.primary : "#991b1b" }}>{t.pass ? "PASS" : "FAIL"}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+        <div className="lg:col-span-8">
+          <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm text-slate-500">Selected angle</div>
+                  <CardTitle className="text-2xl">{current.angle_title}</CardTitle>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" className="rounded-xl" onClick={() => copyAllHeadlines()}><Clipboard className="h-4 w-4 mr-2" /> Copy headlines</Button>
+                  <Button className="rounded-xl" style={{ backgroundColor: BRAND.primary }} onClick={() => copyAllCopies()}><Clipboard className="h-4 w-4 mr-2" /> Copy ad copies</Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div>
+                  <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Headlines</h3><Badge variant="secondary">{current.headlines.length}</Badge></div>
+                  <div className="flex flex-wrap gap-2">
+                    {current.headlines.map((h, i) => (<HeadlineChip key={i} text={h} active={i === headlineIdx} onClick={() => setHeadlineIdx(i)} />))}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-semibold">Ad copies</h3>
+                    <div className="flex items-center gap-2">
+                      {current.ad_copies.map((_, i) => (
+                        <Button key={i} variant={i === copyIdx ? "default" : "outline"} className="rounded-xl h-8 px-3" onClick={() => setCopyIdx(i)}>Copy {i + 1}</Button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border p-4 bg-white shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs text-slate-500">Characters: {currentCopy.length}</div>
+                      <Button size="sm" variant="ghost" onClick={() => copy(currentCopy)}><Clipboard className="h-4 w-4 mr-2" /> Copy</Button>
+                    </div>
+                    <pre className="mt-2 whitespace-pre-wrap text-sm text-slate-800">{currentCopy}</pre>
+                  </div>
+                </div>
+                <div className="xl:col-span-2">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2"><Smartphone className="h-4 w-4" /><h3 className="font-semibold">Mobile Ad Preview</h3></div>
+                    <div className="flex items-center gap-2 text-xs text-slate-500"><span>Headline {headlineIdx + 1} / {current.headlines.length}</span><span className="mx-2">·</span><span>Copy {copyIdx + 1} / {current.ad_copies.length}</span></div>
+                  </div>
+                  <MobileAd title={current.angle_title} headline={currentHeadline} body={currentCopy} />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+            <Card className="rounded-2xl">
+              <CardHeader><CardTitle className="text-base">Quick polish</CardTitle></CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <Button variant="outline" className="rounded-xl justify-start" onClick={() => copy(`${currentHeadline}\n\n${currentCopy}`)}><Wand2 className="h-4 w-4 mr-2" /> Copy headline + copy</Button>
+                <Button variant="outline" className="rounded-xl justify-start" onClick={() => copy(current.headlines.join(" | "))}><Filter className="h-4 w-4 mr-2" /> Copy headlines (one line)</Button>
+              </CardContent>
+            </Card>
+            <Card className="rounded-2xl">
+              <CardHeader><CardTitle className="text-base">Variants</CardTitle></CardHeader>
+              <CardContent>
+                <p className="text-sm text-slate-600">Duplicate the selected angle in your editor and tweak for A/B tests (CTA, first 3 words, emoji usage, length).</p>
+                <div className="mt-3 flex gap-2">
+                  <Button className="rounded-xl" style={{ backgroundColor: BRAND.primary }} onClick={() => copy(`A) ${currentHeadline}\nB) ${currentHeadline.replace(/\\b\\w+\\b/g, (w) => w)}`)}><Sparkles className="h-4 w-4 mr-2" /> Suggest alt headline</Button>
+                  <Button variant="outline" className="rounded-xl" onClick={() => copy(currentCopy.replace(/\n\n/g, " "))}><Sparkles className="h-4 w-4 mr-2" /> One‑paragraph version</Button>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="rounded-2xl">
+              <CardHeader><CardTitle className="text-base">Notes</CardTitle></CardHeader>
+              <CardContent><Textarea placeholder="Add creative notes… (audience, hook, visuals, CTA)" className="rounded-xl" /></CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+      <div className="mt-10 border-t">
+        <div className="mx-auto max-w-7xl px-4 py-8 flex flex-col md:flex-row items-center justify-between gap-3">
+          <div className="text-sm text-slate-500">Built for high‑converting ads · Designed for Irrakids</div>
+          <div className="flex items-center gap-2 text-xs">
+            <Badge style={{ backgroundColor: BRAND.primarySoft, color: BRAND.primary }}>Headlines</Badge>
+            <Badge variant="outline">Ad Copy</Badge>
+            <Badge variant="secondary">Preview</Badge>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
