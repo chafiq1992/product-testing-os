@@ -495,22 +495,100 @@ class ChatKitRunRequest(BaseModel):
     url: Optional[str] = None
     text: Optional[str] = None
     model: Optional[str] = None
+    workflow_id: Optional[str] = None  # overrides env CHATKIT_WORKFLOW_ID
+    version: Optional[str] = None      # optional workflow version
 
 
 @app.post("/api/chatkit/run")
 async def api_chatkit_run(req: ChatKitRunRequest):
     """Headless trigger compatible with the Ads UI.
 
-    For now, normalize to AgentOutput shape by leveraging existing analysis/generation.
-    This can be swapped to a true ChatKit Workflows run once headless API bindings are finalized.
+    First tries to execute the OpenAI Agent Builder workflow headlessly and map
+    its final JSON to our AgentOutput shape. If that fails or is not configured,
+    falls back to local analysis/generation to keep UX unblocked.
     """
     try:
-        # Reuse the same logic as /api/agent/angles to build AgentOutput
-        result: list[dict] = []
+        # 1) Attempt a headless Workflows run via OpenAI HTTP API
+        try:
+            import os as _os, time as _time, requests as _requests
+            wf = (req.workflow_id or CHATKIT_WORKFLOW_ID or "").strip()
+            if wf:
+                headers = {
+                    "Authorization": f"Bearer {_os.environ.get('OPENAI_API_KEY','')}",
+                    "Content-Type": "application/json",
+                    # Enable Workflows API (beta header name may evolve)
+                    "OpenAI-Beta": "workflows=v1",
+                }
+                body = {
+                    "workflow": {"id": wf},
+                    # Many workflows use an input object; include both url and text
+                    "input": {"url": (req.url or None), "text": (req.text or None)},
+                }
+                if isinstance(req.version, str) and req.version.strip():
+                    body["workflow"]["version"] = req.version.strip()
+                # Create run
+                run = _requests.post("https://api.openai.com/v1/workflows/runs", headers=headers, json=body, timeout=30)
+                run.raise_for_status()
+                run_id = (run.json() or {}).get("id")
+                # Poll for completion (up to ~60s)
+                deadline = _time.time() + 60
+                last = None
+                while _time.time() < deadline:
+                    _time.sleep(1)
+                    r = _requests.get(f"https://api.openai.com/v1/workflows/runs/{run_id}", headers=headers, timeout=20)
+                    r.raise_for_status()
+                    data = r.json() or {}
+                    last = data
+                    status = str(data.get("status") or data.get("state") or "").lower()
+                    if status in ("completed", "succeeded", "failed", "cancelled", "canceled", "error"):
+                        break
+                # Extract final output candidates
+                out = None
+                try:
+                    out = (last or {}).get("output") or (last or {}).get("response", {}).get("output") or (last or {}).get("final_output")
+                except Exception:
+                    out = None
+                # Map to AgentOutput
+                if isinstance(out, dict):
+                    # Case: already AgentOutput
+                    if isinstance(out.get("angles"), list):
+                        mapped: list[dict] = []
+                        try:
+                            for a in (out.get("angles") or []):
+                                if not isinstance(a, dict):
+                                    continue
+                                # Normalize various keyings
+                                angle_title = a.get("angle_title") or a.get("title") or a.get("name") or a.get("angle") or "Untitled Angle"
+                                headlines = a.get("headlines") or a.get("titles") or []
+                                primaries = a.get("ad_copies") or a.get("copies") or a.get("descriptions") or a.get("primaries") or []
+                                if isinstance(primaries, dict):
+                                    primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                                headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
+                                primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
+                                mapped.append({"angle_title": str(angle_title), "headlines": headlines, "ad_copies": primaries})
+                        except Exception:
+                            mapped = []
+                        return {"angles": mapped}
+                # If output is a single-angle object
+                if isinstance(out, dict) and (out.get("angle_title") or out.get("headlines") or out.get("ad_copies")):
+                    try:
+                        angle_title = out.get("angle_title") or out.get("title") or out.get("name") or out.get("angle") or "Untitled Angle"
+                        headlines = out.get("headlines") or out.get("titles") or []
+                        primaries = out.get("ad_copies") or out.get("copies") or out.get("descriptions") or out.get("primaries") or []
+                        if isinstance(primaries, dict):
+                            primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                        headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
+                        primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
+                        return {"angles": [{"angle_title": str(angle_title), "headlines": headlines, "ad_copies": primaries}]}
+                    except Exception:
+                        pass
+        except Exception:
+            # Swallow workflow errors and fallback below
+            pass
 
-        if (req.mode == "url" and isinstance(req.url, str) and req.url.strip()) or (
-            not req.mode and isinstance(req.url, str) and req.url.strip()
-        ):
+        # 2) Fallback: reuse local analysis/generation mapping to AgentOutput
+        result: list[dict] = []
+        if (req.mode == "url" and isinstance(req.url, str) and req.url.strip()) or (not req.mode and isinstance(req.url, str) and req.url.strip()):
             analyzed = analyze_landing_page(req.url.strip(), model=req.model)
             for a in (analyzed.get("angles") or []):
                 try:
@@ -520,24 +598,11 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     if isinstance(prims, dict):
                         prims = [prims.get("short"), prims.get("medium"), prims.get("long")]
                     prims = [p for p in prims if isinstance(p, str) and p.strip()]
-                    result.append({
-                        "angle_title": str(name),
-                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
-                        "ad_copies": prims,
-                    })
+                    result.append({"angle_title": str(name), "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()], "ad_copies": prims})
                 except Exception:
                     continue
-
-        if (req.mode == "text" and isinstance(req.text, str) and req.text.strip()) or (
-            not req.mode and isinstance(req.text, str) and req.text.strip()
-        ):
-            payload = {
-                "audience": "shoppers",
-                "benefits": [],
-                "pain_points": [],
-                "description": req.text.strip(),
-                "title": None,
-            }
+        if (req.mode == "text" and isinstance(req.text, str) and req.text.trim()) or (not req.mode and isinstance(req.text, str) and req.text.strip()):
+            payload = {"audience": "shoppers", "benefits": [], "pain_points": [], "description": req.text.strip(), "title": None}
             full = gen_angles_and_copy_full(payload, model=req.model)
             for a in (full.get("angles") or []):
                 try:
@@ -547,14 +612,9 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     if isinstance(primaries, dict):
                         primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
                     primaries = [p for p in primaries if isinstance(p, str) and p.strip()]
-                    result.append({
-                        "angle_title": str(name),
-                        "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()],
-                        "ad_copies": primaries,
-                    })
+                    result.append({"angle_title": str(name), "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()], "ad_copies": primaries})
                 except Exception:
                     continue
-
         return {"angles": result}
     except Exception as e:
         return {"angles": [], "error": str(e)}
