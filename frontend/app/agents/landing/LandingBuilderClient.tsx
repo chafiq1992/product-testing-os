@@ -72,35 +72,49 @@ const LANDING_SAMPLE: LandingInput = {
 }
 
 const copy = async (text: string) => { await navigator.clipboard.writeText(text); toast.success("Copied to clipboard") }
-const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#039;")
-const isLandingInput = (x: any): x is LandingInput => { try { return Boolean(x && x.product_title && x.landing_page && x.seo && x.landing_page.hero) } catch { return false } }
+const escapeHtml = (s: any) => {
+  const str = (s ?? "").toString()
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#039;")
+}
+const isLandingInput = (x: any): x is LandingInput => { try { return Boolean(x && x.landing_page && x.seo && x.landing_page.hero) } catch { return false } }
+
+// Normalize any value (string or Localized) into a Localized object
+const toLocalized = (v: any): Localized<string> => {
+  if (v && typeof v === "object" && ("en" in v || "ar" in v)) {
+    const en = v.en ?? v.ar ?? ""
+    const ar = v.ar ?? v.en ?? ""
+    return { en: en?.toString?.() ?? "", ar: ar?.toString?.() ?? "" }
+  }
+  const s = v?.toString?.() ?? ""
+  return { en: s, ar: s }
+}
 
 function buildLandingHTML(data: LandingInput, lang: "ar" | "en" = "en") {
   const dir = lang === "ar" ? "rtl" : "ltr"
-  const t = (l: Localized) => escapeHtml(l[lang])
-  const title = t(data.seo.title)
-  const desc = t(data.seo.meta_description)
-  const hook = t(data.landing_page.hero.hook3)
-  const headline = t(data.landing_page.hero.headline)
-  const subheadline = t(data.landing_page.hero.subheadline)
-  const pcta = t(data.landing_page.hero.primary_cta)
-  const scta = t(data.landing_page.hero.secondary_cta)
+  const t = (val: any) => escapeHtml(toLocalized(val)[lang])
+  const title = t(data.seo?.title)
+  const desc = t(data.seo?.meta_description)
+  const hook = t(data.landing_page?.hero?.hook3)
+  const headline = t(data.landing_page?.hero?.headline)
+  const subheadline = t(data.landing_page?.hero?.subheadline)
+  const pcta = t(data.landing_page?.hero?.primary_cta)
+  const scta = t(data.landing_page?.hero?.secondary_cta)
   const subtitle = t(data.subtitle)
 
-  const benefits = (data.landing_page.benefits || []).map((b) => `
+  const benefits = (data.landing_page?.benefits || []).map((b: any) => `
     <div class="benefit">
-      <h3>${escapeHtml(b.title[lang])}</h3>
-      <ul>${(b.bullets || []).map((bl:any)=>`<li>${escapeHtml(bl[lang])}</li>`).join("")}</ul>
+      <h3>${t(b?.title)}</h3>
+      <ul>${(b?.bullets || []).map((bl:any)=>`<li>${t(bl)}</li>`).join("")}</ul>
     </div>
   `).join("")
 
-  const faq = (data.landing_page.faq || []).map((f)=> `
-    <details><summary>${escapeHtml(f.q[lang])}</summary><p>${escapeHtml(f.a[lang])}</p></details>
+  const faq = (data.landing_page?.faq || []).map((f:any)=> `
+    <details><summary>${t(f?.q)}</summary><p>${t(f?.a)}</p></details>
   `).join("")
 
-  const materials = (data.landing_page.materials_care?.materials || []).map((m)=>`<li>${escapeHtml(m)}</li>`).join("")
-  const care = (data.landing_page.materials_care?.care_instructions || []).map((m)=>`<li>${escapeHtml(m)}</li>`).join("")
-  const badges = (data.landing_page.policies_trust?.badges || []).map((b)=>`<span class="badge">${escapeHtml(b)}</span>`).join("")
+  const materials = (data.landing_page?.materials_care?.materials || []).map((m:any)=>`<li>${escapeHtml(m)}</li>`).join("")
+  const care = (data.landing_page?.materials_care?.care_instructions || []).map((m:any)=>`<li>${escapeHtml(m)}</li>`).join("")
+  const badges = (data.landing_page?.policies_trust?.badges || []).map((b:any)=>`<span class="badge">${escapeHtml(b)}</span>`).join("")
 
   return `<!DOCTYPE html>
 <html lang="${lang}" dir="${dir}"><head>
@@ -125,17 +139,17 @@ footer{margin:32px 0;color:var(--muted);font-size:14px}
 <div class="cta-row"><a href="#buy" class="btn btn-primary">${pcta}</a><a href="#size" class="btn btn-outline">${scta}</a></div></section>
 <section class="section"><div class="grid grid-2">${benefits}</div></section>
 <section id="size" class="section grid grid-2"><div class="card"><div class="kicker">Size & Fit</div>
-<p>${escapeHtml(data.landing_page.size_fit?.note?.[lang] || "")}</p><p><strong>Range:</strong> ${escapeHtml(data.landing_page.size_fit?.size_range || "")}</p>
-<p>${escapeHtml(data.landing_page.size_fit?.layering_tip?.[lang] || "")}</p></div>
+<p>${t(data.landing_page?.size_fit?.note)}</p><p><strong>Range:</strong> ${escapeHtml(data.landing_page?.size_fit?.size_range || "")}</p>
+<p>${t(data.landing_page?.size_fit?.layering_tip)}</p></div>
 <div class="card"><div class="kicker">Materials & Care</div><ul>${materials}</ul><ul>${care}</ul>
-<p>${escapeHtml(data.landing_page.materials_care?.skin_feel?.[lang] || "")}</p></div></section>
+<p>${t(data.landing_page?.materials_care?.skin_feel)}</p></div></section>
 <section class="section card"><div class="kicker">Why parents love it</div>
-<p>${escapeHtml(data.landing_page.social_proof?.summary?.[lang] || "")}</p>
-<ul>${(data.landing_page.social_proof?.review_snippets || []).map((r:any)=>`<li>${escapeHtml(r[lang])}</li>`).join("")}</ul>
+<p>${t(data.landing_page?.social_proof?.summary)}</p>
+<ul>${(data.landing_page?.social_proof?.review_snippets || []).map((r:any)=>`<li>${t(r)}</li>`).join("")}</ul>
 <div style="margin-top:8px">${badges}</div></section>
-<section class="section"><h2>${escapeHtml(data.landing_page.closing_cta?.headline?.[lang] || "")}</h2>
-<p class="sub">${escapeHtml(data.landing_page.closing_cta?.subheadline?.[lang] || "")}</p>
-<div class="cta-row"><a class="btn btn-primary" href="#buy">${escapeHtml(data.landing_page.closing_cta?.button?.[lang] || "")}</a></div></section>
+<section class="section"><h2>${t(data.landing_page?.closing_cta?.headline)}</h2>
+<p class="sub">${t(data.landing_page?.closing_cta?.subheadline)}</p>
+<div class="cta-row"><a class="btn btn-primary" href="#buy">${t(data.landing_page?.closing_cta?.button)}</a></div></section>
 <footer>© Irrakids</footer>
 </main></body></html>`
 }
@@ -148,7 +162,11 @@ export default function LandingOnlyBuilder() {
   const generateHTML = () => {
     try {
       const obj = JSON.parse(payloadRaw)
-      if (!isLandingInput(obj)) throw new Error("Payload doesn’t match LandingInput")
+      if (!isLandingInput(obj)) {
+        // Try to coerce minimal compatible shapes (string fields -> Localized)
+        // This keeps UX friendly for simpler agent outputs
+        if (!obj?.landing_page || !obj?.seo) throw new Error("Missing landing_page or seo section")
+      }
       const html = buildLandingHTML(obj, lang)
       setSrcDoc(html)
       toast.success("Landing HTML generated")
