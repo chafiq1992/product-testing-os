@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { toast } from "sonner";
 import { Check, Clipboard, Download, FileJson, Smartphone, Wand2, Upload, Sparkles, ChevronDown, CopyCheck, Filter } from "lucide-react";
 import { agentAnglesGenerate } from "@/lib/api";
+import ChatKitWidget from "./ChatKitWidget";
 
 const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF", accent: "#0ea5e9", ok: "#16a34a" };
 
@@ -294,6 +295,18 @@ export default function AdAnglesStudio(){
             </Card>
           </div>
         </div>
+      </div>
+
+      {/* ChatKit (Agent Builder) */}
+      <div className="mx-auto max-w-7xl px-4 pb-10">
+        <Card className="rounded-2xl border-slate-200 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base">Agent Builder Chat</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ChatKitWidget />
+          </CardContent>
+        </Card>
       </div>
 
       <div className="mt-10 border-t">

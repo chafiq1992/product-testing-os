@@ -8,13 +8,14 @@
     "start": "next start"
   },
   "dependencies": {
+    "@openai/chatkit-react": "^1.1.1",
     "axios": "^1.7.7",
     "framer-motion": "^11.0.0",
     "lucide-react": "^0.441.0",
-    "sonner": "^1.5.0",
     "next": "14.2.5",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "sonner": "^1.5.0"
   },
   "devDependencies": {
     "@types/node": "24.3.0",
