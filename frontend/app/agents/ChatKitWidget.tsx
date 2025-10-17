@@ -37,7 +37,6 @@ export default function ChatKitWidget(){
   })
 
   const options: ChatKitOptions = {
-    api: {},
     theme: {
       colorScheme: 'light',
       radius: 'pill',
