@@ -1,7 +1,6 @@
 "use client"
 import { useMemo } from 'react'
 import { ChatKit, useChatKit } from '@openai/chatkit-react'
-import type { ChatKitOptions } from '@openai/chatkit'
 
 export default function ChatKitWidget(){
   const deviceId = useMemo(()=>{
@@ -32,9 +31,7 @@ export default function ChatKitWidget(){
     return data?.client_secret as string
   }
 
-  const { control } = useChatKit({ api: { getClientSecret } })
-
-  const options: ChatKitOptions = {
+  const { control } = useChatKit({
     api: { getClientSecret },
     theme: {
       colorScheme: 'light',
@@ -74,11 +71,11 @@ export default function ChatKitWidget(){
         { icon: 'circle-question', label: 'What is ChatKit?', prompt: 'What is ChatKit?' },
       ],
     },
-  }
+  })
 
   return (
     <div className="w-full flex items-center justify-center relative z-50 pointer-events-auto isolate">
-      <ChatKit control={control} options={options} className="h-[640px] w-full max-w-[480px] bg-white" />
+      <ChatKit control={control} className="h-[640px] w-full max-w-[480px] bg-white" />
     </div>
   )
 }
