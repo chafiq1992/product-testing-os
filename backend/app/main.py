@@ -1736,6 +1736,7 @@ async def health():
 class ChatKitSessionRequest(BaseModel):
     workflow_id: Optional[str] = None
     user: Optional[str] = None
+    version: Optional[str] = None
 
 
 @app.post("/api/chatkit/session")
@@ -1745,6 +1746,8 @@ async def create_chatkit_session(req: ChatKitSessionRequest):
         wf = (req.workflow_id or CHATKIT_WORKFLOW_ID or "").strip()
         if not wf:
             return {"error": "missing_workflow_id"}
+        ver_env = _os.environ.get("CHATKIT_WORKFLOW_VERSION", "").strip()
+        ver = (req.version or ver_env or "").strip()
         api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             return {"error": "missing_openai_api_key"}
@@ -1758,6 +1761,8 @@ async def create_chatkit_session(req: ChatKitSessionRequest):
             "workflow": {"id": wf},
             "user": (req.user or str(uuid4())),
         }
+        if ver:
+            body["workflow"]["version"] = ver
         r = _requests.post("https://api.openai.com/v1/chatkit/sessions", headers=headers, json=body, timeout=20)
         r.raise_for_status()
         data = r.json() or {}
