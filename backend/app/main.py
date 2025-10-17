@@ -1741,17 +1741,30 @@ class ChatKitSessionRequest(BaseModel):
 @app.post("/api/chatkit/session")
 async def create_chatkit_session(req: ChatKitSessionRequest):
     try:
-        from openai import OpenAI as _OpenAI
-        import os as _os
+        import os as _os, requests as _requests
         wf = (req.workflow_id or CHATKIT_WORKFLOW_ID or "").strip()
         if not wf:
             return {"error": "missing_workflow_id"}
-        _client = _OpenAI(api_key=_os.environ.get("OPENAI_API_KEY"))
-        session = _client.chatkit.sessions.create({
+        api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            return {"error": "missing_openai_api_key"}
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            # Required beta header for ChatKit sessions
+            "OpenAI-Beta": "chatkit_beta=v1",
+        }
+        body = {
             "workflow": {"id": wf},
             "user": (req.user or str(uuid4())),
-        })
-        return {"client_secret": session.client_secret}
+        }
+        r = _requests.post("https://api.openai.com/v1/chatkit/sessions", headers=headers, json=body, timeout=20)
+        r.raise_for_status()
+        data = r.json() or {}
+        secret = data.get("client_secret")
+        if not secret:
+            return {"error": "no_client_secret", "details": data}
+        return {"client_secret": secret}
     except Exception as e:
         return {"error": str(e)}
 
