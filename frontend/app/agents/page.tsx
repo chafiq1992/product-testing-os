@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { Check, Clipboard, Download, FileJson, Smartphone, Wand2, Upload, Sparkles, ChevronDown, CopyCheck, Filter } from "lucide-react";
-import { agentAnglesGenerate } from "@/lib/api";
+import axios from "axios";
 import ChatKitWidget from "./ChatKitWidget";
 
 const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF", accent: "#0ea5e9", ok: "#16a34a" };
@@ -79,13 +79,19 @@ export default function AdAnglesStudio(){
     if(!url.trim() && !text.trim()) { toast.error("Enter a URL or some text"); return }
     setLoading(true)
     try{
-      const res = await agentAnglesGenerate({ url: url.trim() || undefined, text: text.trim() || undefined })
+      const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+      const { data: res } = await axios.post(`${base}/api/chatkit/run`, {
+        mode: url.trim()? 'url' : 'text',
+        url: url.trim() || undefined,
+        text: text.trim() || undefined,
+        require_workflow: true,
+      })
       const angles = Array.isArray(res?.angles)? res.angles : []
-      if(!angles.length){ toast.error(res?.error || "No angles generated"); setData(SAMPLE); return }
+      if(!angles.length){ toast.error(res?.error || "No angles from workflow"); setData(SAMPLE); return }
       setData({ angles })
       setSelected(0); setHeadlineIdx(0); setCopyIdx(0)
-      toast.success("Generated angles")
-    }catch(e:any){ toast.error(e?.message||"Failed to generate") }
+      toast.success("Generated from Agent Builder workflow")
+    }catch(e:any){ toast.error(e?.message||"Failed to run workflow") }
     finally{ setLoading(false) }
   }
 

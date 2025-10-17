@@ -497,6 +497,7 @@ class ChatKitRunRequest(BaseModel):
     model: Optional[str] = None
     workflow_id: Optional[str] = None  # overrides env CHATKIT_WORKFLOW_ID
     version: Optional[str] = None      # optional workflow version
+    require_workflow: Optional[bool] = None  # if true, do not fallback
 
 
 @app.post("/api/chatkit/run")
@@ -587,6 +588,9 @@ async def api_chatkit_run(req: ChatKitRunRequest):
             pass
 
         # 2) Fallback: reuse local analysis/generation mapping to AgentOutput
+        if req.require_workflow:
+            # Explicitly require the workflow; if we got here, return an error
+            return {"angles": [], "error": "workflow_required_failed"}
         result: list[dict] = []
         if (req.mode == "url" and isinstance(req.url, str) and req.url.strip()) or (not req.mode and isinstance(req.url, str) and req.url.strip()):
             analyzed = analyze_landing_page(req.url.strip(), model=req.model)
