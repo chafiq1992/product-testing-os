@@ -36,8 +36,8 @@ export default function ChatKitWidget(){
   })
 
   return (
-    <div className="w-full flex items-center justify-center">
-      <ChatKit control={control} className="h-[600px] w-full max-w-[420px]" />
+    <div className="w-full flex items-center justify-center relative z-50 pointer-events-auto isolate">
+      <ChatKit control={control} className="h-[640px] w-full max-w-[480px] bg-white" />
     </div>
   )
 }
