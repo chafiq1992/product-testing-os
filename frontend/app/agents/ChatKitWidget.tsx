@@ -20,8 +20,16 @@ export default function ChatKitWidget(){
         if(existing){
           // Optionally implement refresh by calling the same endpoint
         }
-        const res = await fetch('/api/chatkit/session', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ user: deviceId }) })
+        const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+        const res = await fetch(`${base}/api/chatkit/session`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ user: deviceId }) })
+        if(!res.ok){
+          console.error('ChatKit session fetch failed', res.status)
+          return undefined
+        }
         const data = await res.json()
+        if(!data?.client_secret){
+          console.error('ChatKit missing client_secret', data)
+        }
         return data?.client_secret
       },
     },
