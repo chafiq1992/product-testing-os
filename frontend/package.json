@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@openai/chatkit": "^1.0.0",
     "@openai/chatkit-react": "^1.1.1",
     "axios": "^1.7.7",
     "framer-motion": "^11.0.0",
