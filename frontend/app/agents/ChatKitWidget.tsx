@@ -15,28 +15,27 @@ export default function ChatKitWidget(){
     }catch{ return 'anon' }
   },[])
 
-  const { control } = useChatKit({
-    api: {
-      async getClientSecret(existing){
-        if(existing){
-          // Optionally implement refresh by calling the same endpoint
-        }
-        const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-        const res = await fetch(`${base}/api/chatkit/session`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ user: deviceId }) })
-        if(!res.ok){
-          console.error('ChatKit session fetch failed', res.status)
-          return undefined
-        }
-        const data = await res.json()
-        if(!data?.client_secret){
-          console.error('ChatKit missing client_secret', data)
-        }
-        return data?.client_secret
-      },
-    },
-  })
+  async function getClientSecret(existing: string | null){
+    if(existing){
+      // Optionally implement refresh policy
+    }
+    const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+    const res = await fetch(`${base}/api/chatkit/session`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ user: deviceId }) })
+    if(!res.ok){
+      console.error('ChatKit session fetch failed', res.status)
+      return undefined as unknown as string
+    }
+    const data = await res.json()
+    if(!data?.client_secret){
+      console.error('ChatKit missing client_secret', data)
+    }
+    return data?.client_secret as string
+  }
+
+  const { control } = useChatKit({ api: { getClientSecret } })
 
   const options: ChatKitOptions = {
+    api: { getClientSecret },
     theme: {
       colorScheme: 'light',
       radius: 'pill',
