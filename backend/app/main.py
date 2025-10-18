@@ -543,6 +543,10 @@ async def api_agentbuilder_run(req: AgentBuilderRunRequest):
             "Content-Type": "application/json",
             "OpenAI-Beta": "workflows=v1",
         }
+        # If provided, scope requests to a specific OpenAI Project (avoids 404 if workflow lives in another project)
+        _proj = _os.environ.get("OPENAI_PROJECT", "").strip()
+        if _proj:
+            headers["OpenAI-Project"] = _proj
         body: dict = {"workflow": {"id": wf}}
         if isinstance(req.version, str) and req.version.strip():
             body["workflow"]["version"] = req.version.strip()
@@ -626,6 +630,10 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     # Enable Workflows API (beta header name may evolve)
                     "OpenAI-Beta": "workflows=v1",
                 }
+                # Respect optional project scoping
+                _proj = _os.environ.get("OPENAI_PROJECT", "").strip()
+                if _proj:
+                    headers["OpenAI-Project"] = _proj
                 # Build workflow input: prefer explicit workflow_input if provided
                 input_obj = req.workflow_input if isinstance(req.workflow_input, dict) else {"url": (req.url or None), "text": (req.text or None)}
                 body = {
