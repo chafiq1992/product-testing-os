@@ -541,19 +541,24 @@ async def api_agentbuilder_run(req: AgentBuilderRunRequest):
         headers = {
             "Authorization": f"Bearer {_os.environ.get('OPENAI_API_KEY','')}",
             "Content-Type": "application/json",
-            "OpenAI-Beta": "workflows=v1",
+            # Allow the beta header value to be overridden without code changes
+            "OpenAI-Beta": _os.environ.get("OPENAI_BETA_WORKFLOWS", "workflows=v1"),
         }
-        # If provided, scope requests to a specific OpenAI Project (avoids 404 if workflow lives in another project)
+        # Optional scoping: project and organization
         _proj = _os.environ.get("OPENAI_PROJECT", "").strip()
         if _proj:
             headers["OpenAI-Project"] = _proj
+        _org = _os.environ.get("OPENAI_ORG", "").strip()
+        if _org:
+            headers["OpenAI-Organization"] = _org
         body: dict = {"workflow": {"id": wf}}
         if isinstance(req.version, str) and req.version.strip():
             body["workflow"]["version"] = req.version.strip()
         if isinstance(req.input, dict):
             body["input"] = req.input
 
-        r = _requests.post("https://api.openai.com/v1/workflows/runs", headers=headers, json=body, timeout=30)
+        _wf_base = _os.environ.get("OPENAI_WORKFLOWS_BASE_URL", "https://api.openai.com/v1/workflows").rstrip("/")
+        r = _requests.post(f"{_wf_base}/runs", headers=headers, json=body, timeout=30)
         r.raise_for_status()
         run_id = (r.json() or {}).get("id")
         if not run_id:
@@ -565,7 +570,7 @@ async def api_agentbuilder_run(req: AgentBuilderRunRequest):
         status = "unknown"
         while _time.time() < deadline:
             _time.sleep(1)
-            rr = _requests.get(f"https://api.openai.com/v1/workflows/runs/{run_id}", headers=headers, timeout=20)
+            rr = _requests.get(f"{_wf_base}/runs/{run_id}", headers=headers, timeout=20)
             rr.raise_for_status()
             data = rr.json() or {}
             last = data
@@ -627,13 +632,16 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                 headers = {
                     "Authorization": f"Bearer {_os.environ.get('OPENAI_API_KEY','')}",
                     "Content-Type": "application/json",
-                    # Enable Workflows API (beta header name may evolve)
-                    "OpenAI-Beta": "workflows=v1",
+                    # Enable Workflows API (beta header name may evolve); allow env override
+                    "OpenAI-Beta": _os.environ.get("OPENAI_BETA_WORKFLOWS", "workflows=v1"),
                 }
-                # Respect optional project scoping
+                # Respect optional project/organization scoping
                 _proj = _os.environ.get("OPENAI_PROJECT", "").strip()
                 if _proj:
                     headers["OpenAI-Project"] = _proj
+                _org = _os.environ.get("OPENAI_ORG", "").strip()
+                if _org:
+                    headers["OpenAI-Organization"] = _org
                 # Build workflow input: prefer explicit workflow_input if provided
                 input_obj = req.workflow_input if isinstance(req.workflow_input, dict) else {"url": (req.url or None), "text": (req.text or None)}
                 body = {
@@ -649,8 +657,9 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                         "input_keys": list((input_obj or {}).keys()),
                     }
                     logger.info("chatkit.run create wf=%s ver=%s keys=%s", wf, body["workflow"].get("version"), list((input_obj or {}).keys()))
-                # Create run
-                run = _requests.post("https://api.openai.com/v1/workflows/runs", headers=headers, json=body, timeout=30)
+                # Create run (configurable base URL for Workflows)
+                _wf_base = _os.environ.get("OPENAI_WORKFLOWS_BASE_URL", "https://api.openai.com/v1/workflows").rstrip("/")
+                run = _requests.post(f"{_wf_base}/runs", headers=headers, json=body, timeout=30)
                 run.raise_for_status()
                 run_id = (run.json() or {}).get("id")
                 if debug_enabled:
@@ -661,7 +670,7 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                 last = None
                 while _time.time() < deadline:
                     _time.sleep(1)
-                    r = _requests.get(f"https://api.openai.com/v1/workflows/runs/{run_id}", headers=headers, timeout=20)
+                    r = _requests.get(f"{_wf_base}/runs/{run_id}", headers=headers, timeout=20)
                     r.raise_for_status()
                     data = r.json() or {}
                     last = data
@@ -745,7 +754,20 @@ async def api_chatkit_run(req: ChatKitRunRequest):
             if debug_enabled:
                 debug_info["wf_error"] = str(e)
                 try:
-                    logger.exception("chatkit.run workflow error")
+                    import requests as _requests
+                    status = None
+                    if isinstance(e, _requests.HTTPError):
+                        try:
+                            status = getattr(e.response, "status_code", None)
+                        except Exception:
+                            status = None
+                        msg = f"chatkit.run workflow error status={status}"
+                        if status == 404:
+                            logger.warning(msg)
+                        else:
+                            logger.error(msg)
+                    else:
+                        logger.error("chatkit.run workflow error: %s", str(e))
                 except Exception:
                     pass
             pass
@@ -801,7 +823,12 @@ async def chatkit_endpoint(request: Request):
     # Only available when chatkit package and our server wrapper are initialized
     if not chatkit_server:
         return Response(content=json.dumps({"error": "chatkit_server_disabled"}), media_type="application/json", status_code=503)
-    result = await chatkit_server.process(await request.body(), {})
+    # Minimal context: attach user hints if present (headers/cookies). Extend as needed.
+    try:
+        user_hint = request.headers.get("x-user-id") or request.cookies.get("user_id")
+    except Exception:
+        user_hint = None
+    result = await chatkit_server.process(await request.body(), {"userId": user_hint})
     if _CKStreamingResult is not None and isinstance(result, _CKStreamingResult):
         return StreamingResponse(result, media_type="text/event-stream")
     return Response(content=result.json, media_type="application/json")
