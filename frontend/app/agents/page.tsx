@@ -86,8 +86,16 @@ export default function AdAnglesStudio(){
         url: url.trim() || undefined,
         text: text.trim() || undefined,
         require_workflow: true,
-        // Provide chat Start node input for Agent Builder workflows
-        workflow_input: { input_as_text: inputText || undefined },
+        // Provide chat Start node input array for Agent Builder workflows
+        workflow_input: inputText ? {
+          input: [
+            {
+              type: "message",
+              role: "user",
+              content: [ { type: "input_text", text: inputText } ]
+            }
+          ]
+        } : undefined,
       })
       const angles = Array.isArray(res?.angles)? res.angles : []
       if(!angles.length){ toast.error(res?.error || "No angles from workflow"); setData(SAMPLE); return }
