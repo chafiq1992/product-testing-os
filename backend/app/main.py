@@ -34,6 +34,7 @@ import json as _json
 import io
 import mimetypes
 from urllib.parse import urlparse
+import logging
 
 # Optional ChatKit server-mode support
 try:
@@ -55,6 +56,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# Basic logger for diagnostics (stdout captured by Cloud Run)
+logger = logging.getLogger("app.chatkit")
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.INFO)
 
 # Mount static uploads directory. Use the unified path from config.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
@@ -583,6 +590,8 @@ class ChatKitRunRequest(BaseModel):
     require_workflow: Optional[bool] = None  # if true, do not fallback
     # Optional: provide exact input object for your Workflow instead of default {url, text}
     workflow_input: Optional[dict] = None
+    # Optional: enable verbose diagnostics
+    debug: Optional[bool] = None
 
 
 @app.post("/api/chatkit/run")
@@ -594,6 +603,16 @@ async def api_chatkit_run(req: ChatKitRunRequest):
     falls back to local analysis/generation to keep UX unblocked.
     """
     try:
+        debug_enabled = bool(req.debug) or os.getenv("CHATKIT_DEBUG", "").lower() in ("1", "true", "yes", "debug")
+        debug_info = {
+            "request": {
+                "mode": req.mode,
+                "has_url": bool(req.url),
+                "has_text": bool(req.text),
+                "has_workflow_input": isinstance(req.workflow_input, dict),
+                "require_workflow": bool(req.require_workflow),
+            }
+        }
         # 1) Attempt a headless Workflows run via OpenAI HTTP API
         try:
             import os as _os, time as _time, requests as _requests
@@ -613,10 +632,20 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                 }
                 if isinstance(req.version, str) and req.version.strip():
                     body["workflow"]["version"] = req.version.strip()
+                if debug_enabled:
+                    debug_info["workflow_request"] = {
+                        "workflow_id": wf,
+                        "version": body["workflow"].get("version"),
+                        "input_keys": list((input_obj or {}).keys()),
+                    }
+                    logger.info("chatkit.run create wf=%s ver=%s keys=%s", wf, body["workflow"].get("version"), list((input_obj or {}).keys()))
                 # Create run
                 run = _requests.post("https://api.openai.com/v1/workflows/runs", headers=headers, json=body, timeout=30)
                 run.raise_for_status()
                 run_id = (run.json() or {}).get("id")
+                if debug_enabled:
+                    debug_info["run_id"] = run_id
+                    logger.info("chatkit.run run_id=%s", run_id)
                 # Poll for completion (up to ~60s)
                 deadline = _time.time() + 60
                 last = None
@@ -629,12 +658,20 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     status = str(data.get("status") or data.get("state") or "").lower()
                     if status in ("completed", "succeeded", "failed", "cancelled", "canceled", "error"):
                         break
+                if debug_enabled:
+                    debug_info["run_status"] = str((last or {}).get("status") or (last or {}).get("state"))
                 # Extract final output candidates
                 out = None
                 try:
                     out = (last or {}).get("output") or (last or {}).get("response", {}).get("output") or (last or {}).get("final_output")
                 except Exception:
                     out = None
+                if debug_enabled:
+                    debug_info["output_type"] = type(out).__name__
+                    try:
+                        debug_info["output_keys"] = list((out or {}).keys()) if isinstance(out, dict) else None
+                    except Exception:
+                        debug_info["output_keys"] = None
                 # Map to normalized outputs for multi-agent flows (angles/title/description/landing_copy/product/images)
                 def _map_output(o: dict) -> dict:
                     norm: dict = {"angles": []}
@@ -687,7 +724,11 @@ async def api_chatkit_run(req: ChatKitRunRequest):
 
                 if isinstance(out, dict):
                     mapped = _map_output(out)
+                    if debug_enabled:
+                        logger.info("chatkit.run mapped angles=%d", len(mapped.get("angles") or []))
                     if mapped.get("angles"):
+                        if debug_enabled:
+                            mapped["debug"] = debug_info
                         return mapped
         except Exception:
             # Swallow workflow errors and fallback below
@@ -696,7 +737,11 @@ async def api_chatkit_run(req: ChatKitRunRequest):
         # 2) Fallback: reuse local analysis/generation mapping to AgentOutput
         if req.require_workflow:
             # Explicitly require the workflow; if we got here, return an error
-            return {"angles": [], "error": "workflow_required_failed"}
+            resp = {"angles": [], "error": "workflow_required_failed"}
+            if debug_enabled:
+                resp["debug"] = debug_info
+                logger.info("chatkit.run failed (require_workflow) debug=%s", json.dumps(debug_info))
+            return resp
         result: list[dict] = []
         if (req.mode == "url" and isinstance(req.url, str) and req.url.strip()) or (not req.mode and isinstance(req.url, str) and req.url.strip()):
             analyzed = analyze_landing_page(req.url.strip(), model=req.model)
@@ -725,8 +770,13 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     result.append({"angle_title": str(name), "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()], "ad_copies": primaries})
                 except Exception:
                     continue
-        return {"angles": result}
+        resp = {"angles": result}
+        if debug_enabled:
+            resp["debug"] = debug_info
+            logger.info("chatkit.run fallback angles=%d", len(result))
+        return resp
     except Exception as e:
+        logger.exception("chatkit.run exception")
         return {"angles": [], "error": str(e)}
 
 # ---------------- ChatKit server-mode endpoint (SSE/JSON) ----------------
