@@ -592,6 +592,8 @@ class ChatKitRunRequest(BaseModel):
     workflow_input: Optional[dict] = None
     # Optional: enable verbose diagnostics
     debug: Optional[bool] = None
+    # Optional: adjust workflow poll timeout (seconds)
+    timeout_seconds: Optional[int] = None
 
 
 @app.post("/api/chatkit/run")
@@ -646,8 +648,8 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                 if debug_enabled:
                     debug_info["run_id"] = run_id
                     logger.info("chatkit.run run_id=%s", run_id)
-                # Poll for completion (up to ~60s)
-                deadline = _time.time() + 60
+                # Poll for completion (default ~60s, overridable)
+                deadline = _time.time() + max(10, int(req.timeout_seconds or 60))
                 last = None
                 while _time.time() < deadline:
                     _time.sleep(1)
@@ -730,8 +732,14 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                         if debug_enabled:
                             mapped["debug"] = debug_info
                         return mapped
-        except Exception:
+        except Exception as e:
             # Swallow workflow errors and fallback below
+            if debug_enabled:
+                debug_info["wf_error"] = str(e)
+                try:
+                    logger.exception("chatkit.run workflow error")
+                except Exception:
+                    pass
             pass
 
         # 2) Fallback: reuse local analysis/generation mapping to AgentOutput
