@@ -32,6 +32,9 @@ export default function ChatKitWidget(){
   }
 
   const { control } = useChatKit({
+    // Prefer server-mode endpoint when available
+    apiURL: (process.env.NEXT_PUBLIC_API_BASE_URL || '') + '/chatkit',
+    // Fallback to OpenAI-hosted session if server-mode is disabled
     api: { getClientSecret },
     theme: {
       colorScheme: 'light',

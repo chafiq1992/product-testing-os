@@ -35,6 +35,16 @@ import io
 import mimetypes
 from urllib.parse import urlparse
 
+# Optional ChatKit server-mode support
+try:
+    from chatkit.server import StreamingResult as _CKStreamingResult  # type: ignore
+    from app.chatkit_server import build_default_server as _build_ck_server  # type: ignore
+    _CHATKIT_ENABLED = True
+except Exception:
+    _CKStreamingResult = None  # type: ignore
+    _build_ck_server = None  # type: ignore
+    _CHATKIT_ENABLED = False
+
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
 app.add_middleware(
@@ -61,6 +71,17 @@ async def favicon():
     )
     data = base64.b64decode(png_b64)
     return Response(content=data, media_type="image/png")
+
+# Initialize ChatKit server (server-mode) if package is available
+chatkit_server = None
+if _CHATKIT_ENABLED:
+    try:
+        CK_DB_PATH = os.getenv("CHATKIT_SQLITE_PATH", str(Path(UPLOADS_DIR) / "chatkit.sqlite"))
+        CK_FILES_DIR = os.getenv("CHATKIT_FILES_DIR", str(Path(UPLOADS_DIR) / "chatkit_files"))
+        Path(CK_FILES_DIR).mkdir(parents=True, exist_ok=True)
+        chatkit_server = _build_ck_server(CK_DB_PATH, CK_FILES_DIR)
+    except Exception:
+        chatkit_server = None
 
 class VariantInput(BaseModel):
     size: Optional[str] = None
@@ -622,6 +643,17 @@ async def api_chatkit_run(req: ChatKitRunRequest):
         return {"angles": result}
     except Exception as e:
         return {"angles": [], "error": str(e)}
+
+# ---------------- ChatKit server-mode endpoint (SSE/JSON) ----------------
+@app.post("/chatkit")
+async def chatkit_endpoint(request: Request):
+    # Only available when chatkit package and our server wrapper are initialized
+    if not chatkit_server:
+        return Response(content=json.dumps({"error": "chatkit_server_disabled"}), media_type="application/json", status_code=503)
+    result = await chatkit_server.process(await request.body(), {})
+    if _CKStreamingResult is not None and isinstance(result, _CKStreamingResult):
+        return StreamingResponse(result, media_type="text/event-stream")
+    return Response(content=result.json, media_type="application/json")
 
 # ---------------- Translation API ----------------
 class TranslateRequest(BaseModel):
