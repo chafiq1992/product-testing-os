@@ -96,8 +96,15 @@ export default function AdAnglesStudio(){
             }
           ]
         } : undefined,
+        debug: true,
       })
       const angles = Array.isArray(res?.angles)? res.angles : []
+      if (res?.debug) {
+        // Surface useful run diagnostics in the browser console for quick triage
+        // (Cloud Run logs will also have these when CHATKIT_DEBUG=1)
+        // eslint-disable-next-line no-console
+        console.debug('ChatKit debug:', res.debug)
+      }
       if(!angles.length){ toast.error(res?.error || "No angles from workflow"); setData(SAMPLE); return }
       setData({ angles })
       setSelected(0); setHeadlineIdx(0); setCopyIdx(0)
