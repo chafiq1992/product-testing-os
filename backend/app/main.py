@@ -510,6 +510,68 @@ async def api_agent_angles(req: AgentAnglesRequest):
     except Exception as e:
         return {"angles": [], "error": str(e)}
 
+# ---------------- OpenAI Agent Builder: generic headless run ----------------
+class AgentBuilderRunRequest(BaseModel):
+    workflow_id: Optional[str] = None  # overrides env CHATKIT_WORKFLOW_ID
+    version: Optional[str] = None      # workflow version (optional)
+    input: Optional[dict] = None       # arbitrary input object expected by the workflow
+    timeout_seconds: Optional[int] = 60
+
+
+@app.post("/api/agentbuilder/run")
+async def api_agentbuilder_run(req: AgentBuilderRunRequest):
+    """Run an OpenAI Agent Builder workflow headlessly and return its raw output.
+
+    - Uses Workflows HTTP API with the required beta header.
+    - Accepts arbitrary input expected by your workflow; passthrough.
+    - Returns { output, run_id, status } or { error }.
+    """
+    try:
+        import os as _os, time as _time, requests as _requests
+        wf = (req.workflow_id or CHATKIT_WORKFLOW_ID or "").strip()
+        if not wf:
+            return {"error": "missing_workflow_id"}
+        headers = {
+            "Authorization": f"Bearer {_os.environ.get('OPENAI_API_KEY','')}",
+            "Content-Type": "application/json",
+            "OpenAI-Beta": "workflows=v1",
+        }
+        body: dict = {"workflow": {"id": wf}}
+        if isinstance(req.version, str) and req.version.strip():
+            body["workflow"]["version"] = req.version.strip()
+        if isinstance(req.input, dict):
+            body["input"] = req.input
+
+        r = _requests.post("https://api.openai.com/v1/workflows/runs", headers=headers, json=body, timeout=30)
+        r.raise_for_status()
+        run_id = (r.json() or {}).get("id")
+        if not run_id:
+            return {"error": "no_run_id", "details": r.json()}
+
+        # Poll for completion
+        deadline = _time.time() + max(10, int(req.timeout_seconds or 60))
+        last = None
+        status = "unknown"
+        while _time.time() < deadline:
+            _time.sleep(1)
+            rr = _requests.get(f"https://api.openai.com/v1/workflows/runs/{run_id}", headers=headers, timeout=20)
+            rr.raise_for_status()
+            data = rr.json() or {}
+            last = data
+            status = str(data.get("status") or data.get("state") or "").lower()
+            if status in ("completed", "succeeded", "failed", "cancelled", "canceled", "error"):
+                break
+
+        # Prefer common output fields
+        out = None
+        try:
+            out = (last or {}).get("output") or (last or {}).get("response", {}).get("output") or (last or {}).get("final_output")
+        except Exception:
+            out = None
+        return {"output": out, "run_id": run_id, "status": status}
+    except Exception as e:
+        return {"error": str(e)}
+
 # ---------------- ChatKit headless run (UI integration) ----------------
 class ChatKitRunRequest(BaseModel):
     mode: Optional[str] = None  # 'url' | 'text'
@@ -519,6 +581,8 @@ class ChatKitRunRequest(BaseModel):
     workflow_id: Optional[str] = None  # overrides env CHATKIT_WORKFLOW_ID
     version: Optional[str] = None      # optional workflow version
     require_workflow: Optional[bool] = None  # if true, do not fallback
+    # Optional: provide exact input object for your Workflow instead of default {url, text}
+    workflow_input: Optional[dict] = None
 
 
 @app.post("/api/chatkit/run")
@@ -541,10 +605,11 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     # Enable Workflows API (beta header name may evolve)
                     "OpenAI-Beta": "workflows=v1",
                 }
+                # Build workflow input: prefer explicit workflow_input if provided
+                input_obj = req.workflow_input if isinstance(req.workflow_input, dict) else {"url": (req.url or None), "text": (req.text or None)}
                 body = {
                     "workflow": {"id": wf},
-                    # Many workflows use an input object; include both url and text
-                    "input": {"url": (req.url or None), "text": (req.text or None)},
+                    "input": input_obj,
                 }
                 if isinstance(req.version, str) and req.version.strip():
                     body["workflow"]["version"] = req.version.strip()
@@ -570,40 +635,60 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     out = (last or {}).get("output") or (last or {}).get("response", {}).get("output") or (last or {}).get("final_output")
                 except Exception:
                     out = None
-                # Map to AgentOutput
-                if isinstance(out, dict):
-                    # Case: already AgentOutput
-                    if isinstance(out.get("angles"), list):
-                        mapped: list[dict] = []
+                # Map to normalized outputs for multi-agent flows (angles/title/description/landing_copy/product/images)
+                def _map_output(o: dict) -> dict:
+                    norm: dict = {"angles": []}
+                    if not isinstance(o, dict):
+                        return norm
+                    # Angles
+                    angles_src = o.get("angles") or o.get("ads_angles") or o.get("ad_angles")
+                    mapped: list[dict] = []
+                    if isinstance(angles_src, list):
+                        for a in angles_src:
+                            if not isinstance(a, dict):
+                                continue
+                            title = a.get("angle_title") or a.get("title") or a.get("name") or a.get("angle") or "Untitled Angle"
+                            headlines = a.get("headlines") or a.get("titles") or []
+                            primaries = a.get("ad_copies") or a.get("copies") or a.get("descriptions") or a.get("primaries") or []
+                            if isinstance(primaries, dict):
+                                primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                            headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
+                            primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
+                            mapped.append({"angle_title": str(title), "headlines": headlines, "ad_copies": primaries})
+                    elif any(k in o for k in ("angle_title", "headlines", "ad_copies", "primaries")):
                         try:
-                            for a in (out.get("angles") or []):
-                                if not isinstance(a, dict):
-                                    continue
-                                # Normalize various keyings
-                                angle_title = a.get("angle_title") or a.get("title") or a.get("name") or a.get("angle") or "Untitled Angle"
-                                headlines = a.get("headlines") or a.get("titles") or []
-                                primaries = a.get("ad_copies") or a.get("copies") or a.get("descriptions") or a.get("primaries") or []
-                                if isinstance(primaries, dict):
-                                    primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
-                                headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
-                                primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
-                                mapped.append({"angle_title": str(angle_title), "headlines": headlines, "ad_copies": primaries})
+                            title = o.get("angle_title") or o.get("title") or o.get("name") or o.get("angle") or "Untitled Angle"
+                            headlines = o.get("headlines") or o.get("titles") or []
+                            primaries = o.get("ad_copies") or o.get("copies") or o.get("descriptions") or o.get("primaries") or []
+                            if isinstance(primaries, dict):
+                                primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
+                            headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
+                            primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
+                            mapped.append({"angle_title": str(title), "headlines": headlines, "ad_copies": primaries})
                         except Exception:
                             mapped = []
-                        return {"angles": mapped}
-                # If output is a single-angle object
-                if isinstance(out, dict) and (out.get("angle_title") or out.get("headlines") or out.get("ad_copies")):
-                    try:
-                        angle_title = out.get("angle_title") or out.get("title") or out.get("name") or out.get("angle") or "Untitled Angle"
-                        headlines = out.get("headlines") or out.get("titles") or []
-                        primaries = out.get("ad_copies") or out.get("copies") or out.get("descriptions") or out.get("primaries") or []
-                        if isinstance(primaries, dict):
-                            primaries = [primaries.get("short"), primaries.get("medium"), primaries.get("long")]
-                        headlines = [str(h) for h in (headlines or []) if isinstance(h, str) and h.strip()]
-                        primaries = [str(p) for p in (primaries or []) if isinstance(p, str) and p.strip()]
-                        return {"angles": [{"angle_title": str(angle_title), "headlines": headlines, "ad_copies": primaries}]}
-                    except Exception:
-                        pass
+                    norm["angles"] = mapped
+                    # Title/Description
+                    norm["title"] = o.get("title") if isinstance(o.get("title"), str) else None
+                    norm["description"] = o.get("description") if isinstance(o.get("description"), str) else None
+                    # Landing copy
+                    lc = o.get("landing_copy") or o.get("lp") or {}
+                    norm["landing_copy"] = lc if isinstance(lc, dict) else None
+                    # Product snapshot
+                    prod = o.get("product") or {}
+                    norm["product"] = prod if isinstance(prod, dict) else None
+                    # Images
+                    imgs = o.get("images") or o.get("image_urls") or []
+                    if isinstance(imgs, list):
+                        norm["images"] = [u for u in imgs if isinstance(u, str)]
+                    else:
+                        norm["images"] = []
+                    return norm
+
+                if isinstance(out, dict):
+                    mapped = _map_output(out)
+                    if mapped.get("angles"):
+                        return mapped
         except Exception:
             # Swallow workflow errors and fallback below
             pass
@@ -626,7 +711,7 @@ async def api_chatkit_run(req: ChatKitRunRequest):
                     result.append({"angle_title": str(name), "headlines": [str(h) for h in heads if isinstance(h, str) and h.strip()], "ad_copies": prims})
                 except Exception:
                     continue
-        if (req.mode == "text" and isinstance(req.text, str) and req.text.trim()) or (not req.mode and isinstance(req.text, str) and req.text.strip()):
+        if (req.mode == "text" and isinstance(req.text, str) and req.text.strip()) or (not req.mode and isinstance(req.text, str) and req.text.strip()):
             payload = {"audience": "shoppers", "benefits": [], "pain_points": [], "description": req.text.strip(), "title": None}
             full = gen_angles_and_copy_full(payload, model=req.model)
             for a in (full.get("angles") or []):
