@@ -80,11 +80,14 @@ export default function AdAnglesStudio(){
     setLoading(true)
     try{
       const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+      const inputText = url.trim()? url.trim() : text.trim()
       const { data: res } = await axios.post(`${base}/api/chatkit/run`, {
         mode: url.trim()? 'url' : 'text',
         url: url.trim() || undefined,
         text: text.trim() || undefined,
         require_workflow: true,
+        // Provide chat Start node input for Agent Builder workflows
+        workflow_input: { input_as_text: inputText || undefined },
       })
       const angles = Array.isArray(res?.angles)? res.angles : []
       if(!angles.length){ toast.error(res?.error || "No angles from workflow"); setData(SAMPLE); return }
