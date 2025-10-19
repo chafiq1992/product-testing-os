@@ -3,6 +3,8 @@ import { useMemo } from 'react'
 import { ChatKit, useChatKit } from '@openai/chatkit-react'
 
 export default function ChatKitWidget(){
+  const WORKFLOW_ID = process.env.NEXT_PUBLIC_CHATKIT_WORKFLOW_ID || process.env.NEXT_PUBLIC_CHATKIT_WORKFLOW || undefined
+  const WORKFLOW_VERSION = process.env.NEXT_PUBLIC_CHATKIT_WORKFLOW_VERSION || undefined
   const deviceId = useMemo(()=>{
     try{
       const key = 'chatkit_device_id'
@@ -19,14 +21,24 @@ export default function ChatKitWidget(){
       // Optionally implement refresh policy
     }
     const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-    const res = await fetch(`${base}/api/chatkit/session`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ user: deviceId }) })
+    const res = await fetch(`${base}/api/chatkit/session`, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        user: deviceId,
+        workflow_id: WORKFLOW_ID, // allow frontend override if backend env not set
+        version: WORKFLOW_VERSION,
+      })
+    })
     if(!res.ok){
       console.error('ChatKit session fetch failed', res.status)
-      return undefined as unknown as string
+      throw new Error(`ChatKit session HTTP ${res.status}`)
     }
     const data = await res.json()
     if(!data?.client_secret){
-      console.error('ChatKit missing client_secret', data)
+      const err = (data && (data.error || data.details)) ? JSON.stringify(data) : 'missing client_secret'
+      console.error('ChatKit missing client_secret', err)
+      throw new Error(`ChatKit session error: ${err}`)
     }
     return data?.client_secret as string
   }
