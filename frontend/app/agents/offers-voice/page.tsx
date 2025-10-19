@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Check, Clipboard, Download, Upload, Sparkles } from "lucide-react";
+import ChatKitWidget from "../ChatKitWidget";
 
 // THEME
 const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF" } as const;
@@ -491,6 +492,18 @@ export default function OffersAndVoiceStudio() {
           </div>
         </div>
       )}
+
+      {/* ChatKit (Agent Builder) */}
+      <div className="mx-auto max-w-7xl px-4 pb-10">
+        <Card className="rounded-2xl border-slate-200 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base">Agent Builder Chat</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ChatKitWidget />
+          </CardContent>
+        </Card>
+      </div>
 
       {/* FOOTER */}
       <div className="mt-10 border-t">
