@@ -36,6 +36,7 @@ export default function AgentViewClient(){
             </select>
           </div>
           <Link href="/agents" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Agents</Link>
+          <Link href="/agents/angles" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border border-slate-200 bg-white text-slate-900 hover:bg-slate-50">Angles</Link>
         </div>
       </header>
       <div className="p-6 md:p-8">

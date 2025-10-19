@@ -335,7 +335,7 @@ export default function OffersAndVoiceStudio() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-white to-slate-50">
+    <div className="min-h-screen w-full bg-gradient-to-b from-white to-slate-50 text-slate-800">
       {/* HEADER */}
       <div className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
