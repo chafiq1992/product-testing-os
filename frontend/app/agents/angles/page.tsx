@@ -194,7 +194,7 @@ export default function AdAnglesStudio(){
               <CardTitle className="text-base">Import agent output</CardTitle>
             </CardHeader>
             <CardContent>
-              <Textarea value={raw} onChange={(e) => setRaw(e.target.value)} placeholder='Paste JSON {"angles": [...]}" className="min-h-[140px] rounded-xl" />
+              <Textarea value={raw} onChange={(e) => setRaw(e.target.value)} placeholder='Paste JSON {"angles": [...]}' className="min-h-[140px] rounded-xl" />
               <div className="mt-3 flex gap-2">
                 <Button className="rounded-xl" onClick={importJSON}><Upload className="h-4 w-4 mr-2" /> Load JSON</Button>
                 <Button variant="outline" className="rounded-xl" onClick={() => setRaw("")}>Clear</Button>
