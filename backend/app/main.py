@@ -836,7 +836,7 @@ async def chatkit_endpoint(request: Request):
 # ---------------- Translation API ----------------
 class TranslateRequest(BaseModel):
     texts: list[str]
-    target: str  # e.g., 'ar', 'fr'
+    target: str  # e.g., 'ar', 'fr', 'ary' for Moroccan Darija
     locale: Optional[str] = None
     domain: Optional[str] = "ads"
     model: Optional[str] = None

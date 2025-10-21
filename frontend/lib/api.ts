@@ -343,7 +343,7 @@ export async function agentAdsExecute(payload:{ messages: any[], model?: string 
 }
 
 // Translation API
-export async function translateTexts(payload:{ texts: string[], target: 'ar'|'fr', locale?: string, domain?: string, model?: string }){
+export async function translateTexts(payload:{ texts: string[], target: 'ar'|'fr'|'ary', locale?: string, domain?: string, model?: string }){
   const {data} = await axios.post(`${base}/api/translate`, payload)
   return data as { translations: string[], target: string, error?: string }
 }

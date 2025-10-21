@@ -115,6 +115,13 @@ def translate_texts(items: list[str], target_language: str, *, locale: str | Non
     )
     if lang == "ar":
         instructions += "- Use Modern Standard Arabic (Fus'ha), clear and neutral.\n"
+    # Moroccan Darija (Arabic dialect). Accept common identifiers
+    if lang in ("ary", "ar-ma", "darija"):
+        instructions += (
+            "- Use Moroccan Darija (الدارجة المغربية) with a natural, conversational advertising tone.\n"
+            "- Prefer Arabic script (not Latin) unless the source uses Latin for brand terms.\n"
+            "- Avoid formal MSA phrasing; keep it friendly and concise for ads.\n"
+        )
     if lang == "fr":
         instructions += "- Use standard French; if Morocco context applies, keep terms familiar locally.\n"
     if loc:

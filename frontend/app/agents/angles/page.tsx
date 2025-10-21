@@ -60,11 +60,11 @@ export default function AdAnglesStudio(){
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AgentOutput>(SAMPLE);
-  type Lang = 'en'|'ar'|'fr'
+  type Lang = 'en'|'ar'|'fr'|'ary'
   const [lang, setLang] = useState<Lang>('en')
-  const [localized, setLocalized] = useState<{ ar?: AgentOutput, fr?: AgentOutput }>({})
-  const [translating, setTranslating] = useState<{ ar?: boolean, fr?: boolean }>({})
-  const [translateError, setTranslateError] = useState<{ ar?: string, fr?: string }>({})
+  const [localized, setLocalized] = useState<{ ar?: AgentOutput, fr?: AgentOutput, ary?: AgentOutput }>({})
+  const [translating, setTranslating] = useState<{ ar?: boolean, fr?: boolean, ary?: boolean }>({})
+  const [translateError, setTranslateError] = useState<{ ar?: string, fr?: string, ary?: string }>({})
   const [selected, setSelected] = useState(0);
   const [headlineIdx, setHeadlineIdx] = useState(0);
   const [copyIdx, setCopyIdx] = useState(0);
@@ -73,6 +73,7 @@ export default function AdAnglesStudio(){
   const displayData = useMemo(()=>{
     if(lang==='ar' && localized.ar) return localized.ar
     if(lang==='fr' && localized.fr) return localized.fr
+    if(lang==='ary' && localized.ary) return localized.ary
     return data
   }, [lang, localized, data])
 
@@ -147,24 +148,25 @@ export default function AdAnglesStudio(){
     return out
   }
 
-  async function translateAll(target: 'ar'|'fr', base?: AgentOutput){
+  async function translateAll(target: 'ar'|'fr'|'ary', base?: AgentOutput){
     try{
       const src = base || data
       const { items, indexMap } = flattenAgentOutput(src)
       if(items.length===0){
         if(target==='ar') setLocalized(p=>({ ...p, ar: { angles: [] } }))
         if(target==='fr') setLocalized(p=>({ ...p, fr: { angles: [] } }))
+        if(target==='ary') setLocalized(p=>({ ...p, ary: { angles: [] } }))
         return
       }
       setTranslating(p=>({ ...p, [target]: true }))
       setTranslateError(p=>({ ...p, [target]: undefined }))
-      const res = await translateTexts({ texts: items, target, domain: 'ads' })
+      const res = await translateTexts({ texts: items, target, locale: target==='ary'? 'MA' : undefined, domain: 'ads' })
       const arr = Array.isArray(res?.translations)? res.translations : []
       if(arr.length !== items.length){
         throw new Error("Translation count mismatch")
       }
       const localizedOut = reconstructFromTranslations(src, arr, indexMap)
-      setLocalized(p=> target==='ar'? { ...p, ar: localizedOut } : { ...p, fr: localizedOut })
+      setLocalized(p=> target==='ar' ? { ...p, ar: localizedOut } : target==='fr' ? { ...p, fr: localizedOut } : { ...p, ary: localizedOut })
     }catch(e:any){
       setTranslateError(p=>({ ...p, [target]: e?.message||'Translate failed' }))
       toast.error(`Translate ${target.toUpperCase()} failed`)
@@ -183,6 +185,7 @@ export default function AdAnglesStudio(){
       await Promise.allSettled([
         translateAll('ar', parsed),
         translateAll('fr', parsed),
+        translateAll('ary', parsed),
       ])
     } catch (e: any) {
       toast.error(`Invalid JSON: ${e.message}`);
@@ -303,6 +306,7 @@ export default function AdAnglesStudio(){
                     <TabsTrigger value="en" className="rounded-xl">English</TabsTrigger>
                     <TabsTrigger value="ar" className="rounded-xl">العربية</TabsTrigger>
                     <TabsTrigger value="fr" className="rounded-xl">Français</TabsTrigger>
+                    <TabsTrigger value="ary" className="rounded-xl">الدارجة</TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
