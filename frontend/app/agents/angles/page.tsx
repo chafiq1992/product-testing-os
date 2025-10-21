@@ -6,9 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Check, Clipboard, Download, FileJson, Smartphone, Wand2, Upload, Sparkles, ChevronDown, CopyCheck, Filter } from "lucide-react";
+import { Check, Clipboard, Download, FileJson, Smartphone, Wand2, Upload, Sparkles, ChevronDown, CopyCheck, Filter, Loader2 } from "lucide-react";
 import axios from "axios";
+import { translateTexts } from "@/lib/api";
 import ChatKitWidget from "../ChatKitWidget";
 
 const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF", accent: "#0ea5e9", ok: "#16a34a" };
@@ -58,12 +60,23 @@ export default function AdAnglesStudio(){
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<AgentOutput>(SAMPLE);
+  type Lang = 'en'|'ar'|'fr'
+  const [lang, setLang] = useState<Lang>('en')
+  const [localized, setLocalized] = useState<{ ar?: AgentOutput, fr?: AgentOutput }>({})
+  const [translating, setTranslating] = useState<{ ar?: boolean, fr?: boolean }>({})
+  const [translateError, setTranslateError] = useState<{ ar?: string, fr?: string }>({})
   const [selected, setSelected] = useState(0);
   const [headlineIdx, setHeadlineIdx] = useState(0);
   const [copyIdx, setCopyIdx] = useState(0);
   const [raw, setRaw] = useState("");
 
-  const current = data.angles[selected] || { angle_title: "", headlines: [""], ad_copies: [""] };
+  const displayData = useMemo(()=>{
+    if(lang==='ar' && localized.ar) return localized.ar
+    if(lang==='fr' && localized.fr) return localized.fr
+    return data
+  }, [lang, localized, data])
+
+  const current = displayData.angles[selected] || { angle_title: "", headlines: [""], ad_copies: [""] };
   const currentHeadline = current.headlines[headlineIdx] ?? "";
   const currentCopy = current.ad_copies[copyIdx] ?? "";
 
@@ -111,12 +124,66 @@ export default function AdAnglesStudio(){
     finally{ setLoading(false) }
   }
 
-  const importJSON = () => {
+  function flattenAgentOutput(a: AgentOutput){
+    const items: string[] = []
+    const map: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }> = []
+    (a.angles||[]).forEach((ang, i)=>{
+      items.push(String(ang.angle_title||'')); map.push({ kind:'angle', angleIndex:i })
+      ;(ang.headlines||[]).forEach((h, hi)=>{ items.push(String(h||'')); map.push({ kind:'headline', angleIndex:i, subIndex:hi }) })
+      ;(ang.ad_copies||[]).forEach((c, ci)=>{ items.push(String(c||'')); map.push({ kind:'copy', angleIndex:i, subIndex:ci }) })
+    })
+    return { items, map }
+  }
+
+  function reconstructFromTranslations(base: AgentOutput, translated: string[], map: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }>): AgentOutput{
+    const out: AgentOutput = { angles: base.angles.map(a=>({ angle_title: a.angle_title, headlines: [...a.headlines], ad_copies: [...a.ad_copies] })) }
+    for(let i=0;i<map.length;i++){
+      const m = map[i]
+      const t = translated[i] ?? ''
+      if(m.kind==='angle') out.angles[m.angleIndex].angle_title = t
+      if(m.kind==='headline' && m.subIndex!=null) out.angles[m.angleIndex].headlines[m.subIndex] = t
+      if(m.kind==='copy' && m.subIndex!=null) out.angles[m.angleIndex].ad_copies[m.subIndex] = t
+    }
+    return out
+  }
+
+  async function translateAll(target: 'ar'|'fr', base?: AgentOutput){
+    try{
+      const src = base || data
+      const { items, map } = flattenAgentOutput(src)
+      if(items.length===0){
+        if(target==='ar') setLocalized(p=>({ ...p, ar: { angles: [] } }))
+        if(target==='fr') setLocalized(p=>({ ...p, fr: { angles: [] } }))
+        return
+      }
+      setTranslating(p=>({ ...p, [target]: true }))
+      setTranslateError(p=>({ ...p, [target]: undefined }))
+      const res = await translateTexts({ texts: items, target, domain: 'ads' })
+      const arr = Array.isArray(res?.translations)? res.translations : []
+      if(arr.length !== items.length){
+        throw new Error("Translation count mismatch")
+      }
+      const localizedOut = reconstructFromTranslations(src, arr, map)
+      setLocalized(p=> target==='ar'? { ...p, ar: localizedOut } : { ...p, fr: localizedOut })
+    }catch(e:any){
+      setTranslateError(p=>({ ...p, [target]: e?.message||'Translate failed' }))
+      toast.error(`Translate ${target.toUpperCase()} failed`)
+    }finally{
+      setTranslating(p=>({ ...p, [target]: false }))
+    }
+  }
+
+  const importJSON = async () => {
     try {
       const parsed = JSON.parse(raw);
       if (!parsed.angles) throw new Error("Missing 'angles' array");
       setData(parsed);
+      setSelected(0); setHeadlineIdx(0); setCopyIdx(0); setLang('en')
       toast.success("Agent output loaded");
+      await Promise.allSettled([
+        translateAll('ar', parsed),
+        translateAll('fr', parsed),
+      ])
     } catch (e: any) {
       toast.error(`Invalid JSON: ${e.message}`);
     }
@@ -179,7 +246,7 @@ export default function AdAnglesStudio(){
             </CardHeader>
             <CardContent>
               <div className="flex flex-col gap-2">
-                {data.angles.map((a, i) => (
+                {displayData.angles.map((a, i) => (
                   <button key={i} onClick={() => setSelected(i)} className={cls("w-full text-left p-3 rounded-xl border transition", i===selected? "bg-white border-transparent shadow-sm ring-2": "bg-slate-50 hover:bg-white border-slate-200")} style={i===selected? { boxShadow: `0 0 0 2px ${BRAND.primarySoft}` } : {}}>
                     <div className="text-sm font-semibold">{a.angle_title}</div>
                     <div className="mt-1 text-xs text-slate-500 line-clamp-2">{a.headlines[0]}</div>
@@ -199,7 +266,15 @@ export default function AdAnglesStudio(){
                 <Button className="rounded-xl" onClick={importJSON}><Upload className="h-4 w-4 mr-2" /> Load JSON</Button>
                 <Button variant="outline" className="rounded-xl" onClick={() => setRaw("")}>Clear</Button>
               </div>
-              <div className="mt-4 text-xs text-slate-500">Headlines total: {stats.totalHeadlines} · Copies total: {stats.totalCopies}</div>
+              <div className="mt-3 space-y-1 text-xs text-slate-500">
+                <div>Headlines total: {stats.totalHeadlines} · Copies total: {stats.totalCopies}</div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Translations:</span>
+                  <span className={["inline-flex items-center gap-1", translating.ar?"text-sky-600":"text-slate-500"].join(" ")}>{translating.ar? <Loader2 className="h-3.5 w-3.5 animate-spin"/>: null} AR {localized.ar? 'ready': (translating.ar? '…' : (translateError.ar? 'error' : '–'))}</span>
+                  <span className="mx-1">·</span>
+                  <span className={["inline-flex items-center gap-1", translating.fr?"text-sky-600":"text-slate-500"].join(" ")}>{translating.fr? <Loader2 className="h-3.5 w-3.5 animate-spin"/>: null} FR {localized.fr? 'ready': (translating.fr? '…' : (translateError.fr? 'error' : '–'))}</span>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -222,9 +297,18 @@ export default function AdAnglesStudio(){
                   </Button>
                 </div>
               </div>
+              <div className="mt-4">
+                <Tabs value={lang} onValueChange={v=>setLang(v as Lang)}>
+                  <TabsList className="rounded-xl">
+                    <TabsTrigger value="en" className="rounded-xl">English</TabsTrigger>
+                    <TabsTrigger value="ar" className="rounded-xl">العربية</TabsTrigger>
+                    <TabsTrigger value="fr" className="rounded-xl">Français</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <div className={cls("grid grid-cols-1 xl:grid-cols-2 gap-6", lang==='ar' ? 'rtl text-right' : 'ltr text-left')} dir={lang==='ar'? 'rtl':'ltr'}>
                 <div>
                   <div className="mb-3 flex items-center justify-between">
                     <h3 className="font-semibold">Headlines</h3>
