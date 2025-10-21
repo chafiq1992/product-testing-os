@@ -126,7 +126,7 @@ export default function AdAnglesStudio(){
 
   function flattenAgentOutput(a: AgentOutput){
     const items: string[] = []
-    const indexMap: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }> = []
+    const indexMap: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }> = [];
     (a.angles||[]).forEach((ang, i)=>{
       items.push(String(ang.angle_title||'')); indexMap.push({ kind:'angle', angleIndex:i })
       ;(ang.headlines||[]).forEach((h, hi)=>{ items.push(String(h||'')); indexMap.push({ kind:'headline', angleIndex:i, subIndex:hi }) })
