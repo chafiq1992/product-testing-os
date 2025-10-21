@@ -126,19 +126,19 @@ export default function AdAnglesStudio(){
 
   function flattenAgentOutput(a: AgentOutput){
     const items: string[] = []
-    const map: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }> = []
+    const indexMap: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }> = []
     (a.angles||[]).forEach((ang, i)=>{
-      items.push(String(ang.angle_title||'')); map.push({ kind:'angle', angleIndex:i })
-      ;(ang.headlines||[]).forEach((h, hi)=>{ items.push(String(h||'')); map.push({ kind:'headline', angleIndex:i, subIndex:hi }) })
-      ;(ang.ad_copies||[]).forEach((c, ci)=>{ items.push(String(c||'')); map.push({ kind:'copy', angleIndex:i, subIndex:ci }) })
+      items.push(String(ang.angle_title||'')); indexMap.push({ kind:'angle', angleIndex:i })
+      ;(ang.headlines||[]).forEach((h, hi)=>{ items.push(String(h||'')); indexMap.push({ kind:'headline', angleIndex:i, subIndex:hi }) })
+      ;(ang.ad_copies||[]).forEach((c, ci)=>{ items.push(String(c||'')); indexMap.push({ kind:'copy', angleIndex:i, subIndex:ci }) })
     })
-    return { items, map }
+    return { items, indexMap }
   }
 
-  function reconstructFromTranslations(base: AgentOutput, translated: string[], map: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }>): AgentOutput{
+  function reconstructFromTranslations(base: AgentOutput, translated: string[], indexMap: Array<{ kind:'angle'|'headline'|'copy', angleIndex:number, subIndex?:number }>): AgentOutput{
     const out: AgentOutput = { angles: base.angles.map(a=>({ angle_title: a.angle_title, headlines: [...a.headlines], ad_copies: [...a.ad_copies] })) }
-    for(let i=0;i<map.length;i++){
-      const m = map[i]
+    for(let i=0;i<indexMap.length;i++){
+      const m = indexMap[i]
       const t = translated[i] ?? ''
       if(m.kind==='angle') out.angles[m.angleIndex].angle_title = t
       if(m.kind==='headline' && m.subIndex!=null) out.angles[m.angleIndex].headlines[m.subIndex] = t
@@ -150,7 +150,7 @@ export default function AdAnglesStudio(){
   async function translateAll(target: 'ar'|'fr', base?: AgentOutput){
     try{
       const src = base || data
-      const { items, map } = flattenAgentOutput(src)
+      const { items, indexMap } = flattenAgentOutput(src)
       if(items.length===0){
         if(target==='ar') setLocalized(p=>({ ...p, ar: { angles: [] } }))
         if(target==='fr') setLocalized(p=>({ ...p, fr: { angles: [] } }))
@@ -163,7 +163,7 @@ export default function AdAnglesStudio(){
       if(arr.length !== items.length){
         throw new Error("Translation count mismatch")
       }
-      const localizedOut = reconstructFromTranslations(src, arr, map)
+      const localizedOut = reconstructFromTranslations(src, arr, indexMap)
       setLocalized(p=> target==='ar'? { ...p, ar: localizedOut } : { ...p, fr: localizedOut })
     }catch(e:any){
       setTranslateError(p=>({ ...p, [target]: e?.message||'Translate failed' }))
