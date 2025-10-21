@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Check, Clipboard, Download, Upload, Sparkles } from "lucide-react";
 import ChatKitWidget from "../ChatKitWidget";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { translateTexts } from "@/lib/api";
 
 // THEME
 const BRAND = { primary: "#004AAD", primarySoft: "#E8F0FF" } as const;
@@ -277,6 +279,8 @@ function sToMMSS(s:number){
 export default function OffersAndVoiceStudio() {
   // Tabs
   const [tab, setTab] = useState<'offers'|'voice'>('offers');
+  type Lang = 'en'|'ar'|'fr'|'ary'
+  const [lang, setLang] = useState<Lang>('en')
 
   // Offers-only UI
   const [offersRaw, setOffersRaw] = useState<string>(JSON.stringify({
@@ -287,21 +291,135 @@ export default function OffersAndVoiceStudio() {
   const [jsonCollapsed, setJsonCollapsed] = useState<boolean>(true);
   const [srcDoc, setSrcDoc] = useState<string>("");
   const [lastHtml, setLastHtml] = useState<string>("");
+  const [offersBase, setOffersBase] = useState<OffersInput|null>(null)
+  const [offersPreviewByLang, setOffersPreviewByLang] = useState<Partial<Record<Lang,string>>>({})
+  const [offersExportByLang, setOffersExportByLang] = useState<Partial<Record<Lang,string>>>({})
+  const [offersTranslating, setOffersTranslating] = useState<{ ar?: boolean, fr?: boolean, ary?: boolean }>({})
+  const [offersTranslateError, setOffersTranslateError] = useState<{ ar?: string, fr?: string, ary?: string }>({})
 
   // Voice-over UI
   const [voiceRaw, setVoiceRaw] = useState<string>(JSON.stringify({ source:{from_agent:"ADS_PACK_V1", offer_count:0}, brand:{name:"IRRAKIDS"}, items:[] }, null, 2));
   const [voiceCollapsed, setVoiceCollapsed] = useState<boolean>(true);
   const [voiceDoc, setVoiceDoc] = useState<string>("");
   const [voiceExport, setVoiceExport] = useState<string>("");
+  const [voiceBase, setVoiceBase] = useState<VoiceInput|null>(null)
+  const [voiceDocByLang, setVoiceDocByLang] = useState<Partial<Record<Lang,string>>>({})
+  const [voiceTranslating, setVoiceTranslating] = useState<{ ar?: boolean, fr?: boolean, ary?: boolean }>({})
+  const [voiceTranslateError, setVoiceTranslateError] = useState<{ ar?: string, fr?: string, ary?: string }>({})
 
-  const generateOffers = () => {
+  function injectDir(doc: string, targetLang: Lang){
+    if(targetLang==='ar' || targetLang==='ary'){
+      try{ return doc.replace('<body>', '<body dir="rtl" style="text-align:right">') }catch{ return doc }
+    }
+    return doc
+  }
+
+  function flattenOffers(o: OffersInput){
+    const items: string[] = []
+    const index: Array<{ kind: 'brand'|'label'|'type'|'headline'|'stopper'|'benefit'|'cta'|'full'|'overlay', itemIndex:number, subIndex?:number }> = []
+    if(o.brand?.name){ items.push(String(o.brand.name)); index.push({ kind:'brand', itemIndex:-1 }) }
+    (o.items||[]).forEach((it, i)=>{
+      items.push(String(it.label||'')); index.push({ kind:'label', itemIndex:i })
+      items.push(String(it.type||'')); index.push({ kind:'type', itemIndex:i })
+      ;(it.headlines||[]).forEach((h, hi)=>{ items.push(String(h||'')); index.push({ kind:'headline', itemIndex:i, subIndex:hi }) })
+      ;(it.ad_copies||[]).forEach((ac, ai)=>{
+        items.push(String(ac.stopper||'')); index.push({ kind:'stopper', itemIndex:i, subIndex:ai })
+        items.push(String(ac.benefit_line||'')); index.push({ kind:'benefit', itemIndex:i, subIndex:ai })
+        items.push(String(ac.cta||'')); index.push({ kind:'cta', itemIndex:i, subIndex:ai })
+        items.push(String(ac.full_text||'')); index.push({ kind:'full', itemIndex:i, subIndex:ai })
+      })
+      ;(it.image_prompt?.overlay_text||[]).forEach((t, ti)=>{ items.push(String(t||'')); index.push({ kind:'overlay', itemIndex:i, subIndex:ti }) })
+    })
+    return { items, index }
+  }
+  function reconstructOffers(base: OffersInput, translated: string[], index: Array<{ kind: 'brand'|'label'|'type'|'headline'|'stopper'|'benefit'|'cta'|'full'|'overlay', itemIndex:number, subIndex?:number }>): OffersInput{
+    const out: OffersInput = { source: base.source, brand: { ...(base.brand||{}) }, items: base.items.map(it=>({ ...it, ad_copies: (it.ad_copies||[]).map(x=>({ ...x })), headlines:[...(it.headlines||[])], image_prompt: { ...(it.image_prompt||{}), overlay_text:[...((it.image_prompt?.overlay_text)||[])] } })) }
+    let ptr = 0
+    for(const m of index){
+      const t = translated[ptr++] ?? ''
+      if(m.kind==='brand' && out.brand){ out.brand.name = t }
+      if(m.kind==='label') out.items[m.itemIndex].label = t
+      if(m.kind==='type') out.items[m.itemIndex].type = t
+      if(m.kind==='headline' && m.subIndex!=null) out.items[m.itemIndex].headlines[m.subIndex] = t
+      if(m.kind==='overlay' && m.subIndex!=null && out.items[m.itemIndex].image_prompt) (out.items[m.itemIndex].image_prompt!.overlay_text as string[])[m.subIndex] = t
+      if(m.kind==='stopper' && m.subIndex!=null) out.items[m.itemIndex].ad_copies[m.subIndex!].stopper = t
+      if(m.kind==='benefit' && m.subIndex!=null) out.items[m.itemIndex].ad_copies[m.subIndex!].benefit_line = t
+      if(m.kind==='cta' && m.subIndex!=null) out.items[m.itemIndex].ad_copies[m.subIndex!].cta = t
+      if(m.kind==='full' && m.subIndex!=null) out.items[m.itemIndex].ad_copies[m.subIndex!].full_text = t
+    }
+    return out
+  }
+  async function translateOffers(target: 'ar'|'fr'|'ary', base: OffersInput){
+    const { items, index } = flattenOffers(base)
+    if(items.length===0) return base
+    setOffersTranslating(p=>({ ...p, [target]: true }))
+    setOffersTranslateError(p=>({ ...p, [target]: undefined }))
+    try{
+      const res = await translateTexts({ texts: items, target, locale: target==='ary'? 'MA': undefined, domain:'ads' })
+      const arr = Array.isArray(res?.translations)? res.translations : []
+      if(arr.length!==items.length) throw new Error('count mismatch')
+      return reconstructOffers(base, arr, index)
+    }catch(e:any){ setOffersTranslateError(p=>({ ...p, [target]: e?.message||'translate failed' })); return base }
+    finally{ setOffersTranslating(p=>({ ...p, [target]: false })) }
+  }
+
+  function flattenVoice(v: VoiceInput){
+    const items: string[] = []
+    const index: Array<{ kind:'brand'|'vo'|'ins'|'text'|'check'|'imgnote', itemIndex:number, subIndex?:number, subSub?:number }> = []
+    if(v.brand?.name){ items.push(String(v.brand.name)); index.push({ kind:'brand', itemIndex:-1 }) }
+    (v.items||[]).forEach((it, i)=>{
+      ;(it.storyboard||[]).forEach((s, si)=>{
+        items.push(String(s.voiceover||'')); index.push({ kind:'vo', itemIndex:i, subIndex:si })
+        items.push(String(s.shot_instructions||'')); index.push({ kind:'ins', itemIndex:i, subIndex:si })
+        items.push(String(s.on_screen_text||'')); index.push({ kind:'text', itemIndex:i, subIndex:si })
+      })
+      ;(it.broll_checklist||[]).forEach((t, ti)=>{ items.push(String(t||'')); index.push({ kind:'check', itemIndex:i, subIndex:ti }) })
+    })
+    return { items, index }
+  }
+  function reconstructVoice(base: VoiceInput, translated: string[], index: Array<{ kind:'brand'|'vo'|'ins'|'text'|'check'|'imgnote', itemIndex:number, subIndex?:number, subSub?:number }>): VoiceInput{
+    const out: VoiceInput = { source: base.source, brand: { ...(base.brand||{}) }, items: base.items.map(it=>({ ...it, storyboard:(it.storyboard||[]).map(s=>({ ...s })), broll_checklist:[...((it.broll_checklist)||[])] })) }
+    let ptr=0
+    for(const m of index){
+      const t = translated[ptr++] ?? ''
+      if(m.kind==='brand' && out.brand){ out.brand.name = t }
+      if(m.kind==='vo' && m.subIndex!=null) out.items[m.itemIndex].storyboard![m.subIndex].voiceover = t
+      if(m.kind==='ins' && m.subIndex!=null) out.items[m.itemIndex].storyboard![m.subIndex].shot_instructions = t
+      if(m.kind==='text' && m.subIndex!=null) out.items[m.itemIndex].storyboard![m.subIndex].on_screen_text = t
+      if(m.kind==='check' && m.subIndex!=null) out.items[m.itemIndex].broll_checklist![m.subIndex] = t
+    }
+    return out
+  }
+  async function translateVoice(target:'ar'|'fr'|'ary', base: VoiceInput){
+    const { items, index } = flattenVoice(base)
+    if(items.length===0) return base
+    setVoiceTranslating(p=>({ ...p, [target]: true }))
+    setVoiceTranslateError(p=>({ ...p, [target]: undefined }))
+    try{
+      const res = await translateTexts({ texts: items, target, locale: target==='ary'? 'MA': undefined, domain:'ads' })
+      const arr = Array.isArray(res?.translations)? res.translations : []
+      if(arr.length!==items.length) throw new Error('count mismatch')
+      return reconstructVoice(base, arr, index)
+    }catch(e:any){ setVoiceTranslateError(p=>({ ...p, [target]: e?.message||'translate failed' })); return base }
+    finally{ setVoiceTranslating(p=>({ ...p, [target]: false })) }
+  }
+
+  const generateOffers = async () => {
     try {
       const raw = JSON.parse(offersRaw);
       const norm = normalizeOffersPayload(raw);
+      setOffersBase(norm)
       const htmlPreview = buildOffersShopifyHTML(norm, { preview: true });
       const htmlExport = buildOffersShopifyHTML(norm, { preview: false });
-      setSrcDoc(htmlPreview);
-      setLastHtml(htmlExport);
+      setOffersPreviewByLang({ en: injectDir(htmlPreview, 'en') })
+      setOffersExportByLang({ en: htmlExport })
+      setSrcDoc(injectDir(htmlPreview, 'en'))
+      setLastHtml(htmlExport)
+      await Promise.allSettled([
+        (async()=>{ const ar = await translateOffers('ar', norm); const doc = buildOffersShopifyHTML(ar, { preview: true }); const exp = buildOffersShopifyHTML(ar, { preview: false }); setOffersPreviewByLang(p=>({ ...p, ar: injectDir(doc,'ar') })); setOffersExportByLang(p=>({ ...p, ar: exp })) })(),
+        (async()=>{ const fr = await translateOffers('fr', norm); const doc = buildOffersShopifyHTML(fr, { preview: true }); const exp = buildOffersShopifyHTML(fr, { preview: false }); setOffersPreviewByLang(p=>({ ...p, fr: injectDir(doc,'fr') })); setOffersExportByLang(p=>({ ...p, fr: exp })) })(),
+        (async()=>{ const ary = await translateOffers('ary', norm); const doc = buildOffersShopifyHTML(ary, { preview: true }); const exp = buildOffersShopifyHTML(ary, { preview: false }); setOffersPreviewByLang(p=>({ ...p, ary: injectDir(doc,'ary') })); setOffersExportByLang(p=>({ ...p, ary: exp })) })(),
+      ])
       toast.success("Offers HTML generated");
     } catch (e: any) {
       setSrcDoc("");
@@ -309,13 +427,20 @@ export default function OffersAndVoiceStudio() {
     }
   };
 
-  const generateVoice = () => {
+  const generateVoice = async () => {
     try {
       const raw = JSON.parse(voiceRaw);
       const norm = normalizeVoicePayload(raw);
+      setVoiceBase(norm)
       const htmlPreview = buildVoicePreviewHTML(norm, { preview: true });
-      setVoiceDoc(htmlPreview);
+      setVoiceDocByLang({ en: injectDir(htmlPreview,'en') })
+      setVoiceDoc(injectDir(htmlPreview,'en'))
       setVoiceExport(htmlPreview); // export identical for now
+      await Promise.allSettled([
+        (async()=>{ const ar = await translateVoice('ar', norm); const doc = buildVoicePreviewHTML(ar, { preview: true }); setVoiceDocByLang(p=>({ ...p, ar: injectDir(doc,'ar') })) })(),
+        (async()=>{ const fr = await translateVoice('fr', norm); const doc = buildVoicePreviewHTML(fr, { preview: true }); setVoiceDocByLang(p=>({ ...p, fr: injectDir(doc,'fr') })) })(),
+        (async()=>{ const ary = await translateVoice('ary', norm); const doc = buildVoicePreviewHTML(ary, { preview: true }); setVoiceDocByLang(p=>({ ...p, ary: injectDir(doc,'ary') })) })(),
+      ])
       toast.success("Voiceover preview generated");
     } catch (e: any) {
       setVoiceDoc("");
@@ -417,20 +542,39 @@ export default function OffersAndVoiceStudio() {
 
           {/* Preview */}
           <div className="lg:col-span-7">
-            <Card className="rounded-2xl border-slate-200 shadow-sm">
-              <CardHeader><CardTitle className="text-base">Preview</CardTitle></CardHeader>
+          <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Preview</CardTitle>
+                <Tabs value={lang} onValueChange={(v)=>setLang(v as Lang)}>
+                  <TabsList className="rounded-xl">
+                    <TabsTrigger value="en" className="rounded-xl">English</TabsTrigger>
+                    <TabsTrigger value="ar" className="rounded-xl">العربية</TabsTrigger>
+                    <TabsTrigger value="fr" className="rounded-xl">Français</TabsTrigger>
+                    <TabsTrigger value="ary" className="rounded-xl">الدارجة</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+            </CardHeader>
               <CardContent>
                 <div className="rounded-xl border overflow-hidden">
                   {srcDoc ? (
-                    <iframe title="Offers Preview" srcDoc={srcDoc} style={{ width: "100%", height: 640, border: "0" }} />
+                  <iframe title="Offers Preview" srcDoc={(offersPreviewByLang[lang]||offersPreviewByLang.en||srcDoc)} style={{ width: "100%", height: 640, border: "0" }} />
                   ) : (
                     <div className="p-6 text-sm text-slate-500">Paste offers JSON and click <strong>Generate Offers HTML</strong> to see the live preview.</div>
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-3">
-                  <Button className="rounded-xl" onClick={generateOffers}><Sparkles className="h-4 w-4 mr-2" />Generate Offers HTML</Button>
-                  <Button variant="outline" className="rounded-xl" onClick={downloadHTML}><Download className="h-4 w-4 mr-2" />Download HTML</Button>
+                <Button className="rounded-xl" onClick={generateOffers}><Sparkles className="h-4 w-4 mr-2" />Generate Offers HTML</Button>
+                <Button variant="outline" className="rounded-xl" onClick={downloadHTML}><Download className="h-4 w-4 mr-2" />Download HTML</Button>
                 </div>
+              <div className="mt-3 text-xs text-slate-500 flex items-center gap-2">Translations:
+                <span className={offersTranslating.ar? 'text-sky-600':''}>AR {offersPreviewByLang.ar? 'ready' : (offersTranslating.ar? '…' : (offersTranslateError.ar? 'error':'–'))}</span>
+                <span>·</span>
+                <span className={offersTranslating.fr? 'text-sky-600':''}>FR {offersPreviewByLang.fr? 'ready' : (offersTranslating.fr? '…' : (offersTranslateError.fr? 'error':'–'))}</span>
+                <span>·</span>
+                <span className={offersTranslating.ary? 'text-sky-600':''}>Darija {offersPreviewByLang.ary? 'ready' : (offersTranslating.ary? '…' : (offersTranslateError.ary? 'error':'–'))}</span>
+              </div>
               </CardContent>
             </Card>
           </div>
@@ -473,20 +617,39 @@ export default function OffersAndVoiceStudio() {
           </div>
 
           <div className="lg:col-span-7">
-            <Card className="rounded-2xl border-slate-200 shadow-sm">
-              <CardHeader><CardTitle className="text-base">Voiceover Preview</CardTitle></CardHeader>
+          <Card className="rounded-2xl border-slate-200 shadow-sm">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Voiceover Preview</CardTitle>
+                <Tabs value={lang} onValueChange={(v)=>setLang(v as Lang)}>
+                  <TabsList className="rounded-xl">
+                    <TabsTrigger value="en" className="rounded-xl">English</TabsTrigger>
+                    <TabsTrigger value="ar" className="rounded-xl">العربية</TabsTrigger>
+                    <TabsTrigger value="fr" className="rounded-xl">Français</TabsTrigger>
+                    <TabsTrigger value="ary" className="rounded-xl">الدارجة</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+            </CardHeader>
               <CardContent>
                 <div className="rounded-xl border overflow-hidden">
                   {voiceDoc ? (
-                    <iframe title="Voiceover Preview" srcDoc={voiceDoc} style={{ width: "100%", height: 640, border: "0" }} />
+                  <iframe title="Voiceover Preview" srcDoc={(voiceDocByLang[lang]||voiceDocByLang.en||voiceDoc)} style={{ width: "100%", height: 640, border: "0" }} />
                   ) : (
                     <div className="p-6 text-sm text-slate-500">Paste voiceover JSON and click <strong>Generate Voiceover</strong> to see an easy-to-read VO + Instructions board.</div>
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-3">
-                  <Button className="rounded-xl" onClick={generateVoice}><Sparkles className="h-4 w-4 mr-2" />Generate Voiceover</Button>
-                  <Button variant="outline" className="rounded-xl" onClick={downloadHTML}><Download className="h-4 w-4 mr-2" />Download HTML</Button>
+                <Button className="rounded-xl" onClick={generateVoice}><Sparkles className="h-4 w-4 mr-2" />Generate Voiceover</Button>
+                <Button variant="outline" className="rounded-xl" onClick={downloadHTML}><Download className="h-4 w-4 mr-2" />Download HTML</Button>
                 </div>
+              <div className="mt-3 text-xs text-slate-500 flex items-center gap-2">Translations:
+                <span className={voiceTranslating.ar? 'text-sky-600':''}>AR {voiceDocByLang.ar? 'ready' : (voiceTranslating.ar? '…' : (voiceTranslateError.ar? 'error':'–'))}</span>
+                <span>·</span>
+                <span className={voiceTranslating.fr? 'text-sky-600':''}>FR {voiceDocByLang.fr? 'ready' : (voiceTranslating.fr? '…' : (voiceTranslateError.fr? 'error':'–'))}</span>
+                <span>·</span>
+                <span className={voiceTranslating.ary? 'text-sky-600':''}>Darija {voiceDocByLang.ary? 'ready' : (voiceTranslating.ary? '…' : (voiceTranslateError.ary? 'error':'–'))}</span>
+              </div>
               </CardContent>
             </Card>
           </div>
