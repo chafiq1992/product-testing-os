@@ -1,7 +1,7 @@
 "use client"
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw } from 'lucide-react'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief } from '@/lib/api'
 
 export default function AdsManagementPage(){
@@ -21,6 +21,8 @@ export default function AdsManagementPage(){
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
+  const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
 
   function computeRange(preset: string){
     const now = new Date()
@@ -99,6 +101,86 @@ export default function AdsManagementPage(){
 
   useEffect(()=>{ load(datePreset) },[])
 
+  function getId(row: MetaCampaignRow){
+    return (row.name||'').trim()
+  }
+  function getOrders(row: MetaCampaignRow){
+    const id = getId(row)
+    if(!/^\d+$/.test(id)) return null
+    const v = shopifyCounts[id]
+    return typeof v==='number'? v : null
+  }
+  function getInventory(row: MetaCampaignRow){
+    const id = getId(row)
+    if(!/^\d+$/.test(id)) return null
+    const brief = productBriefs[id]
+    if(!brief) return null
+    return typeof brief.total_available==='number'? brief.total_available : null
+  }
+  function getZeroVariants(row: MetaCampaignRow){
+    const id = getId(row)
+    if(!/^\d+$/.test(id)) return null
+    const brief = productBriefs[id]
+    if(!brief) return null
+    return typeof brief.zero_variants==='number'? brief.zero_variants : null
+  }
+  function getTrueCpp(row: MetaCampaignRow){
+    const orders = getOrders(row)
+    if(orders==null || orders<=0) return null
+    const spend = row.spend||0
+    return spend/orders
+  }
+  function getSortValue(row: MetaCampaignRow){
+    switch(sortKey){
+      case 'campaign': return (row.name||'').toLowerCase()
+      case 'spend': return row.spend||0
+      case 'purchases': return row.purchases||0
+      case 'cpp': return row.cpp==null? null : Number(row.cpp)
+      case 'ctr': return row.ctr==null? null : Number(row.ctr)
+      case 'add_to_cart': return row.add_to_cart||0
+      case 'shopify_orders': return getOrders(row)
+      case 'true_cpp': return getTrueCpp(row)
+      case 'inventory': return getInventory(row)
+      case 'zero_variant': return getZeroVariants(row)
+      default: return null
+    }
+  }
+  function compareRows(a: MetaCampaignRow, b: MetaCampaignRow){
+    const av = getSortValue(a) as any
+    const bv = getSortValue(b) as any
+    // Always push null/undefined to the bottom, regardless of sort direction
+    const aNull = (av==null)
+    const bNull = (bv==null)
+    if(aNull && bNull) return 0
+    if(aNull && !bNull) return 1
+    if(!aNull && bNull) return -1
+    let res = 0
+    if(typeof av==='string' || typeof bv==='string'){
+      res = String(av).localeCompare(String(bv))
+    }else{
+      res = (Number(av)||0) - (Number(bv)||0)
+    }
+    return sortDir==='asc'? res : -res
+  }
+  const sortedItems = useMemo(()=>{
+    const arr = (items||[]).slice()
+    try{ arr.sort(compareRows) }catch{}
+    return arr
+  }, [items, sortKey, sortDir, shopifyCounts, productBriefs])
+
+  function toggleSort(key: typeof sortKey){
+    if(sortKey===key){
+      setSortDir(prev=> prev==='asc'? 'desc' : 'asc')
+    }else{
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  function SortArrow(){
+    return sortDir==='asc'? <ArrowUp className="w-3.5 h-3.5"/> : <ArrowDown className="w-3.5 h-3.5"/>
+  }
+
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
@@ -133,19 +215,69 @@ export default function AdsManagementPage(){
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-b sticky top-0 z-10">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b sticky top-16 z-40 shadow-sm">
               <tr className="text-left">
                 <th className="px-3 py-2 font-semibold">Product</th>
-                <th className="px-3 py-2 font-semibold">Campaign</th>
-                <th className="px-3 py-2 font-semibold text-right">Spend</th>
-                <th className="px-3 py-2 font-semibold text-right">Purchases</th>
-                <th className="px-3 py-2 font-semibold text-right">Cost / Purchase</th>
-                <th className="px-3 py-2 font-semibold text-right">CTR</th>
-                <th className="px-3 py-2 font-semibold text-right">Add to cart</th>
-                <th className="px-3 py-2 font-semibold text-emerald-700">Shopify Orders</th>
-                <th className="px-3 py-2 font-semibold text-right">True CPP</th>
-                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">Inventory</th>
-                <th className="px-3 py-2 font-semibold text-rose-700 text-right">Zero-variant</th>
+                <th className="px-3 py-2 font-semibold">
+                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>Campaign</span>
+                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>Spend</span>
+                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>Purchases</span>
+                    {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>Cost / Purchase</span>
+                    {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>CTR</span>
+                    {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>Add to cart</span>
+                    {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-emerald-700">
+                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 hover:text-emerald-800">
+                    <span>Shopify Orders</span>
+                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-right">
+                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                    <span>True CPP</span>
+                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
+                  <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
+                    <span>Inventory</span>
+                    {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400"/>}
+                  </button>
+                </th>
+                <th className="px-3 py-2 font-semibold text-rose-700 text-right">
+                  <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 hover:text-rose-800">
+                    <span>Zero-variant</span>
+                    {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-rose-400"/>}
+                  </button>
+                </th>
                 <th className="px-3 py-2 font-semibold">Notes</th>
               </tr>
             </thead>
@@ -160,7 +292,7 @@ export default function AdsManagementPage(){
                   <td colSpan={12} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
-              {!loading && items.map((c)=>{
+              {!loading && sortedItems.map((c)=>{
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
                 const id = (c.name||'').trim()
@@ -173,10 +305,10 @@ export default function AdsManagementPage(){
                 const inv = brief? brief.total_available : null
                 const zeros = brief? brief.zero_variants : null
                 const img = brief? brief.image : null
-                const trueCppClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-yellow-50' : 'bg-rose-50'))
+                const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-50 ${trueCppClass}`}>
+                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
