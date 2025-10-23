@@ -302,6 +302,20 @@ def _rest_get_store(store: str | None, path: str):
     return r.json() if r.content else {}
 
 
+def _rest_get_store_raw(store: str | None, path: str):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = requests.get(url, headers=cfg["HEADERS"], timeout=60, auth=auth, allow_redirects=False)
+    r.raise_for_status()
+    return r
+
+
 def get_shop_timezone(store: str | None = None) -> str:
     try:
         data = _rest_get_store(store, "/shop.json")
@@ -427,6 +441,72 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
                 break
             qs["since_id"] = last_id
         except Exception:
+            break
+    return total
+
+
+def _parse_link_next(link: str | None) -> str | None:
+    if not link:
+        return None
+    try:
+        parts = [p.strip() for p in link.split(",")]
+        for p in parts:
+            if 'rel="next"' in p:
+                seg = p.split(";")[0].strip()
+                if seg.startswith("<") and seg.endswith(">"):
+                    from urllib.parse import urlparse, parse_qs
+                    url = seg[1:-1]
+                    q = parse_qs(urlparse(url).query)
+                    pi = q.get("page_info", [None])[0]
+                    return pi
+    except Exception:
+        return None
+    return None
+
+
+def count_orders_by_product_processed(product_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None) -> int:
+    """Count open orders filtered by processed_at date (YYYY-MM-DD) and product_id, matching Shopify Admin behavior.
+
+    Uses page_info pagination.
+    """
+    if not (product_id and product_id.isdigit()):
+        return 0
+    pid = int(product_id)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": "open",
+        "limit": 250,
+        "processed_at_min": f"{processed_min_date}T00:00:00",
+        "processed_at_max": f"{processed_max_date}T23:59:59",
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                for li in (o.get("line_items") or []):
+                    try:
+                        if int((li or {}).get("product_id") or 0) == pid:
+                            total += 1
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
             break
     return total
 

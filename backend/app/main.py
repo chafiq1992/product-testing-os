@@ -19,6 +19,7 @@ from app.integrations.shopify_client import create_product_and_page, upload_imag
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import get_products_brief
+from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -365,8 +366,8 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
 
 class OrdersCountRequest(BaseModel):
     names: list[str]
-    start: str  # ISO date/time
-    end: str    # ISO date/time
+    start: str  # ISO date/time or YYYY-MM-DD
+    end: str    # ISO date/time or YYYY-MM-DD
     store: Optional[str] = None
     include_closed: Optional[bool] = None
 
@@ -380,7 +381,12 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         out: dict[str, int] = {}
         for name in (req.names or []):
             try:
-                out[name] = count_orders_by_title(name or "", start, end, store=store)
+                # If start/end look like YYYY-MM-DD and name is numeric → match Shopify Admin processed_at filter
+                import re as _re
+                if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) and str(name or "").isdigit():
+                    out[name] = count_orders_by_product_processed(str(name), start, end, store=store)
+                else:
+                    out[name] = count_orders_by_title(name or "", start, end, store=store)
             except Exception:
                 out[name] = 0
         return {"data": out}
