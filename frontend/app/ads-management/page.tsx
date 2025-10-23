@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -17,6 +17,7 @@ export default function AdsManagementPage(){
   const [adAccount, setAdAccount] = useState<string>(()=>{
     try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
   })
+  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
 
   function computeRange(preset: string){
     const now = new Date()
@@ -62,12 +63,20 @@ export default function AdsManagementPage(){
       else setItems((res as any)?.data||[])
       // Reset counts and start lazy sequential fetching after table is visible
       setShopifyCounts({})
+      setProductBriefs({})
       const token = ++ordersSeqToken.current
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
         const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
         const ids = rows.map(c=> (c.name||'').trim()).filter(n=> /^\d+$/.test(n))
         if(!ids.length) return
+        // Fetch product briefs (image + inventory) in batch for speed
+        try{
+          const pb = await shopifyProductsBrief({ ids, store })
+          setProductBriefs(((pb as any)?.data)||{})
+        }catch{
+          setProductBriefs({})
+        }
         const { start, end } = computeRange(effPreset)
         for(const id of ids){
           if(token !== ordersSeqToken.current) break
@@ -123,6 +132,7 @@ export default function AdsManagementPage(){
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 border-b sticky top-0 z-10">
               <tr className="text-left">
+                <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 font-semibold">Campaign</th>
                 <th className="px-3 py-2 font-semibold text-right">Spend</th>
                 <th className="px-3 py-2 font-semibold text-right">Purchases</th>
@@ -131,17 +141,19 @@ export default function AdsManagementPage(){
                 <th className="px-3 py-2 font-semibold text-right">Add to cart</th>
                 <th className="px-3 py-2 font-semibold text-emerald-700">Shopify Orders</th>
                 <th className="px-3 py-2 font-semibold text-right">True CPP</th>
+                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">Inventory</th>
+                <th className="px-3 py-2 font-semibold text-rose-700 text-right">Zero-variant</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={12} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={12} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && items.map((c)=>{
@@ -153,8 +165,24 @@ export default function AdsManagementPage(){
                 const orders = typeof ordersVal==='number'? ordersVal : null
                 const trueCppVal = (orders!=null && orders>0)? (c.spend||0)/orders : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
+                const brief = isNumeric? productBriefs[id] : undefined
+                const inv = brief? brief.total_available : null
+                const zeros = brief? brief.zero_variants : null
+                const img = brief? brief.image : null
                 return (
                   <tr key={c.campaign_id || c.name} className="border-b last:border-b-0 hover:bg-slate-50">
+                    <td className="px-3 py-2">
+                      {isNumeric ? (
+                        img ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={img} alt="product" className="w-12 h-12 rounded object-cover border" />
+                        ) : (
+                          <span className="inline-block w-12 h-12 rounded bg-slate-100 border animate-pulse" />
+                        )
+                      ) : (
+                        <span className="inline-block w-12 h-12 rounded bg-slate-50 border" />
+                      )}
+                    </td>
                     <td className="px-3 py-2 whitespace-nowrap">{c.name||'-'}</td>
                     <td className="px-3 py-2 text-right">${(c.spend||0).toFixed(2)}</td>
                     <td className="px-3 py-2 text-right">{c.purchases||0}</td>
@@ -173,6 +201,28 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">{isNumeric && orders===null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                    <td className="px-3 py-2 text-right">
+                      {isNumeric ? (
+                        inv===null || inv===undefined ? (
+                          <span className="inline-block h-4 w-10 bg-indigo-50 rounded animate-pulse" />
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                        )
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {isNumeric ? (
+                        zeros===null || zeros===undefined ? (
+                          <span className="inline-block h-4 w-10 bg-rose-50 rounded animate-pulse" />
+                        ) : (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
+                        )
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
                   </tr>
                 )
               })}

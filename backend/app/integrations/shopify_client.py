@@ -392,6 +392,81 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
     return total
 
 
+def _product_first_image_url(numeric_product_id: str, *, store: str | None = None) -> str | None:
+    try:
+        data = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        imgs = ((data or {}).get("product") or {}).get("images") or []
+        if imgs:
+            return (imgs[0] or {}).get("src")
+    except Exception:
+        return None
+    return None
+
+
+def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> dict:
+    """Return a brief for a product: image, total_available, zero_variants.
+
+    - Sums inventory across all inventory levels per variant
+    - Counts how many variants have 0 available
+    - Picks the first product image as thumbnail
+    """
+    total_available = 0
+    zero_variants = 0
+    try:
+        variants = _list_variants(numeric_product_id, store=store)
+    except Exception:
+        variants = []
+    inv_map: dict[str, int] = {}
+    # Collect inventory_item_ids
+    inv_ids: list[str] = []
+    for v in variants or []:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            if iid and iid != "None":
+                inv_ids.append(iid)
+        except Exception:
+            continue
+    if inv_ids:
+        # Query inventory levels in chunks (Shopify limit)
+        chunk = 50
+        for i in range(0, len(inv_ids), chunk):
+            ids = ",".join(inv_ids[i:i+chunk])
+            try:
+                data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={ids}")
+                levels = (data or {}).get("inventory_levels") or []
+                for lv in levels:
+                    try:
+                        iid = str(lv.get("inventory_item_id"))
+                        avail = int(lv.get("available") or 0)
+                        inv_map[iid] = inv_map.get(iid, 0) + avail
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    # Compute totals per variant
+    for v in variants or []:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            avail = inv_map.get(iid, 0)
+            total_available += max(0, int(avail))
+            if int(avail) <= 0:
+                zero_variants += 1
+        except Exception:
+            continue
+    image = _product_first_image_url(numeric_product_id, store=store)
+    return {"image": image, "total_available": total_available, "zero_variants": zero_variants}
+
+
+def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+    out: dict[str, dict] = {}
+    for pid in (numeric_product_ids or []):
+        try:
+            out[pid] = get_product_brief(str(pid), store=store)
+        except Exception:
+            out[pid] = {"image": None, "total_available": 0, "zero_variants": 0}
+    return out
+
+
 def _extract_numeric_id_from_gid(gid: str) -> str | None:
     try:
         return (gid or "").split("/")[-1] or None

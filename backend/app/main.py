@@ -18,6 +18,7 @@ from app.integrations.gemini_client import analyze_variants_from_image, build_fe
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
+from app.integrations.shopify_client import get_products_brief
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -382,6 +383,20 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
             except Exception:
                 out[name] = 0
         return {"data": out}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+class ProductsBriefRequest(BaseModel):
+    ids: list[str]
+    store: Optional[str] = None
+
+
+@app.post("/api/shopify/products_brief")
+async def api_products_brief(req: ProductsBriefRequest):
+    try:
+        data = get_products_brief(req.ids or [], store=req.store)
+        return {"data": data}
     except Exception as e:
         return {"error": str(e), "data": {}}
 

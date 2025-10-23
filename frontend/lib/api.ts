@@ -446,3 +446,9 @@ export async function shopifyOrdersCountByTitle(payload:{ names: string[], start
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
   return data as { data: { [name:string]: number }, error?: string }
 }
+
+export async function shopifyProductsBrief(payload:{ ids: string[], store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/shopify/products_brief`, body)
+  return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number } }, error?: string }
+}
