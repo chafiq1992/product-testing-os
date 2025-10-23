@@ -18,6 +18,9 @@ export default function AdsManagementPage(){
     try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
   })
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
+  const [notes, setNotes] = useState<Record<string, string>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
+  })
 
   function computeRange(preset: string){
     const now = new Date()
@@ -143,6 +146,7 @@ export default function AdsManagementPage(){
                 <th className="px-3 py-2 font-semibold text-right">True CPP</th>
                 <th className="px-3 py-2 font-semibold text-indigo-700 text-right">Inventory</th>
                 <th className="px-3 py-2 font-semibold text-rose-700 text-right">Zero-variant</th>
+                <th className="px-3 py-2 font-semibold">Notes</th>
               </tr>
             </thead>
             <tbody>
@@ -169,18 +173,20 @@ export default function AdsManagementPage(){
                 const inv = brief? brief.total_available : null
                 const zeros = brief? brief.zero_variants : null
                 const img = brief? brief.image : null
+                const trueCppClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-yellow-50' : 'bg-rose-50'))
+                const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <tr key={c.campaign_id || c.name} className="border-b last:border-b-0 hover:bg-slate-50">
+                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-50 ${trueCppClass}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={img} alt="product" className="w-12 h-12 rounded object-cover border" />
+                          <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
                         ) : (
-                          <span className="inline-block w-12 h-12 rounded bg-slate-100 border animate-pulse" />
+                          <span className="inline-block w-20 h-20 rounded bg-slate-100 border animate-pulse" />
                         )
                       ) : (
-                        <span className="inline-block w-12 h-12 rounded bg-slate-50 border" />
+                        <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
                       )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">{c.name||'-'}</td>
@@ -222,6 +228,17 @@ export default function AdsManagementPage(){
                       ) : (
                         <span className="text-slate-400">—</span>
                       )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        value={notes[rowKey as any]||''}
+                        onChange={(e)=>{
+                          const v = e.target.value
+                          setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
+                        }}
+                        placeholder="Notes"
+                        className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                      />
                     </td>
                   </tr>
                 )
