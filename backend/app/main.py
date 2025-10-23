@@ -368,6 +368,7 @@ class OrdersCountRequest(BaseModel):
     start: str  # ISO date/time
     end: str    # ISO date/time
     store: Optional[str] = None
+    include_closed: Optional[bool] = None
 
 
 @app.post("/api/shopify/orders_count_by_title")

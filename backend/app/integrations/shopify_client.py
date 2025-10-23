@@ -1,4 +1,9 @@
 import os, requests, base64, re
+from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 load_dotenv()
@@ -296,6 +301,17 @@ def _rest_get_store(store: str | None, path: str):
     r.raise_for_status()
     return r.json() if r.content else {}
 
+
+def get_shop_timezone(store: str | None = None) -> str:
+    try:
+        data = _rest_get_store(store, "/shop.json")
+        tz = ((data or {}).get("shop") or {}).get("iana_timezone") or ((data or {}).get("shop") or {}).get("timezone")
+        if isinstance(tz, str) and tz.strip():
+            return tz.strip()
+    except Exception:
+        pass
+    return "UTC"
+
 def _rest_put_store(store: str | None, path: str, payload: dict):
     cfg = _get_store_config(store)
     url = f"{cfg['BASE']}{path}"
@@ -344,11 +360,34 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
     total = 0
     page_info = None
     base_path = "/orders.json"
+    # Normalize date window to store's timezone (inclusive day bounds)
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        start_dt = datetime.fromisoformat(created_at_min.replace("Z","+00:00"))
+        end_dt = datetime.fromisoformat(created_at_max.replace("Z","+00:00"))
+        if tz:
+            start_dt = start_dt.astimezone(tz)
+            end_dt = end_dt.astimezone(tz)
+        # Expand end to end-of-second inclusive to avoid off-by-one truncation
+        end_dt = end_dt + timedelta(milliseconds=999)
+        created_min = start_dt.isoformat()
+        created_max = end_dt.isoformat()
+    except Exception:
+        created_min = created_at_min
+        created_max = created_at_max
+
     qs = {
         "status": "open",  # per requirement: only open orders
         "limit": 250,
-        "created_at_min": created_at_min,
-        "created_at_max": created_at_max,
+        "created_at_min": created_min,
+        "created_at_max": created_max,
         # do not restrict fields to ensure line_items include product_id and variant_id
     }
     while True:
