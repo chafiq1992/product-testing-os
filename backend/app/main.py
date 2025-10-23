@@ -17,6 +17,7 @@ from app.integrations.gemini_client import gen_ad_images_from_image, gen_promoti
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
 from app.integrations.shopify_client import configure_variants_for_product
+from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -359,6 +360,30 @@ async def get_meta_campaigns(date_preset: str | None = None):
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
+
+
+class OrdersCountRequest(BaseModel):
+    names: list[str]
+    start: str  # ISO date/time
+    end: str    # ISO date/time
+    store: Optional[str] = None
+
+
+@app.post("/api/shopify/orders_count_by_title")
+async def api_orders_count_by_title(req: OrdersCountRequest):
+    try:
+        start = req.start
+        end = req.end
+        store = req.store
+        out: dict[str, int] = {}
+        for name in (req.names or []):
+            try:
+                out[name] = count_orders_by_title(name or "", start, end, store=store)
+            except Exception:
+                out[name] = 0
+        return {"data": out}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
 
 
 # ---------------- LLM step endpoints (interactive flow) ----------------

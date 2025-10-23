@@ -323,6 +323,59 @@ def _rest_delete_store(store: str | None, path: str):
     return r.json() if r.content else {}
 
 
+def count_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None) -> int:
+    """Count orders created within [created_at_min, created_at_max] where any line item title contains the given text.
+
+    Includes orders with financial_status paid or pending (and any), and fulfillment status ignored.
+    Only counts open/cancellable orders (exclude canceled).
+    """
+    # Paginate REST orders endpoint using created_at range and status filters
+    # Shopify REST: /orders.json?status=any&created_at_min=...&created_at_max=...&limit=250
+    from urllib.parse import urlencode
+    total = 0
+    page_info = None
+    base_path = "/orders.json"
+    qs = {
+        "status": "any",  # include open, closed, canceled; we'll exclude canceled below
+        "limit": 250,
+        "created_at_min": created_at_min,
+        "created_at_max": created_at_max,
+        "fields": "id,financial_status,cancelled_at,line_items,title,created_at"
+    }
+    while True:
+        path = base_path + ("?" + urlencode(qs) if qs else "")
+        data = _rest_get_store(store, path)
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                # financial_status can be null; accept any (paid, pending, authorized, etc.)
+                items = o.get("line_items") or []
+                found = False
+                for li in items:
+                    t = (li or {}).get("title") or ""
+                    if isinstance(t, str) and title_contains.lower() in t.lower():
+                        found = True
+                        break
+                if found:
+                    total += 1
+            except Exception:
+                continue
+        # Pagination via Link header is not exposed in our helper; break when < limit
+        if len(orders) < int(qs["limit"]):
+            break
+        # Advance created_at_min to last order's created_at to avoid duplicates
+        try:
+            last_created = orders[-1].get("created_at")
+            if not last_created:
+                break
+            qs["created_at_min"] = last_created
+        except Exception:
+            break
+    return total
+
+
 def _extract_numeric_id_from_gid(gid: str) -> str | None:
     try:
         return (gid or "").split("/")[-1] or None

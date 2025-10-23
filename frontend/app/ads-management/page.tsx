@@ -2,20 +2,66 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const [datePreset, setDatePreset] = useState<string>('last_7d')
   const [error, setError] = useState<string|undefined>(undefined)
+  const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
+
+  function computeRange(preset: string){
+    const now = new Date()
+    const end = now.toISOString()
+    const startDate = new Date(now)
+    switch(preset){
+      case 'today':
+        startDate.setHours(0,0,0,0)
+        break
+      case 'yesterday':{
+        const d = new Date(now)
+        d.setDate(d.getDate()-1)
+        d.setHours(0,0,0,0)
+        const e = new Date(d)
+        e.setHours(23,59,59,999)
+        return { start: d.toISOString(), end: e.toISOString() }
+      }
+      case 'last_14d':
+        startDate.setDate(startDate.getDate()-14)
+        break
+      case 'this_month':{
+        const d = new Date(now.getFullYear(), now.getMonth(), 1)
+        return { start: d.toISOString(), end }
+      }
+      case 'last_30d':
+        startDate.setDate(startDate.getDate()-30)
+        break
+      case 'last_7d':
+      default:
+        startDate.setDate(startDate.getDate()-7)
+        break
+    }
+    startDate.setHours(0,0,0,0)
+    return { start: startDate.toISOString(), end }
+  }
 
   async function load(preset?: string){
     setLoading(true); setError(undefined)
     try{
-      const res = await fetchMetaCampaigns(preset||datePreset)
+      const effPreset = preset||datePreset
+      const res = await fetchMetaCampaigns(effPreset)
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
+      // After meta items load, fetch Shopify orders counts for the same period
+      const names = (((res as any)?.data)||[]).map((c:MetaCampaignRow)=> c.name).filter(Boolean)
+      if(names.length){
+        const { start, end } = computeRange(effPreset)
+        const oc = await shopifyOrdersCountByTitle({ names: names as string[], start, end })
+        setShopifyCounts((oc as any)?.data||{})
+      } else {
+        setShopifyCounts({})
+      }
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ setLoading(false) }
   }
@@ -59,22 +105,27 @@ export default function AdsManagementPage(){
                 <th className="px-3 py-2 font-semibold">Cost / Purchase</th>
                 <th className="px-3 py-2 font-semibold">CTR</th>
                 <th className="px-3 py-2 font-semibold">Add to cart</th>
+                <th className="px-3 py-2 font-semibold text-emerald-700">Shopify Orders</th>
+                <th className="px-3 py-2 font-semibold">True CPP</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={8} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={8} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && items.map((c)=>{
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
+                const orders = shopifyCounts[c.name||''] || 0
+                const trueCppVal = orders>0? (c.spend||0)/orders : null
+                const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 return (
                   <tr key={c.campaign_id || c.name} className="border-b last:border-b-0">
                     <td className="px-3 py-2 whitespace-nowrap">{c.name||'-'}</td>
@@ -83,6 +134,8 @@ export default function AdsManagementPage(){
                     <td className="px-3 py-2">{cpp}</td>
                     <td className="px-3 py-2">{ctr}</td>
                     <td className="px-3 py-2">{c.add_to_cart||0}</td>
+                    <td className="px-3 py-2 font-semibold text-emerald-600">{orders}</td>
+                    <td className="px-3 py-2">{trueCpp}</td>
                   </tr>
                 )
               })}

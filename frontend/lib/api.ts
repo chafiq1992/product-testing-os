@@ -436,3 +436,10 @@ export async function fetchMetaCampaigns(datePreset?: string){
   const {data} = await axios.get(`${base}/api/meta/campaigns${qp}`)
   return data as { data: MetaCampaignRow[], error?: string }
 }
+
+// Shopify: count orders by line item title substring for a time range
+export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
+  return data as { data: { [name:string]: number }, error?: string }
+}
