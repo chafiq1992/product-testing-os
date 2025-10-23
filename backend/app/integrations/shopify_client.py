@@ -345,7 +345,7 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
     page_info = None
     base_path = "/orders.json"
     qs = {
-        "status": "any",  # include open, closed, canceled; we'll exclude canceled below
+        "status": "open",  # per requirement: only open orders
         "limit": 250,
         "created_at_min": created_at_min,
         "created_at_max": created_at_max,
@@ -378,15 +378,15 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
                     total += 1
             except Exception:
                 continue
-        # Pagination via Link header is not exposed in our helper; break when < limit
+        # Basic pagination by page number (fallback when Link headers not available via helper)
         if len(orders) < int(qs["limit"]):
             break
-        # Advance created_at_min to last order's created_at to avoid duplicates
+        # Advance page using since_id to avoid overlaps
         try:
-            last_created = orders[-1].get("created_at")
-            if not last_created:
+            last_id = orders[-1].get("id")
+            if not last_id:
                 break
-            qs["created_at_min"] = last_created
+            qs["since_id"] = last_id
         except Exception:
             break
     return total
