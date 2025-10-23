@@ -324,11 +324,20 @@ def _rest_delete_store(store: str | None, path: str):
 
 
 def count_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None) -> int:
-    """Count orders created within [created_at_min, created_at_max] where any line item title contains the given text.
+    """Count orders created within [created_at_min, created_at_max].
 
-    Includes orders with financial_status paid or pending (and any), and fulfillment status ignored.
-    Only counts open/cancellable orders (exclude canceled).
+    Behavior:
+      - If title_contains is numeric (e.g., "123456789"), treat it as Shopify product_id and count
+        orders where any line_item.product_id equals that ID.
+      - Otherwise (textual campaign name), ignore and return 0 as requested.
+
+    Includes orders with any financial_status; excludes canceled orders.
     """
+    # Ignore textual names entirely per requirement
+    ident = (title_contains or "").strip()
+    if not ident or not ident.isdigit():
+        return 0
+    target_pid = int(ident)
     # Paginate REST orders endpoint using created_at range and status filters
     # Shopify REST: /orders.json?status=any&created_at_min=...&created_at_max=...&limit=250
     from urllib.parse import urlencode
@@ -354,10 +363,13 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
                 items = o.get("line_items") or []
                 found = False
                 for li in items:
-                    t = (li or {}).get("title") or ""
-                    if isinstance(t, str) and title_contains.lower() in t.lower():
-                        found = True
-                        break
+                    pid = (li or {}).get("product_id")
+                    try:
+                        if pid is not None and int(pid) == target_pid:
+                            found = True
+                            break
+                    except Exception:
+                        continue
                 if found:
                     total += 1
             except Exception:

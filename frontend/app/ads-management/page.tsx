@@ -54,10 +54,11 @@ export default function AdsManagementPage(){
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
       // After meta items load, fetch Shopify orders counts for the same period
-      const names = (((res as any)?.data)||[]).map((c:MetaCampaignRow)=> c.name).filter(Boolean)
-      if(names.length){
+      // Only use numeric campaign names (Shopify product_id); ignore textual names
+      const ids = ((((res as any)?.data)||[]) as MetaCampaignRow[]).map(c=> (c.name||'').trim()).filter(n=> /^\d+$/.test(n))
+      if(ids.length){
         const { start, end } = computeRange(effPreset)
-        const oc = await shopifyOrdersCountByTitle({ names: names as string[], start, end })
+        const oc = await shopifyOrdersCountByTitle({ names: ids as string[], start, end })
         setShopifyCounts((oc as any)?.data||{})
       } else {
         setShopifyCounts({})
