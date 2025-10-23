@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle } from '@/lib/api'
@@ -10,6 +10,7 @@ export default function AdsManagementPage(){
   const [datePreset, setDatePreset] = useState<string>('last_7d')
   const [error, setError] = useState<string|undefined>(undefined)
   const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
+  const ordersSeqToken = useRef(0)
 
   function computeRange(preset: string){
     const now = new Date()
@@ -53,16 +54,27 @@ export default function AdsManagementPage(){
       const res = await fetchMetaCampaigns(effPreset)
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
-      // After meta items load, fetch Shopify orders counts for the same period
-      // Only use numeric campaign names (Shopify product_id); ignore textual names
-      const ids = ((((res as any)?.data)||[]) as MetaCampaignRow[]).map(c=> (c.name||'').trim()).filter(n=> /^\d+$/.test(n))
-      if(ids.length){
+      // Reset counts and start lazy sequential fetching after table is visible
+      setShopifyCounts({})
+      const token = ++ordersSeqToken.current
+      setTimeout(async ()=>{
+        if(token !== ordersSeqToken.current) return
+        const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
+        const ids = rows.map(c=> (c.name||'').trim()).filter(n=> /^\d+$/.test(n))
+        if(!ids.length) return
         const { start, end } = computeRange(effPreset)
-        const oc = await shopifyOrdersCountByTitle({ names: ids as string[], start, end })
-        setShopifyCounts((oc as any)?.data||{})
-      } else {
-        setShopifyCounts({})
-      }
+        for(const id of ids){
+          if(token !== ordersSeqToken.current) break
+          try{
+            const oc = await shopifyOrdersCountByTitle({ names: [id], start, end })
+            const count = ((oc as any)?.data||{})[id] ?? 0
+            setShopifyCounts(prev=> ({ ...prev, [id]: count }))
+          }catch{
+            setShopifyCounts(prev=> ({ ...prev, [id]: 0 }))
+          }
+          await new Promise(r=> setTimeout(r, 50))
+        }
+      }, 0)
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ setLoading(false) }
   }
@@ -98,16 +110,16 @@ export default function AdsManagementPage(){
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-b">
+            <thead className="bg-slate-50 border-b sticky top-0 z-10">
               <tr className="text-left">
                 <th className="px-3 py-2 font-semibold">Campaign</th>
-                <th className="px-3 py-2 font-semibold">Spend</th>
-                <th className="px-3 py-2 font-semibold">Purchases</th>
-                <th className="px-3 py-2 font-semibold">Cost / Purchase</th>
-                <th className="px-3 py-2 font-semibold">CTR</th>
-                <th className="px-3 py-2 font-semibold">Add to cart</th>
+                <th className="px-3 py-2 font-semibold text-right">Spend</th>
+                <th className="px-3 py-2 font-semibold text-right">Purchases</th>
+                <th className="px-3 py-2 font-semibold text-right">Cost / Purchase</th>
+                <th className="px-3 py-2 font-semibold text-right">CTR</th>
+                <th className="px-3 py-2 font-semibold text-right">Add to cart</th>
                 <th className="px-3 py-2 font-semibold text-emerald-700">Shopify Orders</th>
-                <th className="px-3 py-2 font-semibold">True CPP</th>
+                <th className="px-3 py-2 font-semibold text-right">True CPP</th>
               </tr>
             </thead>
             <tbody>
@@ -124,19 +136,32 @@ export default function AdsManagementPage(){
               {!loading && items.map((c)=>{
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
-                const orders = shopifyCounts[c.name||''] || 0
-                const trueCppVal = orders>0? (c.spend||0)/orders : null
+                const id = (c.name||'').trim()
+                const isNumeric = /^\d+$/.test(id)
+                const ordersVal = isNumeric? shopifyCounts[id] : undefined
+                const orders = typeof ordersVal==='number'? ordersVal : null
+                const trueCppVal = (orders!=null && orders>0)? (c.spend||0)/orders : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 return (
-                  <tr key={c.campaign_id || c.name} className="border-b last:border-b-0">
+                  <tr key={c.campaign_id || c.name} className="border-b last:border-b-0 hover:bg-slate-50">
                     <td className="px-3 py-2 whitespace-nowrap">{c.name||'-'}</td>
-                    <td className="px-3 py-2">${(c.spend||0).toFixed(2)}</td>
-                    <td className="px-3 py-2">{c.purchases||0}</td>
-                    <td className="px-3 py-2">{cpp}</td>
-                    <td className="px-3 py-2">{ctr}</td>
-                    <td className="px-3 py-2">{c.add_to_cart||0}</td>
-                    <td className="px-3 py-2 font-semibold text-emerald-600">{orders}</td>
-                    <td className="px-3 py-2">{trueCpp}</td>
+                    <td className="px-3 py-2 text-right">${(c.spend||0).toFixed(2)}</td>
+                    <td className="px-3 py-2 text-right">{c.purchases||0}</td>
+                    <td className="px-3 py-2 text-right">{cpp}</td>
+                    <td className="px-3 py-2 text-right">{ctr}</td>
+                    <td className="px-3 py-2 text-right">{c.add_to_cart||0}</td>
+                    <td className="px-3 py-2">
+                      {isNumeric ? (
+                        orders===null ? (
+                          <span className="inline-block h-4 w-10 bg-emerald-50 rounded animate-pulse" />
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                        )
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right">{isNumeric && orders===null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
                   </tr>
                 )
               })}
