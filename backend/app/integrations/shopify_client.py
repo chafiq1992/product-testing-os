@@ -349,7 +349,7 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
         "limit": 250,
         "created_at_min": created_at_min,
         "created_at_max": created_at_max,
-        "fields": "id,financial_status,cancelled_at,line_items,title,created_at"
+        # do not restrict fields to ensure line_items include product_id and variant_id
     }
     while True:
         path = base_path + ("?" + urlencode(qs) if qs else "")
@@ -364,8 +364,12 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
                 found = False
                 for li in items:
                     pid = (li or {}).get("product_id")
+                    vid = (li or {}).get("variant_id")
                     try:
                         if pid is not None and int(pid) == target_pid:
+                            found = True
+                            break
+                        if vid is not None and int(vid) == target_pid:
                             found = True
                             break
                     except Exception:
