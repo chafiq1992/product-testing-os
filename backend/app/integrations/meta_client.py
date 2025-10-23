@@ -93,6 +93,92 @@ def list_saved_audiences() -> list[dict]:
     return []
 
 
+def _parse_float(val):
+    try:
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return float(val)
+        s = str(val).strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _action_count(actions: list | None, candidates: list[str]) -> float:
+    try:
+        for a in (actions or []):
+            if (a or {}).get("action_type") in candidates:
+                v = _parse_float((a or {}).get("value"))
+                return float(v or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_active_campaigns_with_insights(date_preset: str = "last_7d") -> list[dict]:
+    """Return active campaigns with key insights for a recent window.
+
+    Metrics per campaign:
+      - name
+      - spend
+      - purchases
+      - cpp (cost per purchase)
+      - ctr
+      - add_to_cart
+    """
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    if not AD_ACCOUNT_ID:
+        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+
+    params = {
+        "level": "campaign",
+        "fields": "campaign_id,campaign_name,spend,actions,ctr,cpp",
+        # Filter only active campaigns
+        "filtering": json.dumps([
+            {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE"]}
+        ]),
+        "date_preset": date_preset or "last_7d",
+        "limit": 250,
+    }
+    res = _get(f"act_{AD_ACCOUNT_ID}/insights", params)
+    rows = (res or {}).get("data") or []
+    out: list[dict] = []
+    for r in rows:
+        name = (r or {}).get("campaign_name")
+        spend = _parse_float((r or {}).get("spend")) or 0.0
+        ctr = _parse_float((r or {}).get("ctr"))
+        cpp = _parse_float((r or {}).get("cpp"))
+        actions = (r or {}).get("actions") or []
+        purchases = _action_count(actions, [
+            "purchase",
+            "omni_purchase",
+            "onsite_conversion.purchase",
+            "offsite_conversion.fb_pixel_purchase",
+        ])
+        add_to_cart = _action_count(actions, [
+            "add_to_cart",
+            "omni_add_to_cart",
+            "onsite_conversion.add_to_cart",
+            "offsite_conversion.fb_pixel_add_to_cart",
+        ])
+        eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
+        out.append({
+            "campaign_id": (r or {}).get("campaign_id"),
+            "name": name,
+            "spend": round(spend, 2),
+            "purchases": int(purchases) if purchases is not None else 0,
+            "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
+            "ctr": round(ctr, 3) if ctr is not None else None,
+            "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
+        })
+    return out
+
+
 def _upload_image(url: str):
     res = _post(f"act_{AD_ACCOUNT_ID}/adimages", {"url": url})
     images = res.get("images", {})

@@ -22,6 +22,7 @@ from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
+from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -341,6 +342,20 @@ async def list_tests(limit: int | None = None):
 async def get_saved_audiences():
     try:
         items = list_saved_audiences()
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/meta/campaigns")
+async def get_meta_campaigns(date_preset: str | None = None):
+    """Return active campaigns with key metrics.
+
+    Query params:
+      - date_preset: e.g., 'last_7d', 'last_14d', 'this_month', 'last_30d'
+    """
+    try:
+        items = list_active_campaigns_with_insights(date_preset or "last_7d")
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}

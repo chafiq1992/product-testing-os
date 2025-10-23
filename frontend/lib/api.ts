@@ -420,3 +420,19 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
   const {data} = await axios.post(`${base}/api/prompts`, payload)
   return data as { [key:string]: string }
 }
+
+// Meta Ads: list active campaigns with insights
+export type MetaCampaignRow = {
+  campaign_id?: string,
+  name?: string,
+  spend: number,
+  purchases: number,
+  cpp?: number|null,
+  ctr?: number|null,
+  add_to_cart: number,
+}
+export async function fetchMetaCampaigns(datePreset?: string){
+  const qp = datePreset? `?date_preset=${encodeURIComponent(datePreset)}` : ''
+  const {data} = await axios.get(`${base}/api/meta/campaigns${qp}`)
+  return data as { data: MetaCampaignRow[], error?: string }
+}
