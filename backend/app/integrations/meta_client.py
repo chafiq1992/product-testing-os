@@ -119,7 +119,7 @@ def _action_count(actions: list | None, candidates: list[str]) -> float:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def list_active_campaigns_with_insights(date_preset: str = "last_7d") -> list[dict]:
+def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None) -> list[dict]:
     """Return active campaigns with key insights for a recent window.
 
     Metrics per campaign:
@@ -132,8 +132,9 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d") -> list[di
     """
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    if not AD_ACCOUNT_ID:
+    if not (ad_account_id or AD_ACCOUNT_ID):
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+    acct = str(ad_account_id or AD_ACCOUNT_ID)
 
     params = {
         "level": "campaign",
@@ -145,7 +146,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d") -> list[di
         "date_preset": date_preset or "last_7d",
         "limit": 250,
     }
-    res = _get(f"act_{AD_ACCOUNT_ID}/insights", params)
+    res = _get(f"act_{acct}/insights", params)
     rows = (res or {}).get("data") or []
     out: list[dict] = []
     for r in rows:

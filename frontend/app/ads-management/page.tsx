@@ -11,6 +11,12 @@ export default function AdsManagementPage(){
   const [error, setError] = useState<string|undefined>(undefined)
   const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
   const ordersSeqToken = useRef(0)
+  const [store, setStore] = useState<string>(()=>{
+    try{ return localStorage.getItem('ptos_store')||'irrakids' }catch{ return 'irrakids' }
+  })
+  const [adAccount, setAdAccount] = useState<string>(()=>{
+    try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
+  })
 
   function computeRange(preset: string){
     const now = new Date()
@@ -51,7 +57,7 @@ export default function AdsManagementPage(){
     setLoading(true); setError(undefined)
     try{
       const effPreset = preset||datePreset
-      const res = await fetchMetaCampaigns(effPreset)
+      const res = await fetchMetaCampaigns(effPreset, adAccount||undefined)
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
       // Reset counts and start lazy sequential fetching after table is visible
@@ -89,6 +95,11 @@ export default function AdsManagementPage(){
           <h1 className="font-semibold text-lg">Ads management</h1>
         </div>
         <div className="flex items-center gap-2">
+          <select value={store} onChange={(e)=>{ const v=e.target.value; setStore(v); try{ localStorage.setItem('ptos_store', v) }catch{} }} className="rounded-xl border px-2 py-1 text-sm bg-white">
+            <option value="irrakids">irrakids</option>
+            <option value="irranova">irranova</option>
+          </select>
+          <input value={adAccount} onChange={(e)=>{ const v=e.target.value.trim(); setAdAccount(v); try{ localStorage.setItem('ptos_ad_account', v) }catch{} }} placeholder="Ad account (numeric)" className="rounded-xl border px-2 py-1 text-sm bg-white w-40" />
           <select value={datePreset} onChange={(e)=>{ setDatePreset(e.target.value); load(e.target.value) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
             <option value="today">Today</option>
             <option value="yesterday">Yesterday</option>

@@ -349,14 +349,14 @@ async def get_saved_audiences():
 
 
 @app.get("/api/meta/campaigns")
-async def get_meta_campaigns(date_preset: str | None = None):
+async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None):
     """Return active campaigns with key metrics.
 
     Query params:
       - date_preset: e.g., 'last_7d', 'last_14d', 'this_month', 'last_30d'
     """
     try:
-        items = list_active_campaigns_with_insights(date_preset or "last_7d")
+        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(ad_account or None))
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}

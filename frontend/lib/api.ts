@@ -431,8 +431,11 @@ export type MetaCampaignRow = {
   ctr?: number|null,
   add_to_cart: number,
 }
-export async function fetchMetaCampaigns(datePreset?: string){
-  const qp = datePreset? `?date_preset=${encodeURIComponent(datePreset)}` : ''
+export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string){
+  const parts: string[] = []
+  if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
+  if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
+  const qp = parts.length? `?${parts.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/meta/campaigns${qp}`)
   return data as { data: MetaCampaignRow[], error?: string }
 }
