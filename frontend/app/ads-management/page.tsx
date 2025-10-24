@@ -117,7 +117,7 @@ export default function AdsManagementPage(){
               const count = ((oc as any)?.data||{})[conf.id] ?? 0
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }else{
-              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true })
+              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'items' })
               const count = Number(((oc as any)?.data||{})?.count ?? 0)
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }
@@ -247,7 +247,7 @@ export default function AdsManagementPage(){
         </div>
       </header>
 
-      <div className="p-4 md:p-6">
+      <div className="p-4 md:p-6 pt-16">
         {error && (
           <div className="mb-3 text-sm text-red-600">{error}</div>
         )}
@@ -392,7 +392,7 @@ export default function AdsManagementPage(){
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }else{
-                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true })
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'items' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }

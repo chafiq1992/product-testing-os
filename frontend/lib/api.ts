@@ -453,8 +453,8 @@ export async function shopifyProductsBrief(payload:{ ids: string[], store?: stri
   return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number } }, error?: string }
 }
 
-export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean }){
-  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true }
+export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean, aggregate?: 'orders'|'items' }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate ?? 'items' }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_collection`, body)
   return data as { data: { count: number }, error?: string }
 }

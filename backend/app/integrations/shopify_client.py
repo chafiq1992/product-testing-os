@@ -684,6 +684,84 @@ def count_orders_by_collection_processed(collection_id: str, processed_min_date:
             break
     return total
 
+
+def count_items_by_collection_processed(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Sum line item quantities for products in the collection within processed_at range (YYYY-MM-DD).
+
+    Differences from count_orders_by_collection_processed:
+      - Sums quantities across line items; does not dedupe per order
+      - If an order has multiple items from the collection, all are counted
+    """
+    try:
+        product_ids = set(list_product_ids_in_collection(collection_id, store=store))
+    except Exception:
+        product_ids = set()
+    if not product_ids:
+        return 0
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    total_qty = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int((li or {}).get("product_id") or 0)
+                        if pid in product_ids:
+                            qty = int((li or {}).get("quantity") or 0)
+                            total_qty += max(0, qty)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total_qty
+
 def _product_first_image_url(numeric_product_id: str, *, store: str | None = None) -> str | None:
     try:
         data = _rest_get_store(store, f"/products/{numeric_product_id}.json")
