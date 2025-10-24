@@ -219,70 +219,70 @@ export default function AdsManagementPage(){
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b sticky top-16 z-40 shadow-sm">
               <tr className="text-left">
-                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">Product</th>
-                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold">Product</th>
+                <th className="px-3 py-2 font-semibold">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Spend</span>
                     {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Purchases</span>
                     {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Cost / Purchase</span>
                     {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>CTR</span>
                     {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Add to cart</span>
                     {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-emerald-700 sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-emerald-700">
                   <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 hover:text-emerald-800">
                     <span>Shopify Orders</span>
                     {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>True CPP</span>
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-indigo-700 text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
                   <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
                     <span>Inventory</span>
                     {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-rose-700 text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
+                <th className="px-3 py-2 font-semibold text-rose-700 text-right">
                   <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 hover:text-rose-800">
                     <span>Zero-variant</span>
                     {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-rose-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">Notes</th>
+                <th className="px-3 py-2 font-semibold">Notes</th>
               </tr>
             </thead>
             <tbody>
