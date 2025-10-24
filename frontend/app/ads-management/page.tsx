@@ -147,13 +147,17 @@ export default function AdsManagementPage(){
       setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
       const { start, end } = computeRange(datePreset)
       try{
-        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true })
+        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'created' })
         const map = ((oc as any)?.data)||{}
         setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
+        // Update collection total to match sum of children
+        const sum = ids.reduce((acc, id)=> acc + (Number(map[id] ?? 0) || 0), 0)
+        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: sum }))
       }catch{
         const empty: Record<string, number> = {}
         for(const id of ids) empty[id] = 0
         setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: empty }))
+        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: 0 }))
       }
     }finally{
       setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: false }))
@@ -423,12 +427,11 @@ export default function AdsManagementPage(){
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }else{
-                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'created' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
-                                      // Reset children cache for this row
-                                      setCollectionProducts(prev=> ({ ...prev, [String(rk)]: [] }))
-                                      setCollectionCounts(prev=> ({ ...prev, [String(rk)]: {} }))
+                                      // Preload children and align total with sum
+                                      await loadCollectionChildren(rk, next.id)
                                     }
                                   }catch{
                                     setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
