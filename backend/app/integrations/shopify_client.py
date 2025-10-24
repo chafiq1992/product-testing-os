@@ -762,6 +762,29 @@ def count_items_by_collection_processed(collection_id: str, processed_min_date: 
             break
     return total_qty
 
+
+def sum_product_order_counts_for_collection(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Sum per-product unique order counts across all products currently in the collection.
+
+    Notes:
+      - For each product_id in the collection, count unique orders containing that product (processed_at range)
+      - Sums across products; an order containing multiple products from the collection will be counted multiple times
+      - This matches a "count per product then sum" aggregation.
+    """
+    try:
+        product_ids = list_product_ids_in_collection(collection_id, store=store)
+    except Exception:
+        product_ids = []
+    if not product_ids:
+        return 0
+    total = 0
+    for pid in product_ids:
+        try:
+            total += count_orders_by_product_processed(str(pid), processed_min_date, processed_max_date, store=store, include_closed=include_closed)
+        except Exception:
+            continue
+    return total
+
 def _product_first_image_url(numeric_product_id: str, *, store: str | None = None) -> str | None:
     try:
         data = _rest_get_store(store, f"/products/{numeric_product_id}.json")

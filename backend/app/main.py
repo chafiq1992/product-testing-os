@@ -23,6 +23,7 @@ from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
+from app.integrations.shopify_client import sum_product_order_counts_for_collection
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -441,7 +442,7 @@ class OrdersCountByCollectionRequest(BaseModel):
     end: str
     store: Optional[str] = None
     include_closed: Optional[bool] = None
-    aggregate: Optional[str] = None  # 'orders' | 'items'
+    aggregate: Optional[str] = None  # 'orders' | 'items' | 'sum_product_orders'
 
 
 @app.post("/api/shopify/orders_count_by_collection")
@@ -456,6 +457,8 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
         agg = (req.aggregate or "orders").lower()
         if agg == "items":
             cnt = count_items_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
+        elif agg == "sum_product_orders":
+            cnt = sum_product_order_counts_for_collection(cid, s_date, e_date, store=req.store, include_closed=include_closed)
         else:
             cnt = count_orders_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
         return {"data": {"count": cnt}}

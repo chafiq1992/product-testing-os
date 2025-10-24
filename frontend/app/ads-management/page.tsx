@@ -117,7 +117,7 @@ export default function AdsManagementPage(){
               const count = ((oc as any)?.data||{})[conf.id] ?? 0
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }else{
-              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'items' })
+              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
               const count = Number(((oc as any)?.data||{})?.count ?? 0)
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }
@@ -320,6 +320,10 @@ export default function AdsManagementPage(){
               </tr>
             </thead>
             <tbody>
+              {/* Spacer row to avoid sticky header overlapping the first data row */}
+              <tr aria-hidden="true">
+                <td colSpan={12} className="h-4"></td>
+              </tr>
               {loading && (
                 <tr>
                   <td colSpan={12} className="px-3 py-6 text-center text-slate-500">Loading…</td>
@@ -392,7 +396,7 @@ export default function AdsManagementPage(){
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }else{
-                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'items' })
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }
