@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -21,6 +21,11 @@ export default function AdsManagementPage(){
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
+  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_campaign_ids')||'{}') }catch{ return {} }
+  })
+  const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
+  const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
 
@@ -73,6 +78,7 @@ export default function AdsManagementPage(){
       // Reset counts and start lazy sequential fetching after table is visible
       setShopifyCounts({})
       setProductBriefs({})
+      setManualCounts({})
       const token = ++ordersSeqToken.current
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
@@ -98,6 +104,28 @@ export default function AdsManagementPage(){
           }
           await new Promise(r=> setTimeout(r, 50))
         }
+        // Also fetch manual IDs (for rows whose campaign name is not numeric)
+        for(const row of rows){
+          if(token !== ordersSeqToken.current) break
+          const rowKey = (row.campaign_id || row.name || '') as any
+          try{
+            const conf = (manualIds as any)[rowKey]
+            if(!conf) continue
+            if(!conf.id || !/^\d+$/.test(conf.id)) continue
+            if(conf.kind==='product'){
+              const oc = await shopifyOrdersCountByTitle({ names: [conf.id], start, end, include_closed: true })
+              const count = ((oc as any)?.data||{})[conf.id] ?? 0
+              setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
+            }else{
+              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true })
+              const count = Number(((oc as any)?.data||{})?.count ?? 0)
+              setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
+            }
+          }catch{
+            setManualCounts(prev=> ({ ...prev, [String(rowKey)]: 0 }))
+          }
+          await new Promise(r=> setTimeout(r, 50))
+        }
       }, 0)
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ setLoading(false) }
@@ -110,6 +138,12 @@ export default function AdsManagementPage(){
   }
   function getOrders(row: MetaCampaignRow){
     const id = getId(row)
+    // If manual mapping exists for this row, prefer it
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    if(manual && manualCounts[String(rowKey)]!=null){
+      return manualCounts[String(rowKey)]
+    }
     if(!/^\d+$/.test(id)) return null
     const v = shopifyCounts[id]
     return typeof v==='number'? v : null
@@ -325,7 +359,65 @@ export default function AdsManagementPage(){
                         <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">{c.name||'-'}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <div>{c.name||'-'}</div>
+                      <div className="mt-1 flex items-center gap-1">
+                        {(()=>{
+                          const rk = (c.campaign_id || c.name || '') as any
+                          const draft = manualDrafts[rk] || manualIds[rk] || { kind:'product', id:'' }
+                          return (
+                            <>
+                              <select
+                                value={draft.kind}
+                                onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ id:'', kind:'product' }), kind: (e.target.value as any) } }))}
+                                className="border rounded px-1 py-0.5 text-xs bg-white"
+                              >
+                                <option value="product">Product</option>
+                                <option value="collection">Collection</option>
+                              </select>
+                              <input
+                                value={draft.id||''}
+                                onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ kind: draft.kind }), id: e.target.value.replace(/[^0-9]/g,'') } }))}
+                                placeholder="ID"
+                                className="w-24 border rounded px-2 py-0.5 text-xs bg-white"
+                              />
+                              <button
+                                onClick={async()=>{
+                                  const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim() }
+                                  setManualIds(prev=>{ const m={...prev, [rk]: next}; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
+                                  // Fetch now for this row respecting current range
+                                  try{
+                                    const { start, end } = computeRange(datePreset)
+                                    if(next.kind==='product'){
+                                      const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
+                                      const count = ((oc as any)?.data||{})[next.id] ?? 0
+                                      setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                    }else{
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true })
+                                      const count = Number(((oc as any)?.data||{})?.count ?? 0)
+                                      setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                    }
+                                  }catch{
+                                    setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
+                                  }
+                                }}
+                                className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
+                              >Save</button>
+                              {(manualIds as any)[rk] && (
+                                <button
+                                  onClick={()=>{
+                                    setManualIds(prev=>{ const m={...prev}; delete (m as any)[rk]; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
+                                    setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
+                                    setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
+                                >Clear</button>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </div>
+                    </td>
                     <td className="px-3 py-2 text-right">${(c.spend||0).toFixed(2)}</td>
                     <td className="px-3 py-2 text-right">{c.purchases||0}</td>
                     <td className="px-3 py-2 text-right">{cpp}</td>

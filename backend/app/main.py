@@ -20,6 +20,8 @@ from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import get_products_brief
 from app.integrations.shopify_client import count_orders_by_product_processed
+from app.integrations.shopify_client import list_product_ids_in_collection
+from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -409,6 +411,50 @@ async def api_products_brief(req: ProductsBriefRequest):
         return {"data": data}
     except Exception as e:
         return {"error": str(e), "data": {}}
+
+
+class CollectionProductsRequest(BaseModel):
+    collection_id: Optional[str] = None
+    collection_handle: Optional[str] = None  # reserved for future use
+    store: Optional[str] = None
+
+
+@app.post("/api/shopify/collection_products")
+async def api_collection_products(req: CollectionProductsRequest):
+    try:
+        cid = (req.collection_id or "").strip()
+        if not cid:
+            return {"data": {"product_ids": []}}
+        # Only numeric collection_id supported via REST collects in current implementation
+        if not cid.isdigit():
+            return {"data": {"product_ids": []}}
+        ids = list_product_ids_in_collection(cid, store=req.store)
+        return {"data": {"product_ids": [str(i) for i in (ids or [])]}}
+    except Exception as e:
+        return {"error": str(e), "data": {"product_ids": []}}
+
+
+class OrdersCountByCollectionRequest(BaseModel):
+    collection_id: str
+    start: str
+    end: str
+    store: Optional[str] = None
+    include_closed: Optional[bool] = None
+
+
+@app.post("/api/shopify/orders_count_by_collection")
+async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
+    try:
+        cid = (req.collection_id or "").strip()
+        if not (cid and cid.isdigit()):
+            return {"data": {"count": 0}}
+        s_date = (req.start or "").split("T")[0] if isinstance(req.start, str) and "-" in req.start else (req.start or "")
+        e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in req.end else (req.end or "")
+        include_closed = bool(req.include_closed) if req.include_closed is not None else False
+        cnt = count_orders_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
+        return {"data": {"count": cnt}}
+    except Exception as e:
+        return {"error": str(e), "data": {"count": 0}}
 
 
 # ---------------- LLM step endpoints (interactive flow) ----------------
