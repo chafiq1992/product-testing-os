@@ -1,8 +1,8 @@
 "use client"
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -26,6 +26,10 @@ export default function AdsManagementPage(){
   })
   const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [collectionProducts, setCollectionProducts] = useState<Record<string, string[]>>({})
+  const [collectionCounts, setCollectionCounts] = useState<Record<string, Record<string, number>>>({})
+  const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
 
@@ -79,6 +83,10 @@ export default function AdsManagementPage(){
       setShopifyCounts({})
       setProductBriefs({})
       setManualCounts({})
+      setExpanded({})
+      setCollectionProducts({})
+      setCollectionCounts({})
+      setChildrenLoading({})
       const token = ++ordersSeqToken.current
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
@@ -129,6 +137,27 @@ export default function AdsManagementPage(){
       }, 0)
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ setLoading(false) }
+  }
+
+  async function loadCollectionChildren(rowKey: any, collectionId: string){
+    setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: true }))
+    try{
+      const { data } = await shopifyCollectionProducts({ collection_id: collectionId, store }) as any
+      const ids: string[] = ((data||{}).product_ids)||[]
+      setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
+      const { start, end } = computeRange(datePreset)
+      try{
+        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true })
+        const map = ((oc as any)?.data)||{}
+        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
+      }catch{
+        const empty: Record<string, number> = {}
+        for(const id of ids) empty[id] = 0
+        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: empty }))
+      }
+    }finally{
+      setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: false }))
+    }
   }
 
   useEffect(()=>{ load(datePreset) },[])
@@ -349,7 +378,8 @@ export default function AdsManagementPage(){
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
+                  <Fragment key={c.campaign_id || c.name}>
+                  <tr className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
@@ -406,12 +436,28 @@ export default function AdsManagementPage(){
                                 }}
                                 className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                               >Save</button>
+                          {(manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
+                                <button
+                                  onClick={async()=>{
+                                    const open = !expanded[String(rk)]
+                                    setExpanded(prev=> ({ ...prev, [String(rk)]: open }))
+                                    if(open){
+                                      const collId = String(((manualIds as any)[rk]||{}).id||'')
+                                      if(collId) await loadCollectionChildren(rk, collId)
+                                    }
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
+                                >{expanded[String(rk)]? 'Hide products' : 'Show products'}</button>
+                              )}
                               {(manualIds as any)[rk] && (
                                 <button
                                   onClick={()=>{
                                     setManualIds(prev=>{ const m={...prev}; delete (m as any)[rk]; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
                                     setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
                                     setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                setCollectionProducts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                setCollectionCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
                                   }}
                                   className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
                                 >Clear</button>
@@ -468,6 +514,38 @@ export default function AdsManagementPage(){
                       />
                     </td>
                   </tr>
+                  {(()=>{
+                    const rk = (c.campaign_id || c.name || '') as any
+                    const conf = (manualIds as any)[rk]
+                    if(!(conf && conf.kind==='collection' && expanded[String(rk)])) return null
+                    const ids = collectionProducts[String(rk)]||[]
+                    const counts = collectionCounts[String(rk)]||{}
+                    const loadingChildren = !!childrenLoading[String(rk)]
+                    return (
+                      <tr className="border-b last:border-b-0">
+                        <td className="px-3 py-2 bg-slate-50" colSpan={12}>
+                          {loadingChildren ? (
+                            <div className="text-xs text-slate-500">Loading products…</div>
+                          ) : (
+                            <div className="text-xs">
+                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                {ids.map(pid=> (
+                                  <div key={pid} className="flex items-center justify-between border rounded px-2 py-1 bg-white">
+                                    <span className="font-mono">{pid}</span>
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">{counts[pid] ?? '—'}</span>
+                                  </div>
+                                ))}
+                                {ids.length===0 && (
+                                  <div className="text-slate-500">No products in this collection.</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+                  </Fragment>
                 )
               })}
             </tbody>
