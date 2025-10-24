@@ -613,11 +613,33 @@ def count_orders_by_collection_processed(collection_id: str, processed_min_date:
         return 0
     from urllib.parse import urlencode
     base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
     params = {
         "status": ("any" if include_closed else "open"),
         "limit": 250,
-        "processed_at_min": f"{processed_min_date}T00:00:00",
-        "processed_at_max": f"{processed_max_date}T23:59:59",
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
         "order": "processed_at asc",
     }
     total = 0
