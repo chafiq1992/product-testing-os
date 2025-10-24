@@ -282,6 +282,13 @@ export async function shopifyUploadProductFiles(payload:{
   return data as { urls: string[], images?: any[], per_image?: any[] }
 }
 
+// Shopify: list product IDs in a collection
+export async function shopifyCollectionProducts(payload:{ collection_id: string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/shopify/collection_products`, body)
+  return data as { data: { product_ids: string[] }, error?: string }
+}
+
 // Gemini image generation (ad image from source image + prompt)
 export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:string, num_images?:number, neutral_background?: boolean }){
   const {data} = await axios.post(`${base}/api/gemini/ad_image`, payload)

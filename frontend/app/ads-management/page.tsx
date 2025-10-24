@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts } from '@/lib/api'
@@ -250,7 +250,7 @@ export default function AdsManagementPage(){
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
-      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
+      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
           <h1 className="font-semibold text-lg">Ads management</h1>
@@ -276,13 +276,13 @@ export default function AdsManagementPage(){
         </div>
       </header>
 
-      <div className="p-4 md:p-6 pt-16">
+      <div className="p-4 md:p-6">
         {error && (
           <div className="mb-3 text-sm text-red-600">{error}</div>
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b sticky top-16 z-40 shadow-sm">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 font-semibold">
@@ -349,10 +349,6 @@ export default function AdsManagementPage(){
               </tr>
             </thead>
             <tbody>
-              {/* Spacer row to avoid sticky header overlapping the first data row */}
-              <tr aria-hidden="true">
-                <td colSpan={12} className="h-4"></td>
-              </tr>
               {loading && (
                 <tr>
                   <td colSpan={12} className="px-3 py-6 text-center text-slate-500">Loading…</td>
@@ -376,9 +372,11 @@ export default function AdsManagementPage(){
                 const zeros = brief? brief.zero_variants : null
                 const img = brief? brief.image : null
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
+                const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
+                  <Fragment key={c.campaign_id || c.name}>
+                  <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
@@ -428,6 +426,9 @@ export default function AdsManagementPage(){
                                       const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                      // Reset children cache for this row
+                                      setCollectionProducts(prev=> ({ ...prev, [String(rk)]: [] }))
+                                      setCollectionCounts(prev=> ({ ...prev, [String(rk)]: {} }))
                                     }
                                   }catch{
                                     setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
@@ -435,7 +436,7 @@ export default function AdsManagementPage(){
                                 }}
                                 className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                               >Save</button>
-                          {(manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
+                              {(manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
                                 <button
                                   onClick={async()=>{
                                     const open = !expanded[String(rk)]
@@ -454,9 +455,9 @@ export default function AdsManagementPage(){
                                     setManualIds(prev=>{ const m={...prev}; delete (m as any)[rk]; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
                                     setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
                                     setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
-                                setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
-                                setCollectionProducts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
-                                setCollectionCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setCollectionProducts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setCollectionCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
                                   }}
                                   className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
                                 >Clear</button>
@@ -521,7 +522,7 @@ export default function AdsManagementPage(){
                     const counts = collectionCounts[String(rk)]||{}
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
-                      <tr key={(c.campaign_id || c.name || '') + ':children'} className="border-b last:border-b-0">
+                      <tr className="border-b last:border-b-0">
                         <td className="px-3 py-2 bg-slate-50" colSpan={12}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
@@ -544,6 +545,7 @@ export default function AdsManagementPage(){
                       </tr>
                     )
                   })()}
+                  </Fragment>
                 )
               })}
             </tbody>
