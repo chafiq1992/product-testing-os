@@ -512,25 +512,25 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
 
 
 def list_product_ids_in_collection(collection_id: str, *, store: str | None = None) -> list[int]:
-    """Return product IDs for a given collection using REST collects endpoint."""
+    """Return product IDs for a given collection using REST products endpoint (supports smart/custom collections)."""
     ids: list[int] = []
     try:
         since_id = None
         limit = 250
         while True:
-            qs = f"limit={limit}&fields=product_id" + (f"&since_id={since_id}" if since_id else "")
-            data = _rest_get_store(store, f"/collects.json?collection_id={collection_id}&{qs}")
-            collects = (data or {}).get("collects") or []
-            for c in collects:
+            qs = f"limit={limit}&fields=id" + (f"&since_id={since_id}" if since_id else "")
+            data = _rest_get_store(store, f"/products.json?collection_id={collection_id}&{qs}")
+            products = (data or {}).get("products") or []
+            for p in products:
                 try:
-                    pid = int((c or {}).get("product_id"))
+                    pid = int((p or {}).get("id"))
                     ids.append(pid)
                 except Exception:
                     continue
-            if len(collects) < limit:
+            if len(products) < limit:
                 break
             try:
-                since_id = (collects[-1] or {}).get("id")
+                since_id = (products[-1] or {}).get("id")
                 if not since_id:
                     break
             except Exception:

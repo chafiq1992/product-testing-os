@@ -335,8 +335,7 @@ export default function AdsManagementPage(){
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
                 const id = (c.name||'').trim()
                 const isNumeric = /^\d+$/.test(id)
-                const ordersVal = isNumeric? shopifyCounts[id] : undefined
-                const orders = typeof ordersVal==='number'? ordersVal : null
+                const orders = getOrders(c)
                 const trueCppVal = (orders!=null && orders>0)? (c.spend||0)/orders : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 const brief = isNumeric? productBriefs[id] : undefined
@@ -424,17 +423,13 @@ export default function AdsManagementPage(){
                     <td className="px-3 py-2 text-right">{ctr}</td>
                     <td className="px-3 py-2 text-right">{c.add_to_cart||0}</td>
                     <td className="px-3 py-2">
-                      {isNumeric ? (
-                        orders===null ? (
-                          <span className="inline-block h-4 w-10 bg-emerald-50 rounded animate-pulse" />
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
-                        )
-                      ) : (
+                      {orders==null ? (
                         <span className="text-slate-400">—</span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right">{isNumeric && orders===null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                    <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
                     <td className="px-3 py-2 text-right">
                       {isNumeric ? (
                         inv===null || inv===undefined ? (
