@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -21,9 +21,7 @@ export default function AdsManagementPage(){
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
-  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>(()=>{
-    try{ return JSON.parse(localStorage.getItem('ptos_campaign_ids')||'{}') }catch{ return {} }
-  })
+  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -165,6 +163,22 @@ export default function AdsManagementPage(){
   }
 
   useEffect(()=>{ load(datePreset) },[])
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const res = await campaignMappingsList(store)
+        const map = ((res as any)?.data)||{}
+        const shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
+        for(const k of Object.keys(map||{})){
+          const v = (map as any)[k]
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
+        }
+        setManualIds(shaped)
+      }catch{
+        // ignore
+      }
+    })()
+  }, [store])
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
@@ -418,9 +432,11 @@ export default function AdsManagementPage(){
                               <button
                                 onClick={async()=>{
                                   const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim() }
-                                  setManualIds(prev=>{ const m={...prev, [rk]: next}; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
+                                  setManualIds(prev=> ({ ...prev, [rk]: next }))
                                   // Fetch now for this row respecting current range
                                   try{
+                                    // Persist mapping server-side
+                                    try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: next.kind, id: next.id, store }) }catch{}
                                     const { start, end } = computeRange(datePreset)
                                     if(next.kind==='product'){
                                       const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })

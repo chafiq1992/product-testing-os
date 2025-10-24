@@ -90,6 +90,20 @@ class AppPrompt(Base):
 
 Index('ix_app_prompts_updated_at', AppPrompt.updated_at)
 
+# Campaign ID mappings (persist manual product/collection IDs per campaign row)
+class CampaignMapping(Base):
+    __tablename__ = "campaign_mappings"
+
+    pk = Column(String, primary_key=True)  # composed key: f"{(store or '').strip()}|{campaign_key}"
+    store = Column(String, nullable=True)
+    campaign_key = Column(String, nullable=False)
+    kind = Column(String, nullable=False)  # 'product' | 'collection'
+    target_id = Column(String, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+Index('ix_campaign_mappings_store_key', CampaignMapping.store, CampaignMapping.campaign_key)
+
 # Ensure new tables are created when module is imported (includes newly added tables)
 Base.metadata.create_all(engine)
 
@@ -311,6 +325,56 @@ def set_app_prompts(patch: Dict[str, str]) -> Dict[str, str]:
                 session.add(AppPrompt(key=k, value=v, updated_at=_now()))
         session.commit()
     return get_app_prompts()
+
+
+# ---------------- Campaign Mappings ----------------
+def _mk_pk(store: str | None, campaign_key: str) -> str:
+    s = (store or "").strip()
+    return f"{s}|{campaign_key}"
+
+
+def upsert_campaign_mapping(store: str | None, campaign_key: str, kind: str, target_id: str) -> dict:
+    with SessionLocal() as session:
+        pk = _mk_pk(store, campaign_key)
+        item = session.get(CampaignMapping, pk)
+        if item:
+            item.kind = kind
+            item.target_id = target_id
+            item.updated_at = _now()
+        else:
+            item = CampaignMapping(pk=pk, store=store, campaign_key=campaign_key, kind=kind, target_id=target_id, updated_at=_now())
+            session.add(item)
+        session.commit()
+        return {"store": item.store, "campaign_key": item.campaign_key, "kind": item.kind, "id": item.target_id, "updated_at": item.updated_at.isoformat() + "Z"}
+
+
+def delete_campaign_mapping(store: str | None, campaign_key: str) -> bool:
+    with SessionLocal() as session:
+        pk = _mk_pk(store, campaign_key)
+        item = session.get(CampaignMapping, pk)
+        if not item:
+            return False
+        session.delete(item)
+        session.commit()
+        return True
+
+
+def list_campaign_mappings(store: str | None = None) -> dict:
+    """Return dict keyed by campaign_key: { campaign_key: { kind, id } }.
+    If store is provided, filter by it; otherwise return all mappings across stores.
+    """
+    with SessionLocal() as session:
+        q = session.query(CampaignMapping)
+        if isinstance(store, str):
+            q = q.filter(CampaignMapping.store == store)
+        rows = q.all()
+        out: Dict[str, dict] = {}
+        for r in rows:
+            try:
+                out[r.campaign_key] = {"kind": r.kind, "id": r.target_id, "store": r.store}
+            except Exception:
+                continue
+        return out
 
 
 def update_test_status(test_id: str, status: str, error: Optional[Dict[str, Any]] = None):

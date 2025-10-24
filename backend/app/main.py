@@ -442,6 +442,38 @@ async def api_collection_products(req: CollectionProductsRequest):
         return {"error": str(e), "data": {"product_ids": []}}
 
 
+class CampaignMappingUpsertRequest(BaseModel):
+    campaign_key: str
+    kind: str  # 'product' | 'collection'
+    id: str
+    store: Optional[str] = None
+
+
+@app.post("/api/campaign_mappings")
+async def api_upsert_campaign_mapping(req: CampaignMappingUpsertRequest):
+    try:
+        key = (req.campaign_key or "").strip()
+        kind = (req.kind or "").strip()
+        target_id = (req.id or "").strip()
+        if not key or not kind or not target_id:
+            return {"error": "missing_fields"}
+        if kind not in ("product", "collection"):
+            return {"error": "invalid_kind"}
+        out = db.upsert_campaign_mapping(req.store, key, kind, target_id)
+        return {"data": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign_mappings")
+async def api_list_campaign_mappings(store: str | None = None):
+    try:
+        items = db.list_campaign_mappings(store)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 class OrdersCountByCollectionRequest(BaseModel):
     collection_id: str
     start: str
