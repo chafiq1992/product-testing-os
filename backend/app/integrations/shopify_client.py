@@ -512,8 +512,41 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
 
 
 def list_product_ids_in_collection(collection_id: str, *, store: str | None = None) -> list[int]:
-    """Return product IDs for a given collection using REST products endpoint (supports smart/custom collections)."""
-    ids: list[int] = []
+    """Return product IDs for a given collection.
+
+    Strategy:
+      1) Try GraphQL collection(id) pagination (works for custom and smart collections)
+      2) Fallback to REST products.json?collection_id=... (current membership)
+      3) Fallback to REST collects.json (custom collections only)
+    """
+    # 1) GraphQL
+    out_ids: set[int] = set()
+    try:
+        gid = f"gid://shopify/Collection/{collection_id}"
+        cursor = None
+        while True:
+            q = (
+                "query($id:ID!,$cursor:String){ collection(id:$id){ products(first:250, after:$cursor){ pageInfo{hasNextPage,endCursor} nodes{ id } } } }"
+            )
+            data = _gql_store(store, q, {"id": gid, "cursor": cursor})
+            nodes = (((data or {}).get("collection") or {}).get("products") or {}).get("nodes") or []
+            for n in nodes:
+                try:
+                    gid_prod = (n or {}).get("id") or ""
+                    num = _extract_numeric_id_from_gid(gid_prod)
+                    if num and num.isdigit():
+                        out_ids.add(int(num))
+                except Exception:
+                    continue
+            pi = (((data or {}).get("collection") or {}).get("products") or {}).get("pageInfo") or {}
+            if not bool(pi.get("hasNextPage")):
+                break
+            cursor = (((data or {}).get("collection") or {}).get("products") or {}).get("pageInfo", {}).get("endCursor")
+            if not cursor:
+                break
+    except Exception:
+        pass
+    # 2) REST products.json fallback
     try:
         since_id = None
         limit = 250
@@ -524,7 +557,7 @@ def list_product_ids_in_collection(collection_id: str, *, store: str | None = No
             for p in products:
                 try:
                     pid = int((p or {}).get("id"))
-                    ids.append(pid)
+                    out_ids.add(pid)
                 except Exception:
                     continue
             if len(products) < limit:
@@ -536,12 +569,42 @@ def list_product_ids_in_collection(collection_id: str, *, store: str | None = No
             except Exception:
                 break
     except Exception:
-        return ids
-    return ids
+        pass
+    # 3) REST collects.json fallback (custom collections only)
+    try:
+        since_id = None
+        limit = 250
+        while True:
+            qs = f"limit={limit}&fields=product_id" + (f"&since_id={since_id}" if since_id else "")
+            data = _rest_get_store(store, f"/collects.json?collection_id={collection_id}&{qs}")
+            collects = (data or {}).get("collects") or []
+            for c in collects:
+                try:
+                    pid = int((c or {}).get("product_id"))
+                    out_ids.add(pid)
+                except Exception:
+                    continue
+            if len(collects) < limit:
+                break
+            try:
+                since_id = (collects[-1] or {}).get("id")
+                if not since_id:
+                    break
+            except Exception:
+                break
+    except Exception:
+        pass
+    return list(out_ids)
 
 
 def count_orders_by_collection_processed(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
-    """Count unique orders whose line_items include any product in the collection within processed_at range (YYYY-MM-DD)."""
+    """Count unique orders whose line_items include any product in the collection within processed_at range (YYYY-MM-DD).
+
+    Notes:
+      - Uses product_id match only (variant_id also implies product match)
+      - Dedupes orders so one order with multiple collection products counts once
+      - Respects include_closed by using status=any
+    """
     try:
         product_ids = set(list_product_ids_in_collection(collection_id, store=store))
     except Exception:
