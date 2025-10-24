@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts } from '@/lib/api'
@@ -378,8 +378,7 @@ export default function AdsManagementPage(){
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <Fragment key={c.campaign_id || c.name}>
-                  <tr className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
+                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
@@ -522,7 +521,7 @@ export default function AdsManagementPage(){
                     const counts = collectionCounts[String(rk)]||{}
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
-                      <tr className="border-b last:border-b-0">
+                      <tr key={(c.campaign_id || c.name || '') + ':children'} className="border-b last:border-b-0">
                         <td className="px-3 py-2 bg-slate-50" colSpan={12}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
@@ -545,7 +544,6 @@ export default function AdsManagementPage(){
                       </tr>
                     )
                   })()}
-                  </Fragment>
                 )
               })}
             </tbody>
