@@ -26,7 +26,11 @@ export default function AdsManagementPage(){
 
   function computeRange(preset: string){
     const now = new Date()
-    const end = now.toISOString()
+    const toYmd = (d: Date)=>{
+      const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0')
+      return `${y}-${m}-${day}`
+    }
+    const endDate = new Date(now)
     const startDate = new Date(now)
     switch(preset){
       case 'today':
@@ -38,14 +42,14 @@ export default function AdsManagementPage(){
         d.setHours(0,0,0,0)
         const e = new Date(d)
         e.setHours(23,59,59,999)
-        return { start: d.toISOString(), end: e.toISOString() }
+        return { start: toYmd(d), end: toYmd(e) }
       }
       case 'last_14d':
         startDate.setDate(startDate.getDate()-14)
         break
       case 'this_month':{
         const d = new Date(now.getFullYear(), now.getMonth(), 1)
-        return { start: d.toISOString(), end }
+        return { start: toYmd(d), end: toYmd(endDate) }
       }
       case 'last_30d':
         startDate.setDate(startDate.getDate()-30)
@@ -56,7 +60,7 @@ export default function AdsManagementPage(){
         break
     }
     startDate.setHours(0,0,0,0)
-    return { start: startDate.toISOString(), end }
+    return { start: toYmd(startDate), end: toYmd(endDate) }
   }
 
   async function load(preset?: string){
@@ -86,7 +90,7 @@ export default function AdsManagementPage(){
         for(const id of ids){
           if(token !== ordersSeqToken.current) break
           try{
-            const oc = await shopifyOrdersCountByTitle({ names: [id], start, end })
+            const oc = await shopifyOrdersCountByTitle({ names: [id], start, end, include_closed: true })
             const count = ((oc as any)?.data||{})[id] ?? 0
             setShopifyCounts(prev=> ({ ...prev, [id]: count }))
           }catch{
@@ -215,70 +219,70 @@ export default function AdsManagementPage(){
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b sticky top-16 z-40 shadow-sm">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
-                <th className="px-3 py-2 font-semibold">Product</th>
-                <th className="px-3 py-2 font-semibold">
+                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">Product</th>
+                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Spend</span>
                     {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Purchases</span>
                     {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Cost / Purchase</span>
                     {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>CTR</span>
                     {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Add to cart</span>
                     {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-emerald-700">
+                <th className="px-3 py-2 font-semibold text-emerald-700 sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 hover:text-emerald-800">
                     <span>Shopify Orders</span>
                     {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-3 py-2 font-semibold text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>True CPP</span>
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
+                <th className="px-3 py-2 font-semibold text-indigo-700 text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
                     <span>Inventory</span>
                     {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-rose-700 text-right">
+                <th className="px-3 py-2 font-semibold text-rose-700 text-right sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">
                   <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 hover:text-rose-800">
                     <span>Zero-variant</span>
                     {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-rose-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold">Notes</th>
+                <th className="px-3 py-2 font-semibold sticky top-16 z-40 bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60">Notes</th>
               </tr>
             </thead>
             <tbody>

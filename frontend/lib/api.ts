@@ -441,8 +441,8 @@ export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string
 }
 
 // Shopify: count orders by line item title substring for a time range
-export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string }){
-  const body = { ...payload, store: payload.store ?? selectedStore() }
+export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
   return data as { data: { [name:string]: number }, error?: string }
 }

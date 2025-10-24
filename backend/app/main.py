@@ -378,15 +378,18 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         start = req.start
         end = req.end
         store = req.store
+        include_closed = bool(req.include_closed) if req.include_closed is not None else False
         out: dict[str, int] = {}
         for name in (req.names or []):
             try:
-                # If start/end look like YYYY-MM-DD and name is numeric → match Shopify Admin processed_at filter
-                import re as _re
-                if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) and _re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) and str(name or "").isdigit():
-                    out[name] = count_orders_by_product_processed(str(name), start, end, store=store)
+                # Prefer processed_at window for numeric product IDs to match Shopify Admin, regardless of input format
+                if str(name or "").isdigit():
+                    s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+                    e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
+                    # Fallback: if parsing fails, still attempt processed_at with raw values
+                    out[name] = count_orders_by_product_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
                 else:
-                    out[name] = count_orders_by_title(name or "", start, end, store=store)
+                    out[name] = count_orders_by_title(name or "", start, end, store=store, include_closed=include_closed)
             except Exception:
                 out[name] = 0
         return {"data": out}

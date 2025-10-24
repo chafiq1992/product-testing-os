@@ -353,7 +353,7 @@ def _rest_delete_store(store: str | None, path: str):
     return r.json() if r.content else {}
 
 
-def count_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None) -> int:
+def count_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count orders created within [created_at_min, created_at_max].
 
     Behavior:
@@ -398,7 +398,7 @@ def count_orders_by_title(title_contains: str, created_at_min: str, created_at_m
         created_max = created_at_max
 
     qs = {
-        "status": "open",  # per requirement: only open orders
+        "status": ("any" if include_closed else "open"),
         "limit": 250,
         "created_at_min": created_min,
         "created_at_max": created_max,
@@ -464,7 +464,7 @@ def _parse_link_next(link: str | None) -> str | None:
     return None
 
 
-def count_orders_by_product_processed(product_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None) -> int:
+def count_orders_by_product_processed(product_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count open orders filtered by processed_at date (YYYY-MM-DD) and product_id, matching Shopify Admin behavior.
 
     Uses page_info pagination.
@@ -475,7 +475,7 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
     from urllib.parse import urlencode
     base_path = "/orders.json"
     params = {
-        "status": "open",
+        "status": ("any" if include_closed else "open"),
         "limit": 250,
         "processed_at_min": f"{processed_min_date}T00:00:00",
         "processed_at_max": f"{processed_max_date}T23:59:59",
