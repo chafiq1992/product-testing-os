@@ -282,6 +282,29 @@ export async function shopifyUploadProductFiles(payload:{
   return data as { urls: string[], images?: any[], per_image?: any[] }
 }
 
+// Shopify: list product IDs in a collection
+export async function shopifyCollectionProducts(payload:{ collection_id: string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/shopify/collection_products`, body)
+  return data as { data: { product_ids: string[] }, error?: string }
+}
+
+// Campaign mappings (persist manual product/collection IDs per campaign row)
+export async function campaignMappingsList(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/campaign_mappings${q}`)
+  return data as { data: Record<string, { kind:'product'|'collection', id:string, store?:string }>, error?: string }
+}
+
+export async function campaignMappingUpsert(payload:{ campaign_key:string, kind:'product'|'collection', id:string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign_mappings`, body)
+  return data as { data?: { store?:string, campaign_key:string, kind:'product'|'collection', id:string }, error?: string }
+}
+
 // Gemini image generation (ad image from source image + prompt)
 export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:string, num_images?:number, neutral_background?: boolean }){
   const {data} = await axios.post(`${base}/api/gemini/ad_image`, payload)
@@ -441,8 +464,8 @@ export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string
 }
 
 // Shopify: count orders by line item title substring for a time range
-export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean }){
-  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true }
+export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field ?? 'created' }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
   return data as { data: { [name:string]: number }, error?: string }
 }
@@ -453,8 +476,8 @@ export async function shopifyProductsBrief(payload:{ ids: string[], store?: stri
   return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number } }, error?: string }
 }
 
-export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean, aggregate?: 'orders'|'items' }){
-  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate ?? 'items' }
+export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean, aggregate?: 'orders'|'items'|'sum_product_orders', date_field?: 'processed'|'created' }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate ?? 'items', date_field: payload.date_field ?? 'created' }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_collection`, body)
   return data as { data: { count: number }, error?: string }
 }

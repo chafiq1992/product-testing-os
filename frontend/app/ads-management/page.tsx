@@ -1,8 +1,8 @@
 "use client"
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -21,11 +21,13 @@ export default function AdsManagementPage(){
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
-  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>(()=>{
-    try{ return JSON.parse(localStorage.getItem('ptos_campaign_ids')||'{}') }catch{ return {} }
-  })
+  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [collectionProducts, setCollectionProducts] = useState<Record<string, string[]>>({})
+  const [collectionCounts, setCollectionCounts] = useState<Record<string, Record<string, number>>>({})
+  const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
 
@@ -79,6 +81,10 @@ export default function AdsManagementPage(){
       setShopifyCounts({})
       setProductBriefs({})
       setManualCounts({})
+      setExpanded({})
+      setCollectionProducts({})
+      setCollectionCounts({})
+      setChildrenLoading({})
       const token = ++ordersSeqToken.current
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
@@ -117,7 +123,7 @@ export default function AdsManagementPage(){
               const count = ((oc as any)?.data||{})[conf.id] ?? 0
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }else{
-              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'items' })
+              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
               const count = Number(((oc as any)?.data||{})?.count ?? 0)
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }
@@ -131,7 +137,48 @@ export default function AdsManagementPage(){
     finally{ setLoading(false) }
   }
 
+  async function loadCollectionChildren(rowKey: any, collectionId: string){
+    setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: true }))
+    try{
+      const { data } = await shopifyCollectionProducts({ collection_id: collectionId, store }) as any
+      const ids: string[] = ((data||{}).product_ids)||[]
+      setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
+      const { start, end } = computeRange(datePreset)
+      try{
+        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'created' })
+        const map = ((oc as any)?.data)||{}
+        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
+        // Update collection total to match sum of children
+        const sum = ids.reduce((acc, id)=> acc + (Number(map[id] ?? 0) || 0), 0)
+        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: sum }))
+      }catch{
+        const empty: Record<string, number> = {}
+        for(const id of ids) empty[id] = 0
+        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: empty }))
+        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: 0 }))
+      }
+    }finally{
+      setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: false }))
+    }
+  }
+
   useEffect(()=>{ load(datePreset) },[])
+  useEffect(()=>{
+    (async()=>{
+      try{
+        const res = await campaignMappingsList(store)
+        const map = ((res as any)?.data)||{}
+        const shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
+        for(const k of Object.keys(map||{})){
+          const v = (map as any)[k]
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
+        }
+        setManualIds(shaped)
+      }catch{
+        // ignore
+      }
+    })()
+  }, [store])
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
@@ -221,7 +268,7 @@ export default function AdsManagementPage(){
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
-      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
+      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
           <h1 className="font-semibold text-lg">Ads management</h1>
@@ -247,13 +294,13 @@ export default function AdsManagementPage(){
         </div>
       </header>
 
-      <div className="p-4 md:p-6 pt-16">
+      <div className="p-4 md:p-6">
         {error && (
           <div className="mb-3 text-sm text-red-600">{error}</div>
         )}
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b sticky top-16 z-40 shadow-sm">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 font-semibold">
@@ -343,9 +390,11 @@ export default function AdsManagementPage(){
                 const zeros = brief? brief.zero_variants : null
                 const img = brief? brief.image : null
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
+                const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
-                  <tr key={c.campaign_id || c.name} className={`border-b last:border-b-0 hover:bg-slate-100 odd:bg-white even:bg-slate-50 ${severityAccent}`}>
+                  <Fragment key={c.campaign_id || c.name}>
+                  <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
@@ -383,18 +432,22 @@ export default function AdsManagementPage(){
                               <button
                                 onClick={async()=>{
                                   const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim() }
-                                  setManualIds(prev=>{ const m={...prev, [rk]: next}; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
+                                  setManualIds(prev=> ({ ...prev, [rk]: next }))
                                   // Fetch now for this row respecting current range
                                   try{
+                                    // Persist mapping server-side
+                                    try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: next.kind, id: next.id, store }) }catch{}
                                     const { start, end } = computeRange(datePreset)
                                     if(next.kind==='product'){
                                       const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }else{
-                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'items' })
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'created' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                      // Preload children and align total with sum
+                                      await loadCollectionChildren(rk, next.id)
                                     }
                                   }catch{
                                     setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
@@ -402,12 +455,28 @@ export default function AdsManagementPage(){
                                 }}
                                 className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                               >Save</button>
+                              {(manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
+                                <button
+                                  onClick={async()=>{
+                                    const open = !expanded[String(rk)]
+                                    setExpanded(prev=> ({ ...prev, [String(rk)]: open }))
+                                    if(open){
+                                      const collId = String(((manualIds as any)[rk]||{}).id||'')
+                                      if(collId) await loadCollectionChildren(rk, collId)
+                                    }
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
+                                >{expanded[String(rk)]? 'Hide products' : 'Show products'}</button>
+                              )}
                               {(manualIds as any)[rk] && (
                                 <button
                                   onClick={()=>{
                                     setManualIds(prev=>{ const m={...prev}; delete (m as any)[rk]; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
                                     setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
                                     setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setCollectionProducts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setCollectionCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
                                   }}
                                   className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
                                 >Clear</button>
@@ -464,6 +533,38 @@ export default function AdsManagementPage(){
                       />
                     </td>
                   </tr>
+                  {(()=>{
+                    const rk = (c.campaign_id || c.name || '') as any
+                    const conf = (manualIds as any)[rk]
+                    if(!(conf && conf.kind==='collection' && expanded[String(rk)])) return null
+                    const ids = collectionProducts[String(rk)]||[]
+                    const counts = collectionCounts[String(rk)]||{}
+                    const loadingChildren = !!childrenLoading[String(rk)]
+                    return (
+                      <tr className="border-b last:border-b-0">
+                        <td className="px-3 py-2 bg-slate-50" colSpan={12}>
+                          {loadingChildren ? (
+                            <div className="text-xs text-slate-500">Loading products…</div>
+                          ) : (
+                            <div className="text-xs">
+                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                                {ids.map(pid=> (
+                                  <div key={pid} className="flex items-center justify-between border rounded px-2 py-1 bg-white">
+                                    <span className="font-mono">{pid}</span>
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">{counts[pid] ?? '—'}</span>
+                                  </div>
+                                ))}
+                                {ids.length===0 && (
+                                  <div className="text-slate-500">No products in this collection.</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+                  </Fragment>
                 )
               })}
             </tbody>

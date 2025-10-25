@@ -23,6 +23,8 @@ from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
+from app.integrations.shopify_client import sum_product_order_counts_for_collection
+from app.integrations.shopify_client import sum_product_order_counts_for_collection_created
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
@@ -373,6 +375,7 @@ class OrdersCountRequest(BaseModel):
     end: str    # ISO date/time or YYYY-MM-DD
     store: Optional[str] = None
     include_closed: Optional[bool] = None
+    date_field: Optional[str] = None  # 'processed' | 'created'
 
 
 @app.post("/api/shopify/orders_count_by_title")
@@ -389,8 +392,12 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
                 if str(name or "").isdigit():
                     s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
                     e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
-                    # Fallback: if parsing fails, still attempt processed_at with raw values
-                    out[name] = count_orders_by_product_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
+                    df = (req.date_field or "processed").lower()
+                    if df == "created":
+                        out[name] = count_orders_by_title(str(name) or "", start, end, store=store, include_closed=include_closed)
+                    else:
+                        # Fallback: if parsing fails, still attempt processed_at with raw values
+                        out[name] = count_orders_by_product_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
                 else:
                     out[name] = count_orders_by_title(name or "", start, end, store=store, include_closed=include_closed)
             except Exception:
@@ -435,13 +442,46 @@ async def api_collection_products(req: CollectionProductsRequest):
         return {"error": str(e), "data": {"product_ids": []}}
 
 
+class CampaignMappingUpsertRequest(BaseModel):
+    campaign_key: str
+    kind: str  # 'product' | 'collection'
+    id: str
+    store: Optional[str] = None
+
+
+@app.post("/api/campaign_mappings")
+async def api_upsert_campaign_mapping(req: CampaignMappingUpsertRequest):
+    try:
+        key = (req.campaign_key or "").strip()
+        kind = (req.kind or "").strip()
+        target_id = (req.id or "").strip()
+        if not key or not kind or not target_id:
+            return {"error": "missing_fields"}
+        if kind not in ("product", "collection"):
+            return {"error": "invalid_kind"}
+        out = db.upsert_campaign_mapping(req.store, key, kind, target_id)
+        return {"data": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign_mappings")
+async def api_list_campaign_mappings(store: str | None = None):
+    try:
+        items = db.list_campaign_mappings(store)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 class OrdersCountByCollectionRequest(BaseModel):
     collection_id: str
     start: str
     end: str
     store: Optional[str] = None
     include_closed: Optional[bool] = None
-    aggregate: Optional[str] = None  # 'orders' | 'items'
+    aggregate: Optional[str] = None  # 'orders' | 'items' | 'sum_product_orders'
+    date_field: Optional[str] = None  # 'processed' | 'created'
 
 
 @app.post("/api/shopify/orders_count_by_collection")
@@ -456,6 +496,12 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
         agg = (req.aggregate or "orders").lower()
         if agg == "items":
             cnt = count_items_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
+        elif agg == "sum_product_orders":
+            df = (req.date_field or "processed").lower()
+            if df == "created":
+                cnt = sum_product_order_counts_for_collection_created(cid, s_date, e_date, store=req.store, include_closed=include_closed)
+            else:
+                cnt = sum_product_order_counts_for_collection(cid, s_date, e_date, store=req.store, include_closed=include_closed)
         else:
             cnt = count_orders_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
         return {"data": {"count": cnt}}
