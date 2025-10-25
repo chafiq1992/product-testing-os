@@ -200,6 +200,7 @@ def _rest_post(path: str, payload: dict):
     return r.json() if r.content else {}
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _rest_get(path: str):
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
@@ -288,6 +289,7 @@ def _rest_post_store(store: str | None, path: str, payload: dict):
     r.raise_for_status()
     return r.json() if r.content else {}
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _rest_get_store(store: str | None, path: str):
     cfg = _get_store_config(store)
     url = f"{cfg['BASE']}{path}"
@@ -302,6 +304,7 @@ def _rest_get_store(store: str | None, path: str):
     return r.json() if r.content else {}
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _rest_get_store_raw(store: str | None, path: str):
     cfg = _get_store_config(store)
     url = f"{cfg['BASE']}{path}"
@@ -502,6 +505,59 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
                             break
                     except Exception:
                         continue
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count open/any orders filtered by processed_at date (YYYY-MM-DD), matching either product_id OR variant_id.
+
+    This handles cases where a numeric identifier refers to a variant rather than a product.
+    Uses page_info pagination.
+    """
+    if not (numeric_id and numeric_id.isdigit()):
+        return 0
+    target = int(numeric_id)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": f"{processed_min_date}T00:00:00",
+        "processed_at_max": f"{processed_max_date}T23:59:59",
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                matched = False
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid == target or vid == target:
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+                if matched:
+                    total += 1
             except Exception:
                 continue
         link = resp.headers.get("Link")

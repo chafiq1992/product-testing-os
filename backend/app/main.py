@@ -20,6 +20,7 @@ from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import get_products_brief
 from app.integrations.shopify_client import count_orders_by_product_processed
+from app.integrations.shopify_client import count_orders_by_product_or_variant_processed
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
@@ -396,8 +397,8 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
                     if df == "created":
                         out[name] = count_orders_by_title(str(name) or "", start, end, store=store, include_closed=include_closed)
                     else:
-                        # Fallback: if parsing fails, still attempt processed_at with raw values
-                        out[name] = count_orders_by_product_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
+                        # Use product_or_variant to catch variant IDs too
+                        out[name] = count_orders_by_product_or_variant_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
                 else:
                     out[name] = count_orders_by_title(name or "", start, end, store=store, include_closed=include_closed)
             except Exception:
