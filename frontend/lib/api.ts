@@ -465,7 +465,7 @@ export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string
 
 // Shopify: count orders by line item title substring for a time range
 export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
-  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field ?? 'created' }
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
   return data as { data: { [name:string]: number }, error?: string }
 }
@@ -477,7 +477,7 @@ export async function shopifyProductsBrief(payload:{ ids: string[], store?: stri
 }
 
 export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean, aggregate?: 'orders'|'items'|'sum_product_orders', date_field?: 'processed'|'created' }){
-  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate ?? 'items', date_field: payload.date_field ?? 'created' }
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate, date_field: payload.date_field }
   const {data} = await axios.post(`${base}/api/shopify/orders_count_by_collection`, body)
   return data as { data: { count: number }, error?: string }
 }
