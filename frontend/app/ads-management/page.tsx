@@ -166,7 +166,7 @@ export default function AdsManagementPage(){
   useEffect(()=>{ load(datePreset) },[])
   useEffect(()=>{
     // Load saved ad account for this store and display name
-    (async()=>{
+    const loadAdAccount = async () => {
       try{
         const res = await metaGetAdAccount(store)
         const conf = (res as any)?.data||{}
@@ -176,8 +176,9 @@ export default function AdsManagementPage(){
         }
         if(conf && conf.name){ setAdAccountName(String(conf.name||'')) } else { setAdAccountName('') }
       }catch{ setAdAccountName('') }
-    })()
-    (async()=>{
+    }
+    loadAdAccount()
+    const loadMappings = async () => {
       try{
         const res = await campaignMappingsList(store)
         const map = ((res as any)?.data)||{}
@@ -190,7 +191,8 @@ export default function AdsManagementPage(){
       }catch{
         // ignore
       }
-    })()
+    }
+    loadMappings()
   }, [store])
 
   function getId(row: MetaCampaignRow){
