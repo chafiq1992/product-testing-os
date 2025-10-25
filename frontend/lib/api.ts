@@ -453,14 +453,38 @@ export type MetaCampaignRow = {
   cpp?: number|null,
   ctr?: number|null,
   add_to_cart: number,
+  status?: string|null,
 }
 export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string){
   const parts: string[] = []
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
+  const s = selectedStore()
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/meta/campaigns${qp}`)
   return data as { data: MetaCampaignRow[], error?: string }
+}
+
+// Ad account persistence per store
+export async function metaGetAdAccount(store?: string){
+  const parts: string[] = []
+  const s = store ?? selectedStore()
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
+  const qp = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/meta/ad_account${qp}`)
+  return data as { data?: { id?: string, name?: string }, error?: string }
+}
+
+export async function metaSetAdAccount(payload:{ id:string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/meta/ad_account`, body)
+  return data as { data?: { id?: string, name?: string }, error?: string }
+}
+
+export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED'){
+  const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status })
+  return data as { data?: any, error?: string }
 }
 
 // Shopify: count orders by line item title substring for a time range

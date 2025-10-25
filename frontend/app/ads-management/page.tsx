@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -18,6 +18,7 @@ export default function AdsManagementPage(){
     try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
   })
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
+  const [adAccountName, setAdAccountName] = useState<string>('')
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
@@ -164,6 +165,18 @@ export default function AdsManagementPage(){
 
   useEffect(()=>{ load(datePreset) },[])
   useEffect(()=>{
+    // Load saved ad account for this store and display name
+    (async()=>{
+      try{
+        const res = await metaGetAdAccount(store)
+        const conf = (res as any)?.data||{}
+        if(conf && conf.id){
+          setAdAccount(String(conf.id||''))
+          try{ localStorage.setItem('ptos_ad_account', String(conf.id||'')) }catch{}
+        }
+        if(conf && conf.name){ setAdAccountName(String(conf.name||'')) } else { setAdAccountName('') }
+      }catch{ setAdAccountName('') }
+    })()
     (async()=>{
       try{
         const res = await campaignMappingsList(store)
@@ -278,7 +291,18 @@ export default function AdsManagementPage(){
             <option value="irrakids">irrakids</option>
             <option value="irranova">irranova</option>
           </select>
-          <input value={adAccount} onChange={(e)=>{ const v=e.target.value.trim(); setAdAccount(v); try{ localStorage.setItem('ptos_ad_account', v) }catch{} }} placeholder="Ad account (numeric)" className="rounded-xl border px-2 py-1 text-sm bg-white w-40" />
+          <div className="flex items-center gap-1">
+            <input value={adAccount} onChange={(e)=>{ const v=e.target.value.replace(/[^0-9]/g,''); setAdAccount(v); try{ localStorage.setItem('ptos_ad_account', v) }catch{} }} onBlur={async()=>{
+              const v = (adAccount||'').trim()
+              if(!v) return
+              try{
+                const res = await metaSetAdAccount({ id: v, store })
+                const data = (res as any)?.data||{}
+                if(data && data.name){ setAdAccountName(String(data.name||'')) }
+              }catch{}
+            }} placeholder="Ad account (numeric)" className="rounded-xl border px-2 py-1 text-sm bg-white w-40" />
+            {adAccountName? (<span className="text-xs text-slate-600">{adAccountName}</span>) : null}
+          </div>
           <select value={datePreset} onChange={(e)=>{ setDatePreset(e.target.value); load(e.target.value) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
             <option value="today">Today</option>
             <option value="yesterday">Yesterday</option>
@@ -308,6 +332,9 @@ export default function AdsManagementPage(){
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
+                </th>
+                <th className="px-3 py-2 font-semibold">
+                  <span>Status</span>
                 </th>
                 <th className="px-3 py-2 font-semibold text-right">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
@@ -485,6 +512,32 @@ export default function AdsManagementPage(){
                           )
                         })()}
                       </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      {(()=>{
+                        const st = (c.status||'').toUpperCase()
+                        const active = st==='ACTIVE'
+                        const color = active? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                        return (
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${color}`}>{active? 'Active' : 'Paused'}</span>
+                            {c.campaign_id && (
+                              <button
+                                onClick={async()=>{
+                                  const next = (st==='ACTIVE')? 'PAUSED' : 'ACTIVE'
+                                  const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this campaign?`)
+                                  if(!ok) return
+                                  try{
+                                    await metaSetCampaignStatus(String(c.campaign_id), next as any)
+                                    setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
+                                  }catch(e){ alert('Failed to update status') }
+                                }}
+                                className={`px-2 py-0.5 rounded text-xs ${st==='ACTIVE'? 'bg-rose-100 text-rose-700 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}
+                              >{st==='ACTIVE'? 'Turn off' : 'Turn on'}</button>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-right">${(c.spend||0).toFixed(2)}</td>
                     <td className="px-3 py-2 text-right">{c.purchases||0}</td>

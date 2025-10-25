@@ -118,9 +118,35 @@ def _action_count(actions: list | None, candidates: list[str]) -> float:
     return 0.0
 
 
+# -------- Ad Account helpers --------
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def get_ad_account_info(ad_account_id: str | None = None) -> dict:
+    """Fetch ad account basic info: id and name."""
+    acct = str(ad_account_id or AD_ACCOUNT_ID)
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    if not acct:
+        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
+    res = _get(f"act_{acct}", {"fields": "id,name,account_status"})
+    return {"id": res.get("id"), "name": res.get("name"), "account_status": res.get("account_status")}
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def set_campaign_status(campaign_id: str, status: str) -> dict:
+    """Set campaign status to 'ACTIVE' or 'PAUSED'. Returns API response."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    status = (status or "").upper()
+    if status not in ("ACTIVE", "PAUSED"):
+        raise RuntimeError("Invalid status. Use 'ACTIVE' or 'PAUSED'.")
+    # POST to /{campaign_id}
+    res = _post(f"{campaign_id}", {"status": status})
+    return res if isinstance(res, dict) else {"ok": True}
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None) -> list[dict]:
-    """Return active campaigns with key insights for a recent window.
+    """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 
     Metrics per campaign:
       - name
@@ -129,6 +155,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
       - cpp (cost per purchase)
       - ctr
       - add_to_cart
+      - status (effective)
     """
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
@@ -139,15 +166,34 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     params = {
         "level": "campaign",
         "fields": "campaign_id,campaign_name,spend,actions,ctr,cpp",
-        # Filter only active campaigns
+        # Filter to active and paused campaigns
         "filtering": json.dumps([
-            {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE"]}
+            {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
         ]),
         "date_preset": date_preset or "last_7d",
         "limit": 250,
     }
     res = _get(f"act_{acct}/insights", params)
     rows = (res or {}).get("data") or []
+    # Fetch current statuses for these campaigns
+    status_map: dict[str, str] = {}
+    try:
+        cparams = {
+            "fields": "id,name,effective_status,configured_status",
+            "filtering": json.dumps([
+                {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
+            ]),
+            "limit": 500,
+        }
+        cres = _get(f"act_{acct}/campaigns", cparams)
+        crows = (cres or {}).get("data") or []
+        for c in (crows or []):
+            cid = str((c or {}).get("id") or "")
+            eff = (c or {}).get("effective_status") or (c or {}).get("configured_status")
+            if cid:
+                status_map[cid] = str(eff or "")
+    except Exception:
+        status_map = {}
     out: list[dict] = []
     for r in rows:
         name = (r or {}).get("campaign_name")
@@ -168,14 +214,16 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
             "offsite_conversion.fb_pixel_add_to_cart",
         ])
         eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
+        cid = (r or {}).get("campaign_id")
         out.append({
-            "campaign_id": (r or {}).get("campaign_id"),
+            "campaign_id": cid,
             "name": name,
             "spend": round(spend, 2),
             "purchases": int(purchases) if purchases is not None else 0,
             "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
             "ctr": round(ctr, 3) if ctr is not None else None,
             "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
+            "status": (status_map.get(str(cid)) or "").upper() if cid else None,
         })
     return out
 

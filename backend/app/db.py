@@ -90,6 +90,19 @@ class AppPrompt(Base):
 
 Index('ix_app_prompts_updated_at', AppPrompt.updated_at)
 
+# Generic app settings (key/value per store)
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    pk = Column(String, primary_key=True)  # composed key: f"{(store or '').strip()}|{key}"
+    store = Column(String, nullable=True)
+    key = Column(String, nullable=False)
+    value = Column(Text, nullable=True)  # JSON-encoded value
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+Index('ix_app_settings_store_key', AppSetting.store, AppSetting.key)
+
 # Campaign ID mappings (persist manual product/collection IDs per campaign row)
 class CampaignMapping(Base):
     __tablename__ = "campaign_mappings"
@@ -331,6 +344,42 @@ def set_app_prompts(patch: Dict[str, str]) -> Dict[str, str]:
 def _mk_pk(store: str | None, campaign_key: str) -> str:
     s = (store or "").strip()
     return f"{s}|{campaign_key}"
+
+
+# ---------------- App Settings (key/value per store) ----------------
+def _mk_setting_pk(store: str | None, key: str) -> str:
+    s = (store or "").strip()
+    return f"{s}|{key}"
+
+
+def get_app_setting(store: str | None, key: str) -> Any:
+    with SessionLocal() as session:
+        pk = _mk_setting_pk(store, key)
+        item = session.get(AppSetting, pk)
+        if not item:
+            return None
+        try:
+            return json.loads(item.value) if item.value is not None else None
+        except Exception:
+            return item.value
+
+
+def set_app_setting(store: str | None, key: str, value: Any) -> Any:
+    with SessionLocal() as session:
+        pk = _mk_setting_pk(store, key)
+        item = session.get(AppSetting, pk)
+        payload = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+        if item:
+            item.value = payload
+            item.updated_at = _now()
+        else:
+            item = AppSetting(pk=pk, store=store, key=key, value=payload, updated_at=_now())
+            session.add(item)
+        session.commit()
+        try:
+            return json.loads(item.value) if item.value is not None else None
+        except Exception:
+            return item.value
 
 
 def upsert_campaign_mapping(store: str | None, campaign_key: str, kind: str, target_id: str) -> dict:

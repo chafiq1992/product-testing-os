@@ -32,6 +32,7 @@ from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -357,14 +358,21 @@ async def get_saved_audiences():
 
 
 @app.get("/api/meta/campaigns")
-async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None):
+async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None, store: str | None = None):
     """Return active campaigns with key metrics.
 
     Query params:
       - date_preset: e.g., 'last_7d', 'last_14d', 'this_month', 'last_30d'
     """
     try:
-        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(ad_account or None))
+        acct = ad_account
+        if not acct:
+            try:
+                conf = db.get_app_setting(store, "meta_ad_account")
+                acct = (conf or {}).get("id") if isinstance(conf, dict) else None
+            except Exception:
+                acct = None
+        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None))
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
@@ -1468,6 +1476,61 @@ async def api_list_agents(limit: int | None = None):
     except Exception as e:
         return {"error": str(e), "data": []}
 
+
+# -------- Meta Ad Account (persist per store) --------
+class AdAccountSetRequest(BaseModel):
+    id: str
+    store: Optional[str] = None
+
+
+@app.get("/api/meta/ad_account")
+async def api_get_ad_account(store: str | None = None):
+    try:
+        conf = db.get_app_setting(store, "meta_ad_account") or {}
+        # Enrich with name live from Meta if we have id
+        out = {}
+        try:
+            acct_id = (conf or {}).get("id") if isinstance(conf, dict) else None
+            if acct_id:
+                info = get_ad_account_info(acct_id)
+                out = {"id": info.get("id"), "name": info.get("name")}
+            else:
+                out = {}
+        except Exception:
+            out = conf if isinstance(conf, dict) else {}
+        return {"data": out}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.post("/api/meta/ad_account")
+async def api_set_ad_account(req: AdAccountSetRequest):
+    try:
+        acct_id = (req.id or "").strip()
+        if not acct_id:
+            return {"error": "missing_id"}
+        # Verify account and get name
+        info = get_ad_account_info(acct_id)
+        saved = db.set_app_setting(req.store, "meta_ad_account", {"id": info.get("id") or acct_id, "name": info.get("name")})
+        return {"data": saved}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class CampaignStatusUpdateRequest(BaseModel):
+    status: str  # ACTIVE | PAUSED
+
+
+@app.post("/api/meta/campaigns/{campaign_id}/status")
+async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdateRequest):
+    try:
+        status = (req.status or "").upper()
+        if status not in ("ACTIVE", "PAUSED"):
+            return {"error": "invalid_status"}
+        res = set_campaign_status(campaign_id, status)
+        return {"data": res}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/api/agents/{agent_id}")
 async def api_get_agent(agent_id: str):
