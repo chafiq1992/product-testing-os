@@ -79,6 +79,18 @@ logger.setLevel(logging.INFO)
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
+# Normalize Meta ad account IDs passed from clients (accepts either numeric or 'act_123...').
+def _normalize_ad_acct_id(acct: str | None) -> str | None:
+    try:
+        s = str(acct or '').strip()
+        if not s:
+            return None
+        if s.lower().startswith('act_'):
+            s = s.split('_', 1)[1]
+        return s
+    except Exception:
+        return acct
+
 # Serve a minimal favicon to avoid 404 noise
 @app.get("/favicon.ico")
 async def favicon():
@@ -366,11 +378,11 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
       - date_preset: e.g., 'last_7d', 'last_14d', 'this_month', 'last_30d'
     """
     try:
-        acct = ad_account
+        acct = _normalize_ad_acct_id(ad_account)
         if not acct:
             try:
                 conf = db.get_app_setting(store, "meta_ad_account")
-                acct = (conf or {}).get("id") if isinstance(conf, dict) else None
+                acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             except Exception:
                 acct = None
         items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None), since=start, until=end)
@@ -1515,7 +1527,7 @@ async def api_get_ad_account(store: str | None = None):
         # Enrich with name live from Meta if we have id
         out = {}
         try:
-            acct_id = (conf or {}).get("id") if isinstance(conf, dict) else None
+            acct_id = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             if acct_id:
                 info = get_ad_account_info(acct_id)
                 out = {"id": info.get("id"), "name": info.get("name")}
@@ -1531,7 +1543,7 @@ async def api_get_ad_account(store: str | None = None):
 @app.post("/api/meta/ad_account")
 async def api_set_ad_account(req: AdAccountSetRequest):
     try:
-        acct_id = (req.id or "").strip()
+        acct_id = _normalize_ad_acct_id((req.id or "").strip())
         if not acct_id:
             return {"error": "missing_id"}
         # Verify account and get name
