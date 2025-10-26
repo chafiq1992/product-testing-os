@@ -149,41 +149,50 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
 def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", since: str | None = None, until: str | None = None) -> list[dict]:
     """Return ad sets for a campaign with insights and current status.
 
-    If "since" and "until" (YYYY-MM-DD) are provided, use a custom time_range instead of date_preset.
+    Implementation note:
+    - We first list ad sets under the campaign to get IDs and statuses.
+    - Then we fetch insights per ad set ("{adset_id}/insights") using date_preset or time_range.
+      This avoids flaky behavior of calling "{campaign_id}/insights" with level=adset.
+    If "since" and "until" (YYYY-MM-DD) are provided, we use a custom time_range instead of date_preset.
     """
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    params: dict = {
-        "level": "adset",
-        "fields": "adset_id,adset_name,spend,actions,ctr,cpp",
-        "filtering": json.dumps([
-            {"field": "adset.campaign_id", "operator": "EQUAL", "value": campaign_id}
-        ]),
-        "limit": 250,
-    }
-    # Prefer explicit time_range if provided
-    if since and until:
-        params["time_range"] = json.dumps({"since": since, "until": until})
-    else:
-        params["date_preset"] = date_preset or "last_7d"
-    # Insights per adset
-    res = _get(f"{campaign_id}/insights", params)
-    rows = (res or {}).get("data") or []
-    out: list[dict] = []
-    # Also fetch statuses
+    # Fetch ad set list and statuses
     status_map: dict[str, str] = {}
-    try:
-        sres = _get(f"{campaign_id}/adsets", {"fields": "id,name,effective_status,configured_status", "limit": 500})
-        srows = (sres or {}).get("data") or []
-        for a in (srows or []):
-            aid = str((a or {}).get("id") or "")
-            eff = (a or {}).get("effective_status") or (a or {}).get("configured_status")
-            if aid:
-                status_map[aid] = str(eff or "").upper()
-    except Exception:
-        status_map = {}
-    for r in rows:
-        name = (r or {}).get("adset_name")
+    adsets_meta: dict[str, dict] = {}
+    sres = _get(
+        f"{campaign_id}/adsets",
+        {"fields": "id,name,effective_status,configured_status", "limit": 500},
+    )
+    srows = (sres or {}).get("data") or []
+    for a in (srows or []):
+        aid = str((a or {}).get("id") or "")
+        if not aid:
+            continue
+        adsets_meta[aid] = {"name": (a or {}).get("name")}
+        eff = (a or {}).get("effective_status") or (a or {}).get("configured_status")
+        status_map[aid] = str(eff or "").upper()
+
+    out: list[dict] = []
+    # For each ad set, query insights directly
+    for aid, meta in adsets_meta.items():
+        iparams: dict = {
+            "level": "adset",
+            "fields": "spend,actions,ctr,cpp",
+            "limit": 250,
+        }
+        if since and until:
+            iparams["time_range"] = json.dumps({"since": since, "until": until})
+        else:
+            iparams["date_preset"] = date_preset or "last_7d"
+        try:
+            ires = _get(f"{aid}/insights", iparams)
+            irows = (ires or {}).get("data") or []
+            # Aggregate first row (Meta returns single row for range)
+            r = irows[0] if irows else {}
+        except Exception:
+            r = {}
+        name = meta.get("name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
         ctr = _parse_float((r or {}).get("ctr"))
         cpp = _parse_float((r or {}).get("cpp"))
@@ -201,7 +210,6 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             "offsite_conversion.fb_pixel_add_to_cart",
         ])
         eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
-        aid = (r or {}).get("adset_id")
         out.append({
             "adset_id": aid,
             "name": name,
@@ -210,7 +218,7 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
             "ctr": round(ctr, 3) if ctr is not None else None,
             "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
-            "status": (status_map.get(str(aid)) or "").upper() if aid else None,
+            "status": (status_map.get(aid) or "").upper() if aid else None,
         })
     return out
 

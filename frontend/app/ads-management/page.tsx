@@ -60,6 +60,12 @@ export default function AdsManagementPage(){
   function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
   function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
 
+  function extractNumericId(s?: string|null){
+    const n = String(s||'')
+    const m = n.match(/(\d{3,})/)
+    return m? m[1] : null
+  }
+
   function computeRange(preset: string){
     const now = new Date()
     const toYmd = (d: Date)=>{
@@ -170,7 +176,19 @@ export default function AdsManagementPage(){
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
         const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
-        const ids = rows.map(c=> (c.name||'').trim()).filter(n=> /^\d+$/.test(n))
+        // Build product ID list from numeric in name OR manual product mappings
+        const idSet: Record<string, true> = {}
+        for(const c of rows){
+          const rk = (c.campaign_id || c.name || '') as any
+          const manual = (manualIds as any)[rk]
+          if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)){
+            idSet[manual.id] = true
+            continue
+          }
+          const pid = extractNumericId(c.name||'')
+          if(pid) idSet[pid] = true
+        }
+        const ids = Object.keys(idSet)
         if(!ids.length) return
         // Fetch product briefs (image + inventory) in batch for speed
         try{
@@ -291,21 +309,30 @@ export default function AdsManagementPage(){
     if(manual && manualCounts[String(rowKey)]!=null){
       return manualCounts[String(rowKey)]
     }
-    if(!/^\d+$/.test(id)) return null
-    const v = shopifyCounts[id]
+    const pid = extractNumericId(id)
+    if(!pid) return null
+    const v = shopifyCounts[pid]
     return typeof v==='number'? v : null
   }
   function getInventory(row: MetaCampaignRow){
-    const id = getId(row)
-    if(!/^\d+$/.test(id)) return null
-    const brief = productBriefs[id]
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    let pid: string | null = null
+    if(manual && manual.kind==='product' && manual.id) pid = manual.id
+    else pid = extractNumericId(getId(row))
+    if(!pid) return null
+    const brief = productBriefs[pid]
     if(!brief) return null
     return typeof brief.total_available==='number'? brief.total_available : null
   }
   function getZeroVariants(row: MetaCampaignRow){
-    const id = getId(row)
-    if(!/^\d+$/.test(id)) return null
-    const brief = productBriefs[id]
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    let pid: string | null = null
+    if(manual && manual.kind==='product' && manual.id) pid = manual.id
+    else pid = extractNumericId(getId(row))
+    if(!pid) return null
+    const brief = productBriefs[pid]
     if(!brief) return null
     return typeof brief.zero_variants==='number'? brief.zero_variants : null
   }
@@ -545,8 +572,8 @@ export default function AdsManagementPage(){
               {!loading && sortedItems.map((c)=>{
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
-                const id = (c.name||'').trim()
-                const isNumeric = /^\d+$/.test(id)
+                        const id = (c.name||'').trim()
+                        const isNumeric = !!extractNumericId(id)
                 const orders = getOrders(c)
                 const trueCppVal = (orders!=null && orders>0)? (c.spend||0)/orders : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
@@ -628,6 +655,8 @@ export default function AdsManagementPage(){
                                     try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: next.kind, id: next.id, store }) }catch{}
                                     const { start, end } = computeRange(datePreset)
                                     if(next.kind==='product'){
+                                      // ensure product brief is loaded for inventory/zero-variants columns
+                                      try{ const pb = await shopifyProductsBrief({ ids: [next.id], store }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
                                       const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
