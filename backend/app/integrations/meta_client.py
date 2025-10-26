@@ -146,19 +146,26 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d") -> list[dict]:
-    """Return ad sets for a campaign with insights and current status."""
+def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", since: str | None = None, until: str | None = None) -> list[dict]:
+    """Return ad sets for a campaign with insights and current status.
+
+    If "since" and "until" (YYYY-MM-DD) are provided, use a custom time_range instead of date_preset.
+    """
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    params = {
+    params: dict = {
         "level": "adset",
         "fields": "adset_id,adset_name,spend,actions,ctr,cpp",
         "filtering": json.dumps([
             {"field": "adset.campaign_id", "operator": "EQUAL", "value": campaign_id}
         ]),
-        "date_preset": date_preset or "last_7d",
         "limit": 250,
     }
+    # Prefer explicit time_range if provided
+    if since and until:
+        params["time_range"] = json.dumps({"since": since, "until": until})
+    else:
+        params["date_preset"] = date_preset or "last_7d"
     # Insights per adset
     res = _get(f"{campaign_id}/insights", params)
     rows = (res or {}).get("data") or []
@@ -278,7 +285,7 @@ def campaign_daily_insights(campaign_id: str, days: int = 6) -> list[dict]:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None) -> list[dict]:
+def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None, since: str | None = None, until: str | None = None) -> list[dict]:
     """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 
     Metrics per campaign:
@@ -296,16 +303,20 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
     acct = str(ad_account_id or AD_ACCOUNT_ID)
 
-    params = {
+    params: dict = {
         "level": "campaign",
         "fields": "campaign_id,campaign_name,spend,actions,ctr,cpp",
         # Filter to active and paused campaigns
         "filtering": json.dumps([
             {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
         ]),
-        "date_preset": date_preset or "last_7d",
         "limit": 250,
     }
+    # Prefer explicit time_range if provided
+    if since and until:
+        params["time_range"] = json.dumps({"since": since, "until": until})
+    else:
+        params["date_preset"] = date_preset or "last_7d"
     res = _get(f"act_{acct}/insights", params)
     rows = (res or {}).get("data") or []
     # Fetch current statuses for these campaigns

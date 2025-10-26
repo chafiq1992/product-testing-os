@@ -359,7 +359,7 @@ async def get_saved_audiences():
 
 
 @app.get("/api/meta/campaigns")
-async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None, store: str | None = None):
+async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None, store: str | None = None, start: str | None = None, end: str | None = None):
     """Return active campaigns with key metrics.
 
     Query params:
@@ -373,7 +373,7 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
                 acct = (conf or {}).get("id") if isinstance(conf, dict) else None
             except Exception:
                 acct = None
-        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None))
+        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None), since=start, until=end)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
@@ -1559,9 +1559,9 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets")
-async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None):
+async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None):
     try:
-        items = list_adsets_with_insights(campaign_id, date_preset or "last_7d")
+        items = list_adsets_with_insights(campaign_id, date_preset or "last_7d", since=start, until=end)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}

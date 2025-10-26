@@ -455,10 +455,11 @@ export type MetaCampaignRow = {
   add_to_cart: number,
   status?: string|null,
 }
-export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string){
+export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string, range?: { start?: string, end?: string }){
   const parts: string[] = []
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
+  if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
   const s = selectedStore()
   if(s) parts.push(`store=${encodeURIComponent(s)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''
@@ -498,9 +499,10 @@ export type MetaAdsetRow = {
   status?: string|null,
 }
 
-export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string){
+export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string, range?: { start?: string, end?: string }){
   const parts: string[] = []
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
+  if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
   const qp = parts.length? `?${parts.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets${qp}`)
   return data as { data: MetaAdsetRow[], error?: string }

@@ -7,7 +7,9 @@ import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, sh
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
-  const [datePreset, setDatePreset] = useState<string>('last_7d')
+  const [datePreset, setDatePreset] = useState<string>('last_7d_incl_today')
+  const [customStart, setCustomStart] = useState<string>('')
+  const [customEnd, setCustomEnd] = useState<string>('')
   const [error, setError] = useState<string|undefined>(undefined)
   const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
   const ordersSeqToken = useRef(0)
@@ -78,30 +80,76 @@ export default function AdsManagementPage(){
         e.setHours(23,59,59,999)
         return { start: toYmd(d), end: toYmd(e) }
       }
-      case 'last_14d':
-        startDate.setDate(startDate.getDate()-14)
-        break
-      case 'this_month':{
-        const d = new Date(now.getFullYear(), now.getMonth(), 1)
-        return { start: toYmd(d), end: toYmd(endDate) }
+      case 'last_3d_excl_today':{
+        // since = 2 days before yesterday; until = yesterday
+        const until = new Date(now)
+        until.setDate(until.getDate()-1)
+        const since = new Date(until)
+        since.setDate(since.getDate()-(3-1))
+        since.setHours(0,0,0,0)
+        until.setHours(23,59,59,999)
+        return { start: toYmd(since), end: toYmd(until) }
       }
-      case 'last_30d':
-        startDate.setDate(startDate.getDate()-30)
+      case 'last_4d_incl_today':
+        startDate.setDate(startDate.getDate()-(4-1))
         break
-      case 'last_7d':
+      case 'last_5d_incl_today':
+        startDate.setDate(startDate.getDate()-(5-1))
+        break
+      case 'last_6d_incl_today':
+        startDate.setDate(startDate.getDate()-(6-1))
+        break
+      case 'last_7d_incl_today':
       default:
-        startDate.setDate(startDate.getDate()-7)
+        startDate.setDate(startDate.getDate()-(7-1))
         break
     }
     startDate.setHours(0,0,0,0)
     return { start: toYmd(startDate), end: toYmd(endDate) }
   }
 
+  function presetLabel(p: string){
+    switch(p){
+      case 'today': return 'today'
+      case 'yesterday': return 'yesterday'
+      case 'last_3d_excl_today': return 'last 3 days (without today)'
+      case 'last_4d_incl_today': return 'last 4 days (including today)'
+      case 'last_5d_incl_today': return 'last 5 days (including today)'
+      case 'last_6d_incl_today': return 'last 6 days (including today)'
+      case 'last_7d_incl_today': return 'last 7 days (including today)'
+      case 'custom': return 'custom'
+      default: return p
+    }
+  }
+
+  function metaRangeParams(preset: string): { datePreset?: string, range?: { start: string, end: string } }{
+    if(preset==='custom'){
+      if(customStart && customEnd) return { range: { start: customStart, end: customEnd } }
+      const { start, end } = computeRange('last_7d_incl_today')
+      return { range: { start, end } }
+    }
+    if(preset==='last_3d_excl_today'){
+      const { start, end } = computeRange(preset)
+      return { range: { start, end } }
+    }
+    switch(preset){
+      case 'today': return { datePreset: 'today' }
+      case 'yesterday': return { datePreset: 'yesterday' }
+      case 'last_4d_incl_today': return { datePreset: 'last_4d' }
+      case 'last_5d_incl_today': return { datePreset: 'last_5d' }
+      case 'last_6d_incl_today': return { datePreset: 'last_6d' }
+      case 'last_7d_incl_today':
+      default:
+        return { datePreset: 'last_7d' }
+    }
+  }
+
   async function load(preset?: string){
     setLoading(true); setError(undefined)
     try{
       const effPreset = preset||datePreset
-      const res = await fetchMetaCampaigns(effPreset, adAccount||undefined)
+      const metaParams = metaRangeParams(effPreset)
+      const res = await fetchMetaCampaigns(metaParams.datePreset, adAccount||undefined, metaParams.range)
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
       // Reset counts and start lazy sequential fetching after table is visible
@@ -115,7 +163,7 @@ export default function AdsManagementPage(){
       const token = ++ordersSeqToken.current
       // Fetch store-wide orders total for the same range
       try{
-        const { start, end } = computeRange(effPreset)
+        const { start, end } = (effPreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(effPreset)
         const resTotal = await shopifyOrdersCountTotal({ start, end, store, include_closed: true, date_field: 'processed' }) as any
         setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
       }catch{ setStoreOrdersTotal(0) }
@@ -131,7 +179,7 @@ export default function AdsManagementPage(){
         }catch{
           setProductBriefs({})
         }
-        const { start, end } = computeRange(effPreset)
+        const { start, end } = (effPreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(effPreset)
         for(const id of ids){
           if(token !== ordersSeqToken.current) break
           try{
@@ -195,7 +243,12 @@ export default function AdsManagementPage(){
     }
   }
 
-  useEffect(()=>{ load(datePreset) },[])
+  useEffect(()=>{ // initialize custom range defaults
+    const { start, end } = computeRange('last_7d_incl_today')
+    setCustomStart(start)
+    setCustomEnd(end)
+    load(datePreset)
+  },[])
   useEffect(()=>{
     // Load saved ad account for this store and display name
     const loadAdAccount = async () => {
@@ -337,14 +390,26 @@ export default function AdsManagementPage(){
             }} placeholder="Ad account (numeric)" className="rounded-xl border px-2 py-1 text-sm bg-white w-40" />
             {adAccountName? (<span className="text-xs text-slate-600">{adAccountName}</span>) : null}
           </div>
-          <select value={datePreset} onChange={(e)=>{ setDatePreset(e.target.value); load(e.target.value) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
-            <option value="today">Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="last_7d">Last 7 days</option>
-            <option value="last_14d">Last 14 days</option>
-            <option value="this_month">This month</option>
-            <option value="last_30d">Last 30 days</option>
-          </select>
+          <div className="flex items-center gap-2">
+            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="last_3d_excl_today">Last 3 days (without today)</option>
+              <option value="last_4d_incl_today">Last 4 days (including today)</option>
+              <option value="last_5d_incl_today">Last 5 days (including today)</option>
+              <option value="last_6d_incl_today">Last 6 days (including today)</option>
+              <option value="last_7d_incl_today">Last 7 days (including today)</option>
+              <option value="custom">Custom…</option>
+            </select>
+            {datePreset==='custom' && (
+              <div className="flex items-center gap-1 text-sm">
+                <input type="date" value={customStart} onChange={(e)=> setCustomStart(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
+                <span>to</span>
+                <input type="date" value={customEnd} onChange={(e)=> setCustomEnd(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
+                <button onClick={()=> load('custom')} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">Apply</button>
+              </div>
+            )}
+          </div>
           <button onClick={()=>load()} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className="w-4 h-4"/> Refresh
           </button>
@@ -363,7 +428,7 @@ export default function AdsManagementPage(){
               <div>
                 <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
                 <div className="text-lg font-semibold">{adAccountName || adAccount || '—'}</div>
-                <div className="text-xs opacity-80">Range: {datePreset} • Store: {store}</div>
+                <div className="text-xs opacity-80">Range: {datePreset==='custom'? `${customStart||'—'} to ${customEnd||'—'}` : presetLabel(datePreset)} • Store: {store}</div>
               </div>
               <div className="text-sm opacity-90 flex items-center gap-2">
                 <Rocket className="w-4 h-4"/>
@@ -518,7 +583,8 @@ export default function AdsManagementPage(){
                             if(open && !adsetsByCampaign[cid]){
                               try{
                                 setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
-                                const res = await fetchCampaignAdsets(cid, datePreset)
+                                const m = metaRangeParams(datePreset)
+                                const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
                                 const items = ((res as any)?.data)||[]
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
                               }catch{
