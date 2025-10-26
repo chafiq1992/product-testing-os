@@ -1,8 +1,8 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -41,6 +41,22 @@ export default function AdsManagementPage(){
   const [perfCampaign, setPerfCampaign] = useState<{ id:string, name:string }|null>(null)
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
+  const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+
+  const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
+  const tableOrdersTotal = useMemo(()=>{
+    let sum = 0
+    for(const r of (items||[])){
+      const v = getOrders(r)
+      if(typeof v==='number' && v>0) sum += v
+    }
+    return sum
+  }, [items, shopifyCounts, manualCounts, manualIds])
+  const totalCPP = useMemo(()=> (tableOrdersTotal>0? (totalSpend / tableOrdersTotal) : null), [totalSpend, tableOrdersTotal])
+  const storeCPP = useMemo(()=> ((storeOrdersTotal||0)>0? (totalSpend / Number(storeOrdersTotal||0)) : null), [totalSpend, storeOrdersTotal])
+
+  function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
+  function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
 
   function computeRange(preset: string){
     const now = new Date()
@@ -97,6 +113,12 @@ export default function AdsManagementPage(){
       setCollectionCounts({})
       setChildrenLoading({})
       const token = ++ordersSeqToken.current
+      // Fetch store-wide orders total for the same range
+      try{
+        const { start, end } = computeRange(effPreset)
+        const resTotal = await shopifyOrdersCountTotal({ start, end, store, include_closed: true, date_field: 'processed' }) as any
+        setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
+      }catch{ setStoreOrdersTotal(0) }
       setTimeout(async ()=>{
         if(token !== ordersSeqToken.current) return
         const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
@@ -334,6 +356,44 @@ export default function AdsManagementPage(){
         {error && (
           <div className="mb-3 text-sm text-red-600">{error}</div>
         )}
+        {/* Summary Header */}
+        <div className="mb-4 rounded-2xl overflow-hidden shadow-lg bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 text-white">
+          <div className="p-4 md:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+              <div>
+                <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
+                <div className="text-lg font-semibold">{adAccountName || adAccount || '—'}</div>
+                <div className="text-xs opacity-80">Range: {datePreset} • Store: {store}</div>
+              </div>
+              <div className="text-sm opacity-90 flex items-center gap-2">
+                <Rocket className="w-4 h-4"/>
+                <span>Performance overview</span>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                <div className="flex items-center justify-between text-xs opacity-90"><span>Total Spend</span><DollarSign className="w-4 h-4 opacity-90"/></div>
+                <div className="mt-1 text-xl font-bold">{fmtCurrency(totalSpend)}</div>
+              </div>
+              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                <div className="flex items-center justify-between text-xs opacity-90"><span>Shopify Orders (table)</span><ShoppingCart className="w-4 h-4 opacity-90"/></div>
+                <div className="mt-1 text-xl font-bold">{fmtInt(tableOrdersTotal)}</div>
+              </div>
+              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                <div className="flex items-center justify-between text-xs opacity-90"><span>Store Orders (all)</span><ShoppingCart className="w-4 h-4 opacity-90"/></div>
+                <div className="mt-1 text-xl font-bold">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</div>
+              </div>
+              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                <div className="flex items-center justify-between text-xs opacity-90"><span>Total CPP</span><Calculator className="w-4 h-4 opacity-90"/></div>
+                <div className="mt-1 text-xl font-bold">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</div>
+              </div>
+              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                <div className="flex items-center justify-between text-xs opacity-90"><span>Full Store CPP</span><Calculator className="w-4 h-4 opacity-90"/></div>
+                <div className="mt-1 text-xl font-bold">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">

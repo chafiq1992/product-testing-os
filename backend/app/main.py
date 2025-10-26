@@ -29,6 +29,7 @@ from app.integrations.shopify_client import sum_product_order_counts_for_collect
 from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
+from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
@@ -428,6 +429,30 @@ async def api_products_brief(req: ProductsBriefRequest):
         return {"data": data}
     except Exception as e:
         return {"error": str(e), "data": {}}
+
+
+class OrdersTotalCountRequest(BaseModel):
+    start: Optional[str] = None  # YYYY-MM-DD
+    end: Optional[str] = None    # YYYY-MM-DD
+    store: Optional[str] = None
+    include_closed: Optional[bool] = None
+    date_field: Optional[str] = None  # 'processed' | 'created'
+
+
+@app.post("/api/shopify/orders_count_total")
+async def api_orders_count_total(req: OrdersTotalCountRequest):
+    try:
+        s_date = (req.start or "").split("T")[0] if isinstance(req.start, str) and "-" in (req.start or "") else (req.start or "")
+        e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in (req.end or "") else (req.end or "")
+        include_closed = bool(req.include_closed) if req.include_closed is not None else False
+        df = (req.date_field or "processed").lower()
+        if df == "created":
+            cnt = count_orders_total_created(s_date, e_date, store=req.store, include_closed=include_closed)
+        else:
+            cnt = count_orders_total_processed(s_date, e_date, store=req.store, include_closed=include_closed)
+        return {"data": {"count": int(cnt)}}
+    except Exception as e:
+        return {"error": str(e), "data": {"count": 0}}
 
 
 class CollectionProductsRequest(BaseModel):

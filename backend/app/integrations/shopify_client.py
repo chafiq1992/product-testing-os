@@ -567,6 +567,119 @@ def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_
     return total
 
 
+def count_orders_total_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count total unique orders within a processed_at date range (YYYY-MM-DD).
+
+    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    """
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def count_orders_total_created(created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count total unique orders within a created_at date range (YYYY-MM-DD).
+
+    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    """
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Build inclusive day bounds
+    try:
+        y1, m1, d1 = [int(x) for x in (created_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (created_max_date or "").split("-")]
+        created_min = f"{y1:04d}-{m1:02d}-{d1:02d}T00:00:00"
+        created_max = f"{y2:04d}-{m2:02d}-{d2:02d}T23:59:59"
+    except Exception:
+        created_min = f"{created_min_date}T00:00:00"
+        created_max = f"{created_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "created_at_min": created_min,
+        "created_at_max": created_max,
+        "order": "created_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
 def list_product_ids_in_collection(collection_id: str, *, store: str | None = None) -> list[int]:
     """Return product IDs for a given collection.
 
