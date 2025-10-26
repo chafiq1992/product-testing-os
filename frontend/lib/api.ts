@@ -483,6 +483,11 @@ export async function metaSetAdAccount(payload:{ id:string, store?: string }){
   return data as { data?: { id?: string, name?: string }, error?: string }
 }
 
+export async function metaListAdAccounts(){
+  const {data} = await axios.get(`${base}/api/meta/ad_accounts`)
+  return data as { data: Array<{ id:string, name:string, account_status?: number }>, error?: string }
+}
+
 export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED'){
   const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status })
   return data as { data?: any, error?: string }

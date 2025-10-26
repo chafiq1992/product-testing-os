@@ -133,6 +133,24 @@ def get_ad_account_info(ad_account_id: str | None = None) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_ad_accounts() -> list[dict]:
+    """List accessible ad accounts for the current access token (id, name)."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    # Use /me/adaccounts; for system users this also works when token belongs to business user/system user
+    res = _get("me/adaccounts", {"fields": "id,name,account_status", "limit": 500})
+    rows = (res or {}).get("data") or []
+    out: list[dict] = []
+    for r in (rows or []):
+        out.append({
+            "id": str((r or {}).get("id") or ""),
+            "name": (r or {}).get("name") or "",
+            "account_status": (r or {}).get("account_status"),
+        })
+    return out
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def set_campaign_status(campaign_id: str, status: str) -> dict:
     """Set campaign status to 'ACTIVE' or 'PAUSED'. Returns API response."""
     if not ACCESS:

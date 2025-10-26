@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -19,6 +19,7 @@ export default function AdsManagementPage(){
   const [adAccount, setAdAccount] = useState<string>(()=>{
     try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
   })
+  const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
   const [adAccountName, setAdAccountName] = useState<string>('')
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
@@ -280,7 +281,15 @@ export default function AdsManagementPage(){
         if(conf && conf.name){ setAdAccountName(String(conf.name||'')) } else { setAdAccountName('') }
       }catch{ setAdAccountName('') }
     }
+    const loadAccounts = async () => {
+      try{
+        const res = await metaListAdAccounts()
+        const items = ((res as any)?.data)||[]
+        setAdAccounts(items)
+      }catch{ setAdAccounts([]) }
+    }
     loadAdAccount()
+    loadAccounts()
     const loadMappings = async () => {
       try{
         const res = await campaignMappingsList(store)
@@ -406,15 +415,25 @@ export default function AdsManagementPage(){
             <option value="irranova">irranova</option>
           </select>
           <div className="flex items-center gap-1">
-            <input value={adAccount} onChange={(e)=>{ const v=e.target.value.replace(/[^0-9]/g,''); setAdAccount(v); try{ localStorage.setItem('ptos_ad_account', v) }catch{} }} onBlur={async()=>{
-              const v = (adAccount||'').trim()
-              if(!v) return
-              try{
-                const res = await metaSetAdAccount({ id: v, store })
-                const data = (res as any)?.data||{}
-                if(data && data.name){ setAdAccountName(String(data.name||'')) }
-              }catch{}
-            }} placeholder="Ad account (numeric)" className="rounded-xl border px-2 py-1 text-sm bg-white w-40" />
+            <select
+              value={adAccount}
+              onChange={async (e)=>{
+                const v = e.target.value
+                setAdAccount(v)
+                try{ localStorage.setItem('ptos_ad_account', v) }catch{}
+                try{
+                  const res = await metaSetAdAccount({ id: v, store })
+                  const data = (res as any)?.data||{}
+                  setAdAccountName(String((data && data.name) ? data.name : (adAccounts.find(a=> a.id===v)?.name || '')))
+                }catch{}
+              }}
+              className="rounded-xl border px-2 py-1 text-sm bg-white w-56"
+            >
+              <option value="">Select ad account…</option>
+              {adAccounts.map(a=> (
+                <option key={a.id} value={a.id}>{a.name||a.id} ({a.id})</option>
+              ))}
+            </select>
             {adAccountName? (<span className="text-xs text-slate-600">{adAccountName}</span>) : null}
           </div>
           <div className="flex items-center gap-2">

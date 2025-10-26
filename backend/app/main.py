@@ -33,7 +33,7 @@ from app.integrations.shopify_client import count_orders_total_processed, count_
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
-from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -1540,6 +1540,17 @@ async def api_set_ad_account(req: AdAccountSetRequest):
         return {"data": saved}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/meta/ad_accounts")
+async def api_list_ad_accounts():
+    try:
+        items = list_ad_accounts()
+        # light shape
+        data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status")} for x in (items or [])]
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": []}
 
 
 class CampaignStatusUpdateRequest(BaseModel):
