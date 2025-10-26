@@ -680,7 +680,7 @@ export default function AdsManagementPage(){
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 13
+                    const colSpan = 14
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -765,7 +765,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-3 py-2 bg-slate-50" colSpan={13}>
+                        <td className="px-3 py-2 bg-slate-50" colSpan={14}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (
@@ -809,6 +809,8 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   const cpp = (days||[]).map(d=> d.cpp==null? 0 : (d.cpp||0))
   const atc = (days||[]).map(d=> d.add_to_cart||0)
   const ordersArr = (orders||[])
+  const [showOrders, setShowOrders] = useState(true)
+  const [showATC, setShowATC] = useState(true)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
@@ -822,6 +824,16 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
             <div className="text-slate-500">Loading…</div>
           ) : (
             <div className="space-y-4">
+              <div className="flex items-center gap-4 text-sm">
+                <label className="inline-flex items-center gap-2">
+                  <input type="checkbox" checked={showOrders} onChange={(e)=> setShowOrders(e.target.checked)} />
+                  <span>Show Orders</span>
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input type="checkbox" checked={showATC} onChange={(e)=> setShowATC(e.target.checked)} />
+                  <span>Show Add to cart</span>
+                </label>
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {(days||[]).map((d,i)=> (
                   <div key={d.date+String(i)} className="border rounded p-3 bg-slate-50">
@@ -838,8 +850,8 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
                 ))}
               </div>
               <div className="mt-4">
-                <div className="mb-2 text-sm text-slate-600">Daily trend (Spend colored by trend; Orders in blue)</div>
-                <MiniTrendChart labels={labels} valuesA={spend} valuesB={ordersArr} />
+                <div className="mb-2 text-sm text-slate-600">Daily performance (Spend bars, Orders/ATC lines)</div>
+                <PerformanceChart labels={labels} spend={spend} orders={ordersArr} addToCart={atc} showOrders={showOrders} showATC={showATC} />
               </div>
             </div>
           )}
@@ -849,34 +861,55 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   )
 }
 
-function MiniTrendChart({ labels, valuesA, valuesB }:{ labels:string[], valuesA:number[], valuesB?:number[] }){
-  const w = 640, h = 220, pad = 32
-  const xs = labels.map((_, i)=> pad + (i*(w-2*pad))/Math.max(1, labels.length-1))
-  const allA = valuesA.filter(v=> Number.isFinite(v))
-  const minA = Math.min(...allA, 0)
-  const maxA = Math.max(...allA, 1)
-  const scaleY = (v:number)=> h - pad - ((v - minA) / Math.max(1e-6, (maxA - minA))) * (h - 2*pad)
-  const pointsA = valuesA.map((v,i)=> `${xs[i]},${scaleY(v||0)}`).join(' ')
-  const trendUp = (valuesA[valuesA.length-1]||0) >= (valuesA[0]||0)
-  const colorA = trendUp? '#10b981' : '#ef4444'
-  const pathA = `M ${xs[0]},${scaleY(valuesA[0]||0)} ` + valuesA.slice(1).map((v,i)=> `L ${xs[i+1]},${scaleY(v||0)}`).join(' ')
-  const hasB = Array.isArray(valuesB) && (valuesB||[]).length===valuesA.length
-  let pathB = ''
-  if(hasB){
-    const allB = (valuesB||[]).filter(v=> Number.isFinite(v))
-    const minB = Math.min(...allB, 0)
-    const maxB = Math.max(...allB, 1)
-    const scaleYB = (v:number)=> h - pad - ((v - minB) / Math.max(1e-6, (maxB - minB))) * (h - 2*pad)
-    pathB = `M ${xs[0]},${scaleYB((valuesB||[])[0]||0)} ` + (valuesB||[]).slice(1).map((v,i)=> `L ${xs[i+1]},${scaleYB(v||0)}`).join(' ')
-  }
+function PerformanceChart({ labels, spend, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
+  const w = 1000, h = 320, padL = 48, padR = 48, padT = 24, padB = 40
+  const innerW = w - padL - padR
+  const innerH = h - padT - padB
+  const n = Math.max(1, labels.length)
+  const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
+  const maxSpend = Math.max(1, ...spend)
+  const maxCounts = Math.max(1, ...orders, ...addToCart)
+  const yLeft = (v:number)=> padT + innerH - (v/maxSpend)*innerH
+  const yRight = (v:number)=> padT + innerH - (v/maxCounts)*innerH
+  const barW = Math.max(6, Math.min(32, innerW / Math.max(3, n*1.6)))
+  const gridLines = 5
+  const leftTicks = Array.from({length: gridLines+1}, (_,i)=> Math.round((maxSpend*i/gridLines)))
+  const rightTicks = Array.from({length: gridLines+1}, (_,i)=> Math.round((maxCounts*i/gridLines)))
+  const pathOrders = `M ${xs[0]},${yRight(orders[0]||0)} ` + orders.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
+  const pathATC = `M ${xs[0]},${yRight(addToCart[0]||0)} ` + addToCart.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
   return (
-    <svg width={w} height={h} className="w-full h-auto">
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
       <rect x={0} y={0} width={w} height={h} fill="#ffffff"/>
-      <path d={pathA} fill="none" stroke={colorA} strokeWidth={2}/>
-      {hasB && (<path d={pathB} fill="none" stroke="#3b82f6" strokeWidth={2} strokeDasharray="4 2"/>) }
-      {xs.map((x,i)=> (
-        <text key={i} x={x} y={h-8} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
+      {/* Gridlines */}
+      {leftTicks.map((tick,i)=> (
+        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#e5e7eb" strokeDasharray="2 2"/>
       ))}
+      {/* Bars: Spend */}
+      {spend.map((v,i)=> (
+        <rect key={`b${i}`} x={xs[i]-barW/2} y={yLeft(v||0)} width={barW} height={Math.max(1, padT+innerH - yLeft(v||0))} fill="#0ea5e9" opacity={0.25} />
+      ))}
+      {/* Lines: Orders and ATC */}
+      {showOrders && (<path d={pathOrders} fill="none" stroke="#2563eb" strokeWidth={2} />)}
+      {showATC && (<path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2} />)}
+      {/* Axes labels */}
+      {leftTicks.map((tick,i)=> (
+        <text key={`lt${i}`} x={padL-6} y={yLeft(tick)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#64748b">${tick}</text>
+      ))}
+      {rightTicks.map((tick,i)=> (
+        <text key={`rt${i}`} x={w-padR+6} y={yRight(tick)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#64748b">{tick}</text>
+      ))}
+      {xs.map((x,i)=> (
+        <text key={`x${i}`} x={x} y={h-8} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
+      ))}
+      {/* Legends */}
+      <g>
+        <rect x={padL} y={8} width={10} height={10} fill="#0ea5e9" opacity={0.25}/>
+        <text x={padL+16} y={16} fontSize="11" fill="#334155">Spend</text>
+        <rect x={padL+80} y={8} width={18} height={2} fill="#2563eb"/>
+        <text x={padL+104} y={16} fontSize="11" fill="#334155">Orders</text>
+        <rect x={padL+160} y={8} width={18} height={2} fill="#f59e0b"/>
+        <text x={padL+184} y={16} fontSize="11" fill="#334155">Add to cart</text>
+      </g>
     </svg>
   )
 }

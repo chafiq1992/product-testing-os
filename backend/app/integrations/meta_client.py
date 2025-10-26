@@ -228,9 +228,11 @@ def campaign_daily_insights(campaign_id: str, days: int = 6) -> list[dict]:
         n = max(1, min(int(days or 6), 30))
     except Exception:
         n = 6
+    # Exclude current day; compute inclusive range ending yesterday
     today = datetime.utcnow().date()
-    since = today - timedelta(days=n-1)
-    time_range = {"since": since.isoformat(), "until": today.isoformat()}
+    until = today - timedelta(days=1)
+    since = until - timedelta(days=n-1)
+    time_range = {"since": since.isoformat(), "until": until.isoformat()}
     params = {
         "level": "campaign",
         "time_increment": 1,
