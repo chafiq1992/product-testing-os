@@ -32,7 +32,7 @@ from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
-from app.integrations.meta_client import get_ad_account_info, set_campaign_status
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -1528,6 +1528,31 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
         res = set_campaign_status(campaign_id, status)
+        return {"data": res}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/meta/campaigns/{campaign_id}/adsets")
+async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None):
+    try:
+        items = list_adsets_with_insights(campaign_id, date_preset or "last_7d")
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+class AdsetStatusUpdateRequest(BaseModel):
+    status: str
+
+
+@app.post("/api/meta/adsets/{adset_id}/status")
+async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
+    try:
+        status = (req.status or "").upper()
+        if status not in ("ACTIVE", "PAUSED"):
+            return {"error": "invalid_status"}
+        res = set_adset_status(adset_id, status)
         return {"data": res}
     except Exception as e:
         return {"error": str(e)}

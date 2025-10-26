@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -29,6 +29,11 @@ export default function AdsManagementPage(){
   const [collectionProducts, setCollectionProducts] = useState<Record<string, string[]>>({})
   const [collectionCounts, setCollectionCounts] = useState<Record<string, Record<string, number>>>({})
   const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({})
+  const [adsetsExpanded, setAdsetsExpanded] = useState<Record<string, boolean>>({})
+  const [adsetsLoading, setAdsetsLoading] = useState<Record<string, boolean>>({})
+  const [adsetsByCampaign, setAdsetsByCampaign] = useState<Record<string, MetaAdsetRow[]>>({})
+  const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
+  const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
 
@@ -437,7 +442,30 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <div>{c.name||'-'}</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={async()=>{
+                            const cid = String(c.campaign_id||'')
+                            if(!cid) return
+                            const open = !adsetsExpanded[cid]
+                            setAdsetsExpanded(prev=> ({ ...prev, [cid]: open }))
+                            if(open && !adsetsByCampaign[cid]){
+                              try{
+                                setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
+                                const res = await fetchCampaignAdsets(cid, datePreset)
+                                const items = ((res as any)?.data)||[]
+                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
+                              }catch{
+                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
+                              }finally{
+                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
+                              }
+                            }
+                          }}
+                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
+                        >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>
+                        <span>{c.name||'-'}</span>
+                      </div>
                       <div className="mt-1 flex items-center gap-1">
                         {(()=>{
                           const rk = (c.campaign_id || c.name || '') as any
@@ -520,22 +548,33 @@ export default function AdsManagementPage(){
                         const st = (c.status||'').toUpperCase()
                         const active = st==='ACTIVE'
                         const color = active? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                        const cid = String(c.campaign_id||'')
                         return (
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-3">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${color}`}>{active? 'Active' : 'Paused'}</span>
                             {c.campaign_id && (
-                              <button
-                                onClick={async()=>{
-                                  const next = (st==='ACTIVE')? 'PAUSED' : 'ACTIVE'
-                                  const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this campaign?`)
-                                  if(!ok) return
-                                  try{
-                                    await metaSetCampaignStatus(String(c.campaign_id), next as any)
-                                    setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
-                                  }catch(e){ alert('Failed to update status') }
-                                }}
-                                className={`px-2 py-0.5 rounded text-xs ${st==='ACTIVE'? 'bg-rose-100 text-rose-700 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'}`}
-                              >{st==='ACTIVE'? 'Turn off' : 'Turn on'}</button>
+                              <label className="inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={active}
+                                  disabled={!!togglingCampaign[cid]}
+                                  onChange={async(e)=>{
+                                    const next = e.target.checked? 'ACTIVE' : 'PAUSED'
+                                    const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this campaign?`)
+                                    if(!ok) return
+                                    try{
+                                      setTogglingCampaign(prev=> ({ ...prev, [cid]: true }))
+                                      await metaSetCampaignStatus(String(cid), next as any)
+                                      setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
+                                    }catch(e){ alert('Failed to update status') }
+                                    finally{ setTogglingCampaign(prev=> ({ ...prev, [cid]: false })) }
+                                  }}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-500 transition-colors">
+                                  <div className="w-4 h-4 bg-white rounded-full shadow transform transition-transform translate-x-0 peer-checked:translate-x-5 mt-0.5 ml-0.5" />
+                                </div>
+                              </label>
                             )}
                           </div>
                         )
@@ -591,13 +630,92 @@ export default function AdsManagementPage(){
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    if(!(conf && conf.kind==='collection' && expanded[String(rk)])) return null
+                    const colSpan = 13
+                    const cid = String(c.campaign_id||'')
+                    const showAdsets = !!adsetsExpanded[cid]
+                    const loadingAdsets = !!adsetsLoading[cid]
+                    if(showAdsets){
+                      const adsets = adsetsByCampaign[cid]||[]
+                      return (
+                        <tr className="border-b last:border-b-0">
+                          <td className="px-3 py-2 bg-slate-50" colSpan={colSpan}>
+                            {loadingAdsets ? (
+                              <div className="text-xs text-slate-500">Loading ad sets…</div>
+                            ) : (
+                              <div className="text-xs">
+                                <div className="border rounded bg-white">
+                                  <div className="grid grid-cols-8 gap-2 px-2 py-1 text-slate-500">
+                                    <div className="col-span-3">Ad set</div>
+                                    <div className="text-right">Spend</div>
+                                    <div className="text-right">Purchases</div>
+                                    <div className="text-right">CPP</div>
+                                    <div className="text-right">CTR</div>
+                                    <div className="text-right">Status</div>
+                                  </div>
+                                  {adsets.map(a=>{
+                                    const ast = (a.status||'').toUpperCase()
+                                    const aactive = ast==='ACTIVE'
+                                    const acolor = aactive? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                                    const aid = String(a.adset_id||'')
+                                    return (
+                                      <div key={aid||a.name} className="grid grid-cols-8 gap-2 px-2 py-1 border-t items-center">
+                                        <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis">{a.name||'-'}</div>
+                                        <div className="text-right">${(a.spend||0).toFixed(2)}</div>
+                                        <div className="text-right">{a.purchases||0}</div>
+                                        <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
+                                        <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
+                                        <div className="flex items-center justify-end gap-2">
+                                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${acolor}`}>{aactive? 'Active' : 'Paused'}</span>
+                                          {aid && (
+                                            <label className="inline-flex items-center cursor-pointer">
+                                              <input
+                                                type="checkbox"
+                                                checked={aactive}
+                                                disabled={!!togglingAdset[aid]}
+                                                onChange={async(e)=>{
+                                                  const next = e.target.checked? 'ACTIVE' : 'PAUSED'
+                                                  const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this ad set?`)
+                                                  if(!ok) return
+                                                  try{
+                                                    setTogglingAdset(prev=> ({ ...prev, [aid]: true }))
+                                                    await metaSetAdsetStatus(aid, next as any)
+                                                    setAdsetsByCampaign(prev=> ({ ...prev, [cid]: (prev[cid]||[]).map(x=> x.adset_id===aid? { ...x, status: next } : x) }))
+                                                  }catch{
+                                                    alert('Failed to update ad set status')
+                                                  }finally{
+                                                    setTogglingAdset(prev=> ({ ...prev, [aid]: false }))
+                                                  }
+                                                }}
+                                                className="sr-only peer"
+                                              />
+                                              <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-500 transition-colors">
+                                                <div className="w-4 h-4 bg-white rounded-full shadow transform transition-transform translate-x-0 peer-checked:translate-x-5 mt-0.5 ml-0.5" />
+                                              </div>
+                                            </label>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                                  {adsets.length===0 && (
+                                    <div className="px-2 py-2 text-slate-500 border-t">No ad sets found.</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    }
+                    // Existing collection expansion block
+                    const conf2 = (manualIds as any)[rk]
+                    if(!(conf2 && conf2.kind==='collection' && expanded[String(rk)])) return null
                     const ids = collectionProducts[String(rk)]||[]
                     const counts = collectionCounts[String(rk)]||{}
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-3 py-2 bg-slate-50" colSpan={12}>
+                        <td className="px-3 py-2 bg-slate-50" colSpan={13}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (

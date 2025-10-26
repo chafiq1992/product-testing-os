@@ -487,6 +487,30 @@ export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE
   return data as { data?: any, error?: string }
 }
 
+export type MetaAdsetRow = {
+  adset_id?: string,
+  name?: string,
+  spend: number,
+  purchases: number,
+  cpp?: number|null,
+  ctr?: number|null,
+  add_to_cart: number,
+  status?: string|null,
+}
+
+export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string){
+  const parts: string[] = []
+  if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
+  const qp = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets${qp}`)
+  return data as { data: MetaAdsetRow[], error?: string }
+}
+
+export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAUSED'){
+  const {data} = await axios.post(`${base}/api/meta/adsets/${encodeURIComponent(adset_id)}/status`, { status })
+  return data as { data?: any, error?: string }
+}
+
 // Shopify: count orders by line item title substring for a time range
 export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }

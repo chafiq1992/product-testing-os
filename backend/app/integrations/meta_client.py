@@ -145,6 +145,80 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d") -> list[dict]:
+    """Return ad sets for a campaign with insights and current status."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    params = {
+        "level": "adset",
+        "fields": "adset_id,adset_name,spend,actions,ctr,cpp",
+        "filtering": json.dumps([
+            {"field": "adset.campaign_id", "operator": "EQUAL", "value": campaign_id}
+        ]),
+        "date_preset": date_preset or "last_7d",
+        "limit": 250,
+    }
+    # Insights per adset
+    res = _get(f"{campaign_id}/insights", params)
+    rows = (res or {}).get("data") or []
+    out: list[dict] = []
+    # Also fetch statuses
+    status_map: dict[str, str] = {}
+    try:
+        sres = _get(f"{campaign_id}/adsets", {"fields": "id,name,effective_status,configured_status", "limit": 500})
+        srows = (sres or {}).get("data") or []
+        for a in (srows or []):
+            aid = str((a or {}).get("id") or "")
+            eff = (a or {}).get("effective_status") or (a or {}).get("configured_status")
+            if aid:
+                status_map[aid] = str(eff or "").upper()
+    except Exception:
+        status_map = {}
+    for r in rows:
+        name = (r or {}).get("adset_name")
+        spend = _parse_float((r or {}).get("spend")) or 0.0
+        ctr = _parse_float((r or {}).get("ctr"))
+        cpp = _parse_float((r or {}).get("cpp"))
+        actions = (r or {}).get("actions") or []
+        purchases = _action_count(actions, [
+            "purchase",
+            "omni_purchase",
+            "onsite_conversion.purchase",
+            "offsite_conversion.fb_pixel_purchase",
+        ])
+        add_to_cart = _action_count(actions, [
+            "add_to_cart",
+            "omni_add_to_cart",
+            "onsite_conversion.add_to_cart",
+            "offsite_conversion.fb_pixel_add_to_cart",
+        ])
+        eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
+        aid = (r or {}).get("adset_id")
+        out.append({
+            "adset_id": aid,
+            "name": name,
+            "spend": round(spend, 2),
+            "purchases": int(purchases) if purchases is not None else 0,
+            "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
+            "ctr": round(ctr, 3) if ctr is not None else None,
+            "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
+            "status": (status_map.get(str(aid)) or "").upper() if aid else None,
+        })
+    return out
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def set_adset_status(adset_id: str, status: str) -> dict:
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    status = (status or "").upper()
+    if status not in ("ACTIVE", "PAUSED"):
+        raise RuntimeError("Invalid status. Use 'ACTIVE' or 'PAUSED'.")
+    res = _post(f"{adset_id}", {"status": status})
+    return res if isinstance(res, dict) else {"ok": True}
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None) -> list[dict]:
     """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 
