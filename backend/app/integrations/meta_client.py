@@ -1,4 +1,5 @@
 import os, json, requests
+from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
@@ -216,6 +217,62 @@ def set_adset_status(adset_id: str, status: str) -> dict:
         raise RuntimeError("Invalid status. Use 'ACTIVE' or 'PAUSED'.")
     res = _post(f"{adset_id}", {"status": status})
     return res if isinstance(res, dict) else {"ok": True}
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def campaign_daily_insights(campaign_id: str, days: int = 6) -> list[dict]:
+    """Return daily insights for a campaign over the last N days (inclusive of today)."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    try:
+        n = max(1, min(int(days or 6), 30))
+    except Exception:
+        n = 6
+    today = datetime.utcnow().date()
+    since = today - timedelta(days=n-1)
+    time_range = {"since": since.isoformat(), "until": today.isoformat()}
+    params = {
+        "level": "campaign",
+        "time_increment": 1,
+        "fields": "spend,actions,ctr,cpp,impressions,clicks",
+        "time_range": json.dumps(time_range),
+        "limit": 250,
+    }
+    res = _get(f"{campaign_id}/insights", params)
+    rows = (res or {}).get("data") or []
+    out: list[dict] = []
+    for r in rows:
+        ds = (r or {}).get("date_start") or (r or {}).get("date_stop")
+        spend = _parse_float((r or {}).get("spend")) or 0.0
+        ctr = _parse_float((r or {}).get("ctr"))
+        cpp = _parse_float((r or {}).get("cpp"))
+        actions = (r or {}).get("actions") or []
+        purchases = _action_count(actions, [
+            "purchase",
+            "omni_purchase",
+            "onsite_conversion.purchase",
+            "offsite_conversion.fb_pixel_purchase",
+        ])
+        add_to_cart = _action_count(actions, [
+            "add_to_cart",
+            "omni_add_to_cart",
+            "onsite_conversion.add_to_cart",
+            "offsite_conversion.fb_pixel_add_to_cart",
+        ])
+        out.append({
+            "date": ds,
+            "spend": round(spend, 2),
+            "purchases": int(purchases) if purchases is not None else 0,
+            "cpp": round(cpp, 2) if cpp is not None else None,
+            "ctr": round(ctr, 3) if ctr is not None else None,
+            "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
+        })
+    # Ensure days are sorted by date ascending
+    try:
+        out.sort(key=lambda x: x.get("date") or "")
+    except Exception:
+        pass
+    return out
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))

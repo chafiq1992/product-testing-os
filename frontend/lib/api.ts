@@ -511,6 +511,14 @@ export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAU
   return data as { data?: any, error?: string }
 }
 
+export async function fetchCampaignPerformance(campaign_id: string, days?: number){
+  const parts: string[] = []
+  if(typeof days==='number') parts.push(`days=${days}`)
+  const qp = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/performance${qp}`)
+  return data as { data: { days: { date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }[] }, error?: string }
+}
+
 // Shopify: count orders by line item title substring for a time range
 export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }

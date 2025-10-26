@@ -36,6 +36,11 @@ export default function AdsManagementPage(){
   const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
+  const [perfOpen, setPerfOpen] = useState<boolean>(false)
+  const [perfLoading, setPerfLoading] = useState<boolean>(false)
+  const [perfCampaign, setPerfCampaign] = useState<{ id:string, name:string }|null>(null)
+  const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
+  const [perfOrders, setPerfOrders] = useState<number[]>([])
 
   function computeRange(preset: string){
     const now = new Date()
@@ -398,6 +403,7 @@ export default function AdsManagementPage(){
                   </button>
                 </th>
                 <th className="px-3 py-2 font-semibold">Notes</th>
+                <th className="px-3 py-2 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -626,6 +632,50 @@ export default function AdsManagementPage(){
                         className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
                       />
                     </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        onClick={async()=>{
+                          const cid = String(c.campaign_id||'')
+                          if(!cid) return
+                          setPerfOpen(true)
+                          setPerfLoading(true)
+                          setPerfCampaign({ id: cid, name: c.name||'' })
+                          try{
+                            const res = await fetchCampaignPerformance(cid, 6)
+                            const days = (((res as any)?.data||{}).days)||[]
+                            setPerfMetrics(days)
+                            // Load Shopify orders per day based on mapping or numeric id
+                            const rk = (c.campaign_id || c.name || '') as any
+                            const conf = (manualIds as any)[rk]
+                            const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
+                            const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
+                            const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
+                            const ordersPerDay: number[] = []
+                            for(const d of (days||[])){
+                              const start = d.date
+                              const end = d.date
+                              try{
+                                if(prodId){
+                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
+                                  const count = ((oc as any)?.data||{})[prodId] ?? 0
+                                  ordersPerDay.push(Number(count||0))
+                                }else if(collId){
+                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                  const count = Number(((oc as any)?.data||{})?.count ?? 0)
+                                  ordersPerDay.push(Number(count||0))
+                                }else{
+                                  ordersPerDay.push(0)
+                                }
+                              }catch{ ordersPerDay.push(0) }
+                            }
+                            setPerfOrders(ordersPerDay)
+                          }finally{
+                            setPerfLoading(false)
+                          }
+                        }}
+                        className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
+                      >Performance</button>
+                    </td>
                   </tr>
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
@@ -744,7 +794,90 @@ export default function AdsManagementPage(){
           </table>
         </div>
       </div>
+      <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
     </div>
+  )
+}
+
+// Performance Modal
+function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ open:boolean, onClose:()=>void, loading:boolean, campaign:{id:string,name:string}|null, days:Array<{date:string,spend:number,purchases:number,cpp?:number|null,ctr?:number|null,add_to_cart:number}>, orders:number[] }){
+  if(!open) return null
+  const labels = (days||[]).map(d=> d.date)
+  const spend = (days||[]).map(d=> d.spend||0)
+  const purchases = (days||[]).map(d=> d.purchases||0)
+  const ctr = (days||[]).map(d=> (d.ctr||0)*1)
+  const cpp = (days||[]).map(d=> d.cpp==null? 0 : (d.cpp||0))
+  const atc = (days||[]).map(d=> d.add_to_cart||0)
+  const ordersArr = (orders||[])
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white rounded-lg shadow-xl w-[92vw] max-w-5xl max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="font-semibold text-lg">Performance · {campaign?.name||campaign?.id}</div>
+          <button onClick={onClose} className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">Close</button>
+        </div>
+        <div className="p-4">
+          {loading ? (
+            <div className="text-slate-500">Loading…</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {(days||[]).map((d,i)=> (
+                  <div key={d.date+String(i)} className="border rounded p-3 bg-slate-50">
+                    <div className="text-xs text-slate-500">{d.date}</div>
+                    <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
+                      <div className="text-slate-500">Spend</div><div className="text-right font-semibold">${(d.spend||0).toFixed(2)}</div>
+                      <div className="text-slate-500">Purchases</div><div className="text-right font-semibold">{d.purchases||0}</div>
+                      <div className="text-slate-500">CPP</div><div className="text-right font-semibold">{d.cpp!=null? `$${(d.cpp||0).toFixed(2)}` : '—'}</div>
+                      <div className="text-slate-500">CTR</div><div className="text-right font-semibold">{d.ctr!=null? `${(d.ctr*1).toFixed(2)}%` : '—'}</div>
+                      <div className="text-slate-500">Add to cart</div><div className="text-right font-semibold">{d.add_to_cart||0}</div>
+                      <div className="text-slate-500">Shopify Orders</div><div className="text-right font-semibold">{(ordersArr[i]||0)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4">
+                <div className="mb-2 text-sm text-slate-600">Daily trend (Spend colored by trend; Orders in blue)</div>
+                <MiniTrendChart labels={labels} valuesA={spend} valuesB={ordersArr} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MiniTrendChart({ labels, valuesA, valuesB }:{ labels:string[], valuesA:number[], valuesB?:number[] }){
+  const w = 640, h = 220, pad = 32
+  const xs = labels.map((_, i)=> pad + (i*(w-2*pad))/Math.max(1, labels.length-1))
+  const allA = valuesA.filter(v=> Number.isFinite(v))
+  const minA = Math.min(...allA, 0)
+  const maxA = Math.max(...allA, 1)
+  const scaleY = (v:number)=> h - pad - ((v - minA) / Math.max(1e-6, (maxA - minA))) * (h - 2*pad)
+  const pointsA = valuesA.map((v,i)=> `${xs[i]},${scaleY(v||0)}`).join(' ')
+  const trendUp = (valuesA[valuesA.length-1]||0) >= (valuesA[0]||0)
+  const colorA = trendUp? '#10b981' : '#ef4444'
+  const pathA = `M ${xs[0]},${scaleY(valuesA[0]||0)} ` + valuesA.slice(1).map((v,i)=> `L ${xs[i+1]},${scaleY(v||0)}`).join(' ')
+  const hasB = Array.isArray(valuesB) && (valuesB||[]).length===valuesA.length
+  let pathB = ''
+  if(hasB){
+    const allB = (valuesB||[]).filter(v=> Number.isFinite(v))
+    const minB = Math.min(...allB, 0)
+    const maxB = Math.max(...allB, 1)
+    const scaleYB = (v:number)=> h - pad - ((v - minB) / Math.max(1e-6, (maxB - minB))) * (h - 2*pad)
+    pathB = `M ${xs[0]},${scaleYB((valuesB||[])[0]||0)} ` + (valuesB||[]).slice(1).map((v,i)=> `L ${xs[i+1]},${scaleYB(v||0)}`).join(' ')
+  }
+  return (
+    <svg width={w} height={h} className="w-full h-auto">
+      <rect x={0} y={0} width={w} height={h} fill="#ffffff"/>
+      <path d={pathA} fill="none" stroke={colorA} strokeWidth={2}/>
+      {hasB && (<path d={pathB} fill="none" stroke="#3b82f6" strokeWidth={2} strokeDasharray="4 2"/>) }
+      {xs.map((x,i)=> (
+        <text key={i} x={x} y={h-8} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
+      ))}
+    </svg>
   )
 }
 

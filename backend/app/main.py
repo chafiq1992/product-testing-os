@@ -32,7 +32,7 @@ from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
-from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -1556,6 +1556,16 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         return {"data": res}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/meta/campaigns/{campaign_id}/performance")
+async def api_campaign_performance(campaign_id: str, days: int | None = 6):
+    try:
+        n = int(days or 6)
+        items = campaign_daily_insights(campaign_id, n)
+        return {"data": {"days": items}}
+    except Exception as e:
+        return {"error": str(e), "data": {"days": []}}
 
 @app.get("/api/agents/{agent_id}")
 async def api_get_agent(agent_id: str):
