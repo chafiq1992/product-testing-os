@@ -862,53 +862,57 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
 }
 
 function PerformanceChart({ labels, spend, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
-  const w = 1000, h = 320, padL = 48, padR = 48, padT = 24, padB = 40
+  const w = 1000, h = 320, padL = 56, padR = 56, padT = 24, padB = 40
   const innerW = w - padL - padR
   const innerH = h - padT - padB
   const n = Math.max(1, labels.length)
   const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
-  const maxSpend = Math.max(1, ...spend)
-  const maxCounts = Math.max(1, ...orders, ...addToCart)
-  const yLeft = (v:number)=> padT + innerH - (v/maxSpend)*innerH
-  const yRight = (v:number)=> padT + innerH - (v/maxCounts)*innerH
-  const barW = Math.max(6, Math.min(32, innerW / Math.max(3, n*1.6)))
+  // Fixed axes: Spend $1..$100 (left), Orders/ATC 1..100 (right)
+  const minSpend = 1, maxSpend = 100
+  const minCount = 1, maxCount = 100
+  const clamp = (v:number, lo:number, hi:number)=> Math.max(lo, Math.min(hi, v||0))
+  const yLeft = (v:number)=> padT + innerH - ((clamp(v, minSpend, maxSpend)-minSpend)/(maxSpend-minSpend))*innerH
+  const yRight = (v:number)=> padT + innerH - ((clamp(v, minCount, maxCount)-minCount)/(maxCount-minCount))*innerH
   const gridLines = 5
-  const leftTicks = Array.from({length: gridLines+1}, (_,i)=> Math.round((maxSpend*i/gridLines)))
-  const rightTicks = Array.from({length: gridLines+1}, (_,i)=> Math.round((maxCounts*i/gridLines)))
+  const leftTicks = [1,25,50,75,100]
+  const rightTicks = [1,25,50,75,100]
+  // Build line paths (spend, orders, atc)
+  const pathSpend = `M ${xs[0]},${yLeft(spend[0]||0)} ` + spend.slice(1).map((v,i)=> `L ${xs[i+1]},${yLeft(v||0)}`).join(' ')
   const pathOrders = `M ${xs[0]},${yRight(orders[0]||0)} ` + orders.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
   const pathATC = `M ${xs[0]},${yRight(addToCart[0]||0)} ` + addToCart.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
       <rect x={0} y={0} width={w} height={h} fill="#ffffff"/>
-      {/* Gridlines */}
+      {/* Horizontal gridlines */}
       {leftTicks.map((tick,i)=> (
         <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#e5e7eb" strokeDasharray="2 2"/>
       ))}
-      {/* Bars: Spend */}
-      {spend.map((v,i)=> (
-        <rect key={`b${i}`} x={xs[i]-barW/2} y={yLeft(v||0)} width={barW} height={Math.max(1, padT+innerH - yLeft(v||0))} fill="#0ea5e9" opacity={0.25} />
+      {/* Vertical gridlines per day */}
+      {xs.map((x,i)=> (
+        <line key={`v${i}`} x1={x} y1={padT} x2={x} y2={h-padB} stroke="#f1f5f9" />
       ))}
-      {/* Lines: Orders and ATC */}
-      {showOrders && (<path d={pathOrders} fill="none" stroke="#2563eb" strokeWidth={2} />)}
-      {showATC && (<path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2} />)}
-      {/* Axes labels */}
+      {/* Lines */}
+      <path d={pathSpend} fill="none" stroke="#10b981" strokeWidth={2.5} />
+      {showOrders && (<path d={pathOrders} fill="none" stroke="#2563eb" strokeWidth={2.5} />)}
+      {showATC && (<path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2.5} />)}
+      {/* Axis labels */}
       {leftTicks.map((tick,i)=> (
-        <text key={`lt${i}`} x={padL-6} y={yLeft(tick)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#64748b">${tick}</text>
+        <text key={`lt${i}`} x={padL-8} y={yLeft(tick)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#64748b">${tick}</text>
       ))}
       {rightTicks.map((tick,i)=> (
-        <text key={`rt${i}`} x={w-padR+6} y={yRight(tick)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#64748b">{tick}</text>
+        <text key={`rt${i}`} x={w-padR+8} y={yRight(tick)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#64748b">{tick}</text>
       ))}
       {xs.map((x,i)=> (
-        <text key={`x${i}`} x={x} y={h-8} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
+        <text key={`x${i}`} x={x} y={h-10} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
       ))}
       {/* Legends */}
       <g>
-        <rect x={padL} y={8} width={10} height={10} fill="#0ea5e9" opacity={0.25}/>
-        <text x={padL+16} y={16} fontSize="11" fill="#334155">Spend</text>
-        <rect x={padL+80} y={8} width={18} height={2} fill="#2563eb"/>
-        <text x={padL+104} y={16} fontSize="11" fill="#334155">Orders</text>
-        <rect x={padL+160} y={8} width={18} height={2} fill="#f59e0b"/>
-        <text x={padL+184} y={16} fontSize="11" fill="#334155">Add to cart</text>
+        <rect x={padL} y={8} width={18} height={2} fill="#10b981"/>
+        <text x={padL+24} y={12} fontSize="11" fill="#334155">Spend ($)</text>
+        <rect x={padL+120} y={8} width={18} height={2} fill="#2563eb"/>
+        <text x={padL+146} y={12} fontSize="11" fill="#334155">Orders</text>
+        <rect x={padL+220} y={8} width={18} height={2} fill="#f59e0b"/>
+        <text x={padL+246} y={12} fontSize="11" fill="#334155">Add to cart</text>
       </g>
     </svg>
   )
