@@ -45,16 +45,46 @@ export default function AdsManagementPage(){
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+  // Selection + Merging state
+  const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
+  })
+  const [mergedWith, setMergedWith] = useState<Record<string, string>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_merged')||'{}') }catch{ return {} }
+  })
+  const [groupNotes, setGroupNotes] = useState<Record<string, string>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes')||'{}') }catch{ return {} }
+  })
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
+    // Sum orders while respecting merged groups (count each group once)
+    const rowByKey: Record<string, MetaCampaignRow> = {}
+    for(const r of (items||[])){
+      const k = String(r.campaign_id||r.name||'')
+      rowByKey[k] = r
+    }
+    const visited: Record<string, true> = {}
     let sum = 0
     for(const r of (items||[])){
-      const v = getOrders(r)
-      if(typeof v==='number' && v>0) sum += v
+      const k = String(r.campaign_id||r.name||'')
+      if(visited[k]) continue
+      const partner = mergedWith[k]
+      if(partner){
+        const r2 = rowByKey[partner]
+        const o1 = getOrders(r) || 0
+        const o2 = r2? (getOrders(r2)||0) : 0
+        sum += (o1 + o2)
+        visited[k] = true
+        visited[partner] = true
+      }else{
+        const v = getOrders(r)
+        if(typeof v==='number' && v>0) sum += v
+        visited[k] = true
+      }
     }
     return sum
-  }, [items, shopifyCounts, manualCounts, manualIds])
+  }, [items, shopifyCounts, manualCounts, manualIds, mergedWith])
   const totalCPP = useMemo(()=> (tableOrdersTotal>0? (totalSpend / tableOrdersTotal) : null), [totalSpend, tableOrdersTotal])
   const storeCPP = useMemo(()=> ((storeOrdersTotal||0)>0? (totalSpend / Number(storeOrdersTotal||0)) : null), [totalSpend, storeOrdersTotal])
 
@@ -386,8 +416,64 @@ export default function AdsManagementPage(){
   const sortedItems = useMemo(()=>{
     const arr = (items||[]).slice()
     try{ arr.sort(compareRows) }catch{}
-    return arr
-  }, [items, sortKey, sortDir, shopifyCounts, productBriefs])
+    // Reorder to keep merged pairs adjacent
+    const rowByKey: Record<string, MetaCampaignRow> = {}
+    for(const r of arr){ rowByKey[String(r.campaign_id||r.name||'')] = r }
+    const seen: Record<string, true> = {}
+    const out: MetaCampaignRow[] = []
+    for(const r of arr){
+      const k = String(r.campaign_id||r.name||'')
+      if(seen[k]) continue
+      const partner = mergedWith[k]
+      if(partner && rowByKey[partner]){
+        out.push(r)
+        out.push(rowByKey[partner])
+        seen[k] = true; seen[partner] = true
+      }else{
+        out.push(r)
+        seen[k] = true
+      }
+    }
+    return out
+  }, [items, sortKey, sortDir, shopifyCounts, productBriefs, mergedWith])
+
+  function groupIdFor(a:string, b:string){
+    return [a,b].map(String).sort().join('||')
+  }
+  function isMergedKey(k:string){ return !!mergedWith[k] }
+  function toggleSelect(k:string, v?:boolean){
+    setSelectedKeys(prev=>{ const next={...prev, [k]: v==null? !prev[k] : !!v}; try{ localStorage.setItem('ptos_ads_selected', JSON.stringify(next)) }catch{}; return next })
+  }
+  function clearSelection(){ setSelectedKeys(()=>{ try{ localStorage.setItem('ptos_ads_selected','{}') }catch{}; return {} }) }
+  function doMergeSelected(){
+    const keys = Object.keys(selectedKeys).filter(k=> !!selectedKeys[k])
+    if(keys.length!==2){ alert('Select exactly 2 rows to merge.'); return }
+    const [a,b] = keys
+    setMergedWith(prev=>{
+      const next = { ...prev }
+      // Unmerge existing pairs containing a or b
+      const pa = next[a]; const pb = next[b]
+      if(pa){ delete next[pa]; delete next[a] }
+      if(pb){ delete next[pb]; delete next[b] }
+      next[a] = b; next[b] = a
+      try{ localStorage.setItem('ptos_ads_merged', JSON.stringify(next)) }catch{}
+      return next
+    })
+    // Initialize shared group note if empty
+    const gid = groupIdFor(a,b)
+    setGroupNotes(prev=>{ const next={...prev}; if(next[gid]==null){ next[gid]='' } try{ localStorage.setItem('ptos_ads_group_notes', JSON.stringify(next)) }catch{} return next })
+    clearSelection()
+  }
+  function unmergeKey(k:string){
+    setMergedWith(prev=>{
+      const partner = prev[k]
+      if(!partner) return prev
+      const next = { ...prev }
+      delete next[k]; delete next[partner]
+      try{ localStorage.setItem('ptos_ads_merged', JSON.stringify(next)) }catch{}
+      return next
+    })
+  }
 
   function toggleSort(key: typeof sortKey){
     if(sortKey===key){
@@ -505,10 +591,21 @@ export default function AdsManagementPage(){
             </div>
           </div>
         </div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-slate-600">Select 2 rows to merge Shopify metrics.</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={doMergeSelected}
+              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm disabled:opacity-60"
+              disabled={Object.keys(selectedKeys).filter(k=> selectedKeys[k]).length!==2}
+            >Merge 2</button>
+          </div>
+        </div>
         <div className="overflow-x-auto bg-white border rounded-none">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
+                <th className="px-3 py-2 font-semibold w-8">Sel</th>
                 <th className="px-3 py-2 font-semibold">Product</th>
                 <th className="px-3 py-2 font-semibold">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
@@ -593,19 +690,39 @@ export default function AdsManagementPage(){
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
                         const id = (c.name||'').trim()
                         const isNumeric = !!extractNumericId(id)
-                const orders = getOrders(c)
-                const trueCppVal = (orders!=null && orders>0)? (c.spend||0)/orders : null
+                const rowKey = String(c.campaign_id||c.name||'')
+                const partnerKey = mergedWith[rowKey]
+                const partnerRow = (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===partnerKey)
+                const singleOrders = getOrders(c)
+                const orders = partnerRow? ((singleOrders||0) + (getOrders(partnerRow)||0)) : singleOrders
+                const trueCppVal = (orders!=null && orders>0)? (((c.spend||0) + (partnerRow?.spend||0)) / orders) : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 const brief = isNumeric? productBriefs[id] : undefined
-                const inv = brief? brief.total_available : null
-                const zeros = brief? brief.zero_variants : null
+                const invSelf = brief? brief.total_available : null
+                const zerosSelf = brief? brief.zero_variants : null
+                const invPartner = partnerRow? ((()=>{
+                  const pid2 = extractNumericId((partnerRow.name||'').trim()); if(!pid2) return null
+                  const b2 = productBriefs[pid2]; return b2? b2.total_available : null
+                })()): null
+                const zerosPartner = partnerRow? ((()=>{
+                  const pid2 = extractNumericId((partnerRow.name||'').trim()); if(!pid2) return null
+                  const b2 = productBriefs[pid2]; return b2? b2.zero_variants : null
+                })()): null
+                const inv = (invSelf==null && invPartner==null)? null : (Number(invSelf||0) + Number(invPartner||0))
+                const zeros = (zerosSelf==null && zerosPartner==null)? null : (Number(zerosSelf||0) + Number(zerosPartner||0))
                 const img = brief? brief.image : null
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
-                const rowKey = c.campaign_id || c.name || String(Math.random())
                 return (
                   <Fragment key={c.campaign_id || c.name}>
                   <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
+                    <td className="px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedKeys[String(rowKey)]}
+                        onChange={(e)=> toggleSelect(String(rowKey), e.target.checked)}
+                      />
+                    </td>
                     <td className="px-3 py-2">
                       {isNumeric ? (
                         img ? (
@@ -796,65 +913,156 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2">
-                      <input
-                        value={notes[rowKey as any]||''}
-                        onChange={(e)=>{
-                          const v = e.target.value
-                          setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
-                        }}
-                        placeholder="Notes"
-                        className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
-                      />
+                      {(()=>{
+                        const pk = mergedWith[String(rowKey)]
+                        if(pk){
+                          const gid = groupIdFor(String(rowKey), String(pk))
+                          const val = groupNotes[gid]||''
+                          return (
+                            <input
+                              value={val}
+                              onChange={(e)=>{
+                                const v = e.target.value
+                                setGroupNotes(prev=>{ const next={...prev, [gid]: v}; try{ localStorage.setItem('ptos_ads_group_notes', JSON.stringify(next)) }catch{}; return next })
+                              }}
+                              placeholder="Group notes"
+                              className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                            />
+                          )
+                        }
+                        return (
+                          <input
+                            value={notes[rowKey as any]||''}
+                            onChange={(e)=>{
+                              const v = e.target.value
+                              setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
+                            }}
+                            placeholder="Notes"
+                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                          />
+                        )
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <button
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
-                          if(!cid) return
+                          const pk = mergedWith[String(rowKey)]
+                          const partner = pk? (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===pk) : null
                           setPerfOpen(true)
                           setPerfLoading(true)
-                          setPerfCampaign({ id: cid, name: c.name||'' })
                           try{
-                            const res = await fetchCampaignPerformance(cid, 6)
-                            const days = (((res as any)?.data||{}).days)||[]
-                            setPerfMetrics(days)
-                            // Load Shopify orders per day based on mapping or numeric id
-                            const rk = (c.campaign_id || c.name || '') as any
-                            const conf = (manualIds as any)[rk]
-                            const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
-                            const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
-                            const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
-                            const ordersPerDay: number[] = []
-                            for(const d of (days||[])){
-                              const start = d.date
-                              const end = d.date
-                              try{
-                                if(prodId){
-                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
-                                  const count = ((oc as any)?.data||{})[prodId] ?? 0
-                                  ordersPerDay.push(Number(count||0))
-                                }else if(collId){
-                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                  const count = Number(((oc as any)?.data||{})?.count ?? 0)
-                                  ordersPerDay.push(Number(count||0))
-                                }else{
-                                  ordersPerDay.push(0)
-                                }
-                              }catch{ ordersPerDay.push(0) }
+                            if(partner && partner.campaign_id){
+                              // Merged performance view: sum days and orders
+                              const cid2 = String(partner.campaign_id||'')
+                              const [res1, res2] = await Promise.all([
+                                fetchCampaignPerformance(cid, 6),
+                                fetchCampaignPerformance(cid2, 6)
+                              ])
+                              const d1 = (((res1 as any)?.data||{}).days)||[]
+                              const d2 = (((res2 as any)?.data||{}).days)||[]
+                              // Index by date
+                              const allDatesSet: Record<string,true> = {}
+                              for(const d of d1){ allDatesSet[d.date]=true }
+                              for(const d of d2){ allDatesSet[d.date]=true }
+                              const dates = Object.keys(allDatesSet).sort()
+                              const days = dates.map(date=>{
+                                const a = d1.find(x=> x.date===date) || { date, spend:0, purchases:0, add_to_cart:0 }
+                                const b = d2.find(x=> x.date===date) || { date, spend:0, purchases:0, add_to_cart:0 }
+                                const spend = Number(a.spend||0)+Number(b.spend||0)
+                                const purchases = Number(a.purchases||0)+Number(b.purchases||0)
+                                const add_to_cart = Number((a as any).add_to_cart||0)+Number((b as any).add_to_cart||0)
+                                const cpp = purchases>0? (spend/purchases) : null
+                                return { date, spend, purchases, cpp, ctr: null, add_to_cart }
+                              })
+                              setPerfMetrics(days)
+                              setPerfCampaign({ id: `${cid}+${cid2}` , name: `Merged` })
+                              // Orders per day for each campaign mapping, then sum
+                              const rk1 = (c.campaign_id || c.name || '') as any
+                              const conf1 = (manualIds as any)[rk1]
+                              const useProduct1 = conf1? (conf1.kind==='product') : /^\d+$/.test((c.name||'').trim())
+                              const prodId1 = useProduct1? (conf1? conf1.id : (c.name||'').trim()) : undefined
+                              const collId1 = (!useProduct1 && conf1 && conf1.kind==='collection')? conf1.id : undefined
+                              const rk2 = (partner.campaign_id || partner.name || '') as any
+                              const conf2 = (manualIds as any)[rk2]
+                              const useProduct2 = conf2? (conf2.kind==='product') : /^\d+$/.test((partner.name||'').trim())
+                              const prodId2 = useProduct2? (conf2? conf2.id : (partner.name||'').trim()) : undefined
+                              const collId2 = (!useProduct2 && conf2 && conf2.kind==='collection')? conf2.id : undefined
+                              const mergedOrders: number[] = []
+                              for(const d of days){
+                                const start = d.date; const end = d.date
+                                let o1 = 0, o2 = 0
+                                try{
+                                  if(prodId1){
+                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId1], start, end, include_closed: true, date_field: 'processed' })
+                                    o1 = Number(((oc as any)?.data||{})[prodId1] ?? 0)
+                                  }else if(collId1){
+                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId1, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                    o1 = Number(((oc as any)?.data||{})?.count ?? 0)
+                                  }
+                                }catch{}
+                                try{
+                                  if(prodId2){
+                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId2], start, end, include_closed: true, date_field: 'processed' })
+                                    o2 = Number(((oc as any)?.data||{})[prodId2] ?? 0)
+                                  }else if(collId2){
+                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId2, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                    o2 = Number(((oc as any)?.data||{})?.count ?? 0)
+                                  }
+                                }catch{}
+                                mergedOrders.push((o1||0)+(o2||0))
+                              }
+                              setPerfOrders(mergedOrders)
+                            }else{
+                              if(!cid) return
+                              setPerfCampaign({ id: cid, name: c.name||'' })
+                              const res = await fetchCampaignPerformance(cid, 6)
+                              const days = (((res as any)?.data||{}).days)||[]
+                              setPerfMetrics(days)
+                              // Load Shopify orders per day based on mapping or numeric id
+                              const rk = (c.campaign_id || c.name || '') as any
+                              const conf = (manualIds as any)[rk]
+                              const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
+                              const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
+                              const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
+                              const ordersPerDay: number[] = []
+                              for(const d of (days||[])){
+                                const start = d.date
+                                const end = d.date
+                                try{
+                                  if(prodId){
+                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
+                                    const count = ((oc as any)?.data||{})[prodId] ?? 0
+                                    ordersPerDay.push(Number(count||0))
+                                  }else if(collId){
+                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                    const count = Number(((oc as any)?.data||{})?.count ?? 0)
+                                    ordersPerDay.push(Number(count||0))
+                                  }else{
+                                    ordersPerDay.push(0)
+                                  }
+                                }catch{ ordersPerDay.push(0) }
+                              }
+                              setPerfOrders(ordersPerDay)
                             }
-                            setPerfOrders(ordersPerDay)
                           }finally{
                             setPerfLoading(false)
                           }
                         }}
                         className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                       >Performance</button>
+                      {partnerKey && (
+                        <button
+                          onClick={()=> unmergeKey(String(rowKey))}
+                          className="ml-2 px-2 py-1 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
+                        >Unmerge</button>
+                      )}
                     </td>
                   </tr>
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 14
+                    const colSpan = 15
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -939,7 +1147,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-3 py-2 bg-slate-50" colSpan={14}>
+                        <td className="px-3 py-2 bg-slate-50" colSpan={15}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (
