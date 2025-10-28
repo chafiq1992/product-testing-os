@@ -959,8 +959,8 @@ export default function AdsManagementPage(){
                                 fetchCampaignPerformance(cid, 6),
                                 fetchCampaignPerformance(cid2, 6)
                               ])
-                              const d1 = (((res1 as any)?.data||{}).days)||[]
-                              const d2 = (((res2 as any)?.data||{}).days)||[]
+                              const d1 = ((((res1 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
+                              const d2 = ((((res2 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
                               // Index by date
                               const allDatesSet: Record<string,true> = {}
                               for(const d of d1){ allDatesSet[d.date]=true }
