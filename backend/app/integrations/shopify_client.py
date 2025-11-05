@@ -525,11 +525,36 @@ def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_
     target = int(numeric_id)
     from urllib.parse import urlencode
     base_path = "/orders.json"
+    # Normalize processed_at window to the shop's timezone, then convert to UTC for the REST API
+    try:
+        try:
+            tzname = get_shop_timezone(store)
+        except Exception:
+            tzname = "UTC"
+        try:
+            tz = ZoneInfo(tzname) if ZoneInfo else None
+        except Exception:
+            tz = None
+        start_local = datetime.fromisoformat(f"{processed_min_date}T00:00:00")
+        end_local = datetime.fromisoformat(f"{processed_max_date}T23:59:59")
+        if tz:
+            start_local = start_local.replace(tzinfo=tz)
+            end_local = end_local.replace(tzinfo=tz)
+        # End-of-day inclusive to avoid truncation at second boundary
+        end_local = end_local + timedelta(milliseconds=999)
+        # Convert to UTC ISO8601 (Shopify processes timestamps in UTC)
+        utc = ZoneInfo("UTC") if ZoneInfo else None
+        processed_min_iso = start_local.astimezone(utc).isoformat() if utc else f"{processed_min_date}T00:00:00Z"
+        processed_max_iso = end_local.astimezone(utc).isoformat() if utc else f"{processed_max_date}T23:59:59Z"
+    except Exception:
+        processed_min_iso = f"{processed_min_date}T00:00:00"
+        processed_max_iso = f"{processed_max_date}T23:59:59"
+
     params = {
         "status": ("any" if include_closed else "open"),
         "limit": 250,
-        "processed_at_min": f"{processed_min_date}T00:00:00",
-        "processed_at_max": f"{processed_max_date}T23:59:59",
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
         "order": "processed_at asc",
     }
     total = 0
