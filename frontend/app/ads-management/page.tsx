@@ -275,7 +275,7 @@ export default function AdsManagementPage(){
       setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
       const { start, end } = computeRange(datePreset)
       try{
-        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true })
+        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: false, date_field: 'processed' })
         const map = ((oc as any)?.data)||{}
         setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
         // Update collection total to match sum of children
