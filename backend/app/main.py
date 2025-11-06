@@ -388,6 +388,17 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
         items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None), since=start, until=end)
         return {"data": items}
     except Exception as e:
+        # Unwrap tenacity RetryError to expose the underlying API error message
+        try:
+            from tenacity import RetryError  # type: ignore
+            if isinstance(e, RetryError):
+                try:
+                    cause = e.last_attempt.exception()  # type: ignore[attr-defined]
+                    return {"error": str(cause), "data": []}
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return {"error": str(e), "data": []}
 
 
