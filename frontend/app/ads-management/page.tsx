@@ -1191,6 +1191,11 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   const cpp = (days||[]).map(d=> d.cpp==null? 0 : (d.cpp||0))
   const atc = (days||[]).map(d=> d.add_to_cart||0)
   const ordersArr = (orders||[])
+  const trueCpp = (days||[]).map((d,i)=> {
+    const o = Number(ordersArr[i]||0)
+    const s = Number(d.spend||0)
+    return o>0? (s/o) : 0
+  })
   const [showOrders, setShowOrders] = useState(true)
   const [showATC, setShowATC] = useState(true)
   return (
@@ -1227,13 +1232,14 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
                       <div className="text-slate-500">CTR</div><div className="text-right font-semibold">{d.ctr!=null? `${(d.ctr*1).toFixed(2)}%` : '—'}</div>
                       <div className="text-slate-500">Add to cart</div><div className="text-right font-semibold">{d.add_to_cart||0}</div>
                       <div className="text-slate-500">Shopify Orders</div><div className="text-right font-semibold">{(ordersArr[i]||0)}</div>
+                      <div className="text-slate-500">True CPP</div><div className="text-right font-semibold">{(ordersArr[i]||0)>0? `$${(trueCpp[i]||0).toFixed(2)}` : '—'}</div>
                     </div>
                   </div>
                 ))}
               </div>
               <div className="mt-4">
-                <div className="mb-2 text-sm text-slate-600">Daily performance (Spend bars, Orders/ATC lines)</div>
-                <PerformanceChart labels={labels} spend={spend} orders={ordersArr} addToCart={atc} showOrders={showOrders} showATC={showATC} />
+                <div className="mb-2 text-sm text-slate-600">Daily performance (Spend/True CPP lines, Orders/ATC lines)</div>
+                <PerformanceChart labels={labels} spend={spend} trueCpp={trueCpp} orders={ordersArr} addToCart={atc} showOrders={showOrders} showATC={showATC} />
               </div>
             </div>
           )}
@@ -1243,23 +1249,27 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   )
 }
 
-function PerformanceChart({ labels, spend, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
+function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], trueCpp:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
   const w = 1000, h = 320, padL = 56, padR = 56, padT = 24, padB = 40
   const innerW = w - padL - padR
   const innerH = h - padT - padB
   const n = Math.max(1, labels.length)
   const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
-  // Fixed axes: Spend $1..$100 (left), Orders/ATC 1..100 (right)
-  const minSpend = 1, maxSpend = 100
+  // Dynamic left axis based on Spend/True CPP in $ (rounded to nearest 25 up, min 25)
+  const maxDataValue = Math.max(1, ...spend.map(v=>Number(v||0)), ...trueCpp.map(v=>Number(v||0)))
+  const maxRounded = Math.max(25, Math.ceil(maxDataValue/25)*25)
+  const minSpend = 0, maxSpend = maxRounded
   const minCount = 1, maxCount = 100
   const clamp = (v:number, lo:number, hi:number)=> Math.max(lo, Math.min(hi, v||0))
   const yLeft = (v:number)=> padT + innerH - ((clamp(v, minSpend, maxSpend)-minSpend)/(maxSpend-minSpend))*innerH
   const yRight = (v:number)=> padT + innerH - ((clamp(v, minCount, maxCount)-minCount)/(maxCount-minCount))*innerH
   const gridLines = 5
-  const leftTicks = [1,25,50,75,100]
+  const leftTicksBase = [0, 0.25, 0.5, 0.75, 1]
+  const leftTicks = leftTicksBase.map(p=> Math.round(p*maxSpend))
   const rightTicks = [1,25,50,75,100]
   // Build line paths (spend, orders, atc)
   const pathSpend = `M ${xs[0]},${yLeft(spend[0]||0)} ` + spend.slice(1).map((v,i)=> `L ${xs[i+1]},${yLeft(v||0)}`).join(' ')
+  const pathTrueCpp = `M ${xs[0]},${yLeft(trueCpp[0]||0)} ` + trueCpp.slice(1).map((v,i)=> `L ${xs[i+1]},${yLeft(v||0)}`).join(' ')
   const pathOrders = `M ${xs[0]},${yRight(orders[0]||0)} ` + orders.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
   const pathATC = `M ${xs[0]},${yRight(addToCart[0]||0)} ` + addToCart.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
   return (
@@ -1275,6 +1285,7 @@ function PerformanceChart({ labels, spend, orders, addToCart, showOrders, showAT
       ))}
       {/* Lines */}
       <path d={pathSpend} fill="none" stroke="#10b981" strokeWidth={2.5} />
+      <path d={pathTrueCpp} fill="none" stroke="#7c3aed" strokeWidth={2.5} />
       {showOrders && (<path d={pathOrders} fill="none" stroke="#2563eb" strokeWidth={2.5} />)}
       {showATC && (<path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2.5} />)}
       {/* Axis labels */}
@@ -1287,14 +1298,25 @@ function PerformanceChart({ labels, spend, orders, addToCart, showOrders, showAT
       {xs.map((x,i)=> (
         <text key={`x${i}`} x={x} y={h-10} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
       ))}
+      {/* True CPP value labels */}
+      {xs.map((x,i)=> (
+        <g key={`tc${i}`}>
+          <circle cx={x} cy={yLeft(trueCpp[i]||0)} r={3} fill="#7c3aed" />
+          {(trueCpp[i]||0) > 0 && (
+            <text x={x} y={yLeft(trueCpp[i]||0)-8} textAnchor="middle" fontSize="10" fill="#7c3aed">${(trueCpp[i]||0).toFixed(2)}</text>
+          )}
+        </g>
+      ))}
       {/* Legends */}
       <g>
         <rect x={padL} y={8} width={18} height={2} fill="#10b981"/>
         <text x={padL+24} y={12} fontSize="11" fill="#334155">Spend ($)</text>
-        <rect x={padL+120} y={8} width={18} height={2} fill="#2563eb"/>
-        <text x={padL+146} y={12} fontSize="11" fill="#334155">Orders</text>
-        <rect x={padL+220} y={8} width={18} height={2} fill="#f59e0b"/>
-        <text x={padL+246} y={12} fontSize="11" fill="#334155">Add to cart</text>
+        <rect x={padL+120} y={8} width={18} height={2} fill="#7c3aed"/>
+        <text x={padL+146} y={12} fontSize="11" fill="#334155">True CPP ($)</text>
+        <rect x={padL+260} y={8} width={18} height={2} fill="#2563eb"/>
+        <text x={padL+286} y={12} fontSize="11" fill="#334155">Orders</text>
+        <rect x={padL+360} y={8} width={18} height={2} fill="#f59e0b"/>
+        <text x={padL+386} y={12} fontSize="11" fill="#334155">Add to cart</text>
       </g>
     </svg>
   )
