@@ -200,6 +200,13 @@ export default function AdsManagementPage(){
       setCollectionProducts({})
       setCollectionCounts({})
       setChildrenLoading({})
+      // Clear ad set related state so expanding re-fetches with the current date range
+      setAdsetsExpanded({})
+      setAdsetsLoading({})
+      setAdsetsByCampaign({})
+      setAdsetOrdersByCampaign({})
+      setAdsetOrdersLoading({})
+      setAdsetOrdersExpanded({})
       const token = ++ordersSeqToken.current
       // Fetch store-wide orders total for the same range
       try{
