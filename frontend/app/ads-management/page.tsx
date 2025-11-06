@@ -315,7 +315,14 @@ export default function AdsManagementPage(){
       try{
         const res = await metaListAdAccounts()
         const items = ((res as any)?.data)||[]
-        setAdAccounts(items)
+        // Append extra known accounts if not present
+        const extras: Array<{id:string,name:string}> = [
+          { id: '8127151147322914', name: '8127151147322914' },
+        ]
+        const byId: Record<string, {id:string,name:string,account_status?:number}> = {}
+        for(const a of items){ byId[a.id] = a }
+        for(const e of extras){ if(!byId[e.id]) byId[e.id] = e as any }
+        setAdAccounts(Object.values(byId))
       }catch{ setAdAccounts([]) }
     }
     loadAdAccount()
