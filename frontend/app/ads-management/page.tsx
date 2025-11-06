@@ -1116,7 +1116,8 @@ export default function AdsManagementPage(){
                                     const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
                                     const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
                                     return (
-                                      <div key={aid||a.name} className="grid grid-cols-8 gap-2 px-2 py-1 border-t items-center">
+                                      <Fragment key={aid||a.name}>
+                                      <div className="grid grid-cols-8 gap-2 px-2 py-1 border-t items-center">
                                         <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-2">
                                           <span>{a.name||'-'}</span>
                                           {adsetOrdersLoading[cid]? (
@@ -1200,6 +1201,7 @@ export default function AdsManagementPage(){
                                           </div>
                                         </div>
                                       )}
+                                      </Fragment>
                                     )
                                   })}
                                   {adsets.length===0 && (
