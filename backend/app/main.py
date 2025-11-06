@@ -30,10 +30,12 @@ from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
+from app.integrations.shopify_client import list_orders_with_utms_processed
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts
+from app.integrations.meta_client import list_ads_for_adsets
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
@@ -1599,6 +1601,58 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
+
+
+@app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None):
+    """Attribute Shopify orders to ad sets by matching UTM ad_id to Meta ad IDs under each ad set.
+
+    Returns mapping: { adset_id: { count: number, orders: [...] } }
+    """
+    try:
+        # 1) List ad sets for campaign and their ads
+        adsets = list_adsets_with_insights(campaign_id, "last_7d")
+        adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
+        ads_by_adset = list_ads_for_adsets(adset_ids)
+
+        # Build reverse map ad_id -> adset_id
+        ad_to_adset: dict[str, str] = {}
+        for aid, ad_ids in (ads_by_adset or {}).items():
+            for ad in (ad_ids or []):
+                if ad:
+                    ad_to_adset[str(ad)] = str(aid)
+
+        # 2) Fetch Shopify orders with UTMs for date range (processed dates)
+        orders = list_orders_with_utms_processed(start, end, store=store, include_closed=True)
+
+        # 3) Attribute orders by ad_id
+        result: dict[str, dict] = {}
+        for o in (orders or []):
+            try:
+                ad_id = str((o or {}).get("ad_id") or "")
+                if not ad_id:
+                    continue
+                adset_id = ad_to_adset.get(ad_id)
+                if not adset_id:
+                    continue
+                bucket = result.setdefault(adset_id, {"count": 0, "orders": []})
+                bucket["count"] = int(bucket.get("count", 0)) + 1
+                # Append a slimmed order row for UI
+                bucket["orders"].append({
+                    "order_id": o.get("order_id"),
+                    "processed_at": o.get("processed_at"),
+                    "total_price": o.get("total_price"),
+                    "currency": o.get("currency"),
+                    "landing_site": o.get("landing_site"),
+                    "utm": o.get("utm") or {},
+                    "ad_id": ad_id,
+                    "campaign_id": o.get("campaign_id"),
+                })
+            except Exception:
+                continue
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
 
 
 class AdsetStatusUpdateRequest(BaseModel):

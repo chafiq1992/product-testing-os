@@ -526,6 +526,28 @@ export async function fetchCampaignPerformance(campaign_id: string, days?: numbe
   return data as { data: { days: { date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }[] }, error?: string }
 }
 
+export type AttributedOrder = {
+  order_id?: string|number,
+  processed_at?: string,
+  total_price?: number,
+  currency?: string,
+  landing_site?: string|null,
+  utm?: Record<string,string>,
+  ad_id?: string,
+  campaign_id?: string,
+}
+
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string){
+  const params: string[] = []
+  if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
+  if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`)
+  return data as { data: Record<string, { count:number, orders: AttributedOrder[] }>, error?: string }
+}
+
 // Shopify: count orders by line item title substring for a time range
 export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -35,6 +35,9 @@ export default function AdsManagementPage(){
   const [adsetsExpanded, setAdsetsExpanded] = useState<Record<string, boolean>>({})
   const [adsetsLoading, setAdsetsLoading] = useState<Record<string, boolean>>({})
   const [adsetsByCampaign, setAdsetsByCampaign] = useState<Record<string, MetaAdsetRow[]>>({})
+  const [adsetOrdersByCampaign, setAdsetOrdersByCampaign] = useState<Record<string, Record<string, { count:number, orders: AttributedOrder[] }>>>({})
+  const [adsetOrdersLoading, setAdsetOrdersLoading] = useState<Record<string, boolean>>({})
+  const [adsetOrdersExpanded, setAdsetOrdersExpanded] = useState<Record<string, boolean>>({})
   const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
   const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
   const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
@@ -759,6 +762,18 @@ export default function AdsManagementPage(){
                                 const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
                                 const items = ((res as any)?.data)||[]
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
+                                // Load Shopify-attributed orders per ad set for this campaign
+                                try{
+                                  const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, store)
+                                  const mapping = ((ord as any)?.data)||{}
+                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
+                                }catch{
+                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
+                                }finally{
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
+                                }
                               }catch{
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
                               }finally{
@@ -1098,9 +1113,25 @@ export default function AdsManagementPage(){
                                     const aactive = ast==='ACTIVE'
                                     const acolor = aactive? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
                                     const aid = String(a.adset_id||'')
+                                    const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
+                                    const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
                                     return (
                                       <div key={aid||a.name} className="grid grid-cols-8 gap-2 px-2 py-1 border-t items-center">
-                                        <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis">{a.name||'-'}</div>
+                                        <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-2">
+                                          <span>{a.name||'-'}</span>
+                                          {adsetOrdersLoading[cid]? (
+                                            <span className="text-[10px] text-slate-500">loading orders…</span>
+                                          ) : (
+                                            hasOrders? (
+                                              <button
+                                                onClick={()=> setAdsetOrdersExpanded(prev=> ({ ...prev, [aid]: !prev[aid] }))}
+                                                className="text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700 border border-emerald-200"
+                                              >Orders {ordersInfo?.count||0} {adsetOrdersExpanded[aid]? '▾' : '▸'}</button>
+                                            ) : (
+                                              <span className="text-[10px] px-1 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">Orders 0</span>
+                                            )
+                                          )}
+                                        </div>
                                         <div className="text-right">${(a.spend||0).toFixed(2)}</div>
                                         <div className="text-right">{a.purchases||0}</div>
                                         <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
@@ -1136,6 +1167,39 @@ export default function AdsManagementPage(){
                                           )}
                                         </div>
                                       </div>
+                                      {adsetOrdersExpanded[aid] && hasOrders && (
+                                        <div className="col-span-8 px-2 py-1 border-t bg-slate-50 text-slate-700">
+                                          <div className="text-[11px] text-slate-600 mb-1">Attributed Shopify orders (by UTM ad_id)</div>
+                                          <div className="overflow-x-auto">
+                                            <table className="min-w-full text-xs">
+                                              <thead>
+                                                <tr className="text-left text-slate-500">
+                                                  <th className="px-1 py-1">Order</th>
+                                                  <th className="px-1 py-1">Processed</th>
+                                                  <th className="px-1 py-1">Total</th>
+                                                  <th className="px-1 py-1">ad_id</th>
+                                                  <th className="px-1 py-1">utm_campaign</th>
+                                                  <th className="px-1 py-1">utm_source</th>
+                                                  <th className="px-1 py-1">utm_medium</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {(ordersInfo?.orders||[]).map((o,idx)=> (
+                                                  <tr key={String(o.order_id||idx)} className="border-t">
+                                                    <td className="px-1 py-1 font-mono">{String(o.order_id||'')}</td>
+                                                    <td className="px-1 py-1">{(o.processed_at||'').replace('T',' ').replace('Z','')}</td>
+                                                    <td className="px-1 py-1">{typeof o.total_price==='number'? `$${(o.total_price||0).toFixed(2)}` : '-'}</td>
+                                                    <td className="px-1 py-1">{o.ad_id|| (o.utm||{}).ad_id || ''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_campaign||o.campaign_id||''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_source||''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_medium||''}</td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        </div>
+                                      )}
                                     )
                                   })}
                                   {adsets.length===0 && (

@@ -655,6 +655,122 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
     return total
 
 
+def _parse_utm_from_url(url: str | None) -> tuple[dict, str | None, str | None]:
+    """Extract UTM parameters and explicit ad/campaign IDs from a URL.
+
+    Returns (utm_map, ad_id, campaign_id).
+    """
+    try:
+        if not url:
+            return ({}, None, None)
+        from urllib.parse import urlparse, parse_qs
+        pr = urlparse(url)
+        q = parse_qs(pr.query or "")
+        # Flatten single values
+        utm: dict = {}
+        for k in ("utm_source","utm_medium","utm_campaign","utm_content","utm_term","utm_id","fbclid","gclid","ad_id","campaign_id"):
+            vals = q.get(k) or []
+            if vals:
+                utm[k] = vals[0]
+        # Prefer explicit ad_id/campaign_id params
+        ad_id = (q.get("ad_id") or [None])[0]
+        campaign_id = (q.get("campaign_id") or [None])[0]
+        # Some setups place the ad id in utm_content/utm_term
+        if not ad_id:
+            ad_id = utm.get("utm_content") or utm.get("utm_term")
+        if not campaign_id:
+            campaign_id = utm.get("utm_campaign")
+        return (utm, ad_id, campaign_id)
+    except Exception:
+        return ({}, None, None)
+
+
+def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    """List orders within processed_at range and extract UTM/ad identifiers from landing URLs.
+
+    Output rows include: order_id, name, processed_at, total_price, currency, source_name,
+    landing_site, utm (map), ad_id, campaign_id.
+    """
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59, 999000)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    out: list[dict] = []
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                landing = (o.get("landing_site") or "").strip()
+                # Fallbacks: some shops store full URL in a note_attribute named full_url
+                if not landing:
+                    try:
+                        for na in (o.get("note_attributes") or []):
+                            if (na or {}).get("name") == "full_url" and (na or {}).get("value"):
+                                landing = str((na or {}).get("value"))
+                                break
+                    except Exception:
+                        pass
+                utm, ad_id, campaign_id = _parse_utm_from_url(landing)
+                # Build output row
+                row = {
+                    "order_id": o.get("id"),
+                    "name": o.get("name"),
+                    "processed_at": o.get("processed_at") or o.get("created_at"),
+                    "total_price": float(o.get("total_price") or 0),
+                    "currency": o.get("currency"),
+                    "source_name": o.get("source_name"),
+                    "landing_site": landing or None,
+                    "utm": utm,
+                    "ad_id": ad_id,
+                    "campaign_id": campaign_id,
+                }
+                out.append(row)
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
+
+
 def count_orders_total_created(created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count total unique orders within a created_at date range (YYYY-MM-DD).
 

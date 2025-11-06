@@ -242,6 +242,22 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_ads_for_adsets(adset_ids: list[str]) -> dict[str, list[str]]:
+    """Return mapping of adset_id -> list of ad ids under that ad set."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    out: dict[str, list[str]] = {}
+    for aid in (adset_ids or []):
+        try:
+            res = _get(f"{aid}/ads", {"fields": "id,name", "limit": 500})
+            rows = (res or {}).get("data") or []
+            out[str(aid)] = [str((r or {}).get("id") or "") for r in rows if (r or {}).get("id")]
+        except Exception:
+            out[str(aid)] = []
+    return out
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def set_adset_status(adset_id: str, status: str) -> dict:
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
