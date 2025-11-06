@@ -688,8 +688,6 @@ export default function AdsManagementPage(){
               {!loading && sortedItems.map((c)=>{
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
-                        const id = (c.name||'').trim()
-                        const isNumeric = !!extractNumericId(id)
                 const rowKey = String(c.campaign_id||c.name||'')
                 const partnerKey = mergedWith[rowKey]
                 const partnerRow = (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===partnerKey)
@@ -697,20 +695,24 @@ export default function AdsManagementPage(){
                 const orders = partnerRow? ((singleOrders||0) + (getOrders(partnerRow)||0)) : singleOrders
                 const trueCppVal = (orders!=null && orders>0)? (((c.spend||0) + (partnerRow?.spend||0)) / orders) : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
-                const brief = isNumeric? productBriefs[id] : undefined
-                const invSelf = brief? brief.total_available : null
-                const zerosSelf = brief? brief.zero_variants : null
-                const invPartner = partnerRow? ((()=>{
-                  const pid2 = extractNumericId((partnerRow.name||'').trim()); if(!pid2) return null
-                  const b2 = productBriefs[pid2]; return b2? b2.total_available : null
-                })()): null
-                const zerosPartner = partnerRow? ((()=>{
-                  const pid2 = extractNumericId((partnerRow.name||'').trim()); if(!pid2) return null
-                  const b2 = productBriefs[pid2]; return b2? b2.zero_variants : null
-                })()): null
+                // Resolve product id from manual mapping (product) or numeric id in name
+                const rkSelf = (c.campaign_id || c.name || '') as any
+                const confSelf = (manualIds as any)[rkSelf]
+                const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id)? confSelf.id : extractNumericId((c.name||'').trim())
+                const briefSelf = pidSelf? productBriefs[pidSelf] : undefined
+                const img = briefSelf? briefSelf.image : null
+                const invSelf = briefSelf? briefSelf.total_available : null
+                const zerosSelf = briefSelf? briefSelf.zero_variants : null
+                // Partner resolution
+                const rkPartner = partnerRow? (partnerRow.campaign_id || partnerRow.name || '') : null
+                const confPartner = rkPartner? (manualIds as any)[rkPartner as any] : undefined
+                const pidPartner = partnerRow? ((confPartner && confPartner.kind==='product' && confPartner.id)? confPartner.id : extractNumericId((partnerRow.name||'').trim())) : null
+                const briefPartner = pidPartner? productBriefs[pidPartner] : undefined
+                const invPartner = briefPartner? briefPartner.total_available : null
+                const zerosPartner = briefPartner? briefPartner.zero_variants : null
                 const inv = (invSelf==null && invPartner==null)? null : (Number(invSelf||0) + Number(invPartner||0))
                 const zeros = (zerosSelf==null && zerosPartner==null)? null : (Number(zerosSelf||0) + Number(zerosPartner||0))
-                const img = brief? brief.image : null
+                const hasAnyPid = !!pidSelf || !!pidPartner
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 return (
@@ -724,15 +726,15 @@ export default function AdsManagementPage(){
                       />
                     </td>
                     <td className="px-3 py-2">
-                      {isNumeric ? (
-                        img ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
-                        ) : (
-                          <span className="inline-block w-20 h-20 rounded bg-slate-100 border animate-pulse" />
-                        )
+                      {img ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
                       ) : (
-                        <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
+                        hasAnyPid ? (
+                          <span className="inline-block w-20 h-20 rounded bg-slate-100 border animate-pulse" />
+                        ) : (
+                          <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
+                        )
                       )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
@@ -891,7 +893,7 @@ export default function AdsManagementPage(){
                     </td>
                     <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
                     <td className="px-3 py-2 text-right">
-                      {isNumeric ? (
+                      {hasAnyPid ? (
                         inv===null || inv===undefined ? (
                           <span className="inline-block h-4 w-10 bg-indigo-50 rounded animate-pulse" />
                         ) : (
@@ -902,7 +904,7 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      {isNumeric ? (
+                      {hasAnyPid ? (
                         zeros===null || zeros===undefined ? (
                           <span className="inline-block h-4 w-10 bg-rose-50 rounded animate-pulse" />
                         ) : (
