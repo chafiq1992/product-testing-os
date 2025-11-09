@@ -76,8 +76,8 @@ export default function AdsManagementPage(){
       if(partner){
         const r2 = rowByKey[partner]
         const o1 = getOrders(r) || 0
-        const o2 = r2? (getOrders(r2)||0) : 0
-        sum += (o1 + o2)
+        // For merged pairs, only count orders from one row to avoid double counting
+        sum += o1
         visited[k] = true
         visited[partner] = true
       }else{
@@ -120,16 +120,9 @@ export default function AdsManagementPage(){
         e.setHours(23,59,59,999)
         return { start: toYmd(d), end: toYmd(e) }
       }
-      case 'last_3d_excl_today':{
-        // since = 2 days before yesterday; until = yesterday
-        const until = new Date(now)
-        until.setDate(until.getDate()-1)
-        const since = new Date(until)
-        since.setDate(since.getDate()-(3-1))
-        since.setHours(0,0,0,0)
-        until.setHours(23,59,59,999)
-        return { start: toYmd(since), end: toYmd(until) }
-      }
+      case 'last_3d_incl_today':
+        startDate.setDate(startDate.getDate()-(3-1))
+        break
       case 'last_4d_incl_today':
         startDate.setDate(startDate.getDate()-(4-1))
         break
@@ -152,7 +145,7 @@ export default function AdsManagementPage(){
     switch(p){
       case 'today': return 'today'
       case 'yesterday': return 'yesterday'
-      case 'last_3d_excl_today': return 'last 3 days (without today)'
+      case 'last_3d_incl_today': return 'last 3 days (including today)'
       case 'last_4d_incl_today': return 'last 4 days (including today)'
       case 'last_5d_incl_today': return 'last 5 days (including today)'
       case 'last_6d_incl_today': return 'last 6 days (including today)'
@@ -168,20 +161,17 @@ export default function AdsManagementPage(){
       const { start, end } = computeRange('last_7d_incl_today')
       return { range: { start, end } }
     }
-    if(preset==='last_3d_excl_today'){
+    // For all presets that include today, use explicit time range to ensure today's data is included
+    if(preset==='last_3d_incl_today' || preset==='last_4d_incl_today' || preset==='last_5d_incl_today' || preset==='last_6d_incl_today' || preset==='last_7d_incl_today'){
       const { start, end } = computeRange(preset)
       return { range: { start, end } }
     }
-    switch(preset){
-      case 'today': return { datePreset: 'today' }
-      case 'yesterday': return { datePreset: 'yesterday' }
-      case 'last_4d_incl_today': return { datePreset: 'last_4d' }
-      case 'last_5d_incl_today': return { datePreset: 'last_5d' }
-      case 'last_6d_incl_today': return { datePreset: 'last_6d' }
-      case 'last_7d_incl_today':
-      default:
-        return { datePreset: 'last_7d' }
-    }
+    // Simple pass-through for exact-day presets
+    if(preset==='today') return { datePreset: 'today' }
+    if(preset==='yesterday') return { datePreset: 'yesterday' }
+    // Fallback to a safe default
+    const { start, end } = computeRange('last_7d_incl_today')
+    return { range: { start, end } }
   }
 
   async function load(preset?: string){
@@ -543,7 +533,7 @@ export default function AdsManagementPage(){
             <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
-              <option value="last_3d_excl_today">Last 3 days (without today)</option>
+              <option value="last_3d_incl_today">Last 3 days (including today)</option>
               <option value="last_4d_incl_today">Last 4 days (including today)</option>
               <option value="last_5d_incl_today">Last 5 days (including today)</option>
               <option value="last_6d_incl_today">Last 6 days (including today)</option>
@@ -709,7 +699,8 @@ export default function AdsManagementPage(){
                 const partnerKey = mergedWith[rowKey]
                 const partnerRow = (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===partnerKey)
                 const singleOrders = getOrders(c)
-                const orders = partnerRow? ((singleOrders||0) + (getOrders(partnerRow)||0)) : singleOrders
+                // Do not sum orders across merged rows; use this row's orders only
+                const orders = singleOrders
                 const trueCppVal = (orders!=null && orders>0)? (((c.spend||0) + (partnerRow?.spend||0)) / orders) : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 // Resolve product id from manual mapping (product) or numeric id in name
@@ -727,8 +718,9 @@ export default function AdsManagementPage(){
                 const briefPartner = pidPartner? productBriefs[pidPartner] : undefined
                 const invPartner = briefPartner? briefPartner.total_available : null
                 const zerosPartner = briefPartner? briefPartner.zero_variants : null
-                const inv = (invSelf==null && invPartner==null)? null : (Number(invSelf||0) + Number(invPartner||0))
-                const zeros = (zerosSelf==null && zerosPartner==null)? null : (Number(zerosSelf||0) + Number(zerosPartner||0))
+                // Do not sum inventory/zero-variants across merged rows; show this row's values only
+                const inv = (invSelf==null || invSelf==undefined)? null : Number(invSelf||0)
+                const zeros = (zerosSelf==null || zerosSelf==undefined)? null : Number(zerosSelf||0)
                 const hasAnyPid = !!pidSelf || !!pidPartner
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
@@ -1008,21 +1000,16 @@ export default function AdsManagementPage(){
                               })
                               setPerfMetrics(days)
                               setPerfCampaign({ id: `${cid}+${cid2}` , name: `Merged` })
-                              // Orders per day for each campaign mapping, then sum
+                              // Orders per day: use ONLY the base row's mapping to avoid double counting
                               const rk1 = (c.campaign_id || c.name || '') as any
                               const conf1 = (manualIds as any)[rk1]
                               const useProduct1 = conf1? (conf1.kind==='product') : /^\d+$/.test((c.name||'').trim())
                               const prodId1 = useProduct1? (conf1? conf1.id : (c.name||'').trim()) : undefined
                               const collId1 = (!useProduct1 && conf1 && conf1.kind==='collection')? conf1.id : undefined
-                              const rk2 = (partner.campaign_id || partner.name || '') as any
-                              const conf2 = (manualIds as any)[rk2]
-                              const useProduct2 = conf2? (conf2.kind==='product') : /^\d+$/.test((partner.name||'').trim())
-                              const prodId2 = useProduct2? (conf2? conf2.id : (partner.name||'').trim()) : undefined
-                              const collId2 = (!useProduct2 && conf2 && conf2.kind==='collection')? conf2.id : undefined
                               const mergedOrders: number[] = []
                               for(const d of days){
                                 const start = d.date; const end = d.date
-                                let o1 = 0, o2 = 0
+                                let o1 = 0
                                 try{
                                   if(prodId1){
                                     const oc = await shopifyOrdersCountByTitle({ names: [prodId1], start, end, include_closed: true, date_field: 'processed' })
@@ -1032,16 +1019,7 @@ export default function AdsManagementPage(){
                                     o1 = Number(((oc as any)?.data||{})?.count ?? 0)
                                   }
                                 }catch{}
-                                try{
-                                  if(prodId2){
-                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId2], start, end, include_closed: true, date_field: 'processed' })
-                                    o2 = Number(((oc as any)?.data||{})[prodId2] ?? 0)
-                                  }else if(collId2){
-                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId2, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                    o2 = Number(((oc as any)?.data||{})?.count ?? 0)
-                                  }
-                                }catch{}
-                                mergedOrders.push((o1||0)+(o2||0))
+                                mergedOrders.push((o1||0))
                               }
                               setPerfOrders(mergedOrders)
                             }else{
