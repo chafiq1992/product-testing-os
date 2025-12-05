@@ -312,10 +312,10 @@ export async function campaignMetaList(store?: string){
   if(s) params.push(`store=${encodeURIComponent(s)}`)
   const q = params.length? `?${params.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/campaign_meta${q}`)
-  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
+  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
 }
 
-export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, store?: string }){
+export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/campaign_meta`, body)
   return data as { data?: { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }

@@ -58,7 +58,7 @@ export default function AdsManagementPage(){
   const [groupNotes, setGroupNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes')||'{}') }catch{ return {} }
   })
-  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, timeline?:Array<{text:string, at:string}> }>>({})
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?:Array<{text:string, at:string}> }>>({})
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
