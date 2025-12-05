@@ -537,7 +537,8 @@ async def api_list_campaign_mappings(store: str | None = None):
 class CampaignMetaUpsertRequest(BaseModel):
     campaign_key: str
     supplier_name: Optional[str] = None
-    supplier_alt_name: Optional[str] = None
+    supplier_alt_name: Optional[str] = None  # legacy
+    supply_available: Optional[str] = None   # new
     store: Optional[str] = None
 
 
@@ -552,6 +553,8 @@ async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
             patch["supplier_name"] = req.supplier_name
         if isinstance(req.supplier_alt_name, str):
             patch["supplier_alt_name"] = req.supplier_alt_name
+        if isinstance(req.supply_available, str):
+            patch["supply_available"] = req.supply_available
         data = db.set_campaign_meta(req.store, key, patch)
         return {"data": data}
     except Exception as e:

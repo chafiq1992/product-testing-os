@@ -393,7 +393,9 @@ export default function AdsManagementPage(){
     if(!pid) return null
     const brief = productBriefs[pid]
     if(!brief) return null
-    return typeof brief.zero_variants==='number'? brief.zero_variants : null
+    // Prefer size-level zero count if available; fallback to variant-level
+    if(typeof (brief as any).zero_sizes === 'number') return Number((brief as any).zero_sizes||0)
+    return typeof brief.zero_variants==='number'? Number(brief.zero_variants||0) : null
   }
   function getTrueCpp(row: MetaCampaignRow){
     const orders = getOrders(row)
@@ -682,7 +684,7 @@ export default function AdsManagementPage(){
                   <span>Supplier</span>
                 </th>
                 <th className="px-3 py-2 font-semibold">
-                  <span>Supplier 2</span>
+                  <span>Supply available</span>
                 </th>
                 <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
                   <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
@@ -807,12 +809,12 @@ export default function AdsManagementPage(){
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
                         const s1 = (meta.supplier_name||'').trim()
-                        const s2 = (meta.supplier_alt_name||'').trim()
+                        const s2 = (meta.supply_available||meta.supplier_alt_name||'').trim()
                         if(!s1 && !s2) return null
                         return (
                           <div className="mt-1 text-xs text-slate-500">
                             {s1? <span className="mr-2">Supplier: <span className="font-medium text-slate-700">{s1}</span></span> : null}
-                            {s2? <span>Supplier 2: <span className="font-medium text-slate-700">{s2}</span></span> : null}
+                            {s2? <span>Supply available: <span className="font-medium text-slate-700">{s2}</span></span> : null}
                           </div>
                         )
                       })()}
@@ -977,15 +979,15 @@ export default function AdsManagementPage(){
                             value={meta.supplier_alt_name || ''}
                             onChange={(e)=>{
                               const v = e.target.value
-                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_alt_name: v } }))
+                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_alt_name: v, supply_available: v } }))
                             }}
                             onBlur={async(e)=>{
                               const v = e.target.value
                               try{
-                                await campaignMetaUpsert({ campaign_key: rk, supplier_alt_name: v, store })
+                                await campaignMetaUpsert({ campaign_key: rk, supply_available: v, store })
                               }catch{}
                             }}
-                            placeholder="Supplier name"
+                            placeholder="Supply available"
                             className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
                           />
                         )

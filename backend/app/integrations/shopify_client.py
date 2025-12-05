@@ -1127,19 +1127,23 @@ def _product_first_image_url(numeric_product_id: str, *, store: str | None = Non
 
 
 def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> dict:
-    """Return a brief for a product: image, total_available, zero_variants.
+    """Return a brief for a product: image, total_available, zero_variants, zero_sizes.
 
     - Sums inventory across all inventory levels per variant
     - Counts how many variants have 0 available
+    - Counts how many sizes have all color variants at 0 or less
     - Picks the first product image as thumbnail
     """
     total_available = 0
     zero_variants = 0
+    zero_sizes = 0
     try:
         variants = _list_variants(numeric_product_id, store=store)
     except Exception:
         variants = []
     inv_map: dict[str, int] = {}
+    # Track per-size inventory across variants (assumes option1 is Size)
+    size_to_avails: dict[str, list[int]] = {}
     # Collect inventory_item_ids
     inv_ids: list[str] = []
     for v in variants or []:
@@ -1174,10 +1178,25 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
             total_available += max(0, int(avail))
             if int(avail) <= 0:
                 zero_variants += 1
+            # Aggregate by size (prefer option1 as size)
+            try:
+                size = str((v or {}).get("option1") or "").strip()
+                if not size:
+                    size = "Default"
+                if size not in size_to_avails:
+                    size_to_avails[size] = []
+                size_to_avails[size].append(int(avail))
+            except Exception:
+                pass
         except Exception:
             continue
+    # Count zero sizes: all color variants for that size have <= 0
+    try:
+        zero_sizes = sum(1 for sz, avs in size_to_avails.items() if all((int(a) <= 0) for a in (avs or [0])))
+    except Exception:
+        zero_sizes = 0
     image = _product_first_image_url(numeric_product_id, store=store)
-    return {"image": image, "total_available": total_available, "zero_variants": zero_variants}
+    return {"image": image, "total_available": total_available, "zero_variants": zero_variants, "zero_sizes": zero_sizes}
 
 
 def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
@@ -1186,7 +1205,7 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
         try:
             out[pid] = get_product_brief(str(pid), store=store)
         except Exception:
-            out[pid] = {"image": None, "total_available": 0, "zero_variants": 0}
+            out[pid] = {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0}
     return out
 
 
