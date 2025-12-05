@@ -809,7 +809,8 @@ export default function AdsManagementPage(){
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
                         const s1 = (meta.supplier_name||'').trim()
-                        const s2 = (meta.supply_available||meta.supplier_alt_name||'').trim()
+                        const s2raw = String(meta.supply_available||meta.supplier_alt_name||'').trim().toLowerCase()
+                        const s2 = s2raw ? (['yes','y','true','1'].includes(s2raw)? 'Yes' : 'No') : ''
                         if(!s1 && !s2) return null
                         return (
                           <div className="mt-1 text-xs text-slate-500">
@@ -974,22 +975,20 @@ export default function AdsManagementPage(){
                       {(()=>{
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
+                        const raw = String(meta.supply_available || meta.supplier_alt_name || '').trim().toLowerCase()
+                        const isYes = raw==='yes' || raw==='y' || raw==='true' || raw==='1'
+                        const label = isYes? 'Yes' : 'No'
+                        const classes = isYes? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-rose-100 text-rose-700 border border-rose-200'
                         return (
-                          <input
-                            value={meta.supplier_alt_name || ''}
-                            onChange={(e)=>{
-                              const v = e.target.value
-                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_alt_name: v, supply_available: v } }))
+                          <button
+                            onClick={async()=>{
+                              const next = isYes? 'no' : 'yes'
+                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supply_available: next, supplier_alt_name: next } }))
+                              try{ await campaignMetaUpsert({ campaign_key: rk, supply_available: next, store }) }catch{}
                             }}
-                            onBlur={async(e)=>{
-                              const v = e.target.value
-                              try{
-                                await campaignMetaUpsert({ campaign_key: rk, supply_available: v, store })
-                              }catch{}
-                            }}
-                            placeholder="Supply available"
-                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
-                          />
+                            className={`px-2 py-0.5 rounded text-xs ${classes}`}
+                            title="Toggle supply availability"
+                          >{label}</button>
                         )
                       })()}
                     </td>

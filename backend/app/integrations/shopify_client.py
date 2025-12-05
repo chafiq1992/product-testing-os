@@ -1137,6 +1137,35 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
     total_available = 0
     zero_variants = 0
     zero_sizes = 0
+    image = None
+    size_option_index = 1  # default to option1
+    try:
+        # Fetch product once to determine options (to identify which option is Size) and first image
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        p = (pdata or {}).get("product") or {}
+        # First image
+        try:
+            imgs = (p.get("images") or [])
+            if imgs:
+                image = (imgs[0] or {}).get("src")
+        except Exception:
+            image = None
+        # Determine which option represents size
+        try:
+            opts = p.get("options") or []
+            for idx, opt in enumerate(opts, start=1):
+                try:
+                    name = str((opt or {}).get("name") or "").strip().lower()
+                    if name == "size" or "size" in name:
+                        size_option_index = idx  # 1..3
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            size_option_index = 1
+    except Exception:
+        image = None
+        size_option_index = 1
     try:
         variants = _list_variants(numeric_product_id, store=store)
     except Exception:
@@ -1180,7 +1209,13 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
                 zero_variants += 1
             # Aggregate by size (prefer option1 as size)
             try:
-                size = str((v or {}).get("option1") or "").strip()
+                # Select size value from the detected option index
+                if size_option_index == 1:
+                    size = str((v or {}).get("option1") or "").strip()
+                elif size_option_index == 2:
+                    size = str((v or {}).get("option2") or "").strip()
+                else:
+                    size = str((v or {}).get("option3") or "").strip()
                 if not size:
                     size = "Default"
                 if size not in size_to_avails:
@@ -1195,7 +1230,6 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
         zero_sizes = sum(1 for sz, avs in size_to_avails.items() if all((int(a) <= 0) for a in (avs or [0])))
     except Exception:
         zero_sizes = 0
-    image = _product_first_image_url(numeric_product_id, store=store)
     return {"image": image, "total_available": total_available, "zero_variants": zero_variants, "zero_sizes": zero_sizes}
 
 
