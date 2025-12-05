@@ -1199,6 +1199,58 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
                         continue
             except Exception:
                 continue
+    # Heuristic: if we couldn't confidently find the size option by name,
+    # infer it from variant values (numeric/S|M|L|XL-like values).
+    try:
+        # Build unique sets for each option
+        vals1 = set()
+        vals2 = set()
+        vals3 = set()
+        for v in variants or []:
+            try:
+                a = str((v or {}).get("option1") or "").strip().lower()
+                b = str((v or {}).get("option2") or "").strip().lower()
+                c = str((v or {}).get("option3") or "").strip().lower()
+                if a: vals1.add(a)
+                if b: vals2.add(b)
+                if c: vals3.add(c)
+            except Exception:
+                continue
+        def _is_size_like(s: str) -> bool:
+            if not s:
+                return False
+            t = s.strip().lower()
+            common = {"xxs","xs","s","m","l","xl","xxl","xxxl","os","one size","2t","3t","4t","5t","6t","7t"}
+            if t in common:
+                return True
+            # numeric-like (includes decimals or slash sizes)
+            import re
+            return bool(re.match(r"^\\d+(?:[./-]\\d+)?$", t))
+        def _score(values: set[str]) -> float:
+            if not values:
+                return 0.0
+            try:
+                good = sum(1 for x in values if _is_size_like(x))
+                return good / max(1, len(values))
+            except Exception:
+                return 0.0
+        scores = [
+            (1, _score(vals1), len(vals1)),
+            (2, _score(vals2), len(vals2)),
+            (3, _score(vals3), len(vals3)),
+        ]
+        # Prefer highest score; tie-break by larger unique count; final fallback keep previous
+        best = max(scores, key=lambda x: (x[1], x[2]))
+        if best[1] >= 0.5 and best[2] > 0:
+            size_option_index = best[0]
+        elif all(s[1] == 0 for s in scores):
+            # No size-like axis detected; pick axis with largest unique count (>1) to avoid over-counting
+            largest = max(scores, key=lambda x: x[2])
+            if largest[2] > 1:
+                size_option_index = largest[0]
+    except Exception:
+        pass
+
     # Compute totals per variant
     for v in variants or []:
         try:
