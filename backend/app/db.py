@@ -382,6 +382,85 @@ def set_app_setting(store: str | None, key: str, value: Any) -> Any:
             return item.value
 
 
+def list_campaign_meta(store: str | None = None) -> Dict[str, dict]:
+    """Return dict keyed by campaign_key: { campaign_key: { supplier_name?, supplier_alt_name?, timeline?: [{text, at}] } }"""
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like("campaign_meta:%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.all()
+        out: Dict[str, dict] = {}
+        for r in rows:
+            try:
+                key = r.key or ""
+                if key.startswith("campaign_meta:"):
+                    ck = key.split("campaign_meta:", 1)[1]
+                else:
+                    continue
+                val: dict
+                try:
+                    val = json.loads(r.value) if r.value else {}
+                except Exception:
+                    val = {}
+                out[ck] = val or {}
+            except Exception:
+                continue
+        return out
+
+
+def set_campaign_meta(store: str | None, campaign_key: str, patch: Dict[str, Any]) -> dict:
+    """Upsert campaign meta by merging patch into existing JSON stored in AppSetting under key campaign_meta:{campaign_key}."""
+    if not isinstance(campaign_key, str) or not campaign_key.strip():
+        return {}
+    key = f"campaign_meta:{campaign_key.strip()}"
+    # Load existing
+    try:
+        existing = get_app_setting(store, key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+    except Exception:
+        existing = {}
+    # Merge shallow
+    data = dict(existing)
+    for k, v in (patch or {}).items():
+        # Only allow specific fields
+        if k in ("supplier_name", "supplier_alt_name", "timeline"):
+            data[k] = v
+    saved = set_app_setting(store, key, data)
+    try:
+        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
+    except Exception:
+        return {}
+
+
+def append_campaign_timeline(store: str | None, campaign_key: str, text: str) -> dict:
+    """Append a timeline note to campaign meta; returns updated meta dict."""
+    if not isinstance(campaign_key, str) or not campaign_key.strip():
+        return {}
+    key = f"campaign_meta:{campaign_key.strip()}"
+    # Load existing
+    try:
+        existing = get_app_setting(store, key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+    except Exception:
+        existing = {}
+    timeline = []
+    try:
+        tl = existing.get("timeline")
+        if isinstance(tl, list):
+            timeline = list(tl)
+    except Exception:
+        timeline = []
+    note = {"text": str(text or ""), "at": _now().isoformat() + "Z"}
+    timeline.append(note)
+    existing["timeline"] = timeline
+    saved = set_app_setting(store, key, existing)
+    try:
+        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
+    except Exception:
+        return {}
+
 def upsert_campaign_mapping(store: str | None, campaign_key: str, kind: str, target_id: str) -> dict:
     with SessionLocal() as session:
         pk = _mk_pk(store, campaign_key)

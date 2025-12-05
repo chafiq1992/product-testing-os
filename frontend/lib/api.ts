@@ -305,6 +305,28 @@ export async function campaignMappingUpsert(payload:{ campaign_key:string, kind:
   return data as { data?: { store?:string, campaign_key:string, kind:'product'|'collection', id:string }, error?: string }
 }
 
+// Campaign meta (supplier fields + timeline)
+export async function campaignMetaList(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/campaign_meta${q}`)
+  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
+}
+
+export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign_meta`, body)
+  return data as { data?: { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }
+}
+
+export async function campaignTimelineAdd(payload:{ campaign_key:string, text:string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign_meta/timeline`, body)
+  return data as { data?: { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }
+}
+
 // Gemini image generation (ad image from source image + prompt)
 export async function geminiGenerateAdImages(payload:{ image_url:string, prompt:string, num_images?:number, neutral_background?: boolean }){
   const {data} = await axios.post(`${base}/api/gemini/ad_image`, payload)

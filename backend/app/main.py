@@ -533,6 +533,58 @@ async def api_list_campaign_mappings(store: str | None = None):
         return {"error": str(e), "data": {}}
 
 
+# -------- Campaign Meta (supplier fields + timeline, stored in AppSetting) --------
+class CampaignMetaUpsertRequest(BaseModel):
+    campaign_key: str
+    supplier_name: Optional[str] = None
+    supplier_alt_name: Optional[str] = None
+    store: Optional[str] = None
+
+
+@app.post("/api/campaign_meta")
+async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
+    try:
+        key = (req.campaign_key or "").strip()
+        if not key:
+            return {"error": "missing_campaign_key"}
+        patch: Dict[str, Any] = {}
+        if isinstance(req.supplier_name, str):
+            patch["supplier_name"] = req.supplier_name
+        if isinstance(req.supplier_alt_name, str):
+            patch["supplier_alt_name"] = req.supplier_alt_name
+        data = db.set_campaign_meta(req.store, key, patch)
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign_meta")
+async def api_list_campaign_meta(store: str | None = None):
+    try:
+        items = db.list_campaign_meta(store)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+class CampaignTimelineAddRequest(BaseModel):
+    campaign_key: str
+    text: str
+    store: Optional[str] = None
+
+
+@app.post("/api/campaign_meta/timeline")
+async def api_campaign_timeline_add(req: CampaignTimelineAddRequest):
+    try:
+        key = (req.campaign_key or "").strip()
+        if not key or not isinstance(req.text, str) or not req.text.strip():
+            return {"error": "invalid_input"}
+        data = db.append_campaign_timeline(req.store, key, req.text)
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 class OrdersCountByCollectionRequest(BaseModel):
     collection_id: str
     start: str

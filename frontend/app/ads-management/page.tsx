@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd } from '@/lib/api'
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -58,6 +58,10 @@ export default function AdsManagementPage(){
   const [groupNotes, setGroupNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes')||'{}') }catch{ return {} }
   })
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, timeline?:Array<{text:string, at:string}> }>>({})
+  const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
+  const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
+  const [timelineDraft, setTimelineDraft] = useState<string>('')
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -342,6 +346,15 @@ export default function AdsManagementPage(){
       }
     }
     loadMappings()
+    const loadMeta = async ()=>{
+      try{
+        const res = await campaignMetaList(store)
+        setCampaignMeta(((res as any)?.data)||{})
+      }catch{
+        setCampaignMeta({})
+      }
+    }
+    loadMeta()
   }, [store])
 
   function getId(row: MetaCampaignRow){
@@ -665,6 +678,12 @@ export default function AdsManagementPage(){
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
+                <th className="px-3 py-2 font-semibold">
+                  <span>Supplier</span>
+                </th>
+                <th className="px-3 py-2 font-semibold">
+                  <span>Supplier 2</span>
+                </th>
                 <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
                   <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
                     <span>Inventory</span>
@@ -684,12 +703,12 @@ export default function AdsManagementPage(){
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={12} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={17} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={12} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={17} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && sortedItems.map((c)=>{
@@ -784,6 +803,19 @@ export default function AdsManagementPage(){
                         >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>
                         <span>{c.name||'-'}</span>
                       </div>
+                      {(()=>{
+                        const rk = String(rowKey)
+                        const meta = (campaignMeta as any)[rk] || {}
+                        const s1 = (meta.supplier_name||'').trim()
+                        const s2 = (meta.supplier_alt_name||'').trim()
+                        if(!s1 && !s2) return null
+                        return (
+                          <div className="mt-1 text-xs text-slate-500">
+                            {s1? <span className="mr-2">Supplier: <span className="font-medium text-slate-700">{s1}</span></span> : null}
+                            {s2? <span>Supplier 2: <span className="font-medium text-slate-700">{s2}</span></span> : null}
+                          </div>
+                        )
+                      })()}
                       <div className="mt-1 flex items-center gap-1">
                         {(()=>{
                           const rk = (c.campaign_id || c.name || '') as any
@@ -913,6 +945,52 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                    <td className="px-3 py-2">
+                      {(()=>{
+                        const rk = String(rowKey)
+                        const meta = (campaignMeta as any)[rk] || {}
+                        return (
+                          <input
+                            value={meta.supplier_name || ''}
+                            onChange={(e)=>{
+                              const v = e.target.value
+                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_name: v } }))
+                            }}
+                            onBlur={async(e)=>{
+                              const v = e.target.value
+                              try{
+                                await campaignMetaUpsert({ campaign_key: rk, supplier_name: v, store })
+                              }catch{}
+                            }}
+                            placeholder="Supplier name"
+                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                          />
+                        )
+                      })()}
+                    </td>
+                    <td className="px-3 py-2">
+                      {(()=>{
+                        const rk = String(rowKey)
+                        const meta = (campaignMeta as any)[rk] || {}
+                        return (
+                          <input
+                            value={meta.supplier_alt_name || ''}
+                            onChange={(e)=>{
+                              const v = e.target.value
+                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_alt_name: v } }))
+                            }}
+                            onBlur={async(e)=>{
+                              const v = e.target.value
+                              try{
+                                await campaignMetaUpsert({ campaign_key: rk, supplier_alt_name: v, store })
+                              }catch{}
+                            }}
+                            placeholder="Supplier name"
+                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                          />
+                        )
+                      })()}
+                    </td>
                     <td className="px-3 py-2 text-right">
                       {hasAnyPid ? (
                         inv===null || inv===undefined ? (
@@ -1060,6 +1138,13 @@ export default function AdsManagementPage(){
                         }}
                         className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                       >Performance</button>
+                      <button
+                        onClick={()=>{
+                          setTimelineDraft('')
+                          setTimelineOpen({ open: true, campaign: { id: String(c.campaign_id||''), name: c.name||'' } })
+                        }}
+                        className="ml-2 px-2 py-1 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
+                      >Timeline</button>
                       {partnerKey && (
                         <button
                           onClick={()=> unmergeKey(String(rowKey))}
@@ -1071,7 +1156,7 @@ export default function AdsManagementPage(){
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 15
+                    const colSpan = 17
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -1237,6 +1322,96 @@ export default function AdsManagementPage(){
         </div>
       </div>
       <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
+      <TimelineModal
+        open={timelineOpen.open}
+        onClose={()=> setTimelineOpen({ open:false })}
+        campaign={timelineOpen.campaign||null}
+        meta={(timelineOpen.campaign && campaignMeta[String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')]) || undefined}
+        draft={timelineDraft}
+        setDraft={setTimelineDraft}
+        adding={timelineAdding}
+        onAdd={async(text:string)=>{
+          if(!timelineOpen.campaign) return
+          const ck = String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')
+          try{
+            setTimelineAdding(true)
+            await campaignTimelineAdd({ campaign_key: ck, text, store })
+            setTimelineDraft('')
+            // Refresh meta mapping
+            try{
+              const res = await campaignMetaList(store)
+              setCampaignMeta(((res as any)?.data)||{})
+            }catch{}
+          }finally{
+            setTimelineAdding(false)
+          }
+        }}
+      />
+    </div>
+  )
+}
+
+// Timeline Modal
+function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void }){
+  if(!open) return null
+  const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(a.at||'').localeCompare(String(b.at||'')))
+  function fmtDelta(prev:string|undefined, cur:string){
+    if(!prev) return '—'
+    try{
+      const pa = new Date(prev).getTime()
+      const ca = new Date(cur).getTime()
+      let ms = Math.max(0, ca - pa)
+      const days = Math.floor(ms / (24*3600*1000)); ms -= days*(24*3600*1000)
+      const hours = Math.floor(ms / (3600*1000)); ms -= hours*(3600*1000)
+      const mins = Math.floor(ms / (60*1000))
+      const parts:string[] = []
+      if(days) parts.push(`${days}d`)
+      if(hours) parts.push(`${hours}h`)
+      parts.push(`${mins}m`)
+      return parts.join(' ')
+    }catch{ return '—' }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white rounded-lg shadow-xl w-[92vw] max-w-2xl max-h-[90vh] overflow-auto">
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="font-semibold text-lg">Timeline · {campaign?.name||campaign?.id}</div>
+          <button onClick={onClose} className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">Close</button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <input
+              value={draft}
+              onChange={(e)=> setDraft(e.target.value)}
+              placeholder="Add a note"
+              className="flex-1 rounded-md border px-3 py-2 text-sm bg-white"
+            />
+            <button
+              onClick={async()=>{ if(draft.trim()){ await onAdd(draft.trim()) } }}
+              disabled={adding || !draft.trim()}
+              className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-60"
+            >{adding? 'Adding…' : 'Add'}</button>
+          </div>
+          <div className="space-y-3">
+            {entries.map((e, idx)=> {
+              const prev = idx>0? entries[idx-1] : undefined
+              return (
+                <div key={String(e.at||idx)} className="border rounded p-3 bg-slate-50">
+                  <div className="text-xs text-slate-500 flex items-center justify-between">
+                    <span>{String(e.at||'').replace('T',' ').replace('Z','')}</span>
+                    <span className="font-mono">{fmtDelta(prev?.at, e.at||'')}</span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-800 whitespace-pre-wrap">{e.text||''}</div>
+                </div>
+              )
+            })}
+            {entries.length===0 && (
+              <div className="text-sm text-slate-500">No notes yet.</div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
