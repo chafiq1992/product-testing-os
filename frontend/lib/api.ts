@@ -540,9 +540,10 @@ export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAU
   return data as { data?: any, error?: string }
 }
 
-export async function fetchCampaignPerformance(campaign_id: string, days?: number){
+export async function fetchCampaignPerformance(campaign_id: string, days?: number, tz?: string){
   const parts: string[] = []
   if(typeof days==='number') parts.push(`days=${days}`)
+  if(tz) parts.push(`tz=${encodeURIComponent(tz)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/performance${qp}`)
   return data as { data: { days: { date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }[] }, error?: string }

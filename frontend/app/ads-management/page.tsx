@@ -62,6 +62,9 @@ export default function AdsManagementPage(){
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
+  const browserTz = useMemo(()=> {
+    try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined }catch{ return undefined }
+  }, [])
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -1058,8 +1061,8 @@ export default function AdsManagementPage(){
                               // Merged performance view: sum days and orders
                               const cid2 = String(partner.campaign_id||'')
                               const [res1, res2] = await Promise.all([
-                                fetchCampaignPerformance(cid, 6),
-                                fetchCampaignPerformance(cid2, 6)
+                                fetchCampaignPerformance(cid, 6, browserTz),
+                                fetchCampaignPerformance(cid2, 6, browserTz)
                               ])
                               const d1 = ((((res1 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
                               const d2 = ((((res2 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
@@ -1104,7 +1107,7 @@ export default function AdsManagementPage(){
                             }else{
                               if(!cid) return
                               setPerfCampaign({ id: cid, name: c.name||'' })
-                              const res = await fetchCampaignPerformance(cid, 6)
+                              const res = await fetchCampaignPerformance(cid, 6, browserTz)
                               const days = (((res as any)?.data||{}).days)||[]
                               setPerfMetrics(days)
                               // Load Shopify orders per day based on mapping or numeric id

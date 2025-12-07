@@ -1727,10 +1727,10 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/performance")
-async def api_campaign_performance(campaign_id: str, days: int | None = 6):
+async def api_campaign_performance(campaign_id: str, days: int | None = 6, tz: str | None = None):
     try:
         n = int(days or 6)
-        items = campaign_daily_insights(campaign_id, n)
+        items = campaign_daily_insights(campaign_id, n, tz)
         return {"data": {"days": items}}
     except Exception as e:
         return {"error": str(e), "data": {"days": []}}

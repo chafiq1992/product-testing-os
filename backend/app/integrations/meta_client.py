@@ -1,5 +1,6 @@
 import os, json, requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
@@ -117,6 +118,19 @@ def _action_count(actions: list | None, candidates: list[str]) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _today_in_tz(tz_name: str | None):
+    """Return today's date in the given timezone, falling back gracefully."""
+    try:
+        if tz_name:
+            return datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        pass
+    try:
+        return datetime.now().astimezone().date()
+    except Exception:
+        return datetime.utcnow().date()
 
 
 # -------- Ad Account helpers --------
@@ -269,17 +283,17 @@ def set_adset_status(adset_id: str, status: str) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def campaign_daily_insights(campaign_id: str, days: int = 6) -> list[dict]:
-    """Return daily insights for a campaign over the last N days (inclusive of today)."""
+def campaign_daily_insights(campaign_id: str, days: int = 6, tz: str | None = None) -> list[dict]:
+    """Return daily insights for a campaign over the last N days (inclusive of today) in the provided timezone."""
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     try:
         n = max(1, min(int(days or 6), 30))
     except Exception:
         n = 6
-    # Exclude current day; compute inclusive range ending yesterday
-    today = datetime.utcnow().date()
-    until = today - timedelta(days=1)
+    # Compute bounds in caller timezone to avoid off-by-one after midnight
+    today = _today_in_tz(tz)
+    until = today
     since = until - timedelta(days=n-1)
     time_range = {"since": since.isoformat(), "until": until.isoformat()}
     params = {
