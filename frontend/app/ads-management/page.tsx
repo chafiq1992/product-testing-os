@@ -7,6 +7,7 @@ import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, sh
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
+  const loadSeqToken = useRef(0)
   const [datePreset, setDatePreset] = useState<string>('last_7d_incl_today')
   const [customStart, setCustomStart] = useState<string>('')
   const [customEnd, setCustomEnd] = useState<string>('')
@@ -181,12 +182,21 @@ export default function AdsManagementPage(){
     return { range: { start, end } }
   }
 
-  async function load(preset?: string){
+  function effectiveYmdRange(preset: string){
+    if(preset==='custom' && customStart && customEnd) return { start: customStart, end: customEnd }
+    return computeRange(preset)
+  }
+
+  async function load(preset?: string, opts?: { store?: string, adAccount?: string }){
+    const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
       const effPreset = preset||datePreset
+      const effStore = opts?.store ?? store
+      const effAdAccount = opts?.adAccount ?? adAccount
       const metaParams = metaRangeParams(effPreset)
-      const res = await fetchMetaCampaigns(metaParams.datePreset, adAccount||undefined, metaParams.range)
+      const res = await fetchMetaCampaigns(metaParams.datePreset, effAdAccount||undefined, metaParams.range)
+      if(loadToken !== loadSeqToken.current) return
       if((res as any)?.error){ setError(String((res as any).error)); setItems([]) }
       else setItems((res as any)?.data||[])
       // Reset counts and start lazy sequential fetching after table is visible
@@ -204,15 +214,15 @@ export default function AdsManagementPage(){
       setAdsetOrdersByCampaign({})
       setAdsetOrdersLoading({})
       setAdsetOrdersExpanded({})
-      const token = ++ordersSeqToken.current
+      const ordersToken = ++ordersSeqToken.current
       // Fetch store-wide orders total for the same range
       try{
-        const { start, end } = (effPreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(effPreset)
-        const resTotal = await shopifyOrdersCountTotal({ start, end, store, include_closed: true, date_field: 'processed' }) as any
+        const { start, end } = effectiveYmdRange(effPreset)
+        const resTotal = await shopifyOrdersCountTotal({ start, end, store: effStore, include_closed: true, date_field: 'processed' }) as any
         setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
       }catch{ setStoreOrdersTotal(0) }
       setTimeout(async ()=>{
-        if(token !== ordersSeqToken.current) return
+        if(ordersToken !== ordersSeqToken.current) return
         const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
         // Build product ID list from numeric in name OR manual product mappings
         const idSet: Record<string, true> = {}
@@ -230,48 +240,50 @@ export default function AdsManagementPage(){
         if(!ids.length) return
         // Fetch product briefs (image + inventory) in batch for speed
         try{
-          const pb = await shopifyProductsBrief({ ids, store })
+          const pb = await shopifyProductsBrief({ ids, store: effStore })
           setProductBriefs(((pb as any)?.data)||{})
         }catch{
           setProductBriefs({})
         }
-        const { start, end } = (effPreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(effPreset)
-        for(const id of ids){
-          if(token !== ordersSeqToken.current) break
-          try{
-            const oc = await shopifyOrdersCountByTitle({ names: [id], start, end, include_closed: true })
-            const count = ((oc as any)?.data||{})[id] ?? 0
-            setShopifyCounts(prev=> ({ ...prev, [id]: count }))
-          }catch{
-            setShopifyCounts(prev=> ({ ...prev, [id]: 0 }))
-          }
-          await new Promise(r=> setTimeout(r, 50))
+        const { start, end } = effectiveYmdRange(effPreset)
+        // Batch fetch Shopify order counts (huge speedup vs per-ID loop)
+        let countsById: Record<string, number> = {}
+        try{
+          const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'processed' })
+          const map = ((oc as any)?.data)||{}
+          const next: Record<string, number> = {}
+          for(const id of ids) next[id] = Number(map[id] ?? 0) || 0
+          countsById = next
+          setShopifyCounts(next)
+        }catch{
+          const next: Record<string, number> = {}
+          for(const id of ids) next[id] = 0
+          countsById = next
+          setShopifyCounts(next)
         }
         // Also fetch manual IDs (for rows whose campaign name is not numeric)
         for(const row of rows){
-          if(token !== ordersSeqToken.current) break
+          if(ordersToken !== ordersSeqToken.current) break
           const rowKey = (row.campaign_id || row.name || '') as any
           try{
             const conf = (manualIds as any)[rowKey]
             if(!conf) continue
             if(!conf.id || !/^\d+$/.test(conf.id)) continue
             if(conf.kind==='product'){
-              const oc = await shopifyOrdersCountByTitle({ names: [conf.id], start, end, include_closed: true })
-              const count = ((oc as any)?.data||{})[conf.id] ?? 0
+              const count = Number(countsById[conf.id] ?? 0) || 0
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }else{
-              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
+              const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: effStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
               const count = Number(((oc as any)?.data||{})?.count ?? 0)
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }
           }catch{
             setManualCounts(prev=> ({ ...prev, [String(rowKey)]: 0 }))
           }
-          await new Promise(r=> setTimeout(r, 50))
         }
       }, 0)
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
-    finally{ setLoading(false) }
+    finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
   }
 
   async function loadCollectionChildren(rowKey: any, collectionId: string){
@@ -280,9 +292,9 @@ export default function AdsManagementPage(){
       const { data } = await shopifyCollectionProducts({ collection_id: collectionId, store }) as any
       const ids: string[] = ((data||{}).product_ids)||[]
       setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
-      const { start, end } = computeRange(datePreset)
+      const { start, end } = effectiveYmdRange(datePreset)
       try{
-        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: false, date_field: 'processed' })
+        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'processed' })
         const map = ((oc as any)?.data)||{}
         setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
         // Update collection total to match sum of children
@@ -306,18 +318,6 @@ export default function AdsManagementPage(){
     load(datePreset)
   },[])
   useEffect(()=>{
-    // Load saved ad account for this store and display name
-    const loadAdAccount = async () => {
-      try{
-        const res = await metaGetAdAccount(store)
-        const conf = (res as any)?.data||{}
-        if(conf && conf.id){
-          setAdAccount(String(conf.id||''))
-          try{ localStorage.setItem('ptos_ad_account', String(conf.id||'')) }catch{}
-        }
-        if(conf && conf.name){ setAdAccountName(String(conf.name||'')) } else { setAdAccountName('') }
-      }catch{ setAdAccountName('') }
-    }
     const loadAccounts = async () => {
       try{
         const res = await metaListAdAccounts()
@@ -332,8 +332,6 @@ export default function AdsManagementPage(){
         setAdAccounts(Object.values(byId))
       }catch{ setAdAccounts([]) }
     }
-    loadAdAccount()
-    loadAccounts()
     const loadMappings = async () => {
       try{
         const res = await campaignMappingsList(store)
@@ -348,7 +346,6 @@ export default function AdsManagementPage(){
         // ignore
       }
     }
-    loadMappings()
     const loadMeta = async ()=>{
       try{
         const res = await campaignMetaList(store)
@@ -357,7 +354,34 @@ export default function AdsManagementPage(){
         setCampaignMeta({})
       }
     }
-    loadMeta()
+    let cancelled = false
+    ;(async()=>{
+      // Kick off parallel loads that don't need to block UI
+      loadAccounts()
+      await Promise.allSettled([loadMappings(), loadMeta()])
+      // Load store-scoped default ad account and then refresh campaigns using that exact value
+      try{
+        const res = await metaGetAdAccount(store)
+        if(cancelled) return
+        const conf = (res as any)?.data||{}
+        const nextId = conf && conf.id ? String(conf.id||'') : ''
+        const nextName = conf && conf.name ? String(conf.name||'') : ''
+        if(nextId){
+          setAdAccount(nextId)
+          try{ localStorage.setItem('ptos_ad_account', nextId) }catch{}
+        }else{
+          setAdAccount('')
+          try{ localStorage.setItem('ptos_ad_account', '') }catch{}
+        }
+        setAdAccountName(nextName || '')
+        load(undefined, { store, adAccount: nextId || undefined })
+      }catch{
+        if(cancelled) return
+        setAdAccountName('')
+        load(undefined, { store, adAccount })
+      }
+    })()
+    return ()=>{ cancelled = true }
   }, [store])
 
   function getId(row: MetaCampaignRow){
@@ -515,12 +539,12 @@ export default function AdsManagementPage(){
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
-      <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur">
+      <header className="min-h-16 py-2 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
           <h1 className="font-semibold text-lg">Ads management</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <select value={store} onChange={(e)=>{ const v=e.target.value; setStore(v); try{ localStorage.setItem('ptos_store', v) }catch{} }} className="rounded-xl border px-2 py-1 text-sm bg-white">
             <option value="irrakids">irrakids</option>
             <option value="irranova">irranova</option>
@@ -537,8 +561,10 @@ export default function AdsManagementPage(){
                   const data = (res as any)?.data||{}
                   setAdAccountName(String((data && data.name) ? data.name : (adAccounts.find(a=> a.id===v)?.name || '')))
                 }catch{}
+                // Refresh campaigns instantly when ad account changes
+                load(undefined, { adAccount: v })
               }}
-              className="rounded-xl border px-2 py-1 text-sm bg-white w-56"
+              className="rounded-xl border px-2 py-1 text-sm bg-white w-44 sm:w-56 md:w-72"
             >
               <option value="">Select ad account…</option>
               {adAccounts.map(a=> (
@@ -568,7 +594,7 @@ export default function AdsManagementPage(){
             )}
           </div>
           <button onClick={()=>load()} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
-            <RefreshCw className="w-4 h-4"/> Refresh
+            <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
           </button>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
         </div>
