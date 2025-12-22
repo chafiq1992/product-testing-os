@@ -4,6 +4,39 @@ const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 function selectedStore(){
   try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_store')||undefined) : undefined }catch{ return undefined }
 }
+function confirmationToken(){
+  try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_confirmation_token')||'') : '' }catch{ return '' }
+}
+function confirmationHeaders(){
+  const tok = confirmationToken()
+  return tok? { Authorization: `Bearer ${tok}` } : {}
+}
+
+// -------- Confirmation (Order confirmation team) --------
+export async function confirmationLogin(payload:{ email: string, password: string, remember?: boolean, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/login`, body)
+  return data as { data?: { token: string, agent: { email: string, name?: string|null } }, error?: string }
+}
+
+export async function confirmationListOrders(payload:{ store?: string, limit?: number, page_info?: string|null }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/orders`, body, { headers: { ...confirmationHeaders() } })
+  return data as { data?: { orders: any[], next_page_info?: string|null, prev_page_info?: string|null }, error?: string }
+}
+
+export async function confirmationOrderAction(payload:{ store?: string, order_id: string, action: 'phone'|'whatsapp'|'confirm', date?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/order/action`, body, { headers: { ...confirmationHeaders() } })
+  return data as { data?: { tags: string[], cod?: string }, error?: string }
+}
+
+export async function confirmationStats(payload?:{ store?: string }){
+  const store = payload?.store ?? selectedStore()
+  const qp = store? `?store=${encodeURIComponent(store)}` : ''
+  const {data} = await axios.get(`${base}/api/confirmation/stats${qp}`, { headers: { ...confirmationHeaders() } })
+  return data as { data?: Record<string, number>, error?: string }
+}
 export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string, sizes?:string[], colors?:string[] }){
   const form = new FormData()
   form.append('audience', payload.audience)

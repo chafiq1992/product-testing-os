@@ -103,6 +103,21 @@ class AppSetting(Base):
 
 Index('ix_app_settings_store_key', AppSetting.store, AppSetting.key)
 
+# ---------------- Confirmation (order confirmation team) ----------------
+class ConfirmationEvent(Base):
+    __tablename__ = "confirmation_events"
+
+    id = Column(String, primary_key=True)  # uuid
+    store = Column(String, nullable=True, index=True)
+    agent = Column(String, nullable=False, index=True)  # email/username
+    order_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # 'confirm' | 'phone' | 'whatsapp'
+    meta_json = Column(Text, nullable=True)  # optional JSON
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+Index("ix_confirmation_events_store_agent_created_at", ConfirmationEvent.store, ConfirmationEvent.agent, ConfirmationEvent.created_at)
+
 # Campaign ID mappings (persist manual product/collection IDs per campaign row)
 class CampaignMapping(Base):
     __tablename__ = "campaign_mappings"
@@ -812,3 +827,45 @@ def delete_all_agents() -> int:
         count = session.query(Agent).delete()
         session.commit()
         return int(count or 0)
+
+
+def log_confirmation_event(store: str | None, agent: str, order_id: str | int, kind: str, meta: dict | None = None) -> dict:
+    """Append an event. Intended for analytics/attribution (not access control)."""
+    from uuid import uuid4
+    a = (agent or "").strip()
+    oid = str(order_id).strip()
+    k = (kind or "").strip().lower()
+    if not a or not oid or k not in ("confirm", "phone", "whatsapp"):
+        return {"ok": False}
+    with SessionLocal() as session:
+        row = ConfirmationEvent(
+            id=str(uuid4()),
+            store=(store.strip() if isinstance(store, str) else None),
+            agent=a,
+            order_id=oid,
+            kind=k,
+            meta_json=(json.dumps(meta, ensure_ascii=False) if isinstance(meta, dict) else None),
+            created_at=_now(),
+        )
+        session.add(row)
+        session.commit()
+        return {"ok": True, "id": row.id}
+
+
+def count_confirmation_events(store: str | None = None, *, kind: str | None = None) -> dict:
+    """Return counts grouped by agent."""
+    k = (kind or "").strip().lower() if kind else None
+    with SessionLocal() as session:
+        q = session.query(ConfirmationEvent)
+        if isinstance(store, str) and store.strip():
+            q = q.filter(ConfirmationEvent.store == store.strip())
+        if k in ("confirm", "phone", "whatsapp"):
+            q = q.filter(ConfirmationEvent.kind == k)
+        rows = q.all()
+        out: dict[str, int] = {}
+        for r in rows:
+            try:
+                out[r.agent] = int(out.get(r.agent, 0)) + 1
+            except Exception:
+                continue
+        return out

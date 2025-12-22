@@ -467,6 +467,188 @@ def _parse_link_next(link: str | None) -> str | None:
     return None
 
 
+def _parse_link_rel(link: str | None, rel: str) -> str | None:
+    """Parse a page_info token from a Shopify REST Link header for the given rel (next|previous)."""
+    if not link or not rel:
+        return None
+    try:
+        rel = rel.strip().lower()
+        parts = [p.strip() for p in link.split(",")]
+        for p in parts:
+            if f'rel="{rel}"' in p:
+                seg = p.split(";")[0].strip()
+                if seg.startswith("<") and seg.endswith(">"):
+                    from urllib.parse import urlparse, parse_qs
+                    url = seg[1:-1]
+                    q = parse_qs(urlparse(url).query)
+                    return (q.get("page_info", [None]) or [None])[0]
+    except Exception:
+        return None
+    return None
+
+
+def _tags_to_list(tags: str | None) -> list[str]:
+    try:
+        if not tags:
+            return []
+        # Shopify REST returns a comma-separated string
+        out = []
+        for t in str(tags).split(","):
+            s = t.strip()
+            if s:
+                out.append(s)
+        return out
+    except Exception:
+        return []
+
+
+def _tags_to_string(tags: list[str] | None) -> str:
+    try:
+        items = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        # Shopify expects a comma-separated string
+        return ", ".join(items)
+    except Exception:
+        return ""
+
+
+def _is_cod_tag(tag: str) -> bool:
+    """Match tags like: 'cod 23/12/25' (dd/mm/yy)."""
+    try:
+        t = (tag or "").strip()
+        return bool(re.match(r"^cod\s+\d{2}/\d{2}/\d{2}$", t, flags=re.IGNORECASE))
+    except Exception:
+        return False
+
+
+def list_orders_open_unfulfilled(
+    *,
+    store: str | None = None,
+    limit: int = 50,
+    page_info: str | None = None,
+    fields: str | None = None,
+) -> dict:
+    """List newest->oldest open & unfulfilled orders using Shopify REST cursor pagination (page_info).
+
+    Returns: { orders: [...], next_page_info?, prev_page_info? }
+    """
+    from urllib.parse import urlencode
+    try:
+        limit = int(limit or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 250))
+    base_path = "/orders.json"
+    if page_info:
+        # With page_info, Shopify only allows page_info + limit (+ fields)
+        q: dict = {"page_info": str(page_info), "limit": limit}
+        if fields:
+            q["fields"] = fields
+    else:
+        q = {
+            "status": "open",
+            "fulfillment_status": "unfulfilled",
+            "limit": limit,
+            "order": "created_at desc",
+        }
+        if fields:
+            q["fields"] = fields
+    path = base_path + "?" + urlencode(q)
+    resp = _rest_get_store_raw(store, path)
+    data = resp.json() if resp.content else {}
+    orders = (data or {}).get("orders") or []
+    link = resp.headers.get("Link")
+    return {
+        "orders": orders,
+        "next_page_info": _parse_link_rel(link, "next"),
+        "prev_page_info": _parse_link_rel(link, "previous"),
+    }
+
+
+def get_order_tags(order_id: str | int, *, store: str | None = None) -> list[str]:
+    try:
+        oid = str(order_id).strip()
+        if not oid.isdigit():
+            return []
+        data = _rest_get_store(store, f"/orders/{oid}.json?fields=id,tags")
+        tags = ((data or {}).get("order") or {}).get("tags")
+        return _tags_to_list(tags)
+    except Exception:
+        return []
+
+
+def set_order_tags(order_id: str | int, tags: list[str], *, store: str | None = None) -> list[str]:
+    """Set order tags exactly to the provided list. Returns resulting list (best-effort)."""
+    oid = str(order_id).strip()
+    if not oid.isdigit():
+        return []
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in (tags or []):
+        s = str(t).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    payload = {"order": {"id": int(oid), "tags": _tags_to_string(out)}}
+    _rest_put_store(store, f"/orders/{oid}.json", payload)
+    return out
+
+
+def cycle_tag(order_id: str | int, prefix: str, *, store: str | None = None, max_n: int = 3) -> list[str]:
+    """Cycle tags like n1->n2->n3 (prefix='n') or wtp1->wtp2->wtp3 (prefix='wtp')."""
+    pfx = (prefix or "").strip()
+    if not pfx:
+        return get_order_tags(order_id, store=store)
+    try:
+        max_n = int(max_n or 3)
+    except Exception:
+        max_n = 3
+    max_n = max(1, min(max_n, 9))
+    tags = get_order_tags(order_id, store=store)
+    # Remove any existing tags for this prefix
+    current_n: int | None = None
+    keep: list[str] = []
+    for t in (tags or []):
+        if re.match(rf"^{re.escape(pfx)}\d+$", t, flags=re.IGNORECASE):
+            try:
+                current_n = int(re.sub(rf"^{re.escape(pfx)}", "", t, flags=re.IGNORECASE))
+            except Exception:
+                current_n = current_n
+            continue
+        keep.append(t)
+    if current_n is None:
+        nxt = 1
+    else:
+        nxt = min(max_n, current_n + 1)
+    keep.append(f"{pfx}{nxt}")
+    return set_order_tags(order_id, keep, store=store)
+
+
+def set_cod_tag(order_id: str | int, date_ddmmyy: str, *, store: str | None = None) -> list[str]:
+    """Set/replace cod tag to 'cod dd/mm/yy' (removes any existing cod dd/mm/yy tags first)."""
+    d = (date_ddmmyy or "").strip()
+    if not re.match(r"^\d{2}/\d{2}/\d{2}$", d):
+        raise ValueError("invalid_date_ddmmyy")
+    tags = get_order_tags(order_id, store=store)
+    keep = [t for t in (tags or []) if not _is_cod_tag(t)]
+    keep.append(f"cod {d}")
+    return set_order_tags(order_id, keep, store=store)
+
+
+def has_cod_tag(tags: str | list[str] | None) -> bool:
+    try:
+        if tags is None:
+            return False
+        if isinstance(tags, str):
+            items = _tags_to_list(tags)
+        else:
+            items = [str(x).strip() for x in (tags or [])]
+        return any(_is_cod_tag(t) for t in items)
+    except Exception:
+        return False
+
+
 def count_orders_by_product_processed(product_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count open orders filtered by processed_at date (YYYY-MM-DD) and product_id, matching Shopify Admin behavior.
 

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from uuid import uuid4
 import json, os
+import base64, hmac, hashlib
 from pathlib import Path
 from urllib.parse import quote
 
@@ -31,6 +32,7 @@ from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
 from app.integrations.shopify_client import list_orders_with_utms_processed
+from app.integrations.shopify_client import list_orders_open_unfulfilled, cycle_tag, set_cod_tag, has_cod_tag
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
@@ -621,6 +623,281 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
         return {"data": {"count": cnt}}
     except Exception as e:
         return {"error": str(e), "data": {"count": 0}}
+
+
+# ---------------- Confirmation Team (Order Browser variant) ----------------
+def _b64u_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64u_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode((s or "") + pad)
+
+
+def _confirmation_secret() -> bytes:
+    sec = (os.getenv("CONFIRMATION_AUTH_SECRET", "") or os.getenv("JWT_SECRET", "") or "").strip()
+    if not sec:
+        # Dev-only fallback; production should set CONFIRMATION_AUTH_SECRET
+        sec = "dev-secret"
+    return sec.encode("utf-8")
+
+
+def _issue_confirmation_token(payload: dict) -> str:
+    msg = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    body = _b64u_encode(msg)
+    sig = _b64u_encode(hmac.new(_confirmation_secret(), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{sig}"
+
+
+def _verify_confirmation_token(token: str) -> dict | None:
+    try:
+        tok = (token or "").strip()
+        if not tok or "." not in tok:
+            return None
+        body, sig = tok.split(".", 1)
+        exp_sig = _b64u_encode(hmac.new(_confirmation_secret(), body.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(exp_sig, sig):
+            return None
+        payload = json.loads(_b64u_decode(body).decode("utf-8"))
+        # exp check (unix seconds)
+        try:
+            exp = int(payload.get("exp") or 0)
+            if exp and int(time.time()) > exp:
+                return None
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _get_confirmation_agent(req: Request) -> dict | None:
+    auth = (req.headers.get("authorization") or req.headers.get("Authorization") or "").strip()
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        token = (req.headers.get("x-confirmation-token") or "").strip()
+    if not token:
+        return None
+    return _verify_confirmation_token(token)
+
+
+def _load_confirmation_users(store: str | None) -> list[dict]:
+    """Resolve confirmation users (email + password + optional name).
+
+    Sources:
+      - AppSetting(store, 'confirmation_users') if set
+      - env CONFIRMATION_USERS (JSON)
+    """
+    out: list[dict] = []
+    # 1) DB setting per store
+    try:
+        val = db.get_app_setting(store, "confirmation_users")
+        if isinstance(val, list):
+            for u in val:
+                if isinstance(u, dict) and u.get("email") and u.get("password"):
+                    out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name")})
+        elif isinstance(val, dict):
+            # allow {"email":"pw"} map
+            for k, v in val.items():
+                if k and v:
+                    out.append({"email": str(k).strip().lower(), "password": str(v), "name": None})
+    except Exception:
+        pass
+    if out:
+        return out
+    # 2) ENV fallback
+    try:
+        raw = (os.getenv("CONFIRMATION_USERS", "") or "").strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                for u in parsed:
+                    if isinstance(u, dict) and u.get("email") and u.get("password"):
+                        out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name")})
+            elif isinstance(parsed, dict):
+                for k, v in parsed.items():
+                    if k and v:
+                        out.append({"email": str(k).strip().lower(), "password": str(v), "name": None})
+    except Exception:
+        pass
+    return out
+
+
+class ConfirmationLoginRequest(BaseModel):
+    email: str
+    password: str
+    store: Optional[str] = None
+    remember: Optional[bool] = True
+
+
+@app.post("/api/confirmation/login")
+async def api_confirmation_login(req: ConfirmationLoginRequest):
+    try:
+        email = (req.email or "").strip().lower()
+        pw = (req.password or "")
+        if not email or not pw:
+            return {"error": "missing_credentials"}
+        users = _load_confirmation_users(req.store)
+        ok = False
+        name = None
+        for u in (users or []):
+            if str(u.get("email") or "").strip().lower() == email and str(u.get("password") or "") == pw:
+                ok = True
+                name = u.get("name")
+                break
+        if not ok:
+            return {"error": "invalid_credentials"}
+        ttl = 60 * 60 * 24 * (30 if bool(req.remember) else 1)
+        now = int(time.time())
+        token = _issue_confirmation_token({"sub": email, "name": name, "store": (req.store or None), "iat": now, "exp": now + ttl})
+        return {"data": {"token": token, "agent": {"email": email, "name": name}}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class ConfirmationOrdersRequest(BaseModel):
+    store: Optional[str] = None
+    limit: Optional[int] = 50
+    page_info: Optional[str] = None
+
+
+@app.post("/api/confirmation/orders")
+async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest):
+    try:
+        agent = _get_confirmation_agent(req)
+        if not agent:
+            return {"error": "unauthorized", "data": {"orders": []}}
+        fields = ",".join([
+            "id", "name", "created_at", "processed_at", "total_price", "currency",
+            "tags", "financial_status", "fulfillment_status", "email", "phone",
+            "customer", "shipping_address", "billing_address", "line_items",
+        ])
+        res = list_orders_open_unfulfilled(store=body.store, limit=int(body.limit or 50), page_info=body.page_info, fields=fields)
+        orders = (res or {}).get("orders") or []
+        out: list[dict] = []
+        for o in orders:
+            try:
+                if not isinstance(o, dict):
+                    continue
+                if has_cod_tag(o.get("tags")):
+                    continue
+                # normalize tags to list for UI
+                tags_raw = o.get("tags")
+                tags_list = [t.strip() for t in str(tags_raw or "").split(",") if t.strip()]
+                cust = o.get("customer") or {}
+                ship = o.get("shipping_address") or {}
+                bill = o.get("billing_address") or {}
+                # phone preference: order.phone > shipping.phone > customer.phone
+                phone = (o.get("phone") or ship.get("phone") or cust.get("phone") or "").strip()
+                # slim items
+                items = []
+                for li in (o.get("line_items") or []):
+                    if not isinstance(li, dict):
+                        continue
+                    items.append({
+                        "title": li.get("title"),
+                        "variant_title": li.get("variant_title"),
+                        "quantity": li.get("quantity"),
+                        "sku": li.get("sku"),
+                    })
+                out.append({
+                    "id": str(o.get("id")),
+                    "name": o.get("name"),
+                    "created_at": o.get("created_at"),
+                    "processed_at": o.get("processed_at"),
+                    "total_price": o.get("total_price"),
+                    "currency": o.get("currency"),
+                    "financial_status": o.get("financial_status"),
+                    "fulfillment_status": o.get("fulfillment_status"),
+                    "email": o.get("email"),
+                    "phone": phone,
+                    "customer": {
+                        "first_name": cust.get("first_name"),
+                        "last_name": cust.get("last_name"),
+                        "email": cust.get("email"),
+                        "phone": cust.get("phone"),
+                    },
+                    "shipping_address": ship,
+                    "billing_address": bill,
+                    "line_items": items,
+                    "tags": tags_list,
+                })
+            except Exception:
+                continue
+        return {"data": {"orders": out, "next_page_info": res.get("next_page_info"), "prev_page_info": res.get("prev_page_info")}}
+    except Exception as e:
+        return {"error": str(e), "data": {"orders": []}}
+
+
+class ConfirmationOrderActionRequest(BaseModel):
+    store: Optional[str] = None
+    order_id: str
+    action: str  # phone | whatsapp | confirm
+    date: Optional[str] = None  # ISO (YYYY-MM-DD) or dd/mm/yy
+
+
+def _to_ddmmyy(date_str: str) -> str:
+    s = (date_str or "").strip()
+    if re.match(r"^\d{2}/\d{2}/\d{2}$", s):
+        return s
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        y, m, d = s.split("-")
+        return f"{d}/{m}/{y[-2:]}"
+    raise ValueError("invalid_date")
+
+
+@app.post("/api/confirmation/order/action")
+async def api_confirmation_order_action(req: Request, body: ConfirmationOrderActionRequest):
+    try:
+        agent = _get_confirmation_agent(req)
+        if not agent:
+            return {"error": "unauthorized"}
+        store = body.store
+        oid = (body.order_id or "").strip()
+        action = (body.action or "").strip().lower()
+        if not oid or not oid.isdigit():
+            return {"error": "invalid_order_id"}
+        if action == "phone":
+            tags = cycle_tag(oid, "n", store=store, max_n=3)
+            try:
+                db.log_confirmation_event(store, agent.get("sub") or "unknown", oid, "phone")
+            except Exception:
+                pass
+            return {"data": {"tags": tags}}
+        if action == "whatsapp":
+            tags = cycle_tag(oid, "wtp", store=store, max_n=3)
+            try:
+                db.log_confirmation_event(store, agent.get("sub") or "unknown", oid, "whatsapp")
+            except Exception:
+                pass
+            return {"data": {"tags": tags}}
+        if action == "confirm":
+            ddmmyy = _to_ddmmyy(body.date or "")
+            tags = set_cod_tag(oid, ddmmyy, store=store)
+            try:
+                db.log_confirmation_event(store, agent.get("sub") or "unknown", oid, "confirm", meta={"cod": ddmmyy})
+            except Exception:
+                pass
+            return {"data": {"tags": tags, "cod": ddmmyy}}
+        return {"error": "invalid_action"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/confirmation/stats")
+async def api_confirmation_stats(req: Request, store: str | None = None):
+    try:
+        agent = _get_confirmation_agent(req)
+        if not agent:
+            return {"error": "unauthorized", "data": {}}
+        # For now expose aggregate counts per agent (confirm-only) for the store
+        data = db.count_confirmation_events(store, kind="confirm")
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
 
 
 # ---------------- LLM step endpoints (interactive flow) ----------------
