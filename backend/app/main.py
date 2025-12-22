@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from uuid import uuid4
@@ -2739,6 +2740,34 @@ if STATIC_DIR == "/app/static":
         STATIC_DIR = str(alt)
 
 if Path(STATIC_DIR).exists():
+    @app.middleware("http")
+    async def _redirect_trailing_slash(request: Request, call_next):
+        """Redirect /foo -> /foo/ when a static directory exists (Next export uses trailingSlash)."""
+        try:
+            path = request.url.path or "/"
+            # Only for frontend routes (never touch API/uploads/assets)
+            if path.startswith("/api") or path.startswith("/uploads") or path.startswith("/_next"):
+                return await call_next(request)
+            # already ok
+            if path == "/" or path.endswith("/"):
+                return await call_next(request)
+            # If last segment looks like a file (has an extension), don't redirect
+            last = path.rsplit("/", 1)[-1]
+            if "." in last:
+                return await call_next(request)
+            # If a directory exists in the static export, redirect to /dir/
+            rel = path.lstrip("/")
+            cand = Path(STATIC_DIR) / rel / "index.html"
+            if cand.exists():
+                qs = request.url.query
+                url = path + "/"
+                if qs:
+                    url = url + "?" + qs
+                return RedirectResponse(url=url, status_code=307)
+        except Exception:
+            pass
+        return await call_next(request)
+
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 else:
     # Skip mounting when directory not found (e.g., during backend-only local dev)
