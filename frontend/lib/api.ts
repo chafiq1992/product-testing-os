@@ -37,6 +37,56 @@ export async function confirmationStats(payload?:{ store?: string }){
   const {data} = await axios.get(`${base}/api/confirmation/stats${qp}`, { headers: { ...confirmationHeaders() } })
   return data as { data?: Record<string, number>, error?: string }
 }
+
+// -------- Confirmation Admin --------
+function confirmationAdminToken(){
+  try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_confirmation_admin_token')||'') : '' }catch{ return '' }
+}
+function confirmationAdminHeaders(){
+  const tok = confirmationAdminToken()
+  return tok? { Authorization: `Bearer ${tok}` } : {}
+}
+
+export async function confirmationAdminLogin(payload:{ email: string, password: string, remember?: boolean }){
+  const {data} = await axios.post(`${base}/api/confirmation/admin/login`, payload)
+  return data as { data?: { token: string, admin: { email: string, name?: string|null } }, error?: string }
+}
+
+export async function confirmationAdminUsersList(payload?:{ store?: string }){
+  const store = payload?.store ?? selectedStore()
+  const qp = store? `?store=${encodeURIComponent(store)}` : ''
+  const {data} = await axios.get(`${base}/api/confirmation/admin/users${qp}`, { headers: { ...confirmationAdminHeaders() } })
+  return data as { data?: Array<{ email: string, name?: string|null }>, error?: string }
+}
+
+export async function confirmationAdminUserUpsert(payload:{ store?: string, email: string, name?: string, password?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/admin/users/upsert`, body, { headers: { ...confirmationAdminHeaders() } })
+  return data as { data?: { email: string, name?: string|null, generated_password?: string|null }, error?: string }
+}
+
+export async function confirmationAdminUserDelete(payload:{ store?: string, email: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/admin/users/delete`, body, { headers: { ...confirmationAdminHeaders() } })
+  return data as { data?: { ok: boolean }, error?: string }
+}
+
+export async function confirmationAdminUserResetPassword(payload:{ store?: string, email: string, password?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/confirmation/admin/users/reset_password`, body, { headers: { ...confirmationAdminHeaders() } })
+  return data as { data?: { email: string, generated_password?: string|null }, error?: string }
+}
+
+export async function confirmationAdminAnalytics(payload?:{ store?: string, days?: number }){
+  const store = payload?.store ?? selectedStore()
+  const days = payload?.days
+  const parts: string[] = []
+  if(store) parts.push(`store=${encodeURIComponent(store)}`)
+  if(typeof days === 'number') parts.push(`days=${days}`)
+  const qp = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/confirmation/admin/analytics${qp}`, { headers: { ...confirmationAdminHeaders() } })
+  return data as { data?: { totals: {confirm:number, phone:number, whatsapp:number}, agents: Record<string, {confirm:number, phone:number, whatsapp:number, last_at?: string|null}>, daily: Array<{date:string, confirm:number, phone:number, whatsapp:number}> }, error?: string }
+}
 export async function launchTest(payload:{audience:string, benefits:string[], pain_points:string[], base_price?:number, title?:string, images?:File[], targeting?:any, advantage_plus?:boolean, adset_budget?:number, model?:string, angles_prompt?:string, title_desc_prompt?:string, landing_copy_prompt?:string, sizes?:string[], colors?:string[] }){
   const form = new FormData()
   form.append('audience', payload.audience)

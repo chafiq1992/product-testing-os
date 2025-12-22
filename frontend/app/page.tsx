@@ -84,6 +84,9 @@ export default function HomePage(){
           <Link href="/confirmation" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">
             Confirmation
           </Link>
+          <Link href="/confirmation-admin" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white">
+            Confirmation Admin
+          </Link>
           <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
           </button>

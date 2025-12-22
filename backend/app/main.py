@@ -759,6 +759,257 @@ async def api_confirmation_login(req: ConfirmationLoginRequest):
         return {"error": str(e)}
 
 
+# ---------------- Confirmation Admin ----------------
+def _confirmation_admin_secret() -> bytes:
+    # Separate secret allows tighter rotation policies
+    sec = (os.getenv("CONFIRMATION_ADMIN_SECRET", "") or os.getenv("CONFIRMATION_AUTH_SECRET", "") or os.getenv("JWT_SECRET", "") or "").strip()
+    if not sec:
+        sec = "dev-admin-secret"
+    return sec.encode("utf-8")
+
+
+def _issue_confirmation_admin_token(payload: dict) -> str:
+    msg = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    body = _b64u_encode(msg)
+    sig = _b64u_encode(hmac.new(_confirmation_admin_secret(), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{sig}"
+
+
+def _verify_confirmation_admin_token(token: str) -> dict | None:
+    try:
+        tok = (token or "").strip()
+        if not tok or "." not in tok:
+            return None
+        body, sig = tok.split(".", 1)
+        exp_sig = _b64u_encode(hmac.new(_confirmation_admin_secret(), body.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(exp_sig, sig):
+            return None
+        payload = json.loads(_b64u_decode(body).decode("utf-8"))
+        try:
+            exp = int((payload or {}).get("exp") or 0)
+            if exp and int(time.time()) > exp:
+                return None
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if (payload.get("role") or "").lower() != "admin":
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _get_confirmation_admin(req: Request) -> dict | None:
+    auth = (req.headers.get("authorization") or req.headers.get("Authorization") or "").strip()
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        token = (req.headers.get("x-confirmation-admin-token") or "").strip()
+    if not token:
+        return None
+    return _verify_confirmation_admin_token(token)
+
+
+def _load_confirmation_admin_users() -> list[dict]:
+    """Resolve admin users (email + password + optional name) from env only."""
+    out: list[dict] = []
+    try:
+        raw = (os.getenv("CONFIRMATION_ADMIN_USERS", "") or "").strip()
+        if not raw:
+            return out
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            for u in parsed:
+                if isinstance(u, dict) and u.get("email") and u.get("password"):
+                    out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name")})
+        elif isinstance(parsed, dict):
+            for k, v in parsed.items():
+                if k and v:
+                    out.append({"email": str(k).strip().lower(), "password": str(v), "name": None})
+    except Exception:
+        return out
+    return out
+
+
+def _normalize_email(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def _sanitize_confirmation_users(users: list[dict]) -> list[dict]:
+    """Normalize and de-duplicate by email. Keeps last occurrence."""
+    by_email: dict[str, dict] = {}
+    for u in (users or []):
+        if not isinstance(u, dict):
+            continue
+        email = _normalize_email(str(u.get("email") or ""))
+        pw = str(u.get("password") or "")
+        name = u.get("name")
+        if not email or not pw:
+            continue
+        by_email[email] = {"email": email, "password": pw, "name": (str(name).strip() if isinstance(name, str) and name.strip() else None)}
+    return list(by_email.values())
+
+
+def _save_confirmation_users(store: str | None, users: list[dict]) -> list[dict]:
+    cleaned = _sanitize_confirmation_users(users)
+    try:
+        db.set_app_setting(store, "confirmation_users", cleaned)
+    except Exception:
+        pass
+    return cleaned
+
+
+def _gen_password(n: int = 10) -> str:
+    import secrets, string
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(max(8, min(int(n or 10), 32))))
+
+
+class ConfirmationAdminLoginRequest(BaseModel):
+    email: str
+    password: str
+    remember: Optional[bool] = True
+
+
+@app.post("/api/confirmation/admin/login")
+async def api_confirmation_admin_login(req: ConfirmationAdminLoginRequest):
+    try:
+        email = _normalize_email(req.email)
+        pw = (req.password or "")
+        if not email or not pw:
+            return {"error": "missing_credentials"}
+        users = _load_confirmation_admin_users()
+        ok = False
+        name = None
+        for u in (users or []):
+            if _normalize_email(str(u.get("email") or "")) == email and str(u.get("password") or "") == pw:
+                ok = True
+                name = u.get("name")
+                break
+        if not ok:
+            return {"error": "invalid_credentials"}
+        ttl = 60 * 60 * 24 * (30 if bool(req.remember) else 1)
+        now = int(time.time())
+        token = _issue_confirmation_admin_token({"sub": email, "name": name, "role": "admin", "iat": now, "exp": now + ttl})
+        return {"data": {"token": token, "admin": {"email": email, "name": name}}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/confirmation/admin/users")
+async def api_confirmation_admin_users(req: Request, store: str | None = None):
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return {"error": "unauthorized", "data": []}
+        users = _load_confirmation_users(store)
+        # Never return passwords
+        out = [{"email": u.get("email"), "name": u.get("name")} for u in (users or []) if isinstance(u, dict) and u.get("email")]
+        # stable sort
+        out.sort(key=lambda x: str(x.get("email") or ""))
+        return {"data": out}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+class ConfirmationAdminUserUpsertRequest(BaseModel):
+    store: Optional[str] = None
+    email: str
+    name: Optional[str] = None
+    password: Optional[str] = None  # if omitted, auto-generate
+
+
+@app.post("/api/confirmation/admin/users/upsert")
+async def api_confirmation_admin_user_upsert(req: Request, body: ConfirmationAdminUserUpsertRequest):
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return {"error": "unauthorized"}
+        store = body.store
+        email = _normalize_email(body.email)
+        if not email:
+            return {"error": "invalid_email"}
+        pw = (body.password or "").strip()
+        generated = None
+        if not pw:
+            generated = _gen_password()
+            pw = generated
+        name = (body.name or "").strip() if isinstance(body.name, str) else None
+        users = _load_confirmation_users(store)
+        # Merge/update
+        merged = [u for u in (users or []) if isinstance(u, dict) and _normalize_email(str(u.get("email") or "")) != email]
+        merged.append({"email": email, "password": pw, "name": (name if name else None)})
+        _save_confirmation_users(store, merged)
+        return {"data": {"email": email, "name": (name if name else None), "generated_password": generated}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class ConfirmationAdminUserDeleteRequest(BaseModel):
+    store: Optional[str] = None
+    email: str
+
+
+@app.post("/api/confirmation/admin/users/delete")
+async def api_confirmation_admin_user_delete(req: Request, body: ConfirmationAdminUserDeleteRequest):
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return {"error": "unauthorized"}
+        store = body.store
+        email = _normalize_email(body.email)
+        if not email:
+            return {"error": "invalid_email"}
+        users = _load_confirmation_users(store)
+        kept = [u for u in (users or []) if isinstance(u, dict) and _normalize_email(str(u.get("email") or "")) != email]
+        _save_confirmation_users(store, kept)
+        return {"data": {"ok": True}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class ConfirmationAdminUserResetPasswordRequest(BaseModel):
+    store: Optional[str] = None
+    email: str
+    password: Optional[str] = None  # if omitted, auto-generate
+
+
+@app.post("/api/confirmation/admin/users/reset_password")
+async def api_confirmation_admin_user_reset_password(req: Request, body: ConfirmationAdminUserResetPasswordRequest):
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return {"error": "unauthorized"}
+        store = body.store
+        email = _normalize_email(body.email)
+        if not email:
+            return {"error": "invalid_email"}
+        pw = (body.password or "").strip()
+        generated = None
+        if not pw:
+            generated = _gen_password()
+            pw = generated
+        users = _load_confirmation_users(store)
+        found = False
+        merged: list[dict] = []
+        for u in (users or []):
+            if not isinstance(u, dict):
+                continue
+            if _normalize_email(str(u.get("email") or "")) == email:
+                found = True
+                merged.append({"email": email, "password": pw, "name": u.get("name")})
+            else:
+                merged.append(u)
+        if not found:
+            merged.append({"email": email, "password": pw, "name": None})
+        _save_confirmation_users(store, merged)
+        return {"data": {"email": email, "generated_password": generated}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 class ConfirmationOrdersRequest(BaseModel):
     store: Optional[str] = None
     limit: Optional[int] = 50
@@ -896,6 +1147,18 @@ async def api_confirmation_stats(req: Request, store: str | None = None):
             return {"error": "unauthorized", "data": {}}
         # For now expose aggregate counts per agent (confirm-only) for the store
         data = db.count_confirmation_events(store, kind="confirm")
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.get("/api/confirmation/admin/analytics")
+async def api_confirmation_admin_analytics(req: Request, store: str | None = None, days: int | None = 30):
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return {"error": "unauthorized", "data": {}}
+        data = db.confirmation_analytics(store, days=days)
         return {"data": data}
     except Exception as e:
         return {"error": str(e), "data": {}}

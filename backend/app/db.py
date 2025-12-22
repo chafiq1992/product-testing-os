@@ -869,3 +869,69 @@ def count_confirmation_events(store: str | None = None, *, kind: str | None = No
             except Exception:
                 continue
         return out
+
+
+def confirmation_analytics(store: str | None = None, *, days: int | None = 30) -> dict:
+    """Compute per-agent counts and daily series for confirmation events.
+
+    Returns:
+      {
+        totals: { confirm:int, phone:int, whatsapp:int },
+        agents: { email: { confirm, phone, whatsapp, last_at } },
+        daily: [ { date: "YYYY-MM-DD", confirm, phone, whatsapp } ]
+      }
+    """
+    from datetime import timedelta
+    try:
+        n = int(days or 30)
+    except Exception:
+        n = 30
+    n = max(1, min(n, 365))
+    cutoff = _now() - timedelta(days=n)
+    with SessionLocal() as session:
+        q = session.query(ConfirmationEvent)
+        if isinstance(store, str) and store.strip():
+            q = q.filter(ConfirmationEvent.store == store.strip())
+        q = q.filter(ConfirmationEvent.created_at >= cutoff)
+        rows = q.all()
+        totals = {"confirm": 0, "phone": 0, "whatsapp": 0}
+        agents: dict[str, dict] = {}
+        daily: dict[str, dict] = {}
+        for r in rows:
+            try:
+                kind = (r.kind or "").lower()
+                if kind not in ("confirm", "phone", "whatsapp"):
+                    continue
+                a = (r.agent or "").strip().lower()
+                d = (r.created_at.date().isoformat() if r.created_at else None)
+                totals[kind] = int(totals.get(kind, 0)) + 1
+                if a:
+                    ag = agents.setdefault(a, {"confirm": 0, "phone": 0, "whatsapp": 0, "last_at": None})
+                    ag[kind] = int(ag.get(kind, 0)) + 1
+                    try:
+                        last = ag.get("last_at")
+                        cur = (r.created_at.isoformat() + "Z") if r.created_at else None
+                        if cur and (not last or cur > str(last)):
+                            ag["last_at"] = cur
+                    except Exception:
+                        pass
+                if d:
+                    day = daily.setdefault(d, {"date": d, "confirm": 0, "phone": 0, "whatsapp": 0})
+                    day[kind] = int(day.get(kind, 0)) + 1
+            except Exception:
+                continue
+        # fill missing days for stable chart display
+        try:
+            from datetime import date as _date
+            start = cutoff.date()
+            today = _now().date()
+            cur = start
+            while cur <= today:
+                key = cur.isoformat()
+                daily.setdefault(key, {"date": key, "confirm": 0, "phone": 0, "whatsapp": 0})
+                cur = cur + timedelta(days=1)
+        except Exception:
+            pass
+        daily_list = list(daily.values())
+        daily_list.sort(key=lambda x: x.get("date") or "")
+        return {"totals": totals, "agents": agents, "daily": daily_list}

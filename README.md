@@ -26,3 +26,16 @@ Set `CONFIRMATION_USERS` as JSON (either a map or an array):
 Optionally, set a signing secret for login tokens:
 
 - `CONFIRMATION_AUTH_SECRET`: random string used to sign session tokens
+
+### Admin dashboard (manage agents + analytics)
+
+Frontend route: `"/confirmation-admin"`
+
+Set admin users in env (JSON map or array):
+
+- `CONFIRMATION_ADMIN_USERS='{"admin@example.com":"adminpass"}'`
+- or `CONFIRMATION_ADMIN_USERS='[{"email":"admin@example.com","password":"adminpass","name":"Admin"}]'`
+
+Set a signing secret (recommended):
+
+- `CONFIRMATION_ADMIN_SECRET`: secret used to sign admin session tokens
