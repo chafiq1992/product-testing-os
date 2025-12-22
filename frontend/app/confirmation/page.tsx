@@ -274,7 +274,7 @@ export default function ConfirmationPage(){
             <option value="irranova">irranova</option>
           </select>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">Home</Link>
-          <button onClick={()=>{ refreshStats(); loadOrders({ page_info, direction: undefined }) }} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
+          <button onClick={()=>{ refreshStats(); loadOrders({ page_info: pageInfo, direction: undefined }) }} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
             <RefreshCw className={`w-4 h-4 ${loading? "animate-spin": ""}`}/> Refresh
           </button>
           <button onClick={doLogout} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
