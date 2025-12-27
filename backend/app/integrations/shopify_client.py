@@ -8,6 +8,27 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from dotenv import load_dotenv
 load_dotenv()
 
+def _oauth_enabled_for_store(store: str | None) -> bool:
+    """Whether DB-backed OAuth tokens are allowed for this store label.
+
+    Default behavior (to support mixed-mode setups):
+      - Only enable for 'irranova'
+
+    Override via env SHOPIFY_OAUTH_STORES (comma-separated store labels), e.g.:
+      SHOPIFY_OAUTH_STORES=irranova,anotherstore
+    """
+    try:
+        s = (store or "").strip().lower()
+        if not s:
+            return False
+        allowed = (os.getenv("SHOPIFY_OAUTH_STORES", "") or "").strip()
+        if allowed:
+            parts = [p.strip().lower() for p in allowed.split(",") if p.strip()]
+            return s in set(parts)
+        return s == "irranova"
+    except Exception:
+        return False
+
 def _normalize_shop_domain(val: str) -> str:
     v = (val or "").strip()
     # remove protocol if provided and any stray whitespace or slashes
@@ -51,6 +72,14 @@ def _get_store_config(store: str | None) -> dict:
       - If store provided, read SHOPIFY_*_{STORE} vars; fallback to base SHOPIFY_* when missing
       - If no store provided, use base SHOPIFY_* values
     """
+    # Optional DB-backed OAuth token store (for Dev Dashboard public apps).
+    # This repo can persist per-store {shop, access_token} under AppSetting(store, "shopify_oauth").
+    _db = None
+    try:
+        from app import db as _db  # type: ignore
+    except Exception:
+        _db = None
+
     if store:
         suf = _store_suffix(store)
         shop_raw = _env_with_suffix("SHOPIFY_SHOP_DOMAIN", suf) or os.getenv("SHOPIFY_SHOP_DOMAIN", "")
@@ -58,6 +87,18 @@ def _get_store_config(store: str | None) -> dict:
         api_key = _env_with_suffix("SHOPIFY_API_KEY", suf) or os.getenv("SHOPIFY_API_KEY", "")
         password = _env_with_suffix("SHOPIFY_PASSWORD", suf) or os.getenv("SHOPIFY_PASSWORD", "")
         version = _env_with_suffix("SHOPIFY_API_VERSION", suf) or os.getenv("SHOPIFY_API_VERSION", "2025-07")
+        # If env isn't set, optionally fall back to stored OAuth token (Option B).
+        # IMPORTANT: we only enable this for configured stores so others can keep the old method.
+        if _db and _oauth_enabled_for_store(store) and (not token or not shop_raw):
+            try:
+                rec = _db.get_app_setting(store, "shopify_oauth") or {}
+                if isinstance(rec, dict):
+                    if not shop_raw:
+                        shop_raw = str(rec.get("shop") or "")
+                    if not token:
+                        token = str(rec.get("access_token") or "")
+            except Exception:
+                pass
     else:
         shop_raw = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
         token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")

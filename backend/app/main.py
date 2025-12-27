@@ -10,7 +10,7 @@ from uuid import uuid4
 import json, os
 import base64, hmac, hashlib
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page, translate_texts
@@ -43,6 +43,7 @@ from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
+from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
 from app import db
 import re
 import threading
@@ -52,6 +53,8 @@ import io
 import mimetypes
 from urllib.parse import urlparse
 import logging
+import secrets
+import requests
 
 # Optional ChatKit server-mode support
 try:
@@ -80,6 +83,111 @@ if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
 
+# ---------------- Shopify OAuth (public apps) ----------------
+def _is_valid_shop_domain(shop: str | None) -> bool:
+    try:
+        s = (shop or "").strip().lower()
+        if not s:
+            return False
+        if s.startswith("https://") or s.startswith("http://"):
+            return False
+        if "/" in s or "?" in s or "#" in s:
+            return False
+        return s.endswith(".myshopify.com")
+    except Exception:
+        return False
+
+
+def _shopify_oauth_scopes() -> str:
+    # Shopify expects scopes as comma-separated string.
+    try:
+        s = (SHOPIFY_OAUTH_SCOPES or "").strip()
+        return s or "read_orders,write_orders"
+    except Exception:
+        return "read_orders,write_orders"
+
+
+def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
+    """Verify Shopify callback query HMAC (SHA256 hex) using app client secret.
+
+    Shopify signs all query parameters except "hmac" and "signature".
+    """
+    try:
+        provided = str((query_params or {}).get("hmac") or "").strip()
+        if not provided:
+            return False
+        items: list[tuple[str, str]] = []
+        for k, v in (query_params or {}).items():
+            if k in ("hmac", "signature"):
+                continue
+            # Shopify may provide multi-values; FastAPI query_params flattens; handle list best-effort.
+            if isinstance(v, list):
+                for vv in v:
+                    items.append((str(k), str(vv)))
+            else:
+                items.append((str(k), str(v)))
+        msg = "&".join([f"{k}={v}" for k, v in sorted(items, key=lambda x: x[0])])
+        digest = hmac.new(client_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(digest, provided)
+    except Exception:
+        return False
+
+
+def _abs_base_url(request: Request) -> str:
+    """Compute absolute base URL for redirects.
+
+    Prefer BASE_URL if configured for non-local deployments; else infer from headers.
+    """
+    try:
+        host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip()
+        scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").strip()
+        req_base = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
+        if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
+            return BASE_URL.rstrip("/")
+        return req_base.rstrip("/")
+    except Exception:
+        return (BASE_URL or "").rstrip("/")
+
+
+def _oauth_state_secret() -> bytes:
+    # Use a stable secret for signing OAuth state tokens.
+    sec = (os.getenv("OAUTH_STATE_SECRET", "") or os.getenv("JWT_SECRET", "") or SHOPIFY_CLIENT_SECRET or "").strip()
+    if not sec:
+        # Dev-only fallback; production should set OAUTH_STATE_SECRET or JWT_SECRET
+        sec = "dev-oauth-state-secret"
+    return sec.encode("utf-8")
+
+
+def _issue_shopify_state(payload: dict) -> str:
+    msg = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    body = _b64u_encode(msg)
+    sig = _b64u_encode(hmac.new(_oauth_state_secret(), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{sig}"
+
+
+def _verify_shopify_state(token: str) -> dict | None:
+    try:
+        tok = (token or "").strip()
+        if not tok or "." not in tok:
+            return None
+        body, sig = tok.split(".", 1)
+        exp_sig = _b64u_encode(hmac.new(_oauth_state_secret(), body.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(exp_sig, sig):
+            return None
+        payload = json.loads(_b64u_decode(body).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        # exp check (unix seconds)
+        try:
+            exp = int(payload.get("exp") or 0)
+            if exp and int(time.time()) > exp:
+                return None
+        except Exception:
+            return None
+        return payload
+    except Exception:
+        return None
+
 # Mount static uploads directory. Use the unified path from config.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
@@ -107,6 +215,125 @@ async def favicon():
     )
     data = base64.b64decode(png_b64)
     return Response(content=data, media_type="image/png")
+
+
+@app.get("/api/shopify/oauth/status")
+async def api_shopify_oauth_status(store: str | None = None):
+    """Return whether we have a stored OAuth token for this store label."""
+    try:
+        rec = db.get_app_setting(store, "shopify_oauth") or {}
+        if not isinstance(rec, dict):
+            rec = {}
+        tok = str(rec.get("access_token") or "").strip()
+        shop = str(rec.get("shop") or "").strip()
+        return {"data": {"connected": bool(tok and shop), "shop": (shop or None), "scopes": rec.get("scopes")}}
+    except Exception as e:
+        return {"error": str(e), "data": {"connected": False}}
+
+
+@app.get("/api/shopify/oauth/start")
+async def api_shopify_oauth_start(request: Request, store: str, shop: str):
+    """Redirect to Shopify OAuth install screen for the given shop.
+
+    Usage:
+      /api/shopify/oauth/start?store=irranova&shop=your-shop.myshopify.com
+    """
+    try:
+        if not (SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET):
+            return {"error": "missing_shopify_client_credentials"}
+        store_label = (store or "").strip()
+        if not store_label:
+            return {"error": "missing_store"}
+        shop = (shop or "").strip().lower()
+        if not _is_valid_shop_domain(shop):
+            return {"error": "invalid_shop_domain"}
+
+        # state/nonce to prevent CSRF (signed token, no server-side session required)
+        exp = int(time.time()) + 10 * 60
+        state = _issue_shopify_state({
+            "store": store_label,
+            "shop": shop,
+            "nonce": secrets.token_urlsafe(16),
+            "iat": int(time.time()),
+            "exp": exp,
+        })
+
+        redirect_uri = f"{_abs_base_url(request)}/api/shopify/oauth/callback"
+        scopes = _shopify_oauth_scopes()
+        params = {
+            "client_id": SHOPIFY_CLIENT_ID,
+            "scope": scopes,
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+        url = f"https://{shop}/admin/oauth/authorize?{urlencode(params)}"
+        return RedirectResponse(url=url, status_code=302)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/shopify/oauth/callback")
+async def api_shopify_oauth_callback(request: Request):
+    """OAuth callback endpoint. Shopify redirects here with code/shop/hmac/state."""
+    try:
+        if not (SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET):
+            return {"error": "missing_shopify_client_credentials"}
+        qp = dict(request.query_params)
+        shop = str(qp.get("shop") or "").strip().lower()
+        state = str(qp.get("state") or "").strip()
+        code = str(qp.get("code") or "").strip()
+
+        st = _verify_shopify_state(state)
+        if not st:
+            return {"error": "invalid_state"}
+        store_label = str(st.get("store") or "").strip()
+        if not store_label:
+            return {"error": "missing_store_in_state"}
+        if not _is_valid_shop_domain(shop):
+            return {"error": "invalid_shop_domain"}
+        if not (state and code):
+            return {"error": "missing_state_or_code"}
+        # Optional: ensure the same shop
+        if st.get("shop") and str(st.get("shop")).strip().lower() != shop:
+            return {"error": "shop_mismatch"}
+
+        # Verify Shopify HMAC
+        if not _verify_shopify_hmac(qp, SHOPIFY_CLIENT_SECRET):
+            return {"error": "invalid_hmac"}
+
+        # Exchange code for token
+        token_url = f"https://{shop}/admin/oauth/access_token"
+        resp = requests.post(token_url, json={
+            "client_id": SHOPIFY_CLIENT_ID,
+            "client_secret": SHOPIFY_CLIENT_SECRET,
+            "code": code,
+        }, timeout=30)
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        access_token = str((data or {}).get("access_token") or "").strip()
+        scopes = (data or {}).get("scope") or (data or {}).get("scopes") or None
+        if not access_token:
+            return {"error": "missing_access_token_from_shopify", "details": data}
+
+        # Persist per-store
+        rec = {
+            "shop": shop,
+            "access_token": access_token,
+            "scopes": scopes,
+            "installed_at": int(time.time()),
+        }
+        db.set_app_setting(store_label, "shopify_oauth", rec)
+
+        # Redirect back to frontend connect page if present; otherwise show JSON
+        return RedirectResponse(url=f"/shopify-connect?store={quote(store_label)}&connected=1", status_code=302)
+    except requests.HTTPError as e:
+        try:
+            txt = e.response.text if getattr(e, "response", None) is not None else str(e)
+        except Exception:
+            txt = str(e)
+        return {"error": "token_exchange_failed", "details": txt}
+    except Exception as e:
+        return {"error": str(e)}
 
 # Initialize ChatKit server (server-mode) if package is available
 chatkit_server = None
@@ -1042,8 +1269,29 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
                 cust = o.get("customer") or {}
                 ship = o.get("shipping_address") or {}
                 bill = o.get("billing_address") or {}
+
+                # Some shops frequently have guest checkouts: `customer` can be null/empty even though
+                # `shipping_address` contains the buyer name/phone/address. Derive a usable "customer"
+                # view model for the UI from both sources.
+                ship_name = (ship.get("name") or "").strip()
+                ship_first = (ship.get("first_name") or "").strip()
+                ship_last = (ship.get("last_name") or "").strip()
+                if (not ship_first or not ship_last) and ship_name and (" " in ship_name):
+                    # Best-effort split for display
+                    parts = [p for p in ship_name.split(" ") if p]
+                    if parts and not ship_first:
+                        ship_first = parts[0]
+                    if len(parts) > 1 and not ship_last:
+                        ship_last = " ".join(parts[1:])
+
+                cust_first = (cust.get("first_name") or "").strip() or ship_first or None
+                cust_last = (cust.get("last_name") or "").strip() or ship_last or None
+                cust_email = (cust.get("email") or "").strip() or (o.get("email") or "").strip() or None
+
                 # phone preference: order.phone > shipping.phone > customer.phone
-                phone = (o.get("phone") or ship.get("phone") or cust.get("phone") or "").strip()
+                phone = (o.get("phone") or ship.get("phone") or cust.get("phone") or "")
+                phone = str(phone).strip() if phone is not None else ""
+                cust_phone = (cust.get("phone") or "").strip() or (ship.get("phone") or "").strip() or (o.get("phone") or "").strip() or None
                 # slim items
                 items = []
                 for li in (o.get("line_items") or []):
@@ -1067,10 +1315,10 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
                     "email": o.get("email"),
                     "phone": phone,
                     "customer": {
-                        "first_name": cust.get("first_name"),
-                        "last_name": cust.get("last_name"),
-                        "email": cust.get("email"),
-                        "phone": cust.get("phone"),
+                        "first_name": cust_first,
+                        "last_name": cust_last,
+                        "email": cust_email,
+                        "phone": cust_phone,
                     },
                     "shipping_address": ship,
                     "billing_address": bill,

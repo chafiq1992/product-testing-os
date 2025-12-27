@@ -81,6 +81,9 @@ export default function HomePage(){
           <Link href="/ads-management" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white">
             Ads management
           </Link>
+          <Link href="/shopify-connect" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border bg-white hover:bg-slate-50">
+            Shopify Connect
+          </Link>
           <Link href="/confirmation" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">
             Confirmation
           </Link>

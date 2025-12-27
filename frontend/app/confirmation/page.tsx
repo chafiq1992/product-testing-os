@@ -56,6 +56,23 @@ function normalizeWaPhone(raw?: string|null){
   return digits
 }
 
+function fmtAddress(ship: any){
+  try{
+    if(!ship) return ""
+    const parts: string[] = []
+    const a1 = String(ship.address1||"").trim()
+    const a2 = String(ship.address2||"").trim()
+    const city = String(ship.city||"").trim()
+    const prov = String(ship.province||ship.province_code||"").trim()
+    const zip = String(ship.zip||"").trim()
+    if(a1) parts.push(a1)
+    if(a2) parts.push(a2)
+    const loc = [city, prov, zip].filter(Boolean).join(" ")
+    if(loc) parts.push(loc)
+    return parts.join(" · ")
+  }catch{ return "" }
+}
+
 export default function ConfirmationPage(){
   const [store, setStore] = useState("irrakids")
   const [email, setEmail] = useState("")
@@ -316,6 +333,7 @@ export default function ConfirmationPage(){
                   <th className="text-left font-medium px-4 py-2">Order</th>
                   <th className="text-left font-medium px-4 py-2">Customer</th>
                   <th className="text-left font-medium px-4 py-2">Phone</th>
+                  <th className="text-left font-medium px-4 py-2">Shipping</th>
                   <th className="text-left font-medium px-4 py-2">Total</th>
                   <th className="text-left font-medium px-4 py-2">Created</th>
                   <th className="text-left font-medium px-4 py-2">Tags</th>
@@ -324,14 +342,17 @@ export default function ConfirmationPage(){
               </thead>
               <tbody>
                 {loading && (
-                  <tr><td colSpan={7} className="px-4 py-6 text-slate-500">Loading…</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-6 text-slate-500">Loading…</td></tr>
                 )}
                 {!loading && orders.length===0 && (
-                  <tr><td colSpan={7} className="px-4 py-6 text-slate-500">No orders found.</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-6 text-slate-500">No orders found.</td></tr>
                 )}
                 {!loading && orders.map(o=> {
-                  const custName = [o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ").trim()
+                  const ship = (o as any)?.shipping_address || {}
+                  const shipName = String(ship?.name || [ship?.first_name, ship?.last_name].filter(Boolean).join(" ")).trim()
+                  const custName = ([o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ").trim()) || shipName
                   const phone = o.phone || o.customer?.phone || ""
+                  const shipAddr = fmtAddress(ship)
                   return (
                     <tr key={o.id} className="border-t">
                       <td className="px-4 py-3 align-top">
@@ -346,6 +367,10 @@ export default function ConfirmationPage(){
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="font-mono text-[13px]">{phone || "—"}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <div className="text-[13px]">{shipAddr || "—"}</div>
+                        <div className="text-xs text-slate-500">{String(ship?.city||"").trim() || ""}</div>
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="font-semibold">{o.total_price} {o.currency || ""}</div>
