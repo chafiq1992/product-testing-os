@@ -113,22 +113,48 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
     Shopify signs all query parameters except "hmac" and "signature".
     """
     try:
+        # IMPORTANT: verify using the raw query string (preserve Shopify's exact URL encoding).
+        # Reconstructing from decoded params can break when values contain special characters
+        # (notably the "host" and "state" params).
+        raw = ""
+        try:
+            raw = str((query_params or {}).get("__raw_query__") or "")
+        except Exception:
+            raw = ""
         provided = str((query_params or {}).get("hmac") or "").strip()
-        if not provided:
+        if not (raw and provided):
             return False
-        items: list[tuple[str, str]] = []
-        for k, v in (query_params or {}).items():
-            if k in ("hmac", "signature"):
-                continue
-            # Shopify may provide multi-values; FastAPI query_params flattens; handle list best-effort.
-            if isinstance(v, list):
-                for vv in v:
-                    items.append((str(k), str(vv)))
+
+        # Parse raw query manually to preserve encoding.
+        parts = [p for p in raw.split("&") if p]
+        items: list[tuple[str, str, str]] = []  # (decoded_key, raw_key, raw_value)
+        for p in parts:
+            if "=" in p:
+                k_raw, v_raw = p.split("=", 1)
             else:
-                items.append((str(k), str(v)))
-        msg = "&".join([f"{k}={v}" for k, v in sorted(items, key=lambda x: x[0])])
+                k_raw, v_raw = p, ""
+            try:
+                from urllib.parse import unquote_plus
+                k_dec = unquote_plus(k_raw)
+            except Exception:
+                k_dec = k_raw
+            if k_dec in ("hmac", "signature"):
+                continue
+            items.append((k_dec, k_raw, v_raw))
+
+        msg = "&".join([f"{k_raw}={v_raw}" for (k_dec, k_raw, v_raw) in sorted(items, key=lambda x: x[0])])
         digest = hmac.new(client_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(digest, provided)
+    except Exception:
+        return False
+
+
+def _verify_shopify_hmac_request(request: Request, client_secret: str) -> bool:
+    """Verify Shopify callback HMAC from the incoming request."""
+    try:
+        qp = dict(request.query_params)
+        qp["__raw_query__"] = request.url.query or ""
+        return _verify_shopify_hmac(qp, client_secret)
     except Exception:
         return False
 
@@ -298,7 +324,7 @@ async def api_shopify_oauth_callback(request: Request):
             return {"error": "shop_mismatch"}
 
         # Verify Shopify HMAC
-        if not _verify_shopify_hmac(qp, SHOPIFY_CLIENT_SECRET):
+        if not _verify_shopify_hmac_request(request, SHOPIFY_CLIENT_SECRET):
             return {"error": "invalid_hmac"}
 
         # Exchange code for token
