@@ -215,54 +215,87 @@ export default function AdsManagementPage(){
       setAdsetOrdersLoading({})
       setAdsetOrdersExpanded({})
       const ordersToken = ++ordersSeqToken.current
-      // Fetch store-wide orders total for the same range
-      try{
-        const { start, end } = effectiveYmdRange(effPreset)
-        const resTotal = await shopifyOrdersCountTotal({ start, end, store: effStore, include_closed: true, date_field: 'processed' }) as any
-        setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
-      }catch{ setStoreOrdersTotal(0) }
+      // Fetch store-wide orders total for the same range (DO NOT block UI on this)
+      ;(async()=>{
+        try{
+          const { start, end } = effectiveYmdRange(effPreset)
+          const resTotal = await shopifyOrdersCountTotal({ start, end, store: effStore, include_closed: true, date_field: 'processed' }) as any
+          if(ordersToken !== ordersSeqToken.current) return
+          setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
+        }catch{
+          if(ordersToken !== ordersSeqToken.current) return
+          setStoreOrdersTotal(0)
+        }
+      })()
+
       setTimeout(async ()=>{
         if(ordersToken !== ordersSeqToken.current) return
         const rows: MetaCampaignRow[] = (((res as any)?.data)||[]) as MetaCampaignRow[]
-        // Build product ID list from numeric in name OR manual product mappings
-        const idSet: Record<string, true> = {}
-        for(const c of rows){
+        const { start, end } = effectiveYmdRange(effPreset)
+
+        // Build prioritized unique product IDs (top spend first) from name numeric OR manual product mappings
+        const ranked = (rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+        const idsOrdered: string[] = []
+        const seen: Record<string, true> = {}
+        for(const c of ranked){
           const rk = (c.campaign_id || c.name || '') as any
           const manual = (manualIds as any)[rk]
-          if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)){
-            idSet[manual.id] = true
-            continue
+          let pid: string | null = null
+          if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)) pid = manual.id
+          else pid = extractNumericId(c.name||'')
+          if(pid && !seen[pid]){
+            seen[pid] = true
+            idsOrdered.push(pid)
           }
-          const pid = extractNumericId(c.name||'')
-          if(pid) idSet[pid] = true
         }
-        const ids = Object.keys(idSet)
-        if(!ids.length) return
-        // Fetch product briefs (image + inventory) in batch for speed
-        try{
-          const pb = await shopifyProductsBrief({ ids, store: effStore })
-          setProductBriefs(((pb as any)?.data)||{})
-        }catch{
-          setProductBriefs({})
+        if(!idsOrdered.length) return
+
+        const chunkSize = 8
+        let i = 0
+        const countsById: Record<string, number> = {}
+
+        const runChunk = async (chunkIds: string[])=>{
+          if(ordersToken !== ordersSeqToken.current) return
+          // 1) product briefs
+          try{
+            const pb = await shopifyProductsBrief({ ids: chunkIds, store: effStore })
+            if(ordersToken !== ordersSeqToken.current) return
+            const data = ((pb as any)?.data)||{}
+            setProductBriefs(prev=> ({ ...prev, ...data }))
+          }catch{
+            // ignore
+          }
+          // 2) order counts
+          try{
+            const oc = await shopifyOrdersCountByTitle({ names: chunkIds, start, end, include_closed: true, date_field: 'processed' })
+            if(ordersToken !== ordersSeqToken.current) return
+            const map = ((oc as any)?.data)||{}
+            const next: Record<string, number> = {}
+            for(const id of chunkIds){
+              const v = Number(map[id] ?? 0) || 0
+              next[id] = v
+              countsById[id] = v
+            }
+            setShopifyCounts(prev=> ({ ...prev, ...next }))
+          }catch{
+            const next: Record<string, number> = {}
+            for(const id of chunkIds){
+              next[id] = 0
+              countsById[id] = 0
+            }
+            setShopifyCounts(prev=> ({ ...prev, ...next }))
+          }
         }
-        const { start, end } = effectiveYmdRange(effPreset)
-        // Batch fetch Shopify order counts (huge speedup vs per-ID loop)
-        let countsById: Record<string, number> = {}
-        try{
-          const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'processed' })
-          const map = ((oc as any)?.data)||{}
-          const next: Record<string, number> = {}
-          for(const id of ids) next[id] = Number(map[id] ?? 0) || 0
-          countsById = next
-          setShopifyCounts(next)
-        }catch{
-          const next: Record<string, number> = {}
-          for(const id of ids) next[id] = 0
-          countsById = next
-          setShopifyCounts(next)
+
+        while(i < idsOrdered.length){
+          if(ordersToken !== ordersSeqToken.current) break
+          const chunk = idsOrdered.slice(i, i+chunkSize)
+          i += chunkSize
+          await runChunk(chunk)
         }
-        // Also fetch manual IDs (for rows whose campaign name is not numeric)
-        for(const row of rows){
+
+        // Finally, compute manual mapped rows (collections) progressively (one-by-one; already far fewer)
+        for(const row of ranked){
           if(ordersToken !== ordersSeqToken.current) break
           const rowKey = (row.campaign_id || row.name || '') as any
           try{
@@ -270,6 +303,7 @@ export default function AdsManagementPage(){
             if(!conf) continue
             if(!conf.id || !/^\d+$/.test(conf.id)) continue
             if(conf.kind==='product'){
+              // product counts handled by batch; just mirror into manualCounts for rows w/out numeric names
               const count = Number(countsById[conf.id] ?? 0) || 0
               setManualCounts(prev=> ({ ...prev, [String(rowKey)]: count }))
             }else{

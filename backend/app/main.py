@@ -22,7 +22,7 @@ from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import get_products_brief
 from app.integrations.shopify_client import count_orders_by_product_processed
-from app.integrations.shopify_client import count_orders_by_product_or_variant_processed
+from app.integrations.shopify_client import count_orders_by_product_or_variant_processed, count_orders_by_product_or_variant_processed_batch
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
@@ -676,23 +676,48 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         end = req.end
         store = req.store
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
-        out: dict[str, int] = {}
-        for name in (req.names or []):
+        names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
+        # Guardrails: keep requests bounded even if UI sends a lot
+        if len(names) > 400:
+            names = names[:400]
+        out: dict[str, int] = {n: 0 for n in names}
+
+        df = (req.date_field or "processed").lower()
+        numeric = [n for n in names if n.isdigit()]
+        non_numeric = [n for n in names if not n.isdigit()]
+
+        # Prefer processed_at window for numeric product/variant IDs to match Shopify Admin.
+        # Use a batched single-pass scan for speed.
+        if numeric:
+            s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+            e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
             try:
-                # Prefer processed_at window for numeric product IDs to match Shopify Admin, regardless of input format
-                if str(name or "").isdigit():
-                    s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
-                    e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
-                    df = (req.date_field or "processed").lower()
-                    if df == "created":
-                        out[name] = count_orders_by_title(str(name) or "", start, end, store=store, include_closed=include_closed)
-                    else:
-                        # Use product_or_variant to catch variant IDs too
-                        out[name] = count_orders_by_product_or_variant_processed(str(name), s_date, e_date, store=store, include_closed=include_closed)
+                if df == "created":
+                    # created_at path: still per-id, but created_at ranges are typically smaller and this is less used
+                    for n in numeric:
+                        try:
+                            out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                        except Exception:
+                            out[n] = 0
                 else:
-                    out[name] = count_orders_by_title(name or "", start, end, store=store, include_closed=include_closed)
+                    batch = count_orders_by_product_or_variant_processed_batch(numeric, s_date, e_date, store=store, include_closed=include_closed)
+                    for k, v in (batch or {}).items():
+                        out[k] = int(v or 0)
             except Exception:
-                out[name] = 0
+                # fallback to slow per-id (best-effort)
+                for n in numeric:
+                    try:
+                        out[n] = count_orders_by_product_or_variant_processed(n, s_date, e_date, store=store, include_closed=include_closed)
+                    except Exception:
+                        out[n] = 0
+
+        # Non-numeric names are intentionally ignored by count_orders_by_title() (returns 0),
+        # but keep behavior consistent.
+        for n in non_numeric:
+            try:
+                out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+            except Exception:
+                out[n] = 0
         return {"data": out}
     except Exception as e:
         return {"error": str(e), "data": {}}

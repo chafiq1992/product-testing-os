@@ -1,12 +1,20 @@
-import os, requests, base64, re
+import os, requests, base64, re, time
 from datetime import datetime, timedelta
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 load_dotenv()
+
+# -------- lightweight in-memory caches (per Cloud Run instance) --------
+# NOTE: Best-effort only; resets on cold start and deploy.
+_PRODUCT_BRIEF_CACHE: dict[str, tuple[float, dict]] = {}
+_PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900")  # 15 minutes
+_PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
+_PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
 
 def _oauth_enabled_for_store(store: str | None) -> bool:
     """Whether DB-backed OAuth tokens are allowed for this store label.
@@ -358,6 +366,31 @@ def _rest_get_store_raw(store: str | None, path: str):
     r = requests.get(url, headers=cfg["HEADERS"], timeout=60, auth=auth, allow_redirects=False)
     r.raise_for_status()
     return r
+
+
+def _processed_window_iso(store: str | None, processed_min_date: str, processed_max_date: str) -> tuple[str, str]:
+    """Return (processed_at_min_iso, processed_at_max_iso) aligned to the shop's timezone day bounds."""
+    try:
+        try:
+            tzname = get_shop_timezone(store)
+        except Exception:
+            tzname = "UTC"
+        try:
+            tz = ZoneInfo(tzname) if ZoneInfo else None
+        except Exception:
+            tz = None
+        start_local = datetime.fromisoformat(f"{processed_min_date}T00:00:00")
+        end_local = datetime.fromisoformat(f"{processed_max_date}T23:59:59")
+        if tz:
+            start_local = start_local.replace(tzinfo=tz)
+            end_local = end_local.replace(tzinfo=tz)
+        end_local = end_local + timedelta(milliseconds=999)
+        utc = ZoneInfo("UTC") if ZoneInfo else None
+        processed_min_iso = start_local.astimezone(utc).isoformat() if utc else f"{processed_min_date}T00:00:00Z"
+        processed_max_iso = end_local.astimezone(utc).isoformat() if utc else f"{processed_max_date}T23:59:59Z"
+        return (processed_min_iso, processed_max_iso)
+    except Exception:
+        return (f"{processed_min_date}T00:00:00", f"{processed_max_date}T23:59:59")
 
 
 def get_shop_timezone(store: str | None = None) -> str:
@@ -748,30 +781,7 @@ def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_
     target = int(numeric_id)
     from urllib.parse import urlencode
     base_path = "/orders.json"
-    # Normalize processed_at window to the shop's timezone, then convert to UTC for the REST API
-    try:
-        try:
-            tzname = get_shop_timezone(store)
-        except Exception:
-            tzname = "UTC"
-        try:
-            tz = ZoneInfo(tzname) if ZoneInfo else None
-        except Exception:
-            tz = None
-        start_local = datetime.fromisoformat(f"{processed_min_date}T00:00:00")
-        end_local = datetime.fromisoformat(f"{processed_max_date}T23:59:59")
-        if tz:
-            start_local = start_local.replace(tzinfo=tz)
-            end_local = end_local.replace(tzinfo=tz)
-        # End-of-day inclusive to avoid truncation at second boundary
-        end_local = end_local + timedelta(milliseconds=999)
-        # Convert to UTC ISO8601 (Shopify processes timestamps in UTC)
-        utc = ZoneInfo("UTC") if ZoneInfo else None
-        processed_min_iso = start_local.astimezone(utc).isoformat() if utc else f"{processed_min_date}T00:00:00Z"
-        processed_max_iso = end_local.astimezone(utc).isoformat() if utc else f"{processed_max_date}T23:59:59Z"
-    except Exception:
-        processed_min_iso = f"{processed_min_date}T00:00:00"
-        processed_max_iso = f"{processed_max_date}T23:59:59"
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
 
     params = {
         "status": ("any" if include_closed else "open"),
@@ -813,6 +823,81 @@ def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_
         if not page_info:
             break
     return total
+
+
+def count_orders_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+) -> dict[str, int]:
+    """Count orders for many numeric product/variant IDs in one scan of orders.
+
+    Returns a mapping { id_str: count } for every numeric id in `numeric_ids`.
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            s = str(raw or "").strip()
+            if s.isdigit():
+                targets[int(s)] = s
+        except Exception:
+            continue
+    out: dict[str, int] = {v: 0 for v in targets.values()}
+    if not targets:
+        return out
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+    }
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                matched: set[int] = set()
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid in targets:
+                            matched.add(pid)
+                        if vid in targets:
+                            matched.add(vid)
+                    except Exception:
+                        continue
+                if matched:
+                    for tid in matched:
+                        key = targets.get(tid)
+                        if key:
+                            out[key] = int(out.get(key, 0) or 0) + 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
 
 
 def count_orders_total_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
@@ -1509,12 +1594,51 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
 
 
 def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+    """Return product briefs for a list of numeric product IDs.
+
+    Performance:
+      - best-effort per-instance TTL cache
+      - bounded parallel fetch for cache misses
+    """
+    ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip()]
+    if len(ids) > _PRODUCT_BRIEF_MAX_IDS:
+        ids = ids[:_PRODUCT_BRIEF_MAX_IDS]
+
+    now = time.time()
     out: dict[str, dict] = {}
-    for pid in (numeric_product_ids or []):
+    missing: list[str] = []
+    store_key = (store or "").strip().lower()
+    for pid in ids:
+        k = f"{store_key}::{pid}"
+        hit = _PRODUCT_BRIEF_CACHE.get(k)
+        if hit and (now - float(hit[0])) <= float(_PRODUCT_BRIEF_TTL_S):
+            out[pid] = hit[1]
+        else:
+            missing.append(pid)
+
+    if not missing:
+        return out
+
+    def _fetch_one(pid: str) -> tuple[str, dict]:
         try:
-            out[pid] = get_product_brief(str(pid), store=store)
+            data = get_product_brief(str(pid), store=store)
+            return (pid, data)
         except Exception:
-            out[pid] = {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0}
+            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0})
+
+    workers = max(1, min(int(_PRODUCT_BRIEF_WORKERS or 8), 16))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_fetch_one, pid) for pid in missing]
+        for f in as_completed(futs):
+            try:
+                pid, data = f.result()
+            except Exception:
+                continue
+            out[pid] = data
+            try:
+                _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+            except Exception:
+                pass
     return out
 
 
