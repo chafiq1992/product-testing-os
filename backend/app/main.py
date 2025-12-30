@@ -167,17 +167,26 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
         def _digest(msg: str, sec: str) -> str:
             return hmac.new(sec.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
 
-        # (1) decoded pairs (key/value decoded), sorted by key
         pairs = parse_qsl(raw, keep_blank_values=True)
-        items_dec: list[tuple[str, str]] = []
-        for k, v in pairs:
-            if k in ("hmac", "signature"):
-                continue
-            items_dec.append((str(k), str(v)))
-        msg_dec = "&".join([f"{k}={v}" for (k, v) in sorted(items_dec, key=lambda x: x[0])])
+
+        def _build_dec_message(exclude_keys: set[str] | None = None) -> str:
+            ex = exclude_keys or set()
+            items_dec: list[tuple[str, str]] = []
+            for k, v in pairs:
+                if k in ("hmac", "signature"):
+                    continue
+                if k in ex:
+                    continue
+                items_dec.append((str(k), str(v)))
+            return "&".join([f"{k}={v}" for (k, v) in sorted(items_dec, key=lambda x: x[0])])
+
+        # (1) decoded pairs (Shopify docs). Try with and without "host" (some installs omit it from HMAC).
+        msg_dec = _build_dec_message()
+        msg_dec_no_host = _build_dec_message({"host"})
         for sec in secrets_to_try:
-            dig_dec = _digest(msg_dec, sec)
-            if hmac.compare_digest(dig_dec, provided):
+            if hmac.compare_digest(_digest(msg_dec, sec), provided):
+                return True
+            if hmac.compare_digest(_digest(msg_dec_no_host, sec), provided):
                 return True
 
         # (2) raw pairs (preserve raw value encoding), sorted by decoded key
