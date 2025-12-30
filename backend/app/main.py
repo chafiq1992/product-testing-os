@@ -84,16 +84,49 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 # ---------------- Shopify OAuth (public apps) ----------------
+_SHOP_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
+
+
+def _extract_shop_domain(raw: str | None) -> str | None:
+    """Extract a valid shop domain from user input.
+
+    Accepts inputs like:
+      - fdd92b-2e.myshopify.com
+      - https://fdd92b-2e.myshopify.com
+      - accidental duplicates like fdd92b-2e.myshopify.comfdd92b-2e.myshopify.com
+    """
+    try:
+        s = (raw or "").strip().lower()
+        if not s:
+            return None
+        # strip protocol and path if pasted as URL
+        if s.startswith("https://"):
+            s = s[8:]
+        elif s.startswith("http://"):
+            s = s[7:]
+        s = s.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+        if _SHOP_RE.match(s):
+            return s
+        # If user pasted garbage or duplicated host, try extracting the first valid host.
+        m = re.findall(r"[a-z0-9][a-z0-9-]*\.myshopify\.com", s)
+        if not m:
+            return None
+        # If duplicated, pick the first; if multiple different, reject.
+        uniq = []
+        for x in m:
+            if x not in uniq:
+                uniq.append(x)
+        if len(uniq) == 1:
+            return uniq[0]
+        return None
+    except Exception:
+        return None
+
+
 def _is_valid_shop_domain(shop: str | None) -> bool:
     try:
         s = (shop or "").strip().lower()
-        if not s:
-            return False
-        if s.startswith("https://") or s.startswith("http://"):
-            return False
-        if "/" in s or "?" in s or "#" in s:
-            return False
-        return s.endswith(".myshopify.com")
+        return bool(_SHOP_RE.match(s))
     except Exception:
         return False
 
@@ -293,8 +326,8 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
         store_label = (store or "").strip()
         if not store_label:
             return {"error": "missing_store"}
-        shop = (shop or "").strip().lower()
-        if not _is_valid_shop_domain(shop):
+        shop = _extract_shop_domain(shop)
+        if not _is_valid_shop_domain(shop or ""):
             return {"error": "invalid_shop_domain"}
 
         # state/nonce to prevent CSRF (signed token, no server-side session required)
