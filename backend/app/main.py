@@ -113,28 +113,58 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
     Shopify signs all query parameters except "hmac" and "signature".
     """
     try:
-        # Shopify docs: build the message from decoded query parameters, excluding hmac/signature,
-        # sort by key, join as "k=v&k2=v2" (NOT URL-encoded), then HMAC-SHA256 (hex).
-        from urllib.parse import parse_qsl
+        # Practical note: different implementations canonicalize params slightly differently.
+        # We validate against both common Shopify canonicalizations to avoid false negatives:
+        #  1) decoded pairs (Shopify docs)
+        #  2) raw query (preserve encoding) sorted by decoded key (seen in some SDKs)
+        from urllib.parse import parse_qsl, unquote_plus
 
         raw = str((query_params or {}).get("__raw_query__") or "")
         provided = str((query_params or {}).get("hmac") or "").strip()
-        if not (raw and provided):
+        secret = str(client_secret or "").strip()
+        if not (raw and provided and secret):
             return False
 
+        def _digest(msg: str) -> str:
+            return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        # (1) decoded pairs (key/value decoded), sorted by key
         pairs = parse_qsl(raw, keep_blank_values=True)
-        items: list[tuple[str, str]] = []
+        items_dec: list[tuple[str, str]] = []
         for k, v in pairs:
             if k in ("hmac", "signature"):
                 continue
-            items.append((str(k), str(v)))
+            items_dec.append((str(k), str(v)))
+        msg_dec = "&".join([f"{k}={v}" for (k, v) in sorted(items_dec, key=lambda x: x[0])])
+        dig_dec = _digest(msg_dec)
+        if hmac.compare_digest(dig_dec, provided):
+            return True
 
-        msg = "&".join([f"{k}={v}" for (k, v) in sorted(items, key=lambda x: x[0])])
-        digest = hmac.new(client_secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-        ok = hmac.compare_digest(digest, provided)
+        # (2) raw pairs (preserve raw value encoding), sorted by decoded key
+        parts = [p for p in raw.split("&") if p]
+        items_raw: list[tuple[str, str]] = []
+        for p in parts:
+            if "=" in p:
+                k_raw, v_raw = p.split("=", 1)
+            else:
+                k_raw, v_raw = p, ""
+            try:
+                k_dec = unquote_plus(k_raw)
+            except Exception:
+                k_dec = k_raw
+            if k_dec in ("hmac", "signature"):
+                continue
+            items_raw.append((k_dec, f"{k_raw}={v_raw}"))
+        msg_raw = "&".join([kv for (_k, kv) in sorted(items_raw, key=lambda x: x[0])])
+        dig_raw = _digest(msg_raw)
+        ok = hmac.compare_digest(dig_raw, provided)
         if not ok:
             try:
-                logger.info(f"[shopify] invalid_hmac shop={query_params.get('shop')} msg_len={len(msg)}")
+                # Do not log secrets or full msg; just enough to debug in Cloud Run.
+                logger.info(
+                    f"[shopify] invalid_hmac shop={query_params.get('shop')} "
+                    f"secret_len={len(secret)} msg_dec_len={len(msg_dec)} msg_raw_len={len(msg_raw)}"
+                )
             except Exception:
                 pass
         return ok
