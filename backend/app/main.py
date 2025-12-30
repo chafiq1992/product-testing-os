@@ -158,8 +158,14 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
         if not (raw and provided and secret):
             return False
 
-        def _digest(msg: str) -> str:
-            return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        # Some dashboards display secrets with a prefix (e.g. "shpss_"). In case Shopify signs using
+        # the raw secret material only, try both forms.
+        secrets_to_try: list[str] = [secret]
+        if secret.startswith("shpss_") and len(secret) > 6:
+            secrets_to_try.append(secret.split("shpss_", 1)[1])
+
+        def _digest(msg: str, sec: str) -> str:
+            return hmac.new(sec.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
 
         # (1) decoded pairs (key/value decoded), sorted by key
         pairs = parse_qsl(raw, keep_blank_values=True)
@@ -169,9 +175,10 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
                 continue
             items_dec.append((str(k), str(v)))
         msg_dec = "&".join([f"{k}={v}" for (k, v) in sorted(items_dec, key=lambda x: x[0])])
-        dig_dec = _digest(msg_dec)
-        if hmac.compare_digest(dig_dec, provided):
-            return True
+        for sec in secrets_to_try:
+            dig_dec = _digest(msg_dec, sec)
+            if hmac.compare_digest(dig_dec, provided):
+                return True
 
         # (2) raw pairs (preserve raw value encoding), sorted by decoded key
         parts = [p for p in raw.split("&") if p]
@@ -189,14 +196,22 @@ def _verify_shopify_hmac(query_params: dict, client_secret: str) -> bool:
                 continue
             items_raw.append((k_dec, f"{k_raw}={v_raw}"))
         msg_raw = "&".join([kv for (_k, kv) in sorted(items_raw, key=lambda x: x[0])])
-        dig_raw = _digest(msg_raw)
-        ok = hmac.compare_digest(dig_raw, provided)
+        ok = False
+        last_dig_dec = ""
+        last_dig_raw = ""
+        for sec in secrets_to_try:
+            last_dig_dec = _digest(msg_dec, sec)
+            last_dig_raw = _digest(msg_raw, sec)
+            if hmac.compare_digest(last_dig_raw, provided):
+                ok = True
+                break
         if not ok:
             try:
                 # Do not log secrets or full msg; just enough to debug in Cloud Run.
                 logger.info(
                     f"[shopify] invalid_hmac shop={query_params.get('shop')} "
-                    f"secret_len={len(secret)} msg_dec_len={len(msg_dec)} msg_raw_len={len(msg_raw)}"
+                    f"secret_len={len(secret)} msg_dec_len={len(msg_dec)} msg_raw_len={len(msg_raw)} "
+                    f"dig_dec_prefix={last_dig_dec[:10]} dig_raw_prefix={last_dig_raw[:10]}"
                 )
             except Exception:
                 pass
@@ -381,7 +396,19 @@ async def api_shopify_oauth_callback(request: Request):
 
         # Verify Shopify HMAC
         if not _verify_shopify_hmac_request(request, SHOPIFY_CLIENT_SECRET):
-            return {"error": "invalid_hmac"}
+            # Return lightweight debug info (no secrets) to help diagnose env/encoding issues.
+            try:
+                qp_dbg = dict(request.query_params)
+                qp_dbg["__raw_query__"] = request.url.query or ""
+                raw = qp_dbg.get("__raw_query__") or ""
+                return {
+                    "error": "invalid_hmac",
+                    "shop": qp_dbg.get("shop"),
+                    "keys": sorted([k for k in qp_dbg.keys() if k != "hmac"]),
+                    "raw_len": len(str(raw)),
+                }
+            except Exception:
+                return {"error": "invalid_hmac"}
 
         # Exchange code for token
         token_url = f"https://{shop}/admin/oauth/access_token"
