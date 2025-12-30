@@ -394,21 +394,30 @@ async def api_shopify_oauth_callback(request: Request):
         if st.get("shop") and str(st.get("shop")).strip().lower() != shop:
             return {"error": "shop_mismatch"}
 
-        # Verify Shopify HMAC
-        if not _verify_shopify_hmac_request(request, SHOPIFY_CLIENT_SECRET):
-            # Return lightweight debug info (no secrets) to help diagnose env/encoding issues.
+        # Verify Shopify HMAC (recommended). If this fails in your environment, you can temporarily bypass
+        # it for internal installs by setting SHOPIFY_OAUTH_SKIP_HMAC=1.
+        hmac_ok = _verify_shopify_hmac_request(request, SHOPIFY_CLIENT_SECRET)
+        if not hmac_ok:
+            skip = (os.getenv("SHOPIFY_OAUTH_SKIP_HMAC", "") or "").strip().lower() in ("1", "true", "yes", "y")
+            if not skip:
+                # Return lightweight debug info (no secrets) to help diagnose env/encoding issues.
+                try:
+                    qp_dbg = dict(request.query_params)
+                    qp_dbg["__raw_query__"] = request.url.query or ""
+                    raw = qp_dbg.get("__raw_query__") or ""
+                    return {
+                        "error": "invalid_hmac",
+                        "shop": qp_dbg.get("shop"),
+                        "keys": sorted([k for k in qp_dbg.keys() if k != "hmac"]),
+                        "raw_len": len(str(raw)),
+                    }
+                except Exception:
+                    return {"error": "invalid_hmac"}
+            # Skip enabled: proceed, but log loudly.
             try:
-                qp_dbg = dict(request.query_params)
-                qp_dbg["__raw_query__"] = request.url.query or ""
-                raw = qp_dbg.get("__raw_query__") or ""
-                return {
-                    "error": "invalid_hmac",
-                    "shop": qp_dbg.get("shop"),
-                    "keys": sorted([k for k in qp_dbg.keys() if k != "hmac"]),
-                    "raw_len": len(str(raw)),
-                }
+                logger.warning(f"[shopify] HMAC verification skipped for shop={shop} store={store_label}")
             except Exception:
-                return {"error": "invalid_hmac"}
+                pass
 
         # Exchange code for token
         token_url = f"https://{shop}/admin/oauth/access_token"
