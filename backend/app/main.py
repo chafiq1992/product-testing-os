@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, Form, File, Request
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
 from pydantic import BaseModel
@@ -55,6 +56,7 @@ from urllib.parse import urlparse
 import logging
 import secrets
 import requests
+import asyncio
 
 # Optional ChatKit server-mode support
 try:
@@ -82,6 +84,92 @@ logger = logging.getLogger("app.chatkit")
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
+
+# ---------------- Small in-memory TTL cache (per Cloud Run instance) ----------------
+# Avoid duplicate expensive Meta/Shopify calls when the UI triggers the same request multiple
+# times within seconds. Best-effort only; caches reset on new instances.
+_API_CACHE: dict[str, tuple[float, object]] = {}
+_API_CACHE_LOCK = threading.Lock()
+_API_INFLIGHT: dict[str, asyncio.Future] = {}
+_API_INFLIGHT_LOCK = asyncio.Lock()
+
+
+def _stable_json(obj: object) -> str:
+    try:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps(str(obj), ensure_ascii=False)
+
+
+def _cache_key(prefix: str, payload: object) -> str:
+    return f"{prefix}:{_stable_json(payload)}"
+
+
+def _cache_get(key: str) -> object | None:
+    now = time.time()
+    with _API_CACHE_LOCK:
+        hit = _API_CACHE.get(key)
+        if not hit:
+            return None
+        exp, val = hit
+        if exp and exp > now:
+            return val
+        # expired
+        _API_CACHE.pop(key, None)
+        return None
+
+
+def _cache_set(key: str, ttl_s: int, value: object) -> None:
+    try:
+        ttl = int(ttl_s or 0)
+    except Exception:
+        ttl = 0
+    if ttl <= 0:
+        return
+    exp = time.time() + ttl
+    with _API_CACHE_LOCK:
+        _API_CACHE[key] = (exp, value)
+        # Opportunistic trim
+        if len(_API_CACHE) > 512:
+            try:
+                items = sorted(_API_CACHE.items(), key=lambda kv: kv[1][0])
+                for k, _ in items[: max(1, len(items) // 5)]:
+                    _API_CACHE.pop(k, None)
+            except Exception:
+                pass
+
+
+async def _cached(key: str, ttl_s: int, compute):
+    """Async cache with in-flight de-duping (multiple callers await the same work)."""
+    hit = _cache_get(key)
+    if hit is not None:
+        return hit
+
+    async with _API_INFLIGHT_LOCK:
+        fut = _API_INFLIGHT.get(key)
+        if fut is not None:
+            return await fut
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        _API_INFLIGHT[key] = fut
+
+    try:
+        val = await compute()
+        _cache_set(key, ttl_s, val)
+        try:
+            fut.set_result(val)
+        except Exception:
+            pass
+        return val
+    except Exception as e:
+        try:
+            fut.set_exception(e)
+        except Exception:
+            pass
+        raise
+    finally:
+        async with _API_INFLIGHT_LOCK:
+            _API_INFLIGHT.pop(key, None)
 
 # ---------------- Shopify OAuth (public apps) ----------------
 _SHOP_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
@@ -744,7 +832,18 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
                 acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             except Exception:
                 acct = None
-        items = list_active_campaigns_with_insights(date_preset or "last_7d", ad_account_id=(acct or None), since=start, until=end)
+        key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store or None})
+
+        async def _compute():
+            return await run_in_threadpool(
+                list_active_campaigns_with_insights,
+                date_preset or "last_7d",
+                ad_account_id=(acct or None),
+                since=start,
+                until=end,
+            )
+
+        items = await _cached(key, 30, _compute)
         return {"data": items}
     except Exception as e:
         # Unwrap tenacity RetryError to expose the underlying API error message
@@ -777,49 +876,65 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         end = req.end
         store = req.store
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
-        names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
+        raw_names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
         # Guardrails: keep requests bounded even if UI sends a lot
-        if len(names) > 400:
-            names = names[:400]
-        out: dict[str, int] = {n: 0 for n in names}
+        if len(raw_names) > 400:
+            raw_names = raw_names[:400]
+        # Normalize for cache hit rate: de-duplicate + stable sort
+        names = sorted(set(raw_names))
 
         df = (req.date_field or "processed").lower()
-        numeric = [n for n in names if n.isdigit()]
-        non_numeric = [n for n in names if not n.isdigit()]
+        key = _cache_key("shopify_orders_count_by_title", {
+            "store": store or None,
+            "start": start,
+            "end": end,
+            "include_closed": include_closed,
+            "date_field": df,
+            "names": names,
+        })
 
-        # Prefer processed_at window for numeric product/variant IDs to match Shopify Admin.
-        # Use a batched single-pass scan for speed.
-        if numeric:
-            s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
-            e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
-            try:
-                if df == "created":
-                    # created_at path: still per-id, but created_at ranges are typically smaller and this is less used
+        def _compute_sync():
+            out: dict[str, int] = {n: 0 for n in names}
+            numeric = [n for n in names if n.isdigit()]
+            non_numeric = [n for n in names if not n.isdigit()]
+
+            if numeric:
+                s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+                e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
+                try:
+                    if df == "created":
+                        for n in numeric:
+                            try:
+                                out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                            except Exception:
+                                out[n] = 0
+                    else:
+                        batch = count_orders_by_product_or_variant_processed_batch(numeric, s_date, e_date, store=store, include_closed=include_closed)
+                        for k, v in (batch or {}).items():
+                            out[k] = int(v or 0)
+                except Exception:
                     for n in numeric:
                         try:
-                            out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                            out[n] = count_orders_by_product_or_variant_processed(n, s_date, e_date, store=store, include_closed=include_closed)
                         except Exception:
                             out[n] = 0
-                else:
-                    batch = count_orders_by_product_or_variant_processed_batch(numeric, s_date, e_date, store=store, include_closed=include_closed)
-                    for k, v in (batch or {}).items():
-                        out[k] = int(v or 0)
-            except Exception:
-                # fallback to slow per-id (best-effort)
-                for n in numeric:
-                    try:
-                        out[n] = count_orders_by_product_or_variant_processed(n, s_date, e_date, store=store, include_closed=include_closed)
-                    except Exception:
-                        out[n] = 0
 
-        # Non-numeric names are intentionally ignored by count_orders_by_title() (returns 0),
-        # but keep behavior consistent.
-        for n in non_numeric:
-            try:
-                out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
-            except Exception:
-                out[n] = 0
-        return {"data": out}
+            for n in non_numeric:
+                try:
+                    out[n] = count_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                except Exception:
+                    out[n] = 0
+            return out
+
+        async def _compute():
+            return await run_in_threadpool(_compute_sync)
+
+        out = await _cached(key, 60, _compute)
+        # Ensure any original names get a value (including duplicates/truncation)
+        shaped: dict[str, int] = {}
+        for n in raw_names:
+            shaped[n] = int((out or {}).get(n, 0) or 0)
+        return {"data": shaped}
     except Exception as e:
         return {"error": str(e), "data": {}}
 
@@ -832,7 +947,14 @@ class ProductsBriefRequest(BaseModel):
 @app.post("/api/shopify/products_brief")
 async def api_products_brief(req: ProductsBriefRequest):
     try:
-        data = get_products_brief(req.ids or [], store=req.store)
+        ids_raw = [str(x or "").strip() for x in (req.ids or []) if str(x or "").strip()]
+        ids = sorted(set(ids_raw))
+        key = _cache_key("shopify_products_brief", {"store": req.store or None, "ids": ids})
+
+        async def _compute():
+            return await run_in_threadpool(get_products_brief, ids, store=req.store)
+
+        data = await _cached(key, 300, _compute)
         return {"data": data}
     except Exception as e:
         return {"error": str(e), "data": {}}
@@ -853,11 +975,15 @@ async def api_orders_count_total(req: OrdersTotalCountRequest):
         e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in (req.end or "") else (req.end or "")
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         df = (req.date_field or "processed").lower()
-        if df == "created":
-            cnt = count_orders_total_created(s_date, e_date, store=req.store, include_closed=include_closed)
-        else:
-            cnt = count_orders_total_processed(s_date, e_date, store=req.store, include_closed=include_closed)
-        return {"data": {"count": int(cnt)}}
+        key = _cache_key("shopify_orders_count_total", {"store": req.store or None, "start": s_date, "end": e_date, "include_closed": include_closed, "date_field": df})
+
+        async def _compute():
+            if df == "created":
+                return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=req.store, include_closed=include_closed)
+            return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=req.store, include_closed=include_closed)
+
+        cnt = await _cached(key, 60, _compute)
+        return {"data": {"count": int(cnt or 0)}}
     except Exception as e:
         return {"error": str(e), "data": {"count": 0}}
 
@@ -990,17 +1116,29 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
         e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in req.end else (req.end or "")
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         agg = (req.aggregate or "orders").lower()
-        if agg == "items":
-            cnt = count_items_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
-        elif agg == "sum_product_orders":
-            df = (req.date_field or "processed").lower()
-            if df == "created":
-                cnt = sum_product_order_counts_for_collection_created(cid, s_date, e_date, store=req.store, include_closed=include_closed)
-            else:
-                cnt = sum_product_order_counts_for_collection(cid, s_date, e_date, store=req.store, include_closed=include_closed)
-        else:
-            cnt = count_orders_by_collection_processed(cid, s_date, e_date, store=req.store, include_closed=include_closed)
-        return {"data": {"count": cnt}}
+        df = (req.date_field or "processed").lower()
+
+        key = _cache_key("shopify_orders_count_by_collection", {
+            "store": req.store or None,
+            "collection_id": cid,
+            "start": s_date,
+            "end": e_date,
+            "include_closed": include_closed,
+            "aggregate": agg,
+            "date_field": df,
+        })
+
+        async def _compute():
+            if agg == "items":
+                return await run_in_threadpool(count_items_by_collection_processed, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+            if agg == "sum_product_orders":
+                if df == "created":
+                    return await run_in_threadpool(sum_product_order_counts_for_collection_created, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+                return await run_in_threadpool(sum_product_order_counts_for_collection, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+            return await run_in_threadpool(count_orders_by_collection_processed, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+
+        cnt = await _cached(key, 60, _compute)
+        return {"data": {"count": int(cnt or 0)}}
     except Exception as e:
         return {"error": str(e), "data": {"count": 0}}
 
@@ -2728,7 +2866,12 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
 @app.get("/api/meta/campaigns/{campaign_id}/adsets")
 async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None):
     try:
-        items = list_adsets_with_insights(campaign_id, date_preset or "last_7d", since=start, until=end)
+        key = _cache_key("meta_campaign_adsets", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None})
+
+        async def _compute():
+            return await run_in_threadpool(list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
+
+        items = await _cached(key, 30, _compute)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
@@ -2741,46 +2884,52 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
     Returns mapping: { adset_id: { count: number, orders: [...] } }
     """
     try:
-        # 1) List ad sets for campaign and their ads
-        adsets = list_adsets_with_insights(campaign_id, "last_7d")
-        adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
-        ads_by_adset = list_ads_for_adsets(adset_ids)
+        key = _cache_key("meta_campaign_adset_orders", {"campaign_id": campaign_id, "start": start, "end": end, "store": store or None})
 
-        # Build reverse map ad_id -> adset_id
-        ad_to_adset: dict[str, str] = {}
-        for aid, ad_ids in (ads_by_adset or {}).items():
-            for ad in (ad_ids or []):
-                if ad:
-                    ad_to_adset[str(ad)] = str(aid)
+        async def _compute():
+            # 1) List ad sets for campaign and their ads
+            adsets = await run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d")
+            adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
+            ads_by_adset = await run_in_threadpool(list_ads_for_adsets, adset_ids)
 
-        # 2) Fetch Shopify orders with UTMs for date range (processed dates)
-        orders = list_orders_with_utms_processed(start, end, store=store, include_closed=True)
+            # Build reverse map ad_id -> adset_id
+            ad_to_adset: dict[str, str] = {}
+            for aid, ad_ids in (ads_by_adset or {}).items():
+                for ad in (ad_ids or []):
+                    if ad:
+                        ad_to_adset[str(ad)] = str(aid)
 
-        # 3) Attribute orders by ad_id
-        result: dict[str, dict] = {}
-        for o in (orders or []):
-            try:
-                ad_id = str((o or {}).get("ad_id") or "")
-                if not ad_id:
+            # 2) Fetch Shopify orders with UTMs for date range (processed dates)
+            orders = await run_in_threadpool(list_orders_with_utms_processed, start, end, store=store, include_closed=True)
+
+            # 3) Attribute orders by ad_id
+            result: dict[str, dict] = {}
+            for o in (orders or []):
+                try:
+                    ad_id = str((o or {}).get("ad_id") or "")
+                    if not ad_id:
+                        continue
+                    adset_id = ad_to_adset.get(ad_id)
+                    if not adset_id:
+                        continue
+                    bucket = result.setdefault(adset_id, {"count": 0, "orders": []})
+                    bucket["count"] = int(bucket.get("count", 0)) + 1
+                    # Append a slimmed order row for UI
+                    bucket["orders"].append({
+                        "order_id": o.get("order_id"),
+                        "processed_at": o.get("processed_at"),
+                        "total_price": o.get("total_price"),
+                        "currency": o.get("currency"),
+                        "landing_site": o.get("landing_site"),
+                        "utm": o.get("utm") or {},
+                        "ad_id": ad_id,
+                        "campaign_id": o.get("campaign_id"),
+                    })
+                except Exception:
                     continue
-                adset_id = ad_to_adset.get(ad_id)
-                if not adset_id:
-                    continue
-                bucket = result.setdefault(adset_id, {"count": 0, "orders": []})
-                bucket["count"] = int(bucket.get("count", 0)) + 1
-                # Append a slimmed order row for UI
-                bucket["orders"].append({
-                    "order_id": o.get("order_id"),
-                    "processed_at": o.get("processed_at"),
-                    "total_price": o.get("total_price"),
-                    "currency": o.get("currency"),
-                    "landing_site": o.get("landing_site"),
-                    "utm": o.get("utm") or {},
-                    "ad_id": ad_id,
-                    "campaign_id": o.get("campaign_id"),
-                })
-            except Exception:
-                continue
+            return result
+
+        result = await _cached(key, 60, _compute)
         return {"data": result}
     except Exception as e:
         return {"error": str(e), "data": {}}

@@ -1,6 +1,38 @@
 import axios from 'axios'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+
+// De-dupe identical in-flight requests (prevents duplicate expensive API calls on re-render).
+const __inflight = new Map<string, Promise<any>>()
+function __stableStringify(obj: any): string {
+  try{
+    if(obj==null) return ''
+    if(typeof obj !== 'object') return String(obj)
+    const seen = new WeakSet()
+    const sorter = (v: any): any => {
+      if(v==null) return v
+      if(typeof v !== 'object') return v
+      if(seen.has(v)) return '[Circular]'
+      seen.add(v)
+      if(Array.isArray(v)) return v.map(sorter)
+      const out: any = {}
+      for(const k of Object.keys(v).sort()){
+        out[k] = sorter(v[k])
+      }
+      return out
+    }
+    return JSON.stringify(sorter(obj))
+  }catch{
+    try{ return JSON.stringify(obj) }catch{ return String(obj) }
+  }
+}
+function __dedupe<T>(key: string, fn: ()=>Promise<T>): Promise<T> {
+  const hit = __inflight.get(key)
+  if(hit) return hit as Promise<T>
+  const p = fn().finally(()=> { __inflight.delete(key) })
+  __inflight.set(key, p as any)
+  return p
+}
 function selectedStore(){
   try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_store')||undefined) : undefined }catch{ return undefined }
 }
@@ -588,8 +620,11 @@ export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string
   const s = selectedStore()
   if(s) parts.push(`store=${encodeURIComponent(s)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''
-  const {data} = await axios.get(`${base}/api/meta/campaigns${qp}`)
-  return data as { data: MetaCampaignRow[], error?: string }
+  const url = `${base}/api/meta/campaigns${qp}`
+  return __dedupe(`GET ${url}`, async ()=>{
+    const {data} = await axios.get(url)
+    return data as { data: MetaCampaignRow[], error?: string }
+  })
 }
 
 // Ad account persistence per store
@@ -634,8 +669,11 @@ export async function fetchCampaignAdsets(campaign_id: string, datePreset?: stri
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
   const qp = parts.length? `?${parts.join('&')}` : ''
-  const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets${qp}`)
-  return data as { data: MetaAdsetRow[], error?: string }
+  const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets${qp}`
+  return __dedupe(`GET ${url}`, async ()=>{
+    const {data} = await axios.get(url)
+    return data as { data: MetaAdsetRow[], error?: string }
+  })
 }
 
 export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAUSED'){
@@ -670,32 +708,47 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
   const s = store ?? selectedStore()
   if(s) params.push(`store=${encodeURIComponent(s)}`)
   const qp = params.length? `?${params.join('&')}` : ''
-  const {data} = await axios.get(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`)
-  return data as { data: Record<string, { count:number, orders: AttributedOrder[] }>, error?: string }
+  const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`
+  return __dedupe(`GET ${url}`, async ()=>{
+    const {data} = await axios.get(url)
+    return data as { data: Record<string, { count:number, orders: AttributedOrder[] }>, error?: string }
+  })
 }
 
 // Shopify: count orders by line item title substring for a time range
 export async function shopifyOrdersCountByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }
-  const {data} = await axios.post(`${base}/api/shopify/orders_count_by_title`, body)
-  return data as { data: { [name:string]: number }, error?: string }
+  const url = `${base}/api/shopify/orders_count_by_title`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { [name:string]: number }, error?: string }
+  })
 }
 
 export async function shopifyProductsBrief(payload:{ ids: string[], store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
-  const {data} = await axios.post(`${base}/api/shopify/products_brief`, body)
-  return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number } }, error?: string }
+  const url = `${base}/api/shopify/products_brief`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number } }, error?: string }
+  })
 }
 
 export async function shopifyOrdersCountByCollection(payload:{ collection_id: string, start: string, end: string, store?: string, include_closed?: boolean, aggregate?: 'orders'|'items'|'sum_product_orders', date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, aggregate: payload.aggregate, date_field: payload.date_field }
-  const {data} = await axios.post(`${base}/api/shopify/orders_count_by_collection`, body)
-  return data as { data: { count: number }, error?: string }
+  const url = `${base}/api/shopify/orders_count_by_collection`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { count: number }, error?: string }
+  })
 }
 
 // Shopify: count total orders for store over a time range
 export async function shopifyOrdersCountTotal(payload:{ start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }
-  const {data} = await axios.post(`${base}/api/shopify/orders_count_total`, body)
-  return data as { data: { count: number }, error?: string }
+  const url = `${base}/api/shopify/orders_count_total`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { count: number }, error?: string }
+  })
 }

@@ -349,7 +349,8 @@ export default function AdsManagementPage(){
     const { start, end } = computeRange('last_7d_incl_today')
     setCustomStart(start)
     setCustomEnd(end)
-    load(datePreset)
+    // Don't call load() here: the store-scoped bootstrap effect below loads the
+    // default ad account first, then fetches campaigns once (avoids duplicate requests).
   },[])
   useEffect(()=>{
     const loadAccounts = async () => {
