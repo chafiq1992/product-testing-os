@@ -1064,6 +1064,50 @@ def _get_confirmation_agent(req: Request) -> dict | None:
     return _verify_confirmation_token(token)
 
 
+def _confirmation_tags_list(tags_raw: str | list[str] | None) -> list[str]:
+    """Normalize Shopify order tags into a list of strings (trimmed)."""
+    try:
+        if not tags_raw:
+            return []
+        if isinstance(tags_raw, list):
+            out: list[str] = []
+            for t in tags_raw:
+                s = str(t or "").strip()
+                if s:
+                    out.append(s)
+            return out
+        # Shopify REST returns tags as a comma-separated string
+        return [t.strip() for t in str(tags_raw or "").split(",") if t.strip()]
+    except Exception:
+        return []
+
+
+def _confirmation_is_fz_agent(agent_email: str | None) -> bool:
+    return (agent_email or "").strip().lower() == "fz@conf.com"
+
+
+def _confirmation_order_assigned_to_agent(order: dict, tags_list: list[str], agent_email: str | None) -> bool:
+    """Return True if an order is assigned to the given agent.
+
+    Current rule set (can be extended later):
+      - fz@conf.com: only orders tagged 'fz' AND financial_status in {pending, paid}
+        (orders are already constrained to open+unfulfilled by list_orders_open_unfulfilled).
+    """
+    ae = (agent_email or "").strip().lower()
+    if not ae:
+        return False
+    if _confirmation_is_fz_agent(ae):
+        tags_lc = {t.strip().lower() for t in (tags_list or []) if str(t).strip()}
+        if "fz" not in tags_lc:
+            return False
+        fs = str((order or {}).get("financial_status") or "").strip().lower()
+        if fs not in ("pending", "paid"):
+            return False
+        return True
+    # default: unassigned routing (everyone sees the queue)
+    return True
+
+
 def _load_confirmation_users(store: str | None) -> list[dict]:
     """Resolve confirmation users (email + password + optional name).
 
@@ -1401,6 +1445,7 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
         agent = _get_confirmation_agent(req)
         if not agent:
             return {"error": "unauthorized", "data": {"orders": []}}
+        agent_email = str((agent or {}).get("sub") or "").strip().lower()
         fields = ",".join([
             "id", "name", "created_at", "processed_at", "total_price", "currency",
             "tags", "financial_status", "fulfillment_status", "email", "phone",
@@ -1413,11 +1458,14 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
             try:
                 if not isinstance(o, dict):
                     continue
-                if has_cod_tag(o.get("tags")):
+                # normalize tags to list for UI + filtering
+                tags_list = _confirmation_tags_list(o.get("tags"))
+                # Exclude confirmed (COD-tagged) orders from the open queue
+                if has_cod_tag(tags_list):
                     continue
-                # normalize tags to list for UI
-                tags_raw = o.get("tags")
-                tags_list = [t.strip() for t in str(tags_raw or "").split(",") if t.strip()]
+                # Optional: assignment routing (e.g., fz@conf.com)
+                if not _confirmation_order_assigned_to_agent(o, tags_list, agent_email):
+                    continue
                 cust = o.get("customer") or {}
                 ship = o.get("shipping_address") or {}
                 bill = o.get("billing_address") or {}
@@ -1482,6 +1530,74 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
         return {"data": {"orders": out, "next_page_info": res.get("next_page_info"), "prev_page_info": res.get("prev_page_info")}}
     except Exception as e:
         return {"error": str(e), "data": {"orders": []}}
+
+
+def _confirmation_agent_order_analytics(store: str | None, agent_email: str) -> dict:
+    """Compute tag-based analytics from the open+unfulfilled order set for this store."""
+    ae = (agent_email or "").strip().lower()
+    if not ae:
+        return {}
+    # Pull all pages (best-effort) because the UI list is paginated.
+    fields = "id,tags,financial_status"
+    page_info: str | None = None
+    max_pages = 20  # safety guard
+    pages = 0
+
+    assigned_total = 0
+    n1 = n2 = n3 = 0
+    any_n = 0
+    no_n = 0
+    all_n = 0  # has n1+n2+n3 simultaneously (rare, but supported)
+
+    while True:
+        res = list_orders_open_unfulfilled(store=store, limit=250, page_info=page_info, fields=fields)
+        orders = (res or {}).get("orders") or []
+        for o in (orders or []):
+            try:
+                if not isinstance(o, dict):
+                    continue
+                tags_list = _confirmation_tags_list(o.get("tags"))
+                if has_cod_tag(tags_list):
+                    continue
+                if not _confirmation_order_assigned_to_agent(o, tags_list, ae):
+                    continue
+                assigned_total += 1
+                tags_lc = {t.lower() for t in (tags_list or [])}
+                has_n1 = "n1" in tags_lc
+                has_n2 = "n2" in tags_lc
+                has_n3 = "n3" in tags_lc
+                if has_n1:
+                    n1 += 1
+                if has_n2:
+                    n2 += 1
+                if has_n3:
+                    n3 += 1
+                has_any_n = has_n1 or has_n2 or has_n3
+                if has_any_n:
+                    any_n += 1
+                else:
+                    no_n += 1
+                if has_n1 and has_n2 and has_n3:
+                    all_n += 1
+            except Exception:
+                continue
+        page_info = (res or {}).get("next_page_info") or None
+        if not page_info:
+            break
+        pages += 1
+        if pages >= max_pages:
+            break
+
+    return {
+        "assigned_total": assigned_total,
+        "n1": n1,
+        "n2": n2,
+        "n3": n3,
+        "any_n": any_n,
+        "no_n": no_n,
+        "all_n": all_n,
+        "truncated": bool(page_info),  # True if we bailed early due to max_pages
+    }
 
 
 class ConfirmationOrderActionRequest(BaseModel):
@@ -1551,6 +1667,25 @@ async def api_confirmation_stats(req: Request, store: str | None = None):
     except Exception as e:
         return {"error": str(e), "data": {}}
 
+
+@app.get("/api/confirmation/agent/analytics")
+async def api_confirmation_agent_analytics(req: Request, store: str | None = None):
+    """Agent-facing analytics for the confirmation queue."""
+    try:
+        agent = _get_confirmation_agent(req)
+        if not agent:
+            return {"error": "unauthorized", "data": {}}
+        agent_email = str((agent or {}).get("sub") or "").strip().lower()
+        base = _confirmation_agent_order_analytics(store, agent_email)
+        # confirmed count from event log (all-time for this store)
+        try:
+            confirmed_by_agent = db.count_confirmation_events(store, kind="confirm")
+            base["confirmed_total"] = int((confirmed_by_agent or {}).get(agent_email, 0) or 0)
+        except Exception:
+            base["confirmed_total"] = 0
+        return {"data": base}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
 
 @app.get("/api/confirmation/admin/analytics")
 async def api_confirmation_admin_analytics(req: Request, store: str | None = None, days: int | None = 30):

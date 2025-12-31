@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { CheckCircle2, LogOut, Phone, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
-import { confirmationLogin, confirmationListOrders, confirmationOrderAction, confirmationStats } from "@/lib/api"
+import { confirmationAgentAnalytics, confirmationLogin, confirmationListOrders, confirmationOrderAction, confirmationStats } from "@/lib/api"
 
 type OrderRow = {
   id: string
@@ -35,6 +35,15 @@ function WhatsAppIcon({ className="" }:{ className?: string }){
 
 function TagBadge({ tag }:{ tag: string }){
   return <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] text-slate-700 bg-white">{tag}</span>
+}
+
+function StatPill({ label, value }:{ label: string, value: number|string }){
+  return (
+    <div className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-sm">
+      <span className="text-slate-600">{label}</span>
+      <span className="font-semibold text-slate-900">{value}</span>
+    </div>
+  )
 }
 
 function fmtDate(s?: string){
@@ -93,6 +102,8 @@ export default function ConfirmationPage(){
   const [stats, setStats] = useState<Record<string, number>>({})
   const myConfirmed = useMemo(()=> (agentEmail ? (stats[agentEmail]||0) : 0), [stats, agentEmail])
 
+  const [agentAnalytics, setAgentAnalytics] = useState<any>({})
+
   const [confirming, setConfirming] = useState<{ orderId: string, date: string }|null>(null)
 
   useEffect(()=>{
@@ -113,6 +124,14 @@ export default function ConfirmationPage(){
       const res = await confirmationStats({ store })
       if((res as any)?.error){ return }
       setStats((res as any)?.data || {})
+    }catch{}
+  }
+
+  async function refreshAgentAnalytics(){
+    try{
+      const res = await confirmationAgentAnalytics({ store })
+      if((res as any)?.error){ return }
+      setAgentAnalytics((res as any)?.data || {})
     }catch{}
   }
 
@@ -149,6 +168,7 @@ export default function ConfirmationPage(){
     setPageInfo(null)
     loadOrders({ page_info: null, direction: "reset" })
     refreshStats()
+    refreshAgentAnalytics()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[authed, store])
 
@@ -233,6 +253,7 @@ export default function ConfirmationPage(){
     setOrders(arr=> arr.filter(x=> x.id !== orderId))
     setConfirming(null)
     refreshStats()
+    refreshAgentAnalytics()
   }
 
   if(!authed){
@@ -291,7 +312,7 @@ export default function ConfirmationPage(){
             <option value="irranova">irranova</option>
           </select>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">Home</Link>
-          <button onClick={()=>{ refreshStats(); loadOrders({ page_info: pageInfo, direction: undefined }) }} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
+          <button onClick={()=>{ refreshStats(); refreshAgentAnalytics(); loadOrders({ page_info: pageInfo, direction: undefined }) }} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
             <RefreshCw className={`w-4 h-4 ${loading? "animate-spin": ""}`}/> Refresh
           </button>
           <button onClick={doLogout} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
@@ -299,6 +320,24 @@ export default function ConfirmationPage(){
           </button>
         </div>
       </header>
+
+      <div className="sticky top-16 z-40 border-b bg-white/80 backdrop-blur">
+        <div className="px-4 md:px-6 py-2 flex items-center gap-2 overflow-auto">
+          <StatPill label="Assigned" value={Number(agentAnalytics?.assigned_total||0)} />
+          <StatPill label="N1" value={Number(agentAnalytics?.n1||0)} />
+          <StatPill label="N2" value={Number(agentAnalytics?.n2||0)} />
+          <StatPill label="N3" value={Number(agentAnalytics?.n3||0)} />
+          <StatPill label="Total N" value={Number(agentAnalytics?.any_n||0)} />
+          <StatPill label="No N" value={Number(agentAnalytics?.no_n||0)} />
+          <StatPill label="All N (n1+n2+n3)" value={Number(agentAnalytics?.all_n||0)} />
+          <StatPill label="Confirmed" value={Number(agentAnalytics?.confirmed_total ?? myConfirmed ?? 0)} />
+          {agentAnalytics?.truncated && (
+            <span className="shrink-0 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1">
+              Truncated (too many pages)
+            </span>
+          )}
+        </div>
+      </div>
 
       <div className="p-4 md:p-6 space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">

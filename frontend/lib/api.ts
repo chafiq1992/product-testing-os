@@ -38,6 +38,26 @@ export async function confirmationStats(payload?:{ store?: string }){
   return data as { data?: Record<string, number>, error?: string }
 }
 
+export async function confirmationAgentAnalytics(payload?:{ store?: string }){
+  const store = payload?.store ?? selectedStore()
+  const qp = store? `?store=${encodeURIComponent(store)}` : ''
+  const {data} = await axios.get(`${base}/api/confirmation/agent/analytics${qp}`, { headers: { ...confirmationHeaders() } })
+  return data as {
+    data?: {
+      assigned_total?: number,
+      n1?: number,
+      n2?: number,
+      n3?: number,
+      any_n?: number,
+      no_n?: number,
+      all_n?: number,
+      confirmed_total?: number,
+      truncated?: boolean,
+    },
+    error?: string
+  }
+}
+
 // -------- Confirmation Admin --------
 function confirmationAdminToken(){
   try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_confirmation_admin_token')||'') : '' }catch{ return '' }
