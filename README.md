@@ -61,37 +61,6 @@ Then install/connect per store:
 
 The minted token is stored in the DB under `AppSetting(store, "shopify_oauth")`.
 
-### Webhooks (order cancellations / deletions) — forensic log
-
-If you're seeing orders getting **cancelled** or **deleted** unexpectedly, you can enable a webhook receiver
-that logs every such event to the app database.
-
-**Important limitation**: Shopify does **not** provide the staff member’s **IP address** or “computer/device ID”
-in webhook payloads. When possible, the backend will try to infer the **actor** (staff/app) for cancellations
-using Shopify’s order events API.
-
-#### Environment variables
-
-- `SHOPIFY_WEBHOOK_SECRET` (recommended): your Shopify app shared secret used to verify webhook HMAC.
-  - If not set, the backend falls back to `SHOPIFY_CLIENT_SECRET`.
-
-#### Configure in Shopify Admin
-
-In your Shopify Admin → Settings → Notifications → Webhooks → **Create webhook**:
-
-- **Event**: `Order cancellation` (topic: `orders/cancelled`)
-- **Event**: `Order deletion` (topic: `orders/delete`)
-- **Format**: `JSON`
-- **URL**:
-  - `{BASE_URL}/api/shopify/webhook?store=irranova`
-  - (use the correct `store` label you configured in this repo)
-
-#### View logs
-
-The backend exposes a protected API (requires a valid `x-confirmation-admin-token`):
-
-- `GET /api/shopify/webhook_events?store=irranova&limit=100`
-
 Mixed-mode setups (your case):
 
 - **`irrakids`**: keep the old method → set `SHOPIFY_ACCESS_TOKEN_IRRAKIDS` / `SHOPIFY_SHOP_DOMAIN_IRRAKIDS` and do *not* include `irrakids` in `SHOPIFY_OAUTH_STORES`
