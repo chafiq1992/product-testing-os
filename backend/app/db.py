@@ -118,6 +118,35 @@ class ConfirmationEvent(Base):
 
 Index("ix_confirmation_events_store_agent_created_at", ConfirmationEvent.store, ConfirmationEvent.agent, ConfirmationEvent.created_at)
 
+# ---------------- Shopify Webhook Forensics ----------------
+class ShopifyWebhookEvent(Base):
+    """Persist incoming Shopify webhooks for later forensic review.
+
+    Note: Shopify webhooks do NOT include the staff IP/computer id. When possible, we
+    enrich cancellation events by calling Shopify's order events API to infer the actor
+    (staff/app) and save that separately.
+    """
+
+    __tablename__ = "shopify_webhook_events"
+
+    id = Column(String, primary_key=True)  # uuid
+    store = Column(String, nullable=True, index=True)  # internal store label (optional)
+    shop = Column(String, nullable=True, index=True)  # shop domain (from webhook header)
+    topic = Column(String, nullable=False, index=True)  # e.g. orders/cancelled
+    webhook_id = Column(String, nullable=True, index=True)  # X-Shopify-Webhook-Id (dedupe key)
+    order_id = Column(String, nullable=True, index=True)
+
+    actor = Column(String, nullable=True)  # best-effort (staff email/name or app)
+    actor_type = Column(String, nullable=True)  # 'staff' | 'app' | 'unknown'
+
+    summary = Column(Text, nullable=True)  # small human-readable info (reason/source)
+    payload_json = Column(Text, nullable=True)  # raw webhook body (JSON)
+    headers_json = Column(Text, nullable=True)  # selected headers (JSON)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+Index("ix_shopify_webhook_events_shop_created_at", ShopifyWebhookEvent.shop, ShopifyWebhookEvent.created_at)
+
 # Campaign ID mappings (persist manual product/collection IDs per campaign row)
 class CampaignMapping(Base):
     __tablename__ = "campaign_mappings"
@@ -134,6 +163,95 @@ Index('ix_campaign_mappings_store_key', CampaignMapping.store, CampaignMapping.c
 
 # Ensure new tables are created when module is imported (includes newly added tables)
 Base.metadata.create_all(engine)
+
+
+def log_shopify_webhook_event(
+    *,
+    store: str | None,
+    shop: str | None,
+    topic: str,
+    webhook_id: str | None,
+    order_id: str | None,
+    actor: str | None = None,
+    actor_type: str | None = None,
+    summary: str | None = None,
+    payload: dict | None = None,
+    headers: dict | None = None,
+) -> dict:
+    """Insert a ShopifyWebhookEvent row; best-effort de-duplication by webhook_id when present."""
+    from uuid import uuid4
+
+    t = (topic or "").strip() or "unknown"
+    wid = (str(webhook_id).strip() if webhook_id is not None else "") or None
+    with SessionLocal() as session:
+        # De-dupe by webhook id when present (Shopify retries deliveries)
+        if wid:
+            try:
+                existing = session.query(ShopifyWebhookEvent).filter(ShopifyWebhookEvent.webhook_id == wid).first()
+                if existing:
+                    return {"ok": True, "id": existing.id, "deduped": True}
+            except Exception:
+                pass
+        row = ShopifyWebhookEvent(
+            id=str(uuid4()),
+            store=(store.strip() if isinstance(store, str) and store.strip() else None),
+            shop=(shop.strip().lower() if isinstance(shop, str) and shop.strip() else None),
+            topic=t,
+            webhook_id=wid,
+            order_id=(str(order_id).strip() if order_id is not None and str(order_id).strip() else None),
+            actor=(actor.strip() if isinstance(actor, str) and actor.strip() else None),
+            actor_type=(actor_type.strip().lower() if isinstance(actor_type, str) and actor_type.strip() else None),
+            summary=(summary.strip() if isinstance(summary, str) and summary.strip() else None),
+            payload_json=(json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else None),
+            headers_json=(json.dumps(headers, ensure_ascii=False) if isinstance(headers, dict) else None),
+            created_at=_now(),
+        )
+        session.add(row)
+        session.commit()
+        return {"ok": True, "id": row.id, "deduped": False}
+
+
+def list_shopify_webhook_events(
+    *,
+    store: str | None = None,
+    shop: str | None = None,
+    topic: str | None = None,
+    order_id: str | None = None,
+    limit: int | None = 100,
+) -> list[dict]:
+    try:
+        n = int(limit or 100)
+    except Exception:
+        n = 100
+    n = max(1, min(n, 500))
+    with SessionLocal() as session:
+        q = session.query(ShopifyWebhookEvent).order_by(desc(ShopifyWebhookEvent.created_at))
+        if isinstance(store, str) and store.strip():
+            q = q.filter(ShopifyWebhookEvent.store == store.strip())
+        if isinstance(shop, str) and shop.strip():
+            q = q.filter(ShopifyWebhookEvent.shop == shop.strip().lower())
+        if isinstance(topic, str) and topic.strip():
+            q = q.filter(ShopifyWebhookEvent.topic == topic.strip())
+        if isinstance(order_id, str) and order_id.strip():
+            q = q.filter(ShopifyWebhookEvent.order_id == order_id.strip())
+        rows = q.limit(n).all()
+        out: list[dict] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "store": r.store,
+                "shop": r.shop,
+                "topic": r.topic,
+                "webhook_id": r.webhook_id,
+                "order_id": r.order_id,
+                "actor": r.actor,
+                "actor_type": r.actor_type,
+                "summary": r.summary,
+                "payload": (json.loads(r.payload_json) if r.payload_json else None),
+                "headers": (json.loads(r.headers_json) if r.headers_json else None),
+                "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+            })
+        return out
 
 
 def create_flow_row(flow_id: str, *, product: Dict[str, Any] | None = None, flow: Dict[str, Any] | None = None, ui: Dict[str, Any] | None = None, prompts: Dict[str, Any] | None = None, settings: Dict[str, Any] | None = None, ads: Dict[str, Any] | None = None, status: str = "draft", page_url: str | None = None, card_image: str | None = None):

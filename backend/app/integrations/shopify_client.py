@@ -650,6 +650,84 @@ def get_order_tags(order_id: str | int, *, store: str | None = None) -> list[str
         return []
 
 
+def get_order_events(order_id: str | int, *, store: str | None = None, timeout_s: int | float | None = 8) -> list[dict]:
+    """Fetch Shopify order events (best-effort) with a short timeout.
+
+    Useful for forensic attribution. Shopify may include `author` (staff/app) on events.
+    """
+    try:
+        oid = str(order_id).strip()
+        if not oid.isdigit():
+            return []
+        cfg = _get_store_config(store)
+        url = f"{cfg['BASE']}/orders/{oid}/events.json"
+        auth = None
+        if not cfg["TOKEN"]:
+            if cfg["API_KEY"] and cfg["PASSWORD"]:
+                auth = (cfg["API_KEY"], cfg["PASSWORD"])
+            else:
+                return []
+        try:
+            t = float(timeout_s or 8)
+        except Exception:
+            t = 8.0
+        r = requests.get(url, headers=cfg["HEADERS"], timeout=max(1.0, min(t, 30.0)), auth=auth)
+        r.raise_for_status()
+        data = r.json() if r.content else {}
+        events = (data or {}).get("events") or []
+        return events if isinstance(events, list) else []
+    except Exception:
+        return []
+
+
+def infer_order_cancellation_actor(order_id: str | int, *, store: str | None = None) -> dict | None:
+    """Try to infer who canceled an order (staff/app) from Shopify order events.
+
+    Returns:
+      { actor, actor_type, event_id, created_at, description, message, subject }
+    """
+    try:
+        events = get_order_events(order_id, store=store) or []
+        if not events:
+            return None
+        # Prefer events that look like cancellation; fall back to most recent.
+        cand: list[dict] = []
+        for e in events:
+            if not isinstance(e, dict):
+                continue
+            verb = str(e.get("verb") or "").strip().lower()
+            msg = str(e.get("message") or "").strip().lower()
+            desc = str(e.get("description") or "").strip().lower()
+            subj = str(e.get("subject_type") or "").strip().lower()
+            if verb == "cancelled" or "cancel" in msg or "cancel" in desc:
+                cand.append(e)
+            # Some events include subject_type="Order" and message mentions cancellation
+            elif subj == "order" and "cancel" in msg:
+                cand.append(e)
+        pick = (cand[-1] if cand else events[-1]) if isinstance(events, list) and events else None
+        if not isinstance(pick, dict):
+            return None
+        author = pick.get("author")
+        actor = str(author).strip() if author is not None else ""
+        if not actor:
+            return None
+        # Heuristic actor type
+        actor_type = "staff"
+        if "app" in actor.lower():
+            actor_type = "app"
+        return {
+            "actor": actor,
+            "actor_type": actor_type,
+            "event_id": pick.get("id"),
+            "created_at": pick.get("created_at"),
+            "description": pick.get("description"),
+            "message": pick.get("message"),
+            "subject": pick.get("subject_type"),
+        }
+    except Exception:
+        return None
+
+
 def set_order_tags(order_id: str | int, tags: list[str], *, store: str | None = None) -> list[str]:
     """Set order tags exactly to the provided list. Returns resulting list (best-effort)."""
     oid = str(order_id).strip()

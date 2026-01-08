@@ -35,6 +35,7 @@ from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
 from app.integrations.shopify_client import list_orders_with_utms_processed
 from app.integrations.shopify_client import list_orders_open_unfulfilled, cycle_tag, set_cod_tag, has_cod_tag
+from app.integrations.shopify_client import infer_order_cancellation_actor
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
@@ -382,6 +383,55 @@ def _verify_shopify_state(token: str) -> dict | None:
     except Exception:
         return None
 
+
+def _shopify_webhook_secrets() -> list[bytes]:
+    """Return possible secrets to verify Shopify webhooks.
+
+    Shopify webhook HMAC uses the app's shared secret. In this repo, that's usually
+    `SHOPIFY_CLIENT_SECRET` (Dev Dashboard). You can also set `SHOPIFY_WEBHOOK_SECRET`
+    explicitly to avoid ambiguity.
+    """
+    out: list[str] = []
+    sec = (os.getenv("SHOPIFY_WEBHOOK_SECRET", "") or "").strip()
+    if sec:
+        out.append(sec)
+    if SHOPIFY_CLIENT_SECRET:
+        out.append(str(SHOPIFY_CLIENT_SECRET).strip())
+    # Some dashboards prefix secrets (e.g. shpss_...). Try both forms.
+    expanded: list[str] = []
+    for s in out:
+        if not s:
+            continue
+        expanded.append(s)
+        if s.startswith("shpss_") and len(s) > 6:
+            expanded.append(s.split("shpss_", 1)[1])
+    # Deduplicate while preserving order
+    uniq: list[bytes] = []
+    seen: set[str] = set()
+    for s in expanded:
+        if s and s not in seen:
+            seen.add(s)
+            uniq.append(s.encode("utf-8"))
+    return uniq
+
+
+def _verify_shopify_webhook(body: bytes, provided_hmac_b64: str | None) -> bool:
+    """Verify Shopify webhook HMAC (base64) against raw request body."""
+    try:
+        provided = (provided_hmac_b64 or "").strip()
+        if not provided:
+            return False
+        secrets_to_try = _shopify_webhook_secrets()
+        if not secrets_to_try:
+            return False
+        for sec in secrets_to_try:
+            digest = base64.b64encode(hmac.new(sec, body or b"", hashlib.sha256).digest()).decode("utf-8")
+            if hmac.compare_digest(digest, provided):
+                return True
+        return False
+    except Exception:
+        return False
+
 # Mount static uploads directory. Use the unified path from config.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
@@ -547,6 +597,125 @@ async def api_shopify_oauth_callback(request: Request):
         except Exception:
             txt = str(e)
         return {"error": "token_exchange_failed", "details": txt}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/shopify/webhook")
+async def api_shopify_webhook(request: Request, store: str | None = None):
+    """Shopify webhook receiver (orders/cancelled, orders/delete, etc).
+
+    IMPORTANT LIMITATION:
+      - Shopify does NOT send the cancelling staff member's IP address or "computer ID" in webhooks.
+      - We can still log the event, and *sometimes* infer the actor (staff/app) for cancellations
+        by querying Shopify's order events API.
+    """
+    body = await request.body()
+    hmac_b64 = request.headers.get("x-shopify-hmac-sha256")
+    if not _verify_shopify_webhook(body, hmac_b64):
+        # Shopify expects 401/403 for bad signatures.
+        return Response(status_code=401)
+
+    topic = (request.headers.get("x-shopify-topic") or "").strip()
+    shop = (request.headers.get("x-shopify-shop-domain") or "").strip()
+    webhook_id = (request.headers.get("x-shopify-webhook-id") or "").strip() or None
+
+    payload: dict | None = None
+    try:
+        j = json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else (body or ""))
+        payload = j if isinstance(j, dict) else {"_raw": j}
+    except Exception:
+        payload = {"_raw": (body.decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body))}
+
+    # Extract order id when present
+    order_id: str | None = None
+    try:
+        if isinstance(payload, dict):
+            oid = payload.get("id") or payload.get("order_id")
+            if oid is not None:
+                order_id = str(oid).strip() or None
+    except Exception:
+        order_id = None
+
+    # Build small summary
+    summary_parts: list[str] = []
+    try:
+        if isinstance(payload, dict):
+            if payload.get("name"):
+                summary_parts.append(f"name={payload.get('name')}")
+            if payload.get("email"):
+                summary_parts.append(f"email={payload.get('email')}")
+            if payload.get("cancel_reason"):
+                summary_parts.append(f"cancel_reason={payload.get('cancel_reason')}")
+            if payload.get("source_name"):
+                summary_parts.append(f"source={payload.get('source_name')}")
+    except Exception:
+        pass
+    summary = " ".join([p for p in summary_parts if p]) or None
+
+    # Best-effort actor enrichment for cancellations
+    actor = None
+    actor_type = None
+    if (topic or "").lower() == "orders/cancelled" and order_id:
+        try:
+            info = infer_order_cancellation_actor(order_id, store=store)
+            if isinstance(info, dict):
+                actor = (info.get("actor") or None)
+                actor_type = (info.get("actor_type") or None)
+                if actor and (not summary):
+                    summary = f"actor={actor}"
+                elif actor:
+                    summary = f"{summary} actor={actor}"
+        except Exception:
+            pass
+
+    # Record selected headers + the caller IP (this is Shopify's delivery IP, not staff)
+    try:
+        client_ip = (request.client.host if request.client else None)
+    except Exception:
+        client_ip = None
+    headers_for_log = {
+        "x-shopify-topic": request.headers.get("x-shopify-topic"),
+        "x-shopify-shop-domain": request.headers.get("x-shopify-shop-domain"),
+        "x-shopify-webhook-id": request.headers.get("x-shopify-webhook-id"),
+        "x-shopify-triggered-at": request.headers.get("x-shopify-triggered-at"),
+        "x-shopify-api-version": request.headers.get("x-shopify-api-version"),
+        "user-agent": request.headers.get("user-agent"),
+        "content-type": request.headers.get("content-type"),
+        "x-forwarded-for": request.headers.get("x-forwarded-for"),
+        "x-real-ip": request.headers.get("x-real-ip"),
+        "client_ip": client_ip,
+    }
+
+    try:
+        db.log_shopify_webhook_event(
+            store=store,
+            shop=shop,
+            topic=(topic or "unknown"),
+            webhook_id=webhook_id,
+            order_id=order_id,
+            actor=actor,
+            actor_type=actor_type,
+            summary=summary,
+            payload=(payload if isinstance(payload, dict) else None),
+            headers=headers_for_log,
+        )
+    except Exception:
+        # Never fail the webhook delivery due to logging issues.
+        pass
+
+    return Response(status_code=200)
+
+
+@app.get("/api/shopify/webhook_events")
+async def api_shopify_webhook_events(req: Request, store: str | None = None, shop: str | None = None, topic: str | None = None, order_id: str | None = None, limit: int | None = 100):
+    """List stored webhook events (protected by confirmation-admin token)."""
+    try:
+        admin = _get_confirmation_admin(req)
+        if not admin:
+            return Response(status_code=401)
+        rows = db.list_shopify_webhook_events(store=store, shop=shop, topic=topic, order_id=order_id, limit=limit)
+        return {"data": rows}
     except Exception as e:
         return {"error": str(e)}
 
