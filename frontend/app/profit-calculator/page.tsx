@@ -170,6 +170,16 @@ export default function ProfitCalculatorPage() {
 
   const loadSeq = useRef(0)
 
+  function sameRange(saved: ProfitCampaignCard | undefined, rng: { start: string; end: string }) {
+    try {
+      const s = String((saved as any)?.range?.start || "")
+      const e = String((saved as any)?.range?.end || "")
+      return !!saved && s === rng.start && e === rng.end
+    } catch {
+      return false
+    }
+  }
+
   function toggleSelect(k: string, v?: boolean) {
     setSelectedKeys((prev) => {
       const next = { ...prev, [k]: v == null ? !prev[k] : !!v }
@@ -657,9 +667,12 @@ export default function ProfitCalculatorPage() {
                   const cid = String(c.campaign_id || "")
                   const partner = mergedWith[cid]
                   const partnerRow = partner ? sortedCampaigns.find((x) => String(x.campaign_id || "") === partner) : undefined
+                  const rng = effectiveYmdRangeForRow(cid)
                   const mergedSpendMad =
-                    (Number(savedByCampaign[cid]?.spend_mad ?? (Number(c.spend || 0) * Number(usdToMadRate || 10))) || 0) +
-                    (partnerRow ? Number(savedByCampaign[String(partnerRow.campaign_id || "")]?.spend_mad ?? (Number(partnerRow.spend || 0) * Number(usdToMadRate || 10))) || 0 : 0)
+                    (sameRange(savedByCampaign[cid], rng) ? (Number(savedByCampaign[cid]?.spend_mad || 0) || 0) : 0) +
+                    (partnerRow && sameRange(savedByCampaign[String(partnerRow.campaign_id || "")], rng)
+                      ? (Number(savedByCampaign[String(partnerRow.campaign_id || "")]?.spend_mad || 0) || 0)
+                      : 0)
 
                   const saved = savedByCampaign[cid]
                   const pid = saved?.product?.id || productIdForCampaign(c)
@@ -668,14 +681,13 @@ export default function ProfitCalculatorPage() {
                   const productCost = Number((costs as any).product_cost ?? (saved?.costs?.product_cost ?? 0) ?? 0)
                   const serviceCost = Number((costs as any).service_delivery_cost ?? (saved?.costs?.service_delivery_cost ?? 0) ?? 0)
 
-                  const paidOrders = Number(saved?.shopify?.paid_orders_total ?? 0)
-                  const ordersTotal = Number(saved?.shopify?.orders_total ?? 0)
-                  const priceMad = Number(saved?.product?.price_mad ?? 0)
-                  const inventory = saved?.product?.inventory
-                  const profitPerOrder = Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost) ?? 0)
-                  const net = (profitPerOrder * paidOrders) - mergedSpendMad
-
-                  const hasCalc = !!saved
+                  const hasCalc = sameRange(saved, rng)
+                  const paidOrders = hasCalc ? Number(saved?.shopify?.paid_orders_total ?? 0) : 0
+                  const ordersTotal = hasCalc ? Number(saved?.shopify?.orders_total ?? 0) : 0
+                  const priceMad = hasCalc ? Number(saved?.product?.price_mad ?? 0) : 0
+                  const inventory = hasCalc ? saved?.product?.inventory : undefined
+                  const profitPerOrder = hasCalc ? Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost) ?? 0) : 0
+                  const net = hasCalc ? ((profitPerOrder * paidOrders) - mergedSpendMad) : 0
                   const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
 
                   const status = String(c.status || "").toUpperCase()
@@ -683,7 +695,6 @@ export default function ProfitCalculatorPage() {
                   const statusClass = active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
 
                   const p = rowPreset[cid] || datePreset
-                  const rng = effectiveYmdRangeForRow(cid)
                   const busy = !!rowBusy[cid]
 
                   return (
