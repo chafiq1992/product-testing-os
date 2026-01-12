@@ -1437,6 +1437,157 @@ async def api_delete_profit_card(card_id: str, store: str | None = None):
         return {"error": str(e), "data": {"ok": False}}
 
 
+# -------- Profit Campaign Cards (campaign-centric) --------
+class ProfitCampaignCalculateRequest(BaseModel):
+    campaign_id: str
+    start: str
+    end: str
+    store: Optional[str] = None
+    ad_account: Optional[str] = None
+
+
+def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | None, campaign_id: str, start: str, end: str) -> dict:
+    cid = (campaign_id or "").strip()
+    if not cid:
+        raise ValueError("invalid_campaign_id")
+    acct = (ad_account or "").strip() or None
+    s_date = (start or "").split("T")[0]
+    e_date = (end or "").split("T")[0]
+    if not s_date or not e_date:
+        raise ValueError("invalid_range")
+
+    rate = db.get_usd_to_mad_rate(store) or 10.0
+    rate = float(rate)
+
+    # Meta: find this campaign row for the date range
+    rows = list_active_campaigns_with_insights("last_7d", ad_account_id=acct, since=s_date, until=e_date) or []
+    row = next((r for r in rows if str((r or {}).get("campaign_id") or "").strip() == cid), None)
+    name = (row or {}).get("name")
+    status = (row or {}).get("status")
+    spend_usd = float((row or {}).get("spend") or 0.0)
+    spend_mad = spend_usd * rate
+
+    # Resolve product_id via campaign mapping or numeric in name
+    pid = None
+    try:
+        mappings = db.list_campaign_mappings(store) or {}
+    except Exception:
+        mappings = {}
+    try:
+        # campaign_key might be campaign_id or campaign name in existing UI
+        for k in (cid, str(name or "").strip()):
+            if not k:
+                continue
+            m = (mappings or {}).get(k)
+            if m and (m.get("kind") == "product") and str(m.get("id") or "").strip().isdigit():
+                pid = str(m.get("id")).strip()
+                break
+    except Exception:
+        pid = None
+    if not pid:
+        try:
+            pid = _extract_numeric_id_from_name(str(name or ""))
+        except Exception:
+            pid = None
+
+    product = {"id": pid, "image": None, "inventory": None, "price_mad": None}
+    shopify = {"orders_total": 0, "paid_orders_total": 0}
+    costs = {"product_cost": 0.0, "service_delivery_cost": 0.0}
+
+    if pid and str(pid).isdigit():
+        try:
+            briefs = get_products_brief([pid], store=store) or {}
+            brief = (briefs or {}).get(pid) or {}
+            product["image"] = brief.get("image")
+            product["inventory"] = int(brief.get("total_available")) if brief.get("total_available") is not None else None
+            product["price_mad"] = float(brief.get("price")) if brief.get("price") is not None else None
+        except Exception:
+            pass
+        try:
+            orders_map = count_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+            shopify["orders_total"] = int((orders_map or {}).get(pid, 0) or 0)
+        except Exception:
+            pass
+        try:
+            paid_map = count_paid_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+            shopify["paid_orders_total"] = int((paid_map or {}).get(pid, 0) or 0)
+        except Exception:
+            pass
+        try:
+            c = db.get_app_setting(store, f"profit_costs:{pid}") or {}
+            if isinstance(c, dict):
+                costs["product_cost"] = float(c.get("product_cost") or 0.0)
+                costs["service_delivery_cost"] = float(c.get("service_delivery_cost") or 0.0)
+        except Exception:
+            pass
+
+    price_mad = float(product.get("price_mad") or 0.0)
+    paid_total = float(shopify.get("paid_orders_total") or 0.0)
+    revenue_mad = price_mad * paid_total
+    net_profit_mad = revenue_mad - float(spend_mad or 0.0) - float(costs["product_cost"] or 0.0) - float(costs["service_delivery_cost"] or 0.0)
+
+    return {
+        "campaign_id": cid,
+        "campaign_name": name,
+        "status": status,
+        "ad_account": acct,
+        "range": {"start": s_date, "end": e_date},
+        "usd_to_mad_rate": rate,
+        "spend_usd": round(spend_usd, 2),
+        "spend_mad": round(spend_mad, 2),
+        "product": product,
+        "shopify": shopify,
+        "costs": costs,
+        "revenue_mad": round(revenue_mad, 2),
+        "net_profit_mad": round(net_profit_mad, 2),
+    }
+
+
+@app.get("/api/profit_campaign_cards")
+async def api_list_profit_campaign_cards(store: str | None = None, ad_account: str | None = None):
+    try:
+        items = db.list_profit_campaign_cards(store, ad_account)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.post("/api/profit_campaign_cards/calculate")
+async def api_calculate_profit_campaign_card(req: ProfitCampaignCalculateRequest):
+    try:
+        cid = (req.campaign_id or "").strip()
+        if not cid:
+            return {"error": "invalid_campaign_id"}
+        s_date = (req.start or "").split("T")[0]
+        e_date = (req.end or "").split("T")[0]
+        key = _cache_key("profit_campaign_calc", {"store": req.store or None, "ad_account": (req.ad_account or "").strip() or None, "campaign_id": cid, "start": s_date, "end": e_date})
+
+        async def _compute():
+            return await run_in_threadpool(_compute_profit_campaign_card_sync, store=req.store, ad_account=req.ad_account, campaign_id=cid, start=s_date, end=e_date)
+
+        snap = await _cached(key, 10, _compute)
+        now = datetime.utcnow().isoformat() + "Z"
+        existing = db.get_profit_campaign_card(req.store, req.ad_account, cid) or {}
+        created_at = (existing or {}).get("created_at") or now
+        payload = dict(existing or {})
+        payload.update(snap or {})
+        payload["created_at"] = created_at
+        payload["updated_at"] = now
+        saved = db.upsert_profit_campaign_card(req.store, req.ad_account, cid, payload)
+        return {"data": saved}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/profit_campaign_cards/{campaign_id}")
+async def api_delete_profit_campaign_card(campaign_id: str, store: str | None = None, ad_account: str | None = None):
+    try:
+        ok = db.delete_profit_campaign_card(store, ad_account, campaign_id)
+        return {"data": {"ok": bool(ok)}}
+    except Exception as e:
+        return {"error": str(e), "data": {"ok": False}}
+
+
 class OrdersCountByCollectionRequest(BaseModel):
     collection_id: str
     start: str

@@ -855,3 +855,48 @@ export async function profitCardDelete(payload:{ card_id: string, store?: string
   const {data} = await axios.delete(`${base}/api/profit_cards/${encodeURIComponent(payload.card_id)}${q}`)
   return data as { data?: { ok: boolean }, error?: string }
 }
+
+// Profit campaign cards (saved per campaign_id + ad_account)
+export type ProfitCampaignCard = {
+  campaign_id: string
+  campaign_name?: string|null
+  status?: string|null
+  ad_account?: string|null
+  range?: { start: string, end: string }
+  usd_to_mad_rate?: number
+  spend_usd?: number
+  spend_mad?: number
+  product?: { id?: string|null, image?: string|null, inventory?: number|null, price_mad?: number|null }
+  shopify?: { orders_total?: number, paid_orders_total?: number }
+  costs?: { product_cost?: number, service_delivery_cost?: number }
+  revenue_mad?: number
+  net_profit_mad?: number
+  created_at?: string
+  updated_at?: string
+}
+
+export async function profitCampaignCardsList(payload?: { store?: string, ad_account?: string }){
+  const params: string[] = []
+  const s = payload?.store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  if(payload?.ad_account) params.push(`ad_account=${encodeURIComponent(payload.ad_account)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/profit_campaign_cards${q}`)
+  return data as { data?: Record<string, ProfitCampaignCard>, error?: string }
+}
+
+export async function profitCampaignCardCalculate(payload:{ campaign_id: string, start: string, end: string, store?: string, ad_account?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/profit_campaign_cards/calculate`, body)
+  return data as { data?: ProfitCampaignCard, error?: string }
+}
+
+export async function profitCampaignCardDelete(payload:{ campaign_id: string, store?: string, ad_account?: string }){
+  const params: string[] = []
+  const s = payload.store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  if(payload.ad_account) params.push(`ad_account=${encodeURIComponent(payload.ad_account)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.delete(`${base}/api/profit_campaign_cards/${encodeURIComponent(payload.campaign_id)}${q}`)
+  return data as { data?: { ok: boolean }, error?: string }
+}

@@ -455,6 +455,23 @@ def set_profit_costs(store: str | None, product_id: str, patch: Dict[str, Any]) 
     """Upsert profit costs by merging patch into existing JSON stored in AppSetting under key profit_costs:{product_id}."""
     if not isinstance(product_id, str) or not product_id.strip():
         return {}
+    pid = product_id.strip()
+    key = f"profit_costs:{pid}"
+    try:
+        existing = get_app_setting(store, key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+    except Exception:
+        existing = {}
+    data = dict(existing)
+    for k, v in (patch or {}).items():
+        if k in ("product_cost", "service_delivery_cost"):
+            data[k] = v
+    saved = set_app_setting(store, key, data)
+    try:
+        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
+    except Exception:
+        return {}
 
 
 # ---------------- Profit Cards (stored in AppSetting) ----------------
@@ -562,23 +579,92 @@ def set_usd_to_mad_rate(store: str | None, rate: float) -> float:
     r = max(0.01, min(r, 1000.0))
     set_app_setting(store, "usd_to_mad_rate", r)
     return r
-    pid = product_id.strip()
-    key = f"profit_costs:{pid}"
-    try:
-        existing = get_app_setting(store, key) or {}
-        if not isinstance(existing, dict):
-            existing = {}
-    except Exception:
-        existing = {}
-    data = dict(existing)
-    for k, v in (patch or {}).items():
-        if k in ("product_cost", "service_delivery_cost"):
-            data[k] = v
-    saved = set_app_setting(store, key, data)
-    try:
-        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
-    except Exception:
+
+
+# ---------------- Profit Campaign Cards (stored in AppSetting) ----------------
+def _profit_campaign_key(ad_account: str | None, campaign_id: str) -> str:
+    acct = (ad_account or "").strip()
+    cid = (campaign_id or "").strip()
+    return f"profit_campaign:{acct}:{cid}"
+
+
+def list_profit_campaign_cards(store: str | None = None, ad_account: str | None = None) -> Dict[str, dict]:
+    """Return dict keyed by campaign_id for the store+ad_account."""
+    acct = (ad_account or "").strip()
+    prefix = f"profit_campaign:{acct}:"
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like(prefix + "%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.order_by(desc(AppSetting.updated_at)).all()
+        out: Dict[str, dict] = {}
+        for r in rows:
+            try:
+                key = r.key or ""
+                if not key.startswith(prefix):
+                    continue
+                cid = key.split(prefix, 1)[1]
+                if not cid:
+                    continue
+                try:
+                    val = json.loads(r.value) if r.value else {}
+                except Exception:
+                    val = {}
+                if not isinstance(val, dict):
+                    val = {}
+                val.setdefault("campaign_id", cid)
+                val.setdefault("ad_account", acct)
+                try:
+                    val["updated_at"] = r.updated_at.isoformat() + "Z"
+                except Exception:
+                    pass
+                out[cid] = val
+            except Exception:
+                continue
+        return out
+
+
+def get_profit_campaign_card(store: str | None, ad_account: str | None, campaign_id: str) -> dict | None:
+    cid = (campaign_id or "").strip()
+    if not cid:
+        return None
+    key = _profit_campaign_key(ad_account, cid)
+    val = get_app_setting(store, key)
+    return val if isinstance(val, dict) else None
+
+
+def upsert_profit_campaign_card(store: str | None, ad_account: str | None, campaign_id: str, data: dict) -> dict:
+    cid = (campaign_id or "").strip()
+    if not cid:
         return {}
+    key = _profit_campaign_key(ad_account, cid)
+    payload = dict(data or {})
+    payload["campaign_id"] = cid
+    payload["ad_account"] = (ad_account or "").strip()
+    saved = set_app_setting(store, key, payload)
+    try:
+        if isinstance(saved, dict):
+            return saved
+        if isinstance(saved, str):
+            return json.loads(saved)
+    except Exception:
+        pass
+    return payload
+
+
+def delete_profit_campaign_card(store: str | None, ad_account: str | None, campaign_id: str) -> bool:
+    cid = (campaign_id or "").strip()
+    if not cid:
+        return False
+    key = _profit_campaign_key(ad_account, cid)
+    pk = _mk_setting_pk(store, key)
+    with SessionLocal() as session:
+        item = session.get(AppSetting, pk)
+        if not item:
+            return False
+        session.delete(item)
+        session.commit()
+        return True
 
 
 def set_campaign_meta(store: str | None, campaign_key: str, patch: Dict[str, Any]) -> dict:
