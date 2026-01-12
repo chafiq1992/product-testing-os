@@ -1317,7 +1317,10 @@ def _compute_profit_card_snapshot_sync(*, store: str | None, product_id: str, st
         spend_usd = float(c.get("spend") or 0)
         spend_mad = spend_usd * rate
         revenue_mad = (float(price_mad or 0) * float(paid_total or 0))
-        net_profit_mad = revenue_mad - spend_mad - product_cost - service_delivery_cost
+        # Costs are PER PAID ORDER
+        total_product_cost = float(product_cost or 0.0) * float(paid_total or 0.0)
+        total_service_delivery_cost = float(service_delivery_cost or 0.0) * float(paid_total or 0.0)
+        net_profit_mad = revenue_mad - float(spend_mad or 0.0) - total_product_cost - total_service_delivery_cost
         rows.append({
             "campaign_id": c.get("campaign_id"),
             "name": c.get("name"),

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
-import { DollarSign, RefreshCw, Rocket, Save } from "lucide-react"
+import { ArrowUp, DollarSign, RefreshCw, Rocket, Save } from "lucide-react"
 import {
   fetchMetaCampaigns,
   type MetaCampaignRow,
@@ -447,6 +447,14 @@ export default function ProfitCalculatorPage() {
     return out
   }, [campaigns, mergedWith])
 
+  const sortedIndexById = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (let i = 0; i < (sortedCampaigns || []).length; i++) {
+      m[String(sortedCampaigns[i]?.campaign_id || "")] = i
+    }
+    return m
+  }, [sortedCampaigns])
+
   const totalSpendMad = useMemo(() => {
     let sum = 0
     for (const c of campaigns || []) sum += Number(c.spend || 0) * Number(usdToMadRate || 10)
@@ -641,8 +649,8 @@ export default function ProfitCalculatorPage() {
                 <th className="px-3 py-2 font-semibold text-right">Paid Orders</th>
                 <th className="px-3 py-2 font-semibold text-right">Product price (MAD)</th>
                 <th className="px-3 py-2 font-semibold text-right">Inventory</th>
-                <th className="px-3 py-2 font-semibold text-right">Product cost</th>
-                <th className="px-3 py-2 font-semibold text-right">Service + delivery</th>
+                <th className="px-3 py-2 font-semibold text-right">Product cost (per paid order)</th>
+                <th className="px-3 py-2 font-semibold text-right">Service + delivery (per paid order)</th>
                 <th className="px-3 py-2 font-semibold text-right">Net profit (MAD)</th>
                 <th className="px-3 py-2 font-semibold text-right">Actions</th>
               </tr>
@@ -667,8 +675,10 @@ export default function ProfitCalculatorPage() {
                   const cid = String(c.campaign_id || "")
                   const partner = mergedWith[cid]
                   const partnerRow = partner ? sortedCampaigns.find((x) => String(x.campaign_id || "") === partner) : undefined
+                  const isMergedPair = !!partner && !!partnerRow
+                  const isMergedChild = isMergedPair ? Number(sortedIndexById[partner] ?? -1) < Number(sortedIndexById[cid] ?? -1) : false
                   const rng = effectiveYmdRangeForRow(cid)
-                  const mergedSpendMad =
+                  const mergedSpendMadLeader =
                     (sameRange(savedByCampaign[cid], rng) ? (Number(savedByCampaign[cid]?.spend_mad || 0) || 0) : 0) +
                     (partnerRow && sameRange(savedByCampaign[String(partnerRow.campaign_id || "")], rng)
                       ? (Number(savedByCampaign[String(partnerRow.campaign_id || "")]?.spend_mad || 0) || 0)
@@ -687,7 +697,8 @@ export default function ProfitCalculatorPage() {
                   const priceMad = hasCalc ? Number(saved?.product?.price_mad ?? 0) : 0
                   const inventory = hasCalc ? saved?.product?.inventory : undefined
                   const profitPerOrder = hasCalc ? Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost) ?? 0) : 0
-                  const net = hasCalc ? ((profitPerOrder * paidOrders) - mergedSpendMad) : 0
+                  const effectiveSpendMad = isMergedChild ? 0 : (isMergedPair ? mergedSpendMadLeader : (hasCalc ? Number(saved?.spend_mad || 0) : 0))
+                  const net = hasCalc && !isMergedChild ? ((profitPerOrder * paidOrders) - effectiveSpendMad) : 0
                   const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
 
                   const status = String(c.status || "").toUpperCase()
@@ -696,6 +707,52 @@ export default function ProfitCalculatorPage() {
 
                   const p = rowPreset[cid] || datePreset
                   const busy = !!rowBusy[cid]
+
+                  if (isMergedChild) {
+                    const leaderRow = partnerRow
+                    const leaderId = leaderRow ? String(leaderRow.campaign_id || "") : partner
+                    const leaderName = leaderRow?.name || leaderId || partner
+                    return (
+                      <tr key={cid || c.name} className="border-b last:border-b-0 bg-slate-50/40">
+                        <td className="px-3 py-2">
+                          <input type="checkbox" checked={false} disabled />
+                        </td>
+                        <td className="px-3 py-2">
+                          {img ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={img} alt="product" className="w-16 h-16 rounded object-cover border" />
+                          ) : (
+                            <div className="w-16 h-16 rounded border bg-slate-50" />
+                          )}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-100 text-purple-800 text-xs font-semibold">
+                              merged <ArrowUp className="w-3 h-3" />
+                            </span>
+                            <span className="text-slate-700">{c.name || "-"}</span>
+                          </div>
+                          <div className="text-xs text-slate-500">Merged into: {leaderName}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{active ? "Active" : "Paused"}</span>
+                        </td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right">
+                          <input type="number" step="0.01" disabled value="" className="w-28 rounded-md border px-2 py-1 text-sm bg-slate-50" />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input type="number" step="0.01" disabled value="" className="w-36 rounded-md border px-2 py-1 text-sm bg-slate-50" />
+                        </td>
+                        <td className="px-3 py-2 text-right">—</td>
+                        <td className="px-3 py-2 text-right"></td>
+                      </tr>
+                    )
+                  }
 
                   return (
                     <tr key={cid || c.name} className="border-b last:border-b-0">
@@ -712,7 +769,7 @@ export default function ProfitCalculatorPage() {
                       </td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          {partner ? (
+                          {isMergedPair ? (
                             <button onClick={() => unmergeKey(cid)} className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs">
                               Unmerge
                             </button>
@@ -724,7 +781,7 @@ export default function ProfitCalculatorPage() {
                       <td className="px-3 py-2">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{active ? "Active" : "Paused"}</span>
                       </td>
-                      <td className="px-3 py-2 text-right">{hasCalc ? fmtMad(mergedSpendMad) : "—"}</td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? fmtMad(effectiveSpendMad) : "—"}</td>
                       <td className="px-3 py-2 text-right">{hasCalc ? ordersTotal : "—"}</td>
                       <td className="px-3 py-2 text-right">{hasCalc ? paidOrders : "—"}</td>
                       <td className="px-3 py-2 text-right">{hasCalc ? fmtMad(priceMad) : "—"}</td>
@@ -749,6 +806,7 @@ export default function ProfitCalculatorPage() {
                           }}
                           className="w-28 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
                         />
+                        {hasCalc ? <div className="mt-1 text-[11px] text-slate-500">Total: {fmtMad((productCost || 0) * (paidOrders || 0))}</div> : null}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <input
@@ -770,6 +828,7 @@ export default function ProfitCalculatorPage() {
                           }}
                           className="w-36 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
                         />
+                        {hasCalc ? <div className="mt-1 text-[11px] text-slate-500">Total: {fmtMad((serviceCost || 0) * (paidOrders || 0))}</div> : null}
                       </td>
                       <td className="px-3 py-2 text-right">
                         {hasCalc ? (
