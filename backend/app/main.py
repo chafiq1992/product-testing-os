@@ -21,7 +21,7 @@ from app.integrations.gemini_client import analyze_variants_from_image, build_fe
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
 from app.integrations.shopify_client import configure_variants_for_product
 from app.integrations.shopify_client import count_orders_by_title
-from app.integrations.shopify_client import get_products_brief
+from app.integrations.shopify_client import get_products_brief, count_paid_orders_by_product_or_variant_processed_batch, count_paid_orders_by_title
 from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import count_orders_by_product_or_variant_processed, count_orders_by_product_or_variant_processed_batch
 from app.integrations.shopify_client import list_product_ids_in_collection
@@ -939,6 +939,76 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         return {"error": str(e), "data": {}}
 
 
+@app.post("/api/shopify/orders_count_paid_by_title")
+async def api_orders_count_paid_by_title(req: OrdersCountRequest):
+    """Count PAID orders for numeric product/variant IDs (and return 0 for non-numeric names).
+
+    Matches the signature of /api/shopify/orders_count_by_title but filters orders by financial_status paid.
+    """
+    try:
+        start = req.start
+        end = req.end
+        store = req.store
+        include_closed = bool(req.include_closed) if req.include_closed is not None else True
+        raw_names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
+        if len(raw_names) > 400:
+            raw_names = raw_names[:400]
+        names = sorted(set(raw_names))
+
+        df = (req.date_field or "processed").lower()
+        key = _cache_key("shopify_orders_count_paid_by_title", {
+            "store": store or None,
+            "start": start,
+            "end": end,
+            "include_closed": include_closed,
+            "date_field": df,
+            "names": names,
+        })
+
+        def _compute_sync():
+            out: dict[str, int] = {n: 0 for n in names}
+            numeric = [n for n in names if n.isdigit()]
+            non_numeric = [n for n in names if not n.isdigit()]
+
+            if numeric:
+                s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+                e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
+                try:
+                    if df == "created":
+                        for n in numeric:
+                            try:
+                                out[n] = count_paid_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                            except Exception:
+                                out[n] = 0
+                    else:
+                        batch = count_paid_orders_by_product_or_variant_processed_batch(numeric, s_date, e_date, store=store, include_closed=include_closed)
+                        for k, v in (batch or {}).items():
+                            out[k] = int(v or 0)
+                except Exception:
+                    # Best-effort fallback: per-id created-at scan
+                    for n in numeric:
+                        try:
+                            out[n] = count_paid_orders_by_title(n, start, end, store=store, include_closed=include_closed)
+                        except Exception:
+                            out[n] = 0
+
+            # Ignore textual names entirely (0) to avoid accidental broad matches
+            for n in non_numeric:
+                out[n] = 0
+            return out
+
+        async def _compute():
+            return await run_in_threadpool(_compute_sync)
+
+        out = await _cached(key, 60, _compute)
+        shaped: dict[str, int] = {}
+        for n in raw_names:
+            shaped[n] = int((out or {}).get(n, 0) or 0)
+        return {"data": shaped}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 class ProductsBriefRequest(BaseModel):
     ids: list[str]
     store: Optional[str] = None
@@ -1091,6 +1161,40 @@ async def api_campaign_timeline_add(req: CampaignTimelineAddRequest):
         if not key or not isinstance(req.text, str) or not req.text.strip():
             return {"error": "invalid_input"}
         data = db.append_campaign_timeline(req.store, key, req.text)
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# -------- Profit Calculator costs (per product, stored in AppSetting) --------
+class ProfitCostsUpsertRequest(BaseModel):
+    product_id: str
+    product_cost: Optional[float] = None
+    service_delivery_cost: Optional[float] = None
+    store: Optional[str] = None
+
+
+@app.get("/api/profit_costs")
+async def api_list_profit_costs(store: str | None = None):
+    try:
+        items = db.list_profit_costs(store)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.post("/api/profit_costs")
+async def api_upsert_profit_costs(req: ProfitCostsUpsertRequest):
+    try:
+        pid = (req.product_id or "").strip()
+        if not pid or not pid.isdigit():
+            return {"error": "invalid_product_id"}
+        patch: Dict[str, Any] = {}
+        if req.product_cost is not None:
+            patch["product_cost"] = float(req.product_cost)
+        if req.service_delivery_cost is not None:
+            patch["service_delivery_cost"] = float(req.service_delivery_cost)
+        data = db.set_profit_costs(req.store, pid, patch)
         return {"data": data}
     except Exception as e:
         return {"error": str(e)}

@@ -725,12 +725,22 @@ export async function shopifyOrdersCountByTitle(payload:{ names: string[], start
   })
 }
 
+// Shopify: count PAID orders by line item product/variant id for a time range
+export async function shopifyOrdersCountPaidByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }
+  const url = `${base}/api/shopify/orders_count_paid_by_title`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { [name:string]: number }, error?: string }
+  })
+}
+
 export async function shopifyProductsBrief(payload:{ ids: string[], store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const url = `${base}/api/shopify/products_brief`
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
     const {data} = await axios.post(url, body)
-    return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number } }, error?: string }
+    return data as { data: { [id:string]: { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null } }, error?: string }
   })
 }
 
@@ -751,4 +761,20 @@ export async function shopifyOrdersCountTotal(payload:{ start: string, end: stri
     const {data} = await axios.post(url, body)
     return data as { data: { count: number }, error?: string }
   })
+}
+
+// Profit Calculator costs (per product)
+export async function profitCostsList(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/profit_costs${q}`)
+  return data as { data?: Record<string, { product_cost?: number|null, service_delivery_cost?: number|null }>, error?: string }
+}
+
+export async function profitCostsUpsert(payload:{ product_id: string, product_cost?: number|null, service_delivery_cost?: number|null, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/profit_costs`, body)
+  return data as { data?: { product_cost?: number|null, service_delivery_cost?: number|null }, error?: string }
 }

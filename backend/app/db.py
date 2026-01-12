@@ -423,6 +423,57 @@ def list_campaign_meta(store: str | None = None) -> Dict[str, dict]:
         return out
 
 
+def list_profit_costs(store: str | None = None) -> Dict[str, dict]:
+    """Return dict keyed by product_id: { product_id: { product_cost?, service_delivery_cost? } }"""
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like("profit_costs:%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.all()
+        out: Dict[str, dict] = {}
+        for r in rows:
+            try:
+                key = r.key or ""
+                if not key.startswith("profit_costs:"):
+                    continue
+                pid = key.split("profit_costs:", 1)[1]
+                if not pid:
+                    continue
+                try:
+                    val = json.loads(r.value) if r.value else {}
+                except Exception:
+                    val = {}
+                if not isinstance(val, dict):
+                    val = {}
+                out[pid] = val
+            except Exception:
+                continue
+        return out
+
+
+def set_profit_costs(store: str | None, product_id: str, patch: Dict[str, Any]) -> dict:
+    """Upsert profit costs by merging patch into existing JSON stored in AppSetting under key profit_costs:{product_id}."""
+    if not isinstance(product_id, str) or not product_id.strip():
+        return {}
+    pid = product_id.strip()
+    key = f"profit_costs:{pid}"
+    try:
+        existing = get_app_setting(store, key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+    except Exception:
+        existing = {}
+    data = dict(existing)
+    for k, v in (patch or {}).items():
+        if k in ("product_cost", "service_delivery_cost"):
+            data[k] = v
+    saved = set_app_setting(store, key, data)
+    try:
+        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
+    except Exception:
+        return {}
+
+
 def set_campaign_meta(store: str | None, campaign_key: str, patch: Dict[str, Any]) -> dict:
     """Upsert campaign meta by merging patch into existing JSON stored in AppSetting under key campaign_meta:{campaign_key}."""
     if not isinstance(campaign_key, str) or not campaign_key.strip():
