@@ -341,6 +341,61 @@ def campaign_daily_insights(campaign_id: str, days: int = 6, tz: str | None = No
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def get_campaign_summary(campaign_id: str, *, since: str, until: str) -> dict:
+    """Fetch a single campaign's summary for a date range.
+
+    Returns:
+      { campaign_id, name, status, spend, purchases, cpp, ctr, add_to_cart }
+    """
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    cid = str(campaign_id or "").strip()
+    if not cid:
+        raise RuntimeError("Missing campaign_id.")
+    # 1) Campaign metadata (name + status)
+    meta = _get(f"{cid}", {"fields": "id,name,effective_status,configured_status"})
+    name = (meta or {}).get("name")
+    st = (meta or {}).get("effective_status") or (meta or {}).get("configured_status")
+    # 2) Insights for the time range
+    params = {
+        "level": "campaign",
+        "fields": "spend,actions,ctr,cpp",
+        "time_range": json.dumps({"since": since, "until": until}),
+        "limit": 10,
+    }
+    res = _get(f"{cid}/insights", params)
+    rows = (res or {}).get("data") or []
+    r = rows[0] if rows else {}
+    spend = _parse_float((r or {}).get("spend")) or 0.0
+    ctr = _parse_float((r or {}).get("ctr"))
+    cpp = _parse_float((r or {}).get("cpp"))
+    actions = (r or {}).get("actions") or []
+    purchases = _action_count(actions, [
+        "purchase",
+        "omni_purchase",
+        "onsite_conversion.purchase",
+        "offsite_conversion.fb_pixel_purchase",
+    ])
+    add_to_cart = _action_count(actions, [
+        "add_to_cart",
+        "omni_add_to_cart",
+        "onsite_conversion.add_to_cart",
+        "offsite_conversion.fb_pixel_add_to_cart",
+    ])
+    eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
+    return {
+        "campaign_id": cid,
+        "name": name,
+        "status": str(st or "").upper() if st else None,
+        "spend": round(spend, 2),
+        "purchases": int(purchases) if purchases is not None else 0,
+        "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
+        "ctr": round(ctr, 3) if ctr is not None else None,
+        "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
+    }
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None, since: str | None = None, until: str | None = None) -> list[dict]:
     """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 

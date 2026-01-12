@@ -1752,6 +1752,94 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     return out
 
 
+def count_orders_and_paid_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = True,
+) -> dict[str, dict]:
+    """Count (orders_total, paid_orders_total) for many numeric product/variant IDs in one scan.
+
+    Uses processed_at date range (YYYY-MM-DD) and counts:
+      - orders_total: any non-cancelled order that contains product_id or variant_id
+      - paid_orders_total: subset where financial_status in (paid, partially_paid)
+
+    Returns:
+      { id_str: { "orders_total": int, "paid_orders_total": int } }
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            s = str(raw or "").strip()
+            if s.isdigit():
+                targets[int(s)] = s
+        except Exception:
+            continue
+    out: dict[str, dict] = {v: {"orders_total": 0, "paid_orders_total": 0} for v in targets.values()}
+    if not targets:
+        return out
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Limit fields to reduce payload size (Shopify REST supports 'fields')
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+        "fields": "id,cancelled_at,financial_status,line_items",
+    }
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            # With page_info, Shopify only allows page_info + limit (+ fields)
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                fs = str(o.get("financial_status") or "").strip().lower()
+                is_paid = fs in ("paid", "partially_paid")
+                matched: set[int] = set()
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid in targets:
+                            matched.add(pid)
+                        if vid in targets:
+                            matched.add(vid)
+                    except Exception:
+                        continue
+                if matched:
+                    for tid in matched:
+                        key = targets.get(tid)
+                        if not key:
+                            continue
+                        out[key]["orders_total"] = int(out[key].get("orders_total", 0) or 0) + 1
+                        if is_paid:
+                            out[key]["paid_orders_total"] = int(out[key].get("paid_orders_total", 0) or 0) + 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
+
+
 def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
     """Return product briefs for a list of numeric product IDs.
 

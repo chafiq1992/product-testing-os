@@ -25,6 +25,7 @@ from app.integrations.shopify_client import count_orders_by_title
 from app.integrations.shopify_client import get_products_brief, count_paid_orders_by_product_or_variant_processed_batch, count_paid_orders_by_title
 from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import count_orders_by_product_or_variant_processed, count_orders_by_product_or_variant_processed_batch
+from app.integrations.shopify_client import count_orders_and_paid_by_product_or_variant_processed_batch
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
@@ -39,6 +40,7 @@ from app.integrations.shopify_client import list_orders_open_unfulfilled, cycle_
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
+from app.integrations.meta_client import get_campaign_summary
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts
 from app.integrations.meta_client import list_ads_for_adsets
 from app.integrations.meta_client import create_draft_image_campaign
@@ -1459,9 +1461,9 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
     rate = db.get_usd_to_mad_rate(store) or 10.0
     rate = float(rate)
 
-    # Meta: find this campaign row for the date range
+    # Meta: fetch single campaign summary (much faster than listing insights for all campaigns)
     try:
-        rows = list_active_campaigns_with_insights("last_7d", ad_account_id=acct, since=s_date, until=e_date) or []
+        row = get_campaign_summary(cid, since=s_date, until=e_date) or {}
     except Exception as e:
         # Unwrap tenacity RetryError to expose the underlying API error message
         try:
@@ -1475,7 +1477,6 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
         except Exception:
             pass
         raise
-    row = next((r for r in rows if str((r or {}).get("campaign_id") or "").strip() == cid), None)
     name = (row or {}).get("name")
     status = (row or {}).get("status")
     spend_usd = float((row or {}).get("spend") or 0.0)
@@ -1518,13 +1519,10 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
         except Exception:
             pass
         try:
-            orders_map = count_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
-            shopify["orders_total"] = int((orders_map or {}).get(pid, 0) or 0)
-        except Exception:
-            pass
-        try:
-            paid_map = count_paid_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
-            shopify["paid_orders_total"] = int((paid_map or {}).get(pid, 0) or 0)
+            both = count_orders_and_paid_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+            rec = (both or {}).get(pid) or {}
+            shopify["orders_total"] = int((rec or {}).get("orders_total", 0) or 0)
+            shopify["paid_orders_total"] = int((rec or {}).get("paid_orders_total", 0) or 0)
         except Exception:
             pass
         try:
@@ -1537,8 +1535,10 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
 
     price_mad = float(product.get("price_mad") or 0.0)
     paid_total = float(shopify.get("paid_orders_total") or 0.0)
+    # Costs are PER PAID ORDER
+    profit_per_order = price_mad - float(costs["product_cost"] or 0.0) - float(costs["service_delivery_cost"] or 0.0)
     revenue_mad = price_mad * paid_total
-    net_profit_mad = revenue_mad - float(spend_mad or 0.0) - float(costs["product_cost"] or 0.0) - float(costs["service_delivery_cost"] or 0.0)
+    net_profit_mad = (profit_per_order * paid_total) - float(spend_mad or 0.0)
 
     return {
         "campaign_id": cid,
@@ -1554,6 +1554,7 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
         "costs": costs,
         "revenue_mad": round(revenue_mad, 2),
         "net_profit_mad": round(net_profit_mad, 2),
+        "profit_per_paid_order_mad": round(profit_per_order, 2),
     }
 
 
@@ -1580,7 +1581,8 @@ async def api_calculate_profit_campaign_card(req: ProfitCampaignCalculateRequest
         async def _compute():
             return await run_in_threadpool(_compute_profit_campaign_card_sync, store=req.store, ad_account=acct, campaign_id=cid, start=s_date, end=e_date)
 
-        snap = await _cached(key, 10, _compute)
+        # Cache compute results longer; Shopify order scans are expensive for large ranges.
+        snap = await _cached(key, 180, _compute)
         now = datetime.utcnow().isoformat() + "Z"
         existing = db.get_profit_campaign_card(req.store, acct, cid) or {}
         created_at = (existing or {}).get("created_at") or now
