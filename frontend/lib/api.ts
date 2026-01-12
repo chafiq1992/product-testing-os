@@ -778,3 +778,80 @@ export async function profitCostsUpsert(payload:{ product_id: string, product_co
   const {data} = await axios.post(`${base}/api/profit_costs`, body)
   return data as { data?: { product_cost?: number|null, service_delivery_cost?: number|null }, error?: string }
 }
+
+// Exchange rate (USD -> MAD)
+export async function usdToMadRateGet(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/exchange/usd_to_mad${q}`)
+  return data as { data?: { rate: number }, error?: string }
+}
+
+export async function usdToMadRateSet(payload:{ rate: number, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/exchange/usd_to_mad`, body)
+  return data as { data?: { rate: number }, error?: string }
+}
+
+// Profit cards (saved snapshots)
+export type ProfitCard = {
+  id: string
+  store?: string|null
+  product_id: string
+  range: { start: string, end: string }
+  usd_to_mad_rate?: number
+  product?: { image?: string|null, inventory?: number|null, price_mad?: number|null }
+  shopify?: { orders_total?: number, paid_orders_total?: number }
+  costs?: { product_cost?: number, service_delivery_cost?: number }
+  campaigns?: Array<{
+    campaign_id?: string|null
+    name?: string|null
+    status?: string|null
+    spend_usd?: number
+    spend_mad?: number
+    orders_total?: number
+    paid_orders_total?: number
+    product_price_mad?: number|null
+    inventory?: number|null
+    product_cost?: number
+    service_delivery_cost?: number
+    net_profit_mad?: number
+  }>
+  created_at?: string
+  updated_at?: string
+}
+
+export async function profitCardsList(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/profit_cards${q}`)
+  return data as { data?: ProfitCard[], error?: string }
+}
+
+export async function profitCardCreate(payload:{ product_id: string, start: string, end: string, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/profit_cards`, body)
+  return data as { data?: ProfitCard, error?: string }
+}
+
+export async function profitCardRefresh(payload:{ card_id: string, store?: string }){
+  const params: string[] = []
+  const s = payload.store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.post(`${base}/api/profit_cards/${encodeURIComponent(payload.card_id)}/refresh${q}`)
+  return data as { data?: ProfitCard, error?: string }
+}
+
+export async function profitCardDelete(payload:{ card_id: string, store?: string }){
+  const params: string[] = []
+  const s = payload.store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.delete(`${base}/api/profit_cards/${encodeURIComponent(payload.card_id)}${q}`)
+  return data as { data?: { ok: boolean }, error?: string }
+}

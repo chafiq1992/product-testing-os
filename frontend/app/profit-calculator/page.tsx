@@ -1,28 +1,78 @@
 "use client"
-import { useEffect, useMemo, useRef, useState } from "react"
+
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { Rocket, RefreshCw, DollarSign } from "lucide-react"
+import { DollarSign, Plus, RefreshCw, Rocket, Save, Trash2 } from "lucide-react"
 import {
-  fetchMetaCampaigns,
-  type MetaCampaignRow,
-  metaGetAdAccount,
-  metaListAdAccounts,
-  metaSetAdAccount,
-  shopifyOrdersCountByTitle,
-  shopifyOrdersCountPaidByTitle,
-  shopifyProductsBrief,
-  campaignMappingsList,
-  campaignMappingUpsert,
+  type ProfitCard,
+  profitCardsList,
+  profitCardCreate,
+  profitCardDelete,
+  profitCardRefresh,
   profitCostsList,
   profitCostsUpsert,
+  usdToMadRateGet,
+  usdToMadRateSet,
 } from "@/lib/api"
 
-export default function ProfitCalculatorPage() {
-  const [items, setItems] = useState<MetaCampaignRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const loadSeqToken = useRef(0)
-  const [error, setError] = useState<string | undefined>(undefined)
+function fmtMad(v: number) {
+  const n = Number(v || 0)
+  try {
+    return n.toLocaleString(undefined, { style: "currency", currency: "MAD", maximumFractionDigits: 2 })
+  } catch {
+    return `${n.toFixed(2)} MAD`
+  }
+}
 
+function computeRange(preset: string) {
+  const now = new Date()
+  const toYmd = (d: Date) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, "0")
+    const day = String(d.getDate()).padStart(2, "0")
+    return `${y}-${m}-${day}`
+  }
+  const endDate = new Date(now)
+  const startDate = new Date(now)
+  switch (preset) {
+    case "today":
+      startDate.setHours(0, 0, 0, 0)
+      break
+    case "yesterday": {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 1)
+      d.setHours(0, 0, 0, 0)
+      const e = new Date(d)
+      e.setHours(23, 59, 59, 999)
+      return { start: toYmd(d), end: toYmd(e) }
+    }
+    case "last_3d_incl_today":
+      startDate.setDate(startDate.getDate() - (3 - 1))
+      break
+    case "last_4d_incl_today":
+      startDate.setDate(startDate.getDate() - (4 - 1))
+      break
+    case "last_5d_incl_today":
+      startDate.setDate(startDate.getDate() - (5 - 1))
+      break
+    case "last_6d_incl_today":
+      startDate.setDate(startDate.getDate() - (6 - 1))
+      break
+    case "last_7d_incl_today":
+    default:
+      startDate.setDate(startDate.getDate() - (7 - 1))
+      break
+  }
+  startDate.setHours(0, 0, 0, 0)
+  return { start: toYmd(startDate), end: toYmd(endDate) }
+}
+
+function effectiveYmdRange(preset: string, customStart: string, customEnd: string) {
+  if (preset === "custom" && customStart && customEnd) return { start: customStart, end: customEnd }
+  return computeRange(preset)
+}
+
+export default function ProfitCalculatorPage() {
   const [store, setStore] = useState<string>(() => {
     try {
       return localStorage.getItem("ptos_store") || "irrakids"
@@ -30,207 +80,37 @@ export default function ProfitCalculatorPage() {
       return "irrakids"
     }
   })
-  const [adAccount, setAdAccount] = useState<string>(() => {
-    try {
-      return localStorage.getItem("ptos_ad_account") || ""
-    } catch {
-      return ""
-    }
-  })
-  const [adAccountName, setAdAccountName] = useState<string>("")
-  const [adAccounts, setAdAccounts] = useState<Array<{ id: string; name: string; account_status?: number }>>([])
 
+  const [cards, setCards] = useState<ProfitCard[]>([])
+  const [costsByProduct, setCostsByProduct] = useState<Record<string, { product_cost?: number | null; service_delivery_cost?: number | null }>>({})
+
+  const [usdToMadRate, setUsdToMadRate] = useState<number>(10)
+  const [usdToMadDraft, setUsdToMadDraft] = useState<string>("10")
+  const [savingRate, setSavingRate] = useState(false)
+
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+
+  // New product modal state
+  const [newOpen, setNewOpen] = useState(false)
+  const [newProductId, setNewProductId] = useState("")
   const [datePreset, setDatePreset] = useState<string>("last_7d_incl_today")
   const [customStart, setCustomStart] = useState<string>("")
   const [customEnd, setCustomEnd] = useState<string>("")
+  const [savingCard, setSavingCard] = useState(false)
 
-  const [manualIds, setManualIds] = useState<Record<string, { kind: "product" | "collection"; id: string }>>({})
-  const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: "product" | "collection"; id: string }>>({})
-
-  const [shopifyOrders, setShopifyOrders] = useState<Record<string, number>>({})
-  const [paidOrders, setPaidOrders] = useState<Record<string, number>>({})
-  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string | null; total_available: number; price?: number | null }>>({})
-
-  const [costsByProduct, setCostsByProduct] = useState<Record<string, { product_cost?: number | null; service_delivery_cost?: number | null }>>({})
-
-  function fmtCurrency(v: number) {
-    try {
-      return v.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 })
-    } catch {
-      return `$${(v || 0).toFixed(2)}`
-    }
-  }
-
-  function extractNumericId(s?: string | null) {
-    const n = String(s || "")
-    const m = n.match(/(\d{3,})/)
-    return m ? m[1] : null
-  }
-
-  function computeRange(preset: string) {
-    const now = new Date()
-    const toYmd = (d: Date) => {
-      const y = d.getFullYear()
-      const m = String(d.getMonth() + 1).padStart(2, "0")
-      const day = String(d.getDate()).padStart(2, "0")
-      return `${y}-${m}-${day}`
-    }
-    const endDate = new Date(now)
-    const startDate = new Date(now)
-    switch (preset) {
-      case "today":
-        startDate.setHours(0, 0, 0, 0)
-        break
-      case "yesterday": {
-        const d = new Date(now)
-        d.setDate(d.getDate() - 1)
-        d.setHours(0, 0, 0, 0)
-        const e = new Date(d)
-        e.setHours(23, 59, 59, 999)
-        return { start: toYmd(d), end: toYmd(e) }
-      }
-      case "last_3d_incl_today":
-        startDate.setDate(startDate.getDate() - (3 - 1))
-        break
-      case "last_4d_incl_today":
-        startDate.setDate(startDate.getDate() - (4 - 1))
-        break
-      case "last_5d_incl_today":
-        startDate.setDate(startDate.getDate() - (5 - 1))
-        break
-      case "last_6d_incl_today":
-        startDate.setDate(startDate.getDate() - (6 - 1))
-        break
-      case "last_7d_incl_today":
-      default:
-        startDate.setDate(startDate.getDate() - (7 - 1))
-        break
-    }
-    startDate.setHours(0, 0, 0, 0)
-    return { start: toYmd(startDate), end: toYmd(endDate) }
-  }
-
-  function presetLabel(p: string) {
-    switch (p) {
-      case "today":
-        return "today"
-      case "yesterday":
-        return "yesterday"
-      case "last_3d_incl_today":
-        return "last 3 days (including today)"
-      case "last_4d_incl_today":
-        return "last 4 days (including today)"
-      case "last_5d_incl_today":
-        return "last 5 days (including today)"
-      case "last_6d_incl_today":
-        return "last 6 days (including today)"
-      case "last_7d_incl_today":
-        return "last 7 days (including today)"
-      case "custom":
-        return "custom"
-      default:
-        return p
-    }
-  }
-
-  function metaRangeParams(preset: string): { datePreset?: string; range?: { start: string; end: string } } {
-    if (preset === "custom") {
-      if (customStart && customEnd) return { range: { start: customStart, end: customEnd } }
-      const { start, end } = computeRange("last_7d_incl_today")
-      return { range: { start, end } }
-    }
-    if (
-      preset === "last_3d_incl_today" ||
-      preset === "last_4d_incl_today" ||
-      preset === "last_5d_incl_today" ||
-      preset === "last_6d_incl_today" ||
-      preset === "last_7d_incl_today"
-    ) {
-      const { start, end } = computeRange(preset)
-      return { range: { start, end } }
-    }
-    if (preset === "today") return { datePreset: "today" }
-    if (preset === "yesterday") return { datePreset: "yesterday" }
-    const { start, end } = computeRange("last_7d_incl_today")
-    return { range: { start, end } }
-  }
-
-  function effectiveYmdRange(preset: string) {
-    if (preset === "custom" && customStart && customEnd) return { start: customStart, end: customEnd }
-    return computeRange(preset)
-  }
-
-  function productIdForRow(row: MetaCampaignRow): string | null {
-    const rowKey = String(row.campaign_id || row.name || "")
-    const manual = manualIds[rowKey]
-    if (manual && manual.kind === "product" && manual.id && /^\d+$/.test(manual.id)) return manual.id
-    return extractNumericId(row.name || "")
-  }
-
-  async function load(preset?: string, opts?: { store?: string; adAccount?: string }) {
-    const loadToken = ++loadSeqToken.current
+  async function reloadCards() {
     setLoading(true)
     setError(undefined)
     try {
-      const effPreset = preset || datePreset
-      const effStore = opts?.store ?? store
-      const effAdAccount = opts?.adAccount ?? adAccount
-      const metaParams = metaRangeParams(effPreset)
-      const res = await fetchMetaCampaigns(metaParams.datePreset, effAdAccount || undefined, metaParams.range)
-      if (loadToken !== loadSeqToken.current) return
-      if ((res as any)?.error) {
-        setError(String((res as any).error))
-        setItems([])
-      } else {
-        const rows: MetaCampaignRow[] = ((res as any)?.data || []) as MetaCampaignRow[]
-        setItems((rows || []).filter((r) => Number(r.spend || 0) > 0))
-      }
-
-      setShopifyOrders({})
-      setPaidOrders({})
-      setProductBriefs({})
-
-      const { start, end } = effectiveYmdRange(effPreset)
-
-      const ranked = (((res as any)?.data || []) as MetaCampaignRow[]).slice().sort((a, b) => Number(b.spend || 0) - Number(a.spend || 0))
-      const idsOrdered: string[] = []
-      const seen: Record<string, true> = {}
-      for (const c of ranked) {
-        const pid = productIdForRow(c)
-        if (pid && !seen[pid]) {
-          seen[pid] = true
-          idsOrdered.push(pid)
-        }
-      }
-      if (!idsOrdered.length) return
-
-      const chunkSize = 8
-      for (let i = 0; i < idsOrdered.length; i += chunkSize) {
-        if (loadToken !== loadSeqToken.current) return
-        const chunk = idsOrdered.slice(i, i + chunkSize)
-        try {
-          const pb = await shopifyProductsBrief({ ids: chunk, store: effStore })
-          if (loadToken !== loadSeqToken.current) return
-          setProductBriefs((prev) => ({ ...prev, ...(((pb as any)?.data || {}) as any) }))
-        } catch {}
-        try {
-          const oc = await shopifyOrdersCountByTitle({ names: chunk, start, end, include_closed: true, date_field: "processed", store: effStore })
-          if (loadToken !== loadSeqToken.current) return
-          const map = ((oc as any)?.data || {}) as Record<string, number>
-          setShopifyOrders((prev) => ({ ...prev, ...map }))
-        } catch {}
-        try {
-          const pc = await shopifyOrdersCountPaidByTitle({ names: chunk, start, end, include_closed: true, date_field: "processed", store: effStore })
-          if (loadToken !== loadSeqToken.current) return
-          const map = ((pc as any)?.data || {}) as Record<string, number>
-          setPaidOrders((prev) => ({ ...prev, ...map }))
-        } catch {}
-      }
+      const res = await profitCardsList(store)
+      if ((res as any)?.error) throw new Error(String((res as any).error))
+      setCards((((res as any)?.data || []) as any) || [])
     } catch (e: any) {
       setError(String(e?.message || e))
-      setItems([])
+      setCards([])
     } finally {
-      if (loadToken === loadSeqToken.current) setLoading(false)
+      setLoading(false)
     }
   }
 
@@ -243,81 +123,43 @@ export default function ProfitCalculatorPage() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      setLoading(true)
+      setError(undefined)
       try {
-        const res = await metaListAdAccounts()
+        const [cardsRes, costsRes, rateRes] = await Promise.allSettled([profitCardsList(store), profitCostsList(store), usdToMadRateGet(store)])
         if (cancelled) return
-        setAdAccounts(((res as any)?.data || []) as any)
-      } catch {
+        if (cardsRes.status === "fulfilled") setCards((((cardsRes.value as any)?.data || []) as any) || [])
+        if (costsRes.status === "fulfilled") setCostsByProduct((((costsRes.value as any)?.data || {}) as any) || {})
+        if (rateRes.status === "fulfilled") {
+          const r = Number(((rateRes.value as any)?.data || {})?.rate ?? 10)
+          setUsdToMadRate(r)
+          setUsdToMadDraft(String(r))
+        }
+      } catch (e: any) {
         if (cancelled) return
-        setAdAccounts([])
+        setError(String(e?.message || e))
+      } finally {
+        if (!cancelled) setLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const [mappingsRes, costsRes] = await Promise.allSettled([campaignMappingsList(store), profitCostsList(store)])
-        if (cancelled) return
-        if (mappingsRes.status === "fulfilled") {
-          const map = ((mappingsRes.value as any)?.data || {}) as Record<string, { kind: "product" | "collection"; id: string }>
-          const shaped: Record<string, { kind: "product" | "collection"; id: string }> = {}
-          for (const k of Object.keys(map || {})) {
-            const v = (map as any)[k]
-            if (v && (v.kind === "product" || v.kind === "collection") && v.id) shaped[k] = { kind: v.kind, id: v.id }
-          }
-          setManualIds(shaped)
-        }
-        if (costsRes.status === "fulfilled") {
-          setCostsByProduct((((costsRes.value as any)?.data || {}) as any) || {})
-        }
-
-        // Load store-scoped default ad account then campaigns
-        try {
-          const res = await metaGetAdAccount(store)
-          if (cancelled) return
-          const conf = (res as any)?.data || {}
-          const nextId = conf && conf.id ? String(conf.id || "") : ""
-          const nextName = conf && conf.name ? String(conf.name || "") : ""
-          if (nextId) {
-            setAdAccount(nextId)
-            try {
-              localStorage.setItem("ptos_ad_account", nextId)
-            } catch {}
-          } else {
-            setAdAccount("")
-          }
-          setAdAccountName(nextName || "")
-          load(undefined, { store, adAccount: nextId || undefined })
-        } catch {
-          if (cancelled) return
-          load(undefined, { store, adAccount })
-        }
-      } catch {
-        if (cancelled) return
-        load(undefined, { store, adAccount })
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store])
 
-  const totalSpend = useMemo(() => (items || []).reduce((acc, it) => acc + Number(it.spend || 0), 0), [items])
-  const totalPaidOrders = useMemo(() => {
+  const totalSpendMad = useMemo(() => {
     let sum = 0
-    for (const r of items || []) {
-      const pid = productIdForRow(r)
-      if (!pid) continue
-      sum += Number(paidOrders[pid] || 0)
+    for (const c of cards || []) {
+      for (const r of c.campaigns || []) sum += Number((r as any).spend_mad || 0)
     }
     return sum
-  }, [items, paidOrders, manualIds])
+  }, [cards])
+
+  const totalPaidOrders = useMemo(() => {
+    let sum = 0
+    for (const c of cards || []) sum += Number((c.shopify as any)?.paid_orders_total || 0)
+    return sum
+  }, [cards])
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -341,70 +183,41 @@ export default function ProfitCalculatorPage() {
             <option value="irrakids">irrakids</option>
             <option value="irranova">irranova</option>
           </select>
-          <div className="flex items-center gap-1">
-            <select
-              value={adAccount}
-              onChange={async (e) => {
-                const v = e.target.value
-                setAdAccount(v)
-                try {
-                  localStorage.setItem("ptos_ad_account", v)
-                } catch {}
-                try {
-                  const res = await metaSetAdAccount({ id: v, store })
-                  const data = (res as any)?.data || {}
-                  setAdAccountName(String(data?.name || adAccounts.find((a) => a.id === v)?.name || ""))
-                } catch {}
-                load(undefined, { adAccount: v })
-              }}
-              className="rounded-xl border px-2 py-1 text-sm bg-white w-44 sm:w-56 md:w-72"
-            >
-              <option value="">Select ad account…</option>
-              {adAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name || a.id} ({a.id})
-                </option>
-              ))}
-            </select>
-            {adAccountName ? <span className="text-xs text-slate-600">{adAccountName}</span> : null}
-          </div>
+
           <div className="flex items-center gap-2">
-            <select
-              value={datePreset}
-              onChange={(e) => {
-                const v = e.target.value
-                setDatePreset(v)
-                if (v !== "custom") load(v)
+            <span className="text-xs text-slate-600">USD→MAD</span>
+            <input className="w-24 rounded-xl border px-2 py-1 text-sm bg-white" value={usdToMadDraft} onChange={(e) => setUsdToMadDraft(e.target.value)} inputMode="decimal" />
+            <button
+              onClick={async () => {
+                const v = Number(usdToMadDraft || 0) || 10
+                setSavingRate(true)
+                try {
+                  const res = await usdToMadRateSet({ rate: v, store })
+                  if ((res as any)?.error) throw new Error(String((res as any).error))
+                  const r = Number(((res as any)?.data || {})?.rate ?? v)
+                  setUsdToMadRate(r)
+                  setUsdToMadDraft(String(r))
+                } catch {
+                  // ignore
+                } finally {
+                  setSavingRate(false)
+                }
               }}
-              className="rounded-xl border px-2 py-1 text-sm bg-white"
+              disabled={savingRate}
+              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-900 text-sm disabled:opacity-60"
             >
-              <option value="today">Today</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="last_3d_incl_today">Last 3 days (including today)</option>
-              <option value="last_4d_incl_today">Last 4 days (including today)</option>
-              <option value="last_5d_incl_today">Last 5 days (including today)</option>
-              <option value="last_6d_incl_today">Last 6 days (including today)</option>
-              <option value="last_7d_incl_today">Last 7 days (including today)</option>
-              <option value="custom">Custom…</option>
-            </select>
-            {datePreset === "custom" && (
-              <div className="flex items-center gap-1 text-sm">
-                <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
-                <span>to</span>
-                <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
-                <button onClick={() => load("custom")} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">
-                  Apply
-                </button>
-              </div>
-            )}
+              <Save className="w-4 h-4" /> {savingRate ? "Saving…" : "Save rate"}
+            </button>
           </div>
-          <button
-            onClick={() => load()}
-            className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60"
-            disabled={loading}
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {loading ? "Updating…" : "Refresh"}
+
+          <button onClick={reloadCards} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {loading ? "Loading…" : "Refresh list"}
           </button>
+
+          <button onClick={() => setNewOpen(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-sm">
+            <Plus className="w-4 h-4" /> New product
+          </button>
+
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             Home
           </Link>
@@ -418,11 +231,9 @@ export default function ProfitCalculatorPage() {
           <div className="p-4 md:p-6">
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
               <div>
-                <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
-                <div className="text-lg font-semibold">{adAccountName || adAccount || "—"}</div>
-                <div className="text-xs opacity-80">
-                  Range: {datePreset === "custom" ? `${customStart || "—"} to ${customEnd || "—"}` : presetLabel(datePreset)} • Store: {store}
-                </div>
+                <div className="text-xs uppercase/relaxed opacity-80">Store</div>
+                <div className="text-lg font-semibold">{store}</div>
+                <div className="text-xs opacity-80">Saved cards: {(cards || []).length} • USD→MAD: {usdToMadRate}</div>
               </div>
               <div className="text-sm opacity-90 flex items-center gap-2">
                 <DollarSign className="w-4 h-4" />
@@ -431,186 +242,265 @@ export default function ProfitCalculatorPage() {
             </div>
             <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
               <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="text-xs opacity-90">Total Spend</div>
-                <div className="mt-1 text-xl font-bold">{fmtCurrency(totalSpend)}</div>
+                <div className="text-xs opacity-90">Total Spend (MAD)</div>
+                <div className="mt-1 text-xl font-bold">{fmtMad(totalSpendMad)}</div>
               </div>
               <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="text-xs opacity-90">Paid Orders (table)</div>
+                <div className="text-xs opacity-90">Paid Orders (all cards)</div>
                 <div className="mt-1 text-xl font-bold">{totalPaidOrders}</div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="overflow-x-auto bg-white border rounded-none">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
-              <tr className="text-left">
-                <th className="px-3 py-2 font-semibold">Product</th>
-                <th className="px-3 py-2 font-semibold">Campaign</th>
-                <th className="px-3 py-2 font-semibold">Status</th>
-                <th className="px-3 py-2 font-semibold text-right">Spend</th>
-                <th className="px-3 py-2 font-semibold text-emerald-700">Shopify Orders</th>
-                <th className="px-3 py-2 font-semibold text-emerald-800">Paid Orders</th>
-                <th className="px-3 py-2 font-semibold text-right">Product price</th>
-                <th className="px-3 py-2 font-semibold text-right">Inventory</th>
-                <th className="px-3 py-2 font-semibold text-right">Product cost</th>
-                <th className="px-3 py-2 font-semibold text-right">Service + delivery</th>
-                <th className="px-3 py-2 font-semibold text-right">Net profit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr>
-                  <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
-                    Loading…
-                  </td>
-                </tr>
-              )}
-              {!loading && items.length === 0 && (
-                <tr>
-                  <td colSpan={11} className="px-3 py-6 text-center text-slate-500">
-                    No campaigns with spend in this range.
-                  </td>
-                </tr>
-              )}
-              {!loading &&
-                items.map((c) => {
-                  const rowKey = String(c.campaign_id || c.name || "")
-                  const pid = productIdForRow(c)
-                  const brief = pid ? productBriefs[pid] : undefined
-                  const img = brief?.image
-                  const inv = brief ? Number(brief.total_available || 0) : null
-                  const price = brief?.price
-                  const orders = pid ? Number(shopifyOrders[pid] || 0) : null
-                  const paid = pid ? Number(paidOrders[pid] || 0) : null
-                  const costRec = pid ? costsByProduct[pid] || {} : {}
-                  const productCost = Number(costRec.product_cost || 0)
-                  const serviceCost = Number(costRec.service_delivery_cost || 0)
-                  const net = (Number(price || 0) * Number(paid || 0) - Number(c.spend || 0) - productCost - serviceCost) || 0
-                  const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
-                  const status = String(c.status || "").toUpperCase()
-                  const active = status === "ACTIVE"
-                  const statusClass = active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
-                  const draft = manualDrafts[rowKey] || manualIds[rowKey] || { kind: "product" as const, id: "" }
-                  return (
-                    <tr key={rowKey} className="border-b last:border-b-0">
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-3">
-                          {img ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className="w-16 h-16 rounded object-cover border" />
-                          ) : pid ? (
-                            <span className="inline-block w-16 h-16 rounded bg-slate-100 border animate-pulse" />
-                          ) : (
-                            <span className="inline-block w-16 h-16 rounded bg-slate-50 border" />
-                          )}
-                          <div className="space-y-1">
-                            <div className="text-xs text-slate-500">Product ID</div>
-                            <div className="font-mono text-sm">{pid || "—"}</div>
-                            <div className="flex items-center gap-1">
-                              <select
-                                value={draft.kind}
-                                onChange={(e) =>
-                                  setManualDrafts((prev) => ({ ...prev, [rowKey]: { ...(prev[rowKey] || { id: "" }), kind: e.target.value as any } }))
-                                }
-                                className="border rounded px-1 py-0.5 text-xs bg-white"
-                              >
-                                <option value="product">Product</option>
-                                <option value="collection">Collection</option>
-                              </select>
+        {!loading && (cards || []).length === 0 && (
+          <div className="flex items-center justify-center py-16">
+            <button onClick={() => setNewOpen(true)} className="rounded-2xl px-8 py-6 text-lg font-bold bg-emerald-700 hover:bg-emerald-800 text-white inline-flex items-center gap-3">
+              <Plus className="w-6 h-6" /> New product
+            </button>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {(cards || []).map((card) => {
+            const pid = String(card.product_id || "")
+            const savedCosts = costsByProduct[pid] || (card.costs as any) || {}
+            const productCost = Number((savedCosts as any).product_cost || 0)
+            const serviceCost = Number((savedCosts as any).service_delivery_cost || 0)
+            const priceMad = Number((card.product as any)?.price_mad || 0)
+            const paid = Number((card.shopify as any)?.paid_orders_total || 0)
+            const revenueMad = priceMad * paid
+            const inv = (card.product as any)?.inventory
+            return (
+              <div key={card.id} className="bg-white border rounded-none">
+                <div className="px-4 py-3 border-b flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                  <div className="flex items-center gap-3">
+                    {(card.product as any)?.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={(card.product as any).image} alt="product" className="w-14 h-14 rounded object-cover border" />
+                    ) : (
+                      <div className="w-14 h-14 rounded border bg-slate-50" />
+                    )}
+                    <div>
+                      <div className="font-semibold">Product {pid}</div>
+                      <div className="text-xs text-slate-600">
+                        Range: {(card.range as any)?.start} to {(card.range as any)?.end} • Updated: {String(card.updated_at || "").replace("T", " ").replace("Z", "") || "—"}
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        Price: {priceMad ? fmtMad(priceMad) : "—"} • Paid orders: {paid} • Revenue: {fmtMad(revenueMad)} • Inventory: {inv ?? "—"}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        setLoading(true)
+                        setError(undefined)
+                        try {
+                          const res = await profitCardRefresh({ card_id: card.id, store })
+                          if ((res as any)?.error) throw new Error(String((res as any).error))
+                          const next = (res as any)?.data
+                          setCards((prev) => prev.map((c) => (c.id === card.id ? (next as any) : c)))
+                        } catch (e: any) {
+                          setError(String(e?.message || e))
+                        } finally {
+                          setLoading(false)
+                        }
+                      }}
+                      className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60"
+                      disabled={loading}
+                    >
+                      <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+                    </button>
+                    <button
+                      onClick={async () => {
+                        const ok = window.confirm("Delete this card?")
+                        if (!ok) return
+                        try {
+                          const res = await profitCardDelete({ card_id: card.id, store })
+                          if ((res as any)?.error) throw new Error(String((res as any).error))
+                          setCards((prev) => prev.filter((c) => c.id !== card.id))
+                        } catch (e: any) {
+                          setError(String(e?.message || e))
+                        }
+                      }}
+                      className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-700 text-sm"
+                    >
+                      <Trash2 className="w-4 h-4" /> Delete
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-4 overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50 border-b">
+                      <tr className="text-left">
+                        <th className="px-3 py-2 font-semibold">Campaign</th>
+                        <th className="px-3 py-2 font-semibold">Status</th>
+                        <th className="px-3 py-2 font-semibold text-right">Spend (MAD)</th>
+                        <th className="px-3 py-2 font-semibold text-right">Product cost</th>
+                        <th className="px-3 py-2 font-semibold text-right">Service + delivery</th>
+                        <th className="px-3 py-2 font-semibold text-right">Net profit (MAD)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(card.campaigns || []).map((r, idx) => {
+                        const spendMad = Number((r as any).spend_mad || 0)
+                        const net = revenueMad - spendMad - productCost - serviceCost
+                        const netClass = net >= 0 ? "bg-emerald-600" : "bg-rose-600"
+                        const st = String((r as any).status || "").toUpperCase()
+                        const active = st === "ACTIVE"
+                        const statusClass = active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
+                        return (
+                          <tr key={String((r as any).campaign_id || idx)} className="border-b last:border-b-0">
+                            <td className="px-3 py-2 whitespace-nowrap">{(r as any).name || (r as any).campaign_id || "-"}</td>
+                            <td className="px-3 py-2">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{active ? "Active" : "Paused"}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right">{fmtMad(spendMad)}</td>
+                            <td className="px-3 py-2 text-right">
                               <input
-                                value={draft.id || ""}
-                                onChange={(e) =>
-                                  setManualDrafts((prev) => ({
-                                    ...prev,
-                                    [rowKey]: { ...(prev[rowKey] || { kind: draft.kind }), id: e.target.value.replace(/[^0-9]/g, "") },
-                                  }))
-                                }
-                                placeholder="ID"
-                                className="w-24 border rounded px-2 py-0.5 text-xs bg-white"
-                              />
-                              <button
-                                onClick={async () => {
-                                  const next = { kind: (manualDrafts[rowKey]?.kind || draft.kind) as any, id: (manualDrafts[rowKey]?.id || draft.id || "").trim() }
-                                  setManualIds((prev) => ({ ...prev, [rowKey]: next }))
-                                  try {
-                                    await campaignMappingUpsert({ campaign_key: rowKey, kind: next.kind, id: next.id, store })
-                                  } catch {}
-                                  load()
+                                type="number"
+                                step="0.01"
+                                value={String((savedCosts as any).product_cost ?? "")}
+                                onChange={(e) => {
+                                  const v = e.target.value === "" ? null : Number(e.target.value)
+                                  setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), product_cost: v } }))
                                 }}
-                                className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
-                              >
-                                Save
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{c.name || "-"}</td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{active ? "Active" : "Paused"}</span>
-                      </td>
-                      <td className="px-3 py-2 text-right">${Number(c.spend || 0).toFixed(2)}</td>
-                      <td className="px-3 py-2">{orders == null ? <span className="text-slate-400">—</span> : <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>}</td>
-                      <td className="px-3 py-2">{paid == null ? <span className="text-slate-400">—</span> : <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-200 text-emerald-800">{paid}</span>}</td>
-                      <td className="px-3 py-2 text-right">{price == null ? <span className="text-slate-400">—</span> : fmtCurrency(Number(price || 0))}</td>
-                      <td className="px-3 py-2 text-right">{inv == null ? <span className="text-slate-400">—</span> : <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>}</td>
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={pid ? String(costRec.product_cost ?? "") : ""}
-                          disabled={!pid}
-                          onChange={(e) => {
-                            if (!pid) return
-                            const v = e.target.value === "" ? null : Number(e.target.value)
-                            setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), product_cost: v } }))
-                          }}
-                          onBlur={async () => {
-                            if (!pid) return
-                            const rec = costsByProduct[pid] || {}
-                            try {
-                              await profitCostsUpsert({ product_id: pid, product_cost: rec.product_cost ?? null, store })
-                            } catch {}
-                          }}
-                          className="w-28 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={pid ? String(costRec.service_delivery_cost ?? "") : ""}
-                          disabled={!pid}
-                          onChange={(e) => {
-                            if (!pid) return
-                            const v = e.target.value === "" ? null : Number(e.target.value)
-                            setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), service_delivery_cost: v } }))
-                          }}
-                          onBlur={async () => {
-                            if (!pid) return
-                            const rec = costsByProduct[pid] || {}
-                            try {
-                              await profitCostsUpsert({ product_id: pid, service_delivery_cost: rec.service_delivery_cost ?? null, store })
-                            } catch {}
-                          }}
-                          className="w-32 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <button className={`w-full min-w-40 inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl text-white font-bold ${netClass}`} disabled>
-                          <span className="text-white/90">$</span>
-                          <span>{Number(net || 0).toFixed(2)}</span>
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-            </tbody>
-          </table>
+                                onBlur={async () => {
+                                  const rec = costsByProduct[pid] || savedCosts || {}
+                                  try {
+                                    await profitCostsUpsert({ product_id: pid, product_cost: (rec as any).product_cost ?? null, store })
+                                  } catch {
+                                    // ignore
+                                  }
+                                }}
+                                className="w-28 rounded-md border px-2 py-1 text-sm bg-white"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={String((savedCosts as any).service_delivery_cost ?? "")}
+                                onChange={(e) => {
+                                  const v = e.target.value === "" ? null : Number(e.target.value)
+                                  setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), service_delivery_cost: v } }))
+                                }}
+                                onBlur={async () => {
+                                  const rec = costsByProduct[pid] || savedCosts || {}
+                                  try {
+                                    await profitCostsUpsert({ product_id: pid, service_delivery_cost: (rec as any).service_delivery_cost ?? null, store })
+                                  } catch {
+                                    // ignore
+                                  }
+                                }}
+                                className="w-36 rounded-md border px-2 py-1 text-sm bg-white"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <div className={`w-full min-w-44 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-white font-bold ${netClass}`}>
+                                <span className="text-white/90">MAD</span>
+                                <span>{Number(net || 0).toFixed(2)}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      {(card.campaigns || []).length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="px-3 py-6 text-center text-slate-500">
+                            No campaigns found for this product in this range. Click Refresh.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
+
+      {newOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setNewOpen(false)} />
+          <div className="relative bg-white rounded-xl border shadow-xl w-[92vw] max-w-xl p-4">
+            <div className="font-semibold text-lg mb-3">New product</div>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <div className="text-xs text-slate-600 mb-1">Product ID</div>
+                <input
+                  value={newProductId}
+                  onChange={(e) => setNewProductId(e.target.value.replace(/[^0-9]/g, ""))}
+                  className="w-full rounded-xl border px-3 py-2"
+                  placeholder="e.g. 123456789"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select value={datePreset} onChange={(e) => setDatePreset(e.target.value)} className="rounded-xl border px-2 py-2 text-sm bg-white">
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="last_3d_incl_today">Last 3 days (including today)</option>
+                  <option value="last_4d_incl_today">Last 4 days (including today)</option>
+                  <option value="last_5d_incl_today">Last 5 days (including today)</option>
+                  <option value="last_6d_incl_today">Last 6 days (including today)</option>
+                  <option value="last_7d_incl_today">Last 7 days (including today)</option>
+                  <option value="custom">Custom…</option>
+                </select>
+                {datePreset === "custom" && (
+                  <div className="flex items-center gap-1 text-sm">
+                    <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="rounded-xl border px-2 py-2 bg-white" />
+                    <span>to</span>
+                    <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="rounded-xl border px-2 py-2 bg-white" />
+                  </div>
+                )}
+              </div>
+              <div className="text-xs text-slate-600">
+                Range:{" "}
+                {(() => {
+                  const r = effectiveYmdRange(datePreset, customStart, customEnd)
+                  return `${r.start} to ${r.end}`
+                })()}
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setNewOpen(false)} className="rounded-xl px-4 py-2 border bg-white hover:bg-slate-50">
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const pid = String(newProductId || "").trim()
+                  const { start, end } = effectiveYmdRange(datePreset, customStart, customEnd)
+                  if (!pid || !/^\d+$/.test(pid)) {
+                    alert("Enter a valid numeric product id")
+                    return
+                  }
+                  setSavingCard(true)
+                  setError(undefined)
+                  try {
+                    const res = await profitCardCreate({ product_id: pid, start, end, store })
+                    if ((res as any)?.error) throw new Error(String((res as any).error))
+                    const card = (res as any)?.data
+                    if (card) setCards((prev) => [card as any, ...prev])
+                    setNewOpen(false)
+                    setNewProductId("")
+                  } catch (e: any) {
+                    setError(String(e?.message || e))
+                  } finally {
+                    setSavingCard(false)
+                  }
+                }}
+                disabled={savingCard}
+                className="rounded-xl px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold disabled:opacity-60 inline-flex items-center gap-2"
+              >
+                <Save className="w-4 h-4" /> {savingCard ? "Saving…" : "Save card"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

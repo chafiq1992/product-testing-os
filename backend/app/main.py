@@ -6,8 +6,9 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import uuid4
+from datetime import datetime
 import json, os
 import base64, hmac, hashlib
 from pathlib import Path
@@ -1198,6 +1199,242 @@ async def api_upsert_profit_costs(req: ProfitCostsUpsertRequest):
         return {"data": data}
     except Exception as e:
         return {"error": str(e)}
+
+
+# -------- Exchange rate (USD -> MAD) --------
+class UsdToMadRateUpsertRequest(BaseModel):
+    rate: float
+    store: Optional[str] = None
+
+
+@app.get("/api/exchange/usd_to_mad")
+async def api_get_usd_to_mad_rate(store: str | None = None):
+    try:
+        rate = db.get_usd_to_mad_rate(store)
+        if rate is None:
+            rate = 10.0
+        return {"data": {"rate": float(rate)}}
+    except Exception as e:
+        return {"error": str(e), "data": {"rate": 10.0}}
+
+
+@app.post("/api/exchange/usd_to_mad")
+async def api_set_usd_to_mad_rate(req: UsdToMadRateUpsertRequest):
+    try:
+        rate = db.set_usd_to_mad_rate(req.store, float(req.rate))
+        return {"data": {"rate": float(rate)}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# -------- Profit Cards (saved snapshots) --------
+def _extract_numeric_id_from_name(name: str | None) -> str | None:
+    try:
+        n = str(name or "")
+        m = re.search(r"(\d{3,})", n)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _compute_profit_card_snapshot_sync(*, store: str | None, product_id: str, start: str, end: str) -> dict:
+    """Compute and return the profit card payload for a single product_id and date range."""
+    pid = (product_id or "").strip()
+    if not pid or not pid.isdigit():
+        raise ValueError("invalid_product_id")
+    s_date = (start or "").split("T")[0]
+    e_date = (end or "").split("T")[0]
+    rate = db.get_usd_to_mad_rate(store)
+    if rate is None:
+        rate = 10.0
+    rate = float(rate)
+
+    # Meta campaigns (ACTIVE+PAUSED) with spend within range
+    campaigns = list_active_campaigns_with_insights("last_7d", ad_account_id=None, since=s_date, until=e_date)
+    campaigns = [c for c in (campaigns or []) if float(c.get("spend") or 0) > 0]
+
+    # Campaign mappings (optional, to map a campaign to a product id)
+    try:
+        mappings = db.list_campaign_mappings(store) or {}
+    except Exception:
+        mappings = {}
+
+    def _matches_product(c: dict) -> bool:
+        try:
+            cid = str(c.get("campaign_id") or "").strip()
+            name = str(c.get("name") or "").strip()
+            # 1) Numeric id in name
+            if _extract_numeric_id_from_name(name) == pid:
+                return True
+            # 2) Explicit mapping by campaign_key (campaign_id or name)
+            for key in (cid, name):
+                if not key:
+                    continue
+                m = mappings.get(key)
+                if m and m.get("kind") == "product" and str(m.get("id") or m.get("target_id") or "") == pid:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    matched_campaigns = [c for c in campaigns if _matches_product(c)]
+
+    # Shopify product brief (inventory + price)
+    briefs = get_products_brief([pid], store=store) or {}
+    brief = (briefs or {}).get(pid) or {}
+    price_mad = brief.get("price")
+    try:
+        price_mad = float(price_mad) if price_mad is not None else None
+    except Exception:
+        price_mad = None
+
+    inv = brief.get("total_available")
+    try:
+        inv = int(inv) if inv is not None else None
+    except Exception:
+        inv = None
+
+    # Shopify orders (processed_at window)
+    orders_map = count_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+    paid_map = count_paid_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+    orders_total = int((orders_map or {}).get(pid, 0) or 0)
+    paid_total = int((paid_map or {}).get(pid, 0) or 0)
+
+    # Costs (saved per product)
+    try:
+        costs = db.get_app_setting(store, f"profit_costs:{pid}") or {}
+        if not isinstance(costs, dict):
+            costs = {}
+    except Exception:
+        costs = {}
+    product_cost = float(costs.get("product_cost") or 0)
+    service_delivery_cost = float(costs.get("service_delivery_cost") or 0)
+
+    rows: list[dict] = []
+    for c in matched_campaigns:
+        spend_usd = float(c.get("spend") or 0)
+        spend_mad = spend_usd * rate
+        revenue_mad = (float(price_mad or 0) * float(paid_total or 0))
+        net_profit_mad = revenue_mad - spend_mad - product_cost - service_delivery_cost
+        rows.append({
+            "campaign_id": c.get("campaign_id"),
+            "name": c.get("name"),
+            "status": c.get("status"),
+            "spend_usd": round(spend_usd, 2),
+            "spend_mad": round(spend_mad, 2),
+            "orders_total": orders_total,
+            "paid_orders_total": paid_total,
+            "product_price_mad": price_mad,
+            "inventory": inv,
+            "product_cost": product_cost,
+            "service_delivery_cost": service_delivery_cost,
+            "net_profit_mad": round(net_profit_mad, 2),
+        })
+
+    # Sort by spend desc
+    try:
+        rows.sort(key=lambda x: float(x.get("spend_usd") or 0), reverse=True)
+    except Exception:
+        pass
+
+    return {
+        "store": store,
+        "product_id": pid,
+        "range": {"start": s_date, "end": e_date},
+        "currency": {"shopify": "MAD", "meta_spend": "USD", "display": "MAD"},
+        "usd_to_mad_rate": rate,
+        "product": {
+            "image": brief.get("image"),
+            "inventory": inv,
+            "price_mad": price_mad,
+        },
+        "shopify": {
+            "orders_total": orders_total,
+            "paid_orders_total": paid_total,
+        },
+        "costs": {
+            "product_cost": product_cost,
+            "service_delivery_cost": service_delivery_cost,
+        },
+        "campaigns": rows,
+    }
+
+
+class ProfitCardCreateRequest(BaseModel):
+    product_id: str
+    start: str
+    end: str
+    store: Optional[str] = None
+
+
+@app.get("/api/profit_cards")
+async def api_list_profit_cards(store: str | None = None):
+    try:
+        items = db.list_profit_cards(store)
+        return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.post("/api/profit_cards")
+async def api_create_profit_card(req: ProfitCardCreateRequest):
+    try:
+        pid = (req.product_id or "").strip()
+        s_date = (req.start or "").split("T")[0]
+        e_date = (req.end or "").split("T")[0]
+        if not pid or not pid.isdigit():
+            return {"error": "invalid_product_id"}
+        if not s_date or not e_date:
+            return {"error": "invalid_range"}
+        card_id = str(uuid4())
+        key = _cache_key("profit_card_compute", {"store": req.store or None, "pid": pid, "start": s_date, "end": e_date})
+
+        async def _compute():
+            return await run_in_threadpool(_compute_profit_card_snapshot_sync, store=req.store, product_id=pid, start=s_date, end=e_date)
+
+        snap = await _cached(key, 10, _compute)
+        now = datetime.utcnow().isoformat() + "Z"
+        data = {"id": card_id, **(snap or {}), "created_at": now, "updated_at": now}
+        saved = db.upsert_profit_card(req.store, card_id, data)
+        return {"data": saved}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/profit_cards/{card_id}/refresh")
+async def api_refresh_profit_card(card_id: str, store: str | None = None):
+    try:
+        existing = db.get_profit_card(store, card_id) or {}
+        pid = str((existing or {}).get("product_id") or "").strip()
+        rng = (existing or {}).get("range") or {}
+        s_date = str((rng or {}).get("start") or "").split("T")[0]
+        e_date = str((rng or {}).get("end") or "").split("T")[0]
+        if not pid or not pid.isdigit():
+            return {"error": "invalid_product_id"}
+        if not s_date or not e_date:
+            return {"error": "invalid_range"}
+        key = _cache_key("profit_card_refresh", {"store": store or None, "card_id": card_id, "pid": pid, "start": s_date, "end": e_date})
+
+        async def _compute():
+            return await run_in_threadpool(_compute_profit_card_snapshot_sync, store=store, product_id=pid, start=s_date, end=e_date)
+
+        snap = await _cached(key, 10, _compute)
+        merged = dict(existing or {})
+        merged.update(snap or {})
+        merged["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        saved = db.upsert_profit_card(store, card_id, merged)
+        return {"data": saved}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/profit_cards/{card_id}")
+async def api_delete_profit_card(card_id: str, store: str | None = None):
+    try:
+        ok = db.delete_profit_card(store, card_id)
+        return {"data": {"ok": bool(ok)}}
+    except Exception as e:
+        return {"error": str(e), "data": {"ok": False}}
 
 
 class OrdersCountByCollectionRequest(BaseModel):

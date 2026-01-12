@@ -455,6 +455,113 @@ def set_profit_costs(store: str | None, product_id: str, patch: Dict[str, Any]) 
     """Upsert profit costs by merging patch into existing JSON stored in AppSetting under key profit_costs:{product_id}."""
     if not isinstance(product_id, str) or not product_id.strip():
         return {}
+
+
+# ---------------- Profit Cards (stored in AppSetting) ----------------
+def list_profit_cards(store: str | None = None) -> list[dict]:
+    """Return a list of saved profit cards for the store.
+
+    Cards are stored under keys: profit_card:{card_id}
+    """
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like("profit_card:%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.order_by(desc(AppSetting.updated_at)).all()
+        out: list[dict] = []
+        for r in rows:
+            try:
+                key = r.key or ""
+                if not key.startswith("profit_card:"):
+                    continue
+                cid = key.split("profit_card:", 1)[1]
+                if not cid:
+                    continue
+                try:
+                    val = json.loads(r.value) if r.value else {}
+                except Exception:
+                    val = {}
+                if not isinstance(val, dict):
+                    val = {}
+                # Ensure id field exists
+                if "id" not in val:
+                    val["id"] = cid
+                # Attach updated_at for sorting/UX
+                try:
+                    val["updated_at"] = r.updated_at.isoformat() + "Z"
+                except Exception:
+                    pass
+                out.append(val)
+            except Exception:
+                continue
+        return out
+
+
+def get_profit_card(store: str | None, card_id: str) -> dict | None:
+    cid = (card_id or "").strip()
+    if not cid:
+        return None
+    key = f"profit_card:{cid}"
+    val = get_app_setting(store, key)
+    if not isinstance(val, dict):
+        return None
+    if "id" not in val:
+        val["id"] = cid
+    return val
+
+
+def upsert_profit_card(store: str | None, card_id: str, data: dict) -> dict:
+    cid = (card_id or "").strip()
+    if not cid:
+        return {}
+    key = f"profit_card:{cid}"
+    payload = dict(data or {})
+    payload["id"] = cid
+    saved = set_app_setting(store, key, payload)
+    try:
+        if isinstance(saved, dict):
+            return saved
+        if isinstance(saved, str):
+            return json.loads(saved)
+    except Exception:
+        pass
+    return payload
+
+
+def delete_profit_card(store: str | None, card_id: str) -> bool:
+    cid = (card_id or "").strip()
+    if not cid:
+        return False
+    key = f"profit_card:{cid}"
+    pk = _mk_setting_pk(store, key)
+    with SessionLocal() as session:
+        item = session.get(AppSetting, pk)
+        if not item:
+            return False
+        session.delete(item)
+        session.commit()
+        return True
+
+
+# ---------------- Exchange rate (USD -> MAD) ----------------
+def get_usd_to_mad_rate(store: str | None) -> float | None:
+    try:
+        v = get_app_setting(store, "usd_to_mad_rate")
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def set_usd_to_mad_rate(store: str | None, rate: float) -> float:
+    try:
+        r = float(rate)
+    except Exception:
+        r = 10.0
+    r = max(0.01, min(r, 1000.0))
+    set_app_setting(store, "usd_to_mad_rate", r)
+    return r
     pid = product_id.strip()
     key = f"profit_costs:{pid}"
     try:
