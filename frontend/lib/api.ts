@@ -871,6 +871,7 @@ export type ProfitCampaignCard = {
   costs?: { product_cost?: number, service_delivery_cost?: number }
   revenue_mad?: number
   net_profit_mad?: number
+  profit_per_paid_order_mad?: number
   created_at?: string
   updated_at?: string
 }
@@ -885,7 +886,7 @@ export async function profitCampaignCardsList(payload?: { store?: string, ad_acc
   return data as { data?: Record<string, ProfitCampaignCard>, error?: string }
 }
 
-export async function profitCampaignCardCalculate(payload:{ campaign_id: string, start: string, end: string, store?: string, ad_account?: string }){
+export async function profitCampaignCardCalculate(payload:{ campaign_id: string, start: string, end: string, store?: string, ad_account?: string, force?: boolean }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/profit_campaign_cards/calculate`, body)
   return data as { data?: ProfitCampaignCard, error?: string }

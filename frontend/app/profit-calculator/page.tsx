@@ -443,7 +443,7 @@ export default function ProfitCalculatorPage() {
     return sum
   }, [campaigns, usdToMadRate])
 
-  async function calculateFor(ids: string[], range: { start: string; end: string }) {
+  async function calculateFor(ids: string[], range: { start: string; end: string }, force?: boolean) {
     const uniq = Array.from(new Set(ids.filter(Boolean)))
     if (!uniq.length) return
     setRowBusy((prev) => {
@@ -453,7 +453,7 @@ export default function ProfitCalculatorPage() {
     })
     try {
       const results = await Promise.all(
-        uniq.map((cid) => profitCampaignCardCalculate({ campaign_id: cid, start: range.start, end: range.end, store, ad_account: adAccount }))
+        uniq.map((cid) => profitCampaignCardCalculate({ campaign_id: cid, start: range.start, end: range.end, store, ad_account: adAccount, force: !!force }))
       )
       const nextSaved: Record<string, ProfitCampaignCard> = {}
       for (const res of results as any[]) {
@@ -672,8 +672,8 @@ export default function ProfitCalculatorPage() {
                   const ordersTotal = Number(saved?.shopify?.orders_total ?? 0)
                   const priceMad = Number(saved?.product?.price_mad ?? 0)
                   const inventory = saved?.product?.inventory
-                  const revenueMad = priceMad * paidOrders
-                  const net = revenueMad - mergedSpendMad - productCost - serviceCost
+                  const profitPerOrder = Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost) ?? 0)
+                  const net = (profitPerOrder * paidOrders) - mergedSpendMad
 
                   const hasCalc = !!saved
                   const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
@@ -796,7 +796,7 @@ export default function ProfitCalculatorPage() {
                               try {
                                 const ids = [cid]
                                 if (partnerRow?.campaign_id) ids.push(String(partnerRow.campaign_id))
-                                await calculateFor(ids, rng)
+                                await calculateFor(ids, rng, hasCalc)
                               } catch (e: any) {
                                 setError(String(e?.message || e))
                               }

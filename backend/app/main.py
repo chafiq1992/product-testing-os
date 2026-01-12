@@ -1446,6 +1446,7 @@ class ProfitCampaignCalculateRequest(BaseModel):
     end: str
     store: Optional[str] = None
     ad_account: Optional[str] = None
+    force: Optional[bool] = None
 
 
 def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | None, campaign_id: str, start: str, end: str) -> dict:
@@ -1576,6 +1577,17 @@ async def api_calculate_profit_campaign_card(req: ProfitCampaignCalculateRequest
         s_date = (req.start or "").split("T")[0]
         e_date = (req.end or "").split("T")[0]
         acct = _normalize_ad_acct_id((req.ad_account or "").strip()) or None
+        force = bool(req.force) if req.force is not None else False
+
+        # Fast path: if we already have a saved result for the same range, return it immediately (no recompute)
+        if not force:
+            try:
+                existing = db.get_profit_campaign_card(req.store, acct, cid) or {}
+                rng = (existing or {}).get("range") or {}
+                if isinstance(rng, dict) and str(rng.get("start") or "") == s_date and str(rng.get("end") or "") == e_date:
+                    return {"data": existing}
+            except Exception:
+                pass
         key = _cache_key("profit_campaign_calc", {"store": req.store or None, "ad_account": acct, "campaign_id": cid, "start": s_date, "end": e_date})
 
         async def _compute():
