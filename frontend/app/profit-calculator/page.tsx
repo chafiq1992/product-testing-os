@@ -696,7 +696,7 @@ export default function ProfitCalculatorPage() {
                   const ordersTotal = hasCalc ? Number(saved?.shopify?.orders_total ?? 0) : 0
                   const priceMad = hasCalc ? Number(saved?.product?.price_mad ?? 0) : 0
                   const inventory = hasCalc ? saved?.product?.inventory : undefined
-                  const profitPerOrder = hasCalc ? Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost) ?? 0) : 0
+                  const profitPerOrder = hasCalc ? Number((saved as any)?.profit_per_paid_order_mad ?? (priceMad - productCost - serviceCost)) : 0
                   const effectiveSpendMad = isMergedChild ? 0 : (isMergedPair ? mergedSpendMadLeader : (hasCalc ? Number(saved?.spend_mad || 0) : 0))
                   const net = hasCalc && !isMergedChild ? ((profitPerOrder * paidOrders) - effectiveSpendMad) : 0
                   const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
