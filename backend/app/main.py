@@ -1450,7 +1450,7 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
     cid = (campaign_id or "").strip()
     if not cid:
         raise ValueError("invalid_campaign_id")
-    acct = (ad_account or "").strip() or None
+    acct = _normalize_ad_acct_id((ad_account or "").strip()) or None
     s_date = (start or "").split("T")[0]
     e_date = (end or "").split("T")[0]
     if not s_date or not e_date:
@@ -1460,7 +1460,21 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
     rate = float(rate)
 
     # Meta: find this campaign row for the date range
-    rows = list_active_campaigns_with_insights("last_7d", ad_account_id=acct, since=s_date, until=e_date) or []
+    try:
+        rows = list_active_campaigns_with_insights("last_7d", ad_account_id=acct, since=s_date, until=e_date) or []
+    except Exception as e:
+        # Unwrap tenacity RetryError to expose the underlying API error message
+        try:
+            from tenacity import RetryError  # type: ignore
+            if isinstance(e, RetryError):
+                try:
+                    cause = e.last_attempt.exception()  # type: ignore[attr-defined]
+                    raise RuntimeError(str(cause)) from cause
+                except Exception:
+                    raise RuntimeError(str(e)) from e
+        except Exception:
+            pass
+        raise
     row = next((r for r in rows if str((r or {}).get("campaign_id") or "").strip() == cid), None)
     name = (row or {}).get("name")
     status = (row or {}).get("status")
@@ -1560,22 +1574,34 @@ async def api_calculate_profit_campaign_card(req: ProfitCampaignCalculateRequest
             return {"error": "invalid_campaign_id"}
         s_date = (req.start or "").split("T")[0]
         e_date = (req.end or "").split("T")[0]
-        key = _cache_key("profit_campaign_calc", {"store": req.store or None, "ad_account": (req.ad_account or "").strip() or None, "campaign_id": cid, "start": s_date, "end": e_date})
+        acct = _normalize_ad_acct_id((req.ad_account or "").strip()) or None
+        key = _cache_key("profit_campaign_calc", {"store": req.store or None, "ad_account": acct, "campaign_id": cid, "start": s_date, "end": e_date})
 
         async def _compute():
-            return await run_in_threadpool(_compute_profit_campaign_card_sync, store=req.store, ad_account=req.ad_account, campaign_id=cid, start=s_date, end=e_date)
+            return await run_in_threadpool(_compute_profit_campaign_card_sync, store=req.store, ad_account=acct, campaign_id=cid, start=s_date, end=e_date)
 
         snap = await _cached(key, 10, _compute)
         now = datetime.utcnow().isoformat() + "Z"
-        existing = db.get_profit_campaign_card(req.store, req.ad_account, cid) or {}
+        existing = db.get_profit_campaign_card(req.store, acct, cid) or {}
         created_at = (existing or {}).get("created_at") or now
         payload = dict(existing or {})
         payload.update(snap or {})
         payload["created_at"] = created_at
         payload["updated_at"] = now
-        saved = db.upsert_profit_campaign_card(req.store, req.ad_account, cid, payload)
+        saved = db.upsert_profit_campaign_card(req.store, acct, cid, payload)
         return {"data": saved}
     except Exception as e:
+        # Unwrap tenacity RetryError to expose the underlying API error message
+        try:
+            from tenacity import RetryError  # type: ignore
+            if isinstance(e, RetryError):
+                try:
+                    cause = e.last_attempt.exception()  # type: ignore[attr-defined]
+                    return {"error": str(cause)}
+                except Exception:
+                    return {"error": str(e)}
+        except Exception:
+            pass
         return {"error": str(e)}
 
 

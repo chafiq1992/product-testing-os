@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
-import { DollarSign, RefreshCw, Rocket, Save, Trash2 } from "lucide-react"
+import { DollarSign, RefreshCw, Rocket, Save } from "lucide-react"
 import {
   fetchMetaCampaigns,
   type MetaCampaignRow,
@@ -16,6 +16,8 @@ import {
   profitCampaignCardsList,
   profitCampaignCardCalculate,
   profitCampaignCardDelete,
+  profitCostsList,
+  profitCostsUpsert,
   type ProfitCampaignCard,
 } from "@/lib/api"
 
@@ -26,6 +28,13 @@ function fmtMad(v: number) {
   } catch {
     return `${n.toFixed(2)} MAD`
   }
+}
+
+function normalizeAdAccountId(raw: string) {
+  const s = String(raw || "").trim()
+  if (!s) return ""
+  if (s.toLowerCase().startsWith("act_")) return s.split("_", 2)[1] || ""
+  return s
 }
 
 function computeRange(preset: string) {
@@ -109,10 +118,10 @@ export default function ProfitCalculatorPage() {
     }
   })
 
-  // Ad account selector (same pattern as Ads Management)
+  // Ad account selector (mirrors Ads Management)
   const [adAccount, setAdAccount] = useState<string>(() => {
     try {
-      return localStorage.getItem("ptos_ad_account") || ""
+      return normalizeAdAccountId(localStorage.getItem("ptos_ad_account") || "")
     } catch {
       return ""
     }
@@ -136,22 +145,100 @@ export default function ProfitCalculatorPage() {
   const [mappings, setMappings] = useState<Record<string, { kind: "product" | "collection"; id: string }>>({})
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string | null }>>({})
   const [savedByCampaign, setSavedByCampaign] = useState<Record<string, ProfitCampaignCard>>({})
+  const [costsByProduct, setCostsByProduct] = useState<Record<string, { product_cost?: number | null; service_delivery_cost?: number | null }>>({})
 
-  // Per-card period selector (defaults to global)
-  const [cardPreset, setCardPreset] = useState<Record<string, string>>({})
-  const [cardCustom, setCardCustom] = useState<Record<string, { start: string; end: string }>>({})
-  const [cardBusy, setCardBusy] = useState<Record<string, boolean>>({})
+  // Merge behavior (same concept as ads-management)
+  const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ptos_profit_selected") || "{}")
+    } catch {
+      return {}
+    }
+  })
+  const [mergedWith, setMergedWith] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ptos_profit_merged") || "{}")
+    } catch {
+      return {}
+    }
+  })
+
+  // Per-row period selector (defaults to global)
+  const [rowPreset, setRowPreset] = useState<Record<string, string>>({})
+  const [rowCustom, setRowCustom] = useState<Record<string, { start: string; end: string }>>({})
+  const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({})
+
   const loadSeq = useRef(0)
 
-  function effectiveYmdRange(preset: string, campaignId?: string) {
-    if (preset === "custom") {
-      const cc = campaignId ? cardCustom[campaignId] : undefined
+  function toggleSelect(k: string, v?: boolean) {
+    setSelectedKeys((prev) => {
+      const next = { ...prev, [k]: v == null ? !prev[k] : !!v }
+      try {
+        localStorage.setItem("ptos_profit_selected", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }
+  function clearSelection() {
+    setSelectedKeys(() => {
+      try {
+        localStorage.setItem("ptos_profit_selected", "{}")
+      } catch {}
+      return {}
+    })
+  }
+  function doMergeSelected() {
+    const keys = Object.keys(selectedKeys).filter((k) => !!selectedKeys[k])
+    if (keys.length !== 2) {
+      alert("Select exactly 2 rows to merge.")
+      return
+    }
+    const [a, b] = keys
+    setMergedWith((prev) => {
+      const next = { ...prev }
+      const pa = next[a]
+      const pb = next[b]
+      if (pa) {
+        delete next[pa]
+        delete next[a]
+      }
+      if (pb) {
+        delete next[pb]
+        delete next[b]
+      }
+      next[a] = b
+      next[b] = a
+      try {
+        localStorage.setItem("ptos_profit_merged", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+    clearSelection()
+  }
+  function unmergeKey(k: string) {
+    setMergedWith((prev) => {
+      const partner = prev[k]
+      if (!partner) return prev
+      const next = { ...prev }
+      delete next[k]
+      delete next[partner]
+      try {
+        localStorage.setItem("ptos_profit_merged", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }
+
+  function effectiveYmdRangeForRow(cid: string) {
+    const p = rowPreset[cid] || datePreset
+    if (p === "custom") {
+      const cc = rowCustom[cid]
       const s = cc?.start || customStart
       const e = cc?.end || customEnd
       if (s && e) return { start: s, end: e }
       return computeRange("last_7d_incl_today")
     }
-    return computeRange(preset)
+    return computeRange(p)
   }
 
   function metaRangeParams(preset: string): { datePreset?: string; range?: { start: string; end: string } } {
@@ -173,7 +260,12 @@ export default function ProfitCalculatorPage() {
   function productIdForCampaign(c: MetaCampaignRow): string | null {
     const cid = String(c.campaign_id || "").trim()
     const name = String(c.name || "").trim()
-    const fromMap = (cid && mappings[cid] && mappings[cid].kind === "product") ? mappings[cid].id : ((name && mappings[name] && mappings[name].kind === "product") ? mappings[name].id : null)
+    const fromMap =
+      cid && mappings[cid] && mappings[cid].kind === "product"
+        ? mappings[cid].id
+        : name && mappings[name] && mappings[name].kind === "product"
+          ? mappings[name].id
+          : null
     if (fromMap && /^\d+$/.test(fromMap)) return fromMap
     return extractNumericId(name)
   }
@@ -190,8 +282,7 @@ export default function ProfitCalculatorPage() {
       const rows = (((res as any)?.data || []) as MetaCampaignRow[]).filter((r) => Number(r.spend || 0) > 0)
       setCampaigns(rows)
 
-      // default per-card preset to global preset
-      setCardPreset((prev) => {
+      setRowPreset((prev) => {
         const next = { ...prev }
         for (const r of rows) {
           const cid = String(r.campaign_id || "")
@@ -199,9 +290,8 @@ export default function ProfitCalculatorPage() {
         }
         return next
       })
-      // propagate global custom range into per-card custom values when needed
       if (datePreset === "custom" && customStart && customEnd) {
-        setCardCustom((prev) => {
+        setRowCustom((prev) => {
           const next = { ...prev }
           for (const r of rows) {
             const cid = String(r.campaign_id || "")
@@ -225,6 +315,15 @@ export default function ProfitCalculatorPage() {
         setSavedByCampaign((((sres as any)?.data || {}) as any) || {})
       } catch {
         setSavedByCampaign({})
+      }
+
+      // Load costs
+      try {
+        const cres = await profitCostsList(store)
+        if (token !== loadSeq.current) return
+        setCostsByProduct((((cres as any)?.data || {}) as any) || {})
+      } catch {
+        setCostsByProduct({})
       }
 
       // Load product images only
@@ -263,7 +362,6 @@ export default function ProfitCalculatorPage() {
   }, [])
 
   useEffect(() => {
-    // load ad accounts list once
     ;(async () => {
       try {
         const res = await metaListAdAccounts()
@@ -275,7 +373,6 @@ export default function ProfitCalculatorPage() {
   }, [])
 
   useEffect(() => {
-    // store-scoped ad account + exchange rate on store change
     let cancelled = false
     ;(async () => {
       try {
@@ -290,7 +387,8 @@ export default function ProfitCalculatorPage() {
         const res = await metaGetAdAccount(store)
         if (cancelled) return
         const conf = (res as any)?.data || {}
-        const nextId = conf && conf.id ? String(conf.id || "") : ""
+        const nextIdRaw = conf && conf.id ? String(conf.id || "") : ""
+        const nextId = normalizeAdAccountId(nextIdRaw)
         const nextName = conf && conf.name ? String(conf.name || "") : ""
         if (nextId) {
           setAdAccount(nextId)
@@ -309,19 +407,69 @@ export default function ProfitCalculatorPage() {
     }
   }, [store])
 
-  // reload list when key selectors change
   useEffect(() => {
     if (!adAccount) return
     loadList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, adAccount, datePreset, customStart, customEnd])
 
+  // Keep merged pairs adjacent
+  const sortedCampaigns = useMemo(() => {
+    const arr = (campaigns || []).slice().sort((a, b) => Number(b.spend || 0) - Number(a.spend || 0))
+    const byId: Record<string, MetaCampaignRow> = {}
+    for (const r of arr) byId[String(r.campaign_id || "")] = r
+    const seen: Record<string, true> = {}
+    const out: MetaCampaignRow[] = []
+    for (const r of arr) {
+      const k = String(r.campaign_id || "")
+      if (seen[k]) continue
+      const partner = mergedWith[k]
+      if (partner && byId[partner]) {
+        out.push(r)
+        out.push(byId[partner])
+        seen[k] = true
+        seen[partner] = true
+      } else {
+        out.push(r)
+        seen[k] = true
+      }
+    }
+    return out
+  }, [campaigns, mergedWith])
+
   const totalSpendMad = useMemo(() => {
-    // sum across campaigns, convert using *current* header rate for display only
     let sum = 0
     for (const c of campaigns || []) sum += Number(c.spend || 0) * Number(usdToMadRate || 10)
     return sum
   }, [campaigns, usdToMadRate])
+
+  async function calculateFor(ids: string[], range: { start: string; end: string }) {
+    const uniq = Array.from(new Set(ids.filter(Boolean)))
+    if (!uniq.length) return
+    setRowBusy((prev) => {
+      const next = { ...prev }
+      for (const id of uniq) next[id] = true
+      return next
+    })
+    try {
+      const results = await Promise.all(
+        uniq.map((cid) => profitCampaignCardCalculate({ campaign_id: cid, start: range.start, end: range.end, store, ad_account: adAccount }))
+      )
+      const nextSaved: Record<string, ProfitCampaignCard> = {}
+      for (const res of results as any[]) {
+        if (res?.error) throw new Error(String(res.error))
+        const data = res?.data
+        if (data?.campaign_id) nextSaved[String(data.campaign_id)] = data
+      }
+      setSavedByCampaign((prev) => ({ ...prev, ...nextSaved }))
+    } finally {
+      setRowBusy((prev) => {
+        const next = { ...prev }
+        for (const id of uniq) next[id] = false
+        return next
+      })
+    }
+  }
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -350,7 +498,7 @@ export default function ProfitCalculatorPage() {
             <select
               value={adAccount}
               onChange={async (e) => {
-                const v = e.target.value
+                const v = normalizeAdAccountId(e.target.value)
                 setAdAccount(v)
                 try {
                   localStorage.setItem("ptos_ad_account", v)
@@ -358,15 +506,15 @@ export default function ProfitCalculatorPage() {
                 try {
                   const res = await metaSetAdAccount({ id: v, store })
                   const data = (res as any)?.data || {}
-                  setAdAccountName(String(data?.name || adAccounts.find((a) => a.id === v)?.name || ""))
+                  setAdAccountName(String(data?.name || adAccounts.find((a) => normalizeAdAccountId(a.id) === v)?.name || ""))
                 } catch {}
               }}
               className="rounded-xl border px-2 py-1 text-sm bg-white w-44 sm:w-56 md:w-72"
             >
               <option value="">Select ad account…</option>
               {adAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name || a.id} ({a.id})
+                <option key={a.id} value={normalizeAdAccountId(a.id)}>
+                  {a.name || a.id} ({normalizeAdAccountId(a.id)})
                 </option>
               ))}
             </select>
@@ -374,14 +522,7 @@ export default function ProfitCalculatorPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <select
-              value={datePreset}
-              onChange={(e) => {
-                const v = e.target.value
-                setDatePreset(v)
-              }}
-              className="rounded-xl border px-2 py-1 text-sm bg-white"
-            >
+            <select value={datePreset} onChange={(e) => setDatePreset(e.target.value)} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="last_3d_incl_today">Last 3 days (including today)</option>
@@ -413,7 +554,7 @@ export default function ProfitCalculatorPage() {
                   const r = Number(((res as any)?.data || {})?.rate ?? v)
                   setUsdToMadRate(r)
                   setUsdToMadDraft(String(r))
-                } catch (e) {
+                } catch {
                   // ignore
                 } finally {
                   setSavingRate(false)
@@ -427,9 +568,8 @@ export default function ProfitCalculatorPage() {
           </div>
 
           <button onClick={loadList} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {loading ? "Updating…" : "Refresh list"}
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {loading ? "Updating…" : "Refresh"}
           </button>
-
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             Home
           </Link>
@@ -451,179 +591,267 @@ export default function ProfitCalculatorPage() {
               </div>
               <div className="text-sm opacity-90 flex items-center gap-2">
                 <DollarSign className="w-4 h-4" />
-                <span>Campaigns with spend</span>
+                <span>Profit overview</span>
               </div>
             </div>
             <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-3">
               <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="text-xs opacity-90">Campaigns</div>
+                <div className="text-xs opacity-90">Campaigns with spend</div>
                 <div className="mt-1 text-xl font-bold">{(campaigns || []).length}</div>
               </div>
               <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="text-xs opacity-90">Spend (MAD, using rate)</div>
+                <div className="text-xs opacity-90">Spend (MAD)</div>
                 <div className="mt-1 text-xl font-bold">{fmtMad(totalSpendMad)}</div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {campaigns.map((c) => {
-            const cid = String(c.campaign_id || "")
-            const pid = productIdForCampaign(c)
-            const img = pid ? (productBriefs[pid] as any)?.image : null
-            const saved = cid ? savedByCampaign[cid] : undefined
-            const preset = cardPreset[cid] || datePreset
-            const rng = effectiveYmdRange(preset, cid)
-            const showData = !!saved
-            const busy = !!cardBusy[cid]
-            const net = Number((saved as any)?.net_profit_mad || 0)
-            const netClass = net >= 0 ? "bg-emerald-600" : "bg-rose-600"
-            return (
-              <div key={cid || c.name} className="bg-white border rounded-none">
-                <div className="p-3 border-b flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    {img ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={img} alt="product" className="w-16 h-16 rounded object-cover border" />
-                    ) : (
-                      <div className="w-16 h-16 rounded border bg-slate-50" />
-                    )}
-                    <div className="min-w-0">
-                      <div className="font-semibold truncate">{c.name || cid}</div>
-                      <div className="text-xs text-slate-600">Status: {String(c.status || "").toUpperCase() || "—"}</div>
-                      <div className="text-xs text-slate-600">Product ID: {pid || "—"}</div>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-2">
-                    {showData ? (
-                      <div className={`px-3 py-2 rounded-xl text-white font-bold ${netClass}`}>
-                        <span className="text-white/90 mr-1">MAD</span>
-                        <span>{Number(net || 0).toFixed(2)}</span>
-                      </div>
-                    ) : (
-                      <div className="px-3 py-2 rounded-xl bg-slate-100 text-slate-600 font-semibold">Not calculated</div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={preset}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          setCardPreset((prev) => ({ ...prev, [cid]: v }))
-                          if (v === "custom") {
-                            setCardCustom((prev) => ({ ...prev, [cid]: prev[cid] || { start: customStart, end: customEnd } }))
-                          }
-                        }}
-                        className="rounded-xl border px-2 py-1 text-xs bg-white"
-                      >
-                        <option value="today">Today</option>
-                        <option value="yesterday">Yesterday</option>
-                        <option value="last_3d_incl_today">Last 3d</option>
-                        <option value="last_4d_incl_today">Last 4d</option>
-                        <option value="last_5d_incl_today">Last 5d</option>
-                        <option value="last_6d_incl_today">Last 6d</option>
-                        <option value="last_7d_incl_today">Last 7d</option>
-                        <option value="custom">Custom…</option>
-                      </select>
-                    </div>
-                    {preset === "custom" && (
-                      <div className="flex items-center gap-1 text-xs">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-slate-600">Select 2 rows to merge (use combined spend for net profit).</div>
+          <button
+            onClick={doMergeSelected}
+            className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm disabled:opacity-60"
+            disabled={Object.keys(selectedKeys).filter((k) => selectedKeys[k]).length !== 2}
+          >
+            Merge 2
+          </button>
+        </div>
+
+        <div className="overflow-x-auto bg-white border rounded-none">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
+              <tr className="text-left">
+                <th className="px-3 py-2 font-semibold w-8">Sel</th>
+                <th className="px-3 py-2 font-semibold">Product</th>
+                <th className="px-3 py-2 font-semibold">Campaign</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 font-semibold text-right">Spend (MAD)</th>
+                <th className="px-3 py-2 font-semibold text-right">Shopify Orders</th>
+                <th className="px-3 py-2 font-semibold text-right">Paid Orders</th>
+                <th className="px-3 py-2 font-semibold text-right">Product price (MAD)</th>
+                <th className="px-3 py-2 font-semibold text-right">Inventory</th>
+                <th className="px-3 py-2 font-semibold text-right">Product cost</th>
+                <th className="px-3 py-2 font-semibold text-right">Service + delivery</th>
+                <th className="px-3 py-2 font-semibold text-right">Net profit (MAD)</th>
+                <th className="px-3 py-2 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && sortedCampaigns.length === 0 && (
+                <tr>
+                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">
+                    No campaigns with spend in this range.
+                  </td>
+                </tr>
+              )}
+              {!loading &&
+                sortedCampaigns.map((c) => {
+                  const cid = String(c.campaign_id || "")
+                  const partner = mergedWith[cid]
+                  const partnerRow = partner ? sortedCampaigns.find((x) => String(x.campaign_id || "") === partner) : undefined
+                  const mergedSpendMad =
+                    (Number(savedByCampaign[cid]?.spend_mad ?? (Number(c.spend || 0) * Number(usdToMadRate || 10))) || 0) +
+                    (partnerRow ? Number(savedByCampaign[String(partnerRow.campaign_id || "")]?.spend_mad ?? (Number(partnerRow.spend || 0) * Number(usdToMadRate || 10))) || 0 : 0)
+
+                  const saved = savedByCampaign[cid]
+                  const pid = saved?.product?.id || productIdForCampaign(c)
+                  const img = pid ? (productBriefs as any)[pid]?.image : null
+                  const costs = pid ? (costsByProduct[pid] || {}) : {}
+                  const productCost = Number((costs as any).product_cost ?? (saved?.costs?.product_cost ?? 0) ?? 0)
+                  const serviceCost = Number((costs as any).service_delivery_cost ?? (saved?.costs?.service_delivery_cost ?? 0) ?? 0)
+
+                  const paidOrders = Number(saved?.shopify?.paid_orders_total ?? 0)
+                  const ordersTotal = Number(saved?.shopify?.orders_total ?? 0)
+                  const priceMad = Number(saved?.product?.price_mad ?? 0)
+                  const inventory = saved?.product?.inventory
+                  const revenueMad = priceMad * paidOrders
+                  const net = revenueMad - mergedSpendMad - productCost - serviceCost
+
+                  const hasCalc = !!saved
+                  const netClass = net >= 0 ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"
+
+                  const status = String(c.status || "").toUpperCase()
+                  const active = status === "ACTIVE"
+                  const statusClass = active ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
+
+                  const p = rowPreset[cid] || datePreset
+                  const rng = effectiveYmdRangeForRow(cid)
+                  const busy = !!rowBusy[cid]
+
+                  return (
+                    <tr key={cid || c.name} className="border-b last:border-b-0">
+                      <td className="px-3 py-2">
+                        <input type="checkbox" checked={!!selectedKeys[cid]} onChange={(e) => toggleSelect(cid, e.target.checked)} />
+                      </td>
+                      <td className="px-3 py-2">
+                        {img ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={img} alt="product" className="w-16 h-16 rounded object-cover border" />
+                        ) : (
+                          <div className="w-16 h-16 rounded border bg-slate-50" />
+                        )}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          {partner ? (
+                            <button onClick={() => unmergeKey(cid)} className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs">
+                              Unmerge
+                            </button>
+                          ) : null}
+                          <span>{c.name || "-"}</span>
+                        </div>
+                        {partnerRow ? <div className="text-xs text-slate-500">Merged with: {partnerRow.name || partnerRow.campaign_id}</div> : null}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{active ? "Active" : "Paused"}</span>
+                      </td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? fmtMad(mergedSpendMad) : "—"}</td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? ordersTotal : "—"}</td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? paidOrders : "—"}</td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? fmtMad(priceMad) : "—"}</td>
+                      <td className="px-3 py-2 text-right">{hasCalc ? (inventory ?? "—") : "—"}</td>
+                      <td className="px-3 py-2 text-right">
                         <input
-                          type="date"
-                          value={(cardCustom[cid]?.start || customStart) || ""}
-                          onChange={(e) => setCardCustom((prev) => ({ ...prev, [cid]: { start: e.target.value, end: prev[cid]?.end || customEnd } }))}
-                          className="rounded-xl border px-2 py-1 bg-white"
+                          type="number"
+                          step="0.01"
+                          disabled={!pid}
+                          value={pid ? String((costs as any).product_cost ?? "") : ""}
+                          onChange={(e) => {
+                            if (!pid) return
+                            const v = e.target.value === "" ? null : Number(e.target.value)
+                            setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), product_cost: v } }))
+                          }}
+                          onBlur={async () => {
+                            if (!pid) return
+                            const rec = costsByProduct[pid] || {}
+                            try {
+                              await profitCostsUpsert({ product_id: pid, product_cost: (rec as any).product_cost ?? null, store })
+                            } catch {}
+                          }}
+                          className="w-28 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
                         />
-                        <span>to</span>
+                      </td>
+                      <td className="px-3 py-2 text-right">
                         <input
-                          type="date"
-                          value={(cardCustom[cid]?.end || customEnd) || ""}
-                          onChange={(e) => setCardCustom((prev) => ({ ...prev, [cid]: { start: prev[cid]?.start || customStart, end: e.target.value } }))}
-                          className="rounded-xl border px-2 py-1 bg-white"
+                          type="number"
+                          step="0.01"
+                          disabled={!pid}
+                          value={pid ? String((costs as any).service_delivery_cost ?? "") : ""}
+                          onChange={(e) => {
+                            if (!pid) return
+                            const v = e.target.value === "" ? null : Number(e.target.value)
+                            setCostsByProduct((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), service_delivery_cost: v } }))
+                          }}
+                          onBlur={async () => {
+                            if (!pid) return
+                            const rec = costsByProduct[pid] || {}
+                            try {
+                              await profitCostsUpsert({ product_id: pid, service_delivery_cost: (rec as any).service_delivery_cost ?? null, store })
+                            } catch {}
+                          }}
+                          className="w-36 rounded-md border px-2 py-1 text-sm bg-white disabled:bg-slate-50"
                         />
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="p-3 space-y-2">
-                  <div className="text-xs text-slate-600">
-                    Selected range: <span className="font-mono">{rng.start}</span> to <span className="font-mono">{rng.end}</span>
-                  </div>
-
-                  {showData ? (
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div className="border rounded p-2 bg-slate-50">
-                        <div className="text-xs text-slate-500">Spend (MAD)</div>
-                        <div className="font-semibold">{fmtMad(Number((saved as any)?.spend_mad || 0))}</div>
-                      </div>
-                      <div className="border rounded p-2 bg-slate-50">
-                        <div className="text-xs text-slate-500">Paid orders</div>
-                        <div className="font-semibold">{Number((saved as any)?.shopify?.paid_orders_total || 0)}</div>
-                      </div>
-                      <div className="border rounded p-2 bg-slate-50">
-                        <div className="text-xs text-slate-500">Price (MAD)</div>
-                        <div className="font-semibold">{(saved as any)?.product?.price_mad != null ? fmtMad(Number((saved as any)?.product?.price_mad || 0)) : "—"}</div>
-                      </div>
-                      <div className="border rounded p-2 bg-slate-50">
-                        <div className="text-xs text-slate-500">Inventory</div>
-                        <div className="font-semibold">{(saved as any)?.product?.inventory ?? "—"}</div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-slate-500">Only image is loaded. Click Calculate to compute and save results.</div>
-                  )}
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={async () => {
-                        setCardBusy((prev) => ({ ...prev, [cid]: true }))
-                        try {
-                          const res = await profitCampaignCardCalculate({ campaign_id: cid, start: rng.start, end: rng.end, store, ad_account: adAccount })
-                          if ((res as any)?.error) throw new Error(String((res as any).error))
-                          const data = (res as any)?.data as ProfitCampaignCard
-                          setSavedByCampaign((prev) => ({ ...prev, [cid]: data }))
-                        } catch (e: any) {
-                          setError(String(e?.message || e))
-                        } finally {
-                          setCardBusy((prev) => ({ ...prev, [cid]: false }))
-                        }
-                      }}
-                      disabled={busy}
-                      className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm disabled:opacity-60"
-                    >
-                      <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} /> {showData ? "Refresh calculation" : "Calculate"}
-                    </button>
-                    {showData && (
-                      <button
-                        onClick={async () => {
-                          const ok = window.confirm("Delete saved calculation for this campaign?")
-                          if (!ok) return
-                          try {
-                            const res = await profitCampaignCardDelete({ campaign_id: cid, store, ad_account: adAccount })
-                            if ((res as any)?.error) throw new Error(String((res as any).error))
-                            setSavedByCampaign((prev) => {
-                              const next = { ...prev }
-                              delete next[cid]
-                              return next
-                            })
-                          } catch (e: any) {
-                            setError(String(e?.message || e))
-                          }
-                        }}
-                        className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 bg-rose-100 hover:bg-rose-200 text-rose-700 text-sm"
-                      >
-                        <Trash2 className="w-4 h-4" /> Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-          {!loading && campaigns.length === 0 && (
-            <div className="text-sm text-slate-500">No campaigns with spend in this range.</div>
-          )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {hasCalc ? (
+                          <button className={`w-full min-w-44 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-white font-bold ${netClass}`} disabled>
+                            <span className="text-white/90">MAD</span>
+                            <span>{Number(net || 0).toFixed(2)}</span>
+                          </button>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <select
+                            value={p}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setRowPreset((prev) => ({ ...prev, [cid]: v }))
+                              if (v === "custom") setRowCustom((prev) => ({ ...prev, [cid]: prev[cid] || { start: customStart, end: customEnd } }))
+                            }}
+                            className="rounded-xl border px-2 py-1 text-xs bg-white"
+                          >
+                            <option value="today">Today</option>
+                            <option value="yesterday">Yesterday</option>
+                            <option value="last_3d_incl_today">Last 3d</option>
+                            <option value="last_4d_incl_today">Last 4d</option>
+                            <option value="last_5d_incl_today">Last 5d</option>
+                            <option value="last_6d_incl_today">Last 6d</option>
+                            <option value="last_7d_incl_today">Last 7d</option>
+                            <option value="custom">Custom…</option>
+                          </select>
+                          <button
+                            onClick={async () => {
+                              setError(undefined)
+                              try {
+                                const ids = [cid]
+                                if (partnerRow?.campaign_id) ids.push(String(partnerRow.campaign_id))
+                                await calculateFor(ids, rng)
+                              } catch (e: any) {
+                                setError(String(e?.message || e))
+                              }
+                            }}
+                            disabled={busy}
+                            className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs disabled:opacity-60"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} /> {hasCalc ? "Refresh calc" : "Calculate"}
+                          </button>
+                          {hasCalc && (
+                            <button
+                              onClick={async () => {
+                                const ok = window.confirm("Clear saved calculation for this campaign?")
+                                if (!ok) return
+                                try {
+                                  const res = await profitCampaignCardDelete({ campaign_id: cid, store, ad_account: adAccount })
+                                  if ((res as any)?.error) throw new Error(String((res as any).error))
+                                  setSavedByCampaign((prev) => {
+                                    const next = { ...prev }
+                                    delete next[cid]
+                                    return next
+                                  })
+                                } catch (e: any) {
+                                  setError(String(e?.message || e))
+                                }
+                              }}
+                              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        {p === "custom" && (
+                          <div className="mt-2 flex items-center justify-end gap-1 text-xs">
+                            <input
+                              type="date"
+                              value={(rowCustom[cid]?.start || customStart) || ""}
+                              onChange={(e) => setRowCustom((prev) => ({ ...prev, [cid]: { start: e.target.value, end: prev[cid]?.end || customEnd } }))}
+                              className="rounded-xl border px-2 py-1 bg-white"
+                            />
+                            <span>to</span>
+                            <input
+                              type="date"
+                              value={(rowCustom[cid]?.end || customEnd) || ""}
+                              onChange={(e) => setRowCustom((prev) => ({ ...prev, [cid]: { start: prev[cid]?.start || customStart, end: e.target.value } }))}
+                              className="rounded-xl border px-2 py-1 bg-white"
+                            />
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
