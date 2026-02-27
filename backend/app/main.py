@@ -1227,12 +1227,23 @@ async def _ads_management_bundle_impl(
         end = end or None
 
         acct = _normalize_ad_acct_id(ad_account)
+        ad_account_info: dict = {}
         if not acct:
             try:
                 conf = db.get_app_setting(store, "meta_ad_account")
                 acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
+                if isinstance(conf, dict):
+                    ad_account_info = {"id": conf.get("id"), "name": conf.get("name")}
             except Exception:
                 acct = None
+
+        # Resolve ad account name if we have an ID but no name yet
+        if acct and not ad_account_info.get("name"):
+            try:
+                info = get_ad_account_info(acct)
+                ad_account_info = {"id": info.get("id"), "name": info.get("name")}
+            except Exception:
+                ad_account_info = {"id": acct, "name": ""}
 
         # Whole-bundle cache: avoid re-computing the entire bundle within a short window
         bundle_key = _cache_key("ads_mgmt_bundle", {
@@ -1244,6 +1255,7 @@ async def _ads_management_bundle_impl(
             return await _ads_management_bundle_compute(acct, date_preset, start, end, store)
 
         result = await _cached(bundle_key, 25, _compute_bundle)
+        result["ad_account"] = ad_account_info
         return {"data": result}
     except Exception as e:
         return {"error": str(e), "data": {}}

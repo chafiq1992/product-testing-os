@@ -610,6 +610,7 @@ export type AdsManagementBundle = {
   order_counts: Record<string, number>,
   store_orders_total: number,
   collection_counts: Record<string, number>,
+  ad_account?: { id?: string, name?: string },
 }
 export async function fetchAdsManagementBundle(payload: {
   date_preset?: string,

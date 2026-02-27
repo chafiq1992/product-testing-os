@@ -219,6 +219,14 @@ export default function AdsManagementPage(){
       setShopifyCounts(bundle?.order_counts || {})
       setStoreOrdersTotal(typeof bundle?.store_orders_total === 'number' ? bundle.store_orders_total : null)
 
+      // Apply ad account info from bundle (eliminates separate metaGetAdAccount call)
+      const bundleAdAccount = bundle?.ad_account
+      if(bundleAdAccount?.id){
+        setAdAccount(String(bundleAdAccount.id || ''))
+        setAdAccountName(String(bundleAdAccount.name || ''))
+        try{ localStorage.setItem('ptos_ad_account', String(bundleAdAccount.id || '')) }catch{}
+      }
+
       // Apply mappings from bundle
       const shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
       const bundleMappings = bundle?.mappings || {}
@@ -313,28 +321,9 @@ export default function AdsManagementPage(){
     ;(async()=>{
       // Load ad accounts list in background (non-blocking)
       loadAccounts()
-      // Load ad account config + kick off bundle in parallel
-      try{
-        const res = await metaGetAdAccount(store)
-        if(cancelled) return
-        const conf = (res as any)?.data||{}
-        const nextId = conf && conf.id ? String(conf.id||'') : ''
-        const nextName = conf && conf.name ? String(conf.name||'') : ''
-        if(nextId){
-          setAdAccount(nextId)
-          try{ localStorage.setItem('ptos_ad_account', nextId) }catch{}
-        }else{
-          setAdAccount('')
-          try{ localStorage.setItem('ptos_ad_account', '') }catch{}
-        }
-        setAdAccountName(nextName || '')
-        // Bundle call fetches campaigns + mappings + meta + shopify data in ONE request
-        load(undefined, { store, adAccount: nextId || undefined })
-      }catch{
-        if(cancelled) return
-        setAdAccountName('')
-        load(undefined, { store, adAccount })
-      }
+      // Bundle call fetches everything: campaigns + mappings + meta + shopify data + ad account info
+      // No need for a separate metaGetAdAccount call - the bundle resolves it server-side
+      load(undefined, { store, adAccount: adAccount || undefined })
     })()
     return ()=>{ cancelled = true }
   }, [store])
