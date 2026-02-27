@@ -98,8 +98,8 @@ export default function AdsManagementPage(){
   // Keep legacy single-value for backward compat with other parts of the code
   const store = selectedStores[0] || 'irrakids'
   const adAccount = selectedAdAccounts[0] || ''
-  const setStore = (v: string) => { setSelectedStores([v]); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify([v])) }catch{} }
-  const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{}; return next }) }
+  const setStore = (v: string) => { setSelectedStores([v]); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify([v])); localStorage.setItem('ptos_store', v) }catch{} }
+  const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
   const [adAccountName, setAdAccountName] = useState<string>('')
@@ -701,7 +701,7 @@ export default function AdsManagementPage(){
             label="Stores"
             options={ALL_STORES}
             selected={selectedStores}
-            onChange={(next) => { setSelectedStores(next); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(next)) }catch{} }}
+            onChange={(next) => { setSelectedStores(next); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(next)); if(next.length) localStorage.setItem('ptos_store', next[0]) }catch{} }}
           />
           <MultiCheckDropdown
             label="Ad accounts"
@@ -952,7 +952,8 @@ export default function AdsManagementPage(){
                                 try{
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, store)
+                                  const rowStore = (c as any)._store || store
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore)
                                   const mapping = ((ord as any)?.data)||{}
                                   setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
                                 }catch{

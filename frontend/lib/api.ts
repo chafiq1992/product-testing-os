@@ -34,7 +34,15 @@ function __dedupe<T>(key: string, fn: ()=>Promise<T>): Promise<T> {
   return p
 }
 function selectedStore(){
-  try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_store')||undefined) : undefined }catch{ return undefined }
+  try{
+    if(typeof window==='undefined') return undefined
+    // Check multi-store key first, fall back to legacy single key
+    const multi = localStorage.getItem('ptos_stores_multi')
+    if(multi){
+      try{ const arr = JSON.parse(multi); if(Array.isArray(arr) && arr.length) return arr[0] }catch{}
+    }
+    return localStorage.getItem('ptos_store') || undefined
+  }catch{ return undefined }
 }
 function confirmationToken(){
   try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_confirmation_token')||'') : '' }catch{ return '' }
