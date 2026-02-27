@@ -601,6 +601,31 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
   return data as { [key:string]: string }
 }
 
+// Ads Management: aggregated bundle endpoint (single request for all data)
+export type AdsManagementBundle = {
+  campaigns: MetaCampaignRow[],
+  mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
+  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text: string, at: string }> }>,
+  product_briefs: Record<string, { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null }>,
+  order_counts: Record<string, number>,
+  store_orders_total: number,
+  collection_counts: Record<string, number>,
+}
+export async function fetchAdsManagementBundle(payload: {
+  date_preset?: string,
+  ad_account?: string,
+  store?: string,
+  start?: string,
+  end?: string,
+}){
+  const url = `${base}/api/ads-management/bundle`
+  const body = { ...payload }
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data?: AdsManagementBundle, error?: string }
+  })
+}
+
 // Meta Ads: list active campaigns with insights
 export type MetaCampaignRow = {
   campaign_id?: string,

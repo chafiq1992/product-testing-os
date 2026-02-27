@@ -1169,6 +1169,181 @@ async def api_campaign_timeline_add(req: CampaignTimelineAddRequest):
         return {"error": str(e)}
 
 
+# -------- Ads Management Bundle (single-request aggregation) --------
+class AdsManagementBundleRequest(BaseModel):
+    date_preset: Optional[str] = None
+    ad_account: Optional[str] = None
+    store: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+@app.post("/api/ads-management/bundle")
+async def api_ads_management_bundle(req: AdsManagementBundleRequest):
+    """Single aggregated endpoint for the ads-management page.
+
+    Fetches Meta campaigns, Shopify product briefs, Shopify order counts,
+    store total orders, campaign mappings, and campaign meta ALL in parallel.
+    Replaces 6-10+ sequential frontend requests with one backend call.
+    """
+    try:
+        store = req.store or None
+        date_preset = req.date_preset or "last_7d"
+        start = req.start or None
+        end = req.end or None
+
+        acct = _normalize_ad_acct_id(req.ad_account)
+        if not acct:
+            try:
+                conf = db.get_app_setting(store, "meta_ad_account")
+                acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
+            except Exception:
+                acct = None
+
+        # Phase 1: Fetch campaigns + mappings + meta in parallel
+        campaigns_key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset, "start": start, "end": end, "store": store})
+
+        async def _fetch_campaigns():
+            return await _cached(campaigns_key, 30, lambda: run_in_threadpool(
+                list_active_campaigns_with_insights,
+                date_preset,
+                ad_account_id=(acct or None),
+                since=start,
+                until=end,
+            ))
+
+        async def _fetch_mappings():
+            try:
+                return db.list_campaign_mappings(store)
+            except Exception:
+                return {}
+
+        async def _fetch_meta():
+            try:
+                return db.list_campaign_meta(store)
+            except Exception:
+                return {}
+
+        campaigns_result, mappings, campaign_meta = await asyncio.gather(
+            _fetch_campaigns(),
+            _fetch_mappings(),
+            _fetch_meta(),
+        )
+        campaigns = campaigns_result or []
+
+        # Phase 2: Extract product IDs from campaigns + mappings, then fetch
+        # Shopify data (briefs, order counts, store total) in parallel
+        product_ids: list[str] = []
+        seen_ids: set[str] = set()
+        collection_mappings: dict[str, str] = {}
+
+        for c in campaigns:
+            campaign_key = str((c or {}).get("campaign_id") or (c or {}).get("name") or "")
+            mapping = (mappings or {}).get(campaign_key)
+
+            pid = None
+            if mapping and mapping.get("kind") == "product" and mapping.get("id") and str(mapping["id"]).isdigit():
+                pid = str(mapping["id"])
+            elif mapping and mapping.get("kind") == "collection" and mapping.get("id") and str(mapping["id"]).isdigit():
+                collection_mappings[campaign_key] = str(mapping["id"])
+            else:
+                name = str((c or {}).get("name") or "")
+                m = re.search(r"(\d{3,})", name)
+                if m:
+                    pid = m.group(1)
+
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                product_ids.append(pid)
+
+        s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in (start or "") else (start or "")
+        e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in (end or "") else (end or "")
+
+        async def _fetch_product_briefs():
+            if not product_ids:
+                return {}
+            key = _cache_key("shopify_products_brief", {"store": store, "ids": sorted(product_ids)})
+            return await _cached(key, 300, lambda: run_in_threadpool(get_products_brief, product_ids, store=store))
+
+        async def _fetch_order_counts():
+            if not product_ids:
+                return {}
+            names = sorted(set(product_ids))
+            key = _cache_key("shopify_orders_count_by_title", {
+                "store": store, "start": s_date, "end": e_date,
+                "include_closed": True, "date_field": "processed", "names": names,
+            })
+
+            def _compute_sync():
+                out: dict[str, int] = {n: 0 for n in names}
+                numeric = [n for n in names if n.isdigit()]
+                if numeric:
+                    try:
+                        batch = count_orders_by_product_or_variant_processed_batch(numeric, s_date, e_date, store=store, include_closed=True)
+                        for k, v in (batch or {}).items():
+                            out[k] = int(v or 0)
+                    except Exception:
+                        for n in numeric:
+                            try:
+                                out[n] = count_orders_by_product_or_variant_processed(n, s_date, e_date, store=store, include_closed=True)
+                            except Exception:
+                                out[n] = 0
+                return out
+
+            return await _cached(key, 60, lambda: run_in_threadpool(_compute_sync))
+
+        async def _fetch_store_total():
+            key = _cache_key("shopify_orders_count_total", {"store": store, "start": s_date, "end": e_date, "include_closed": True, "date_field": "processed"})
+            try:
+                cnt = await _cached(key, 60, lambda: run_in_threadpool(count_orders_total_processed, s_date, e_date, store=store, include_closed=True))
+                return int(cnt or 0)
+            except Exception:
+                return 0
+
+        async def _fetch_collection_counts():
+            if not collection_mappings:
+                return {}
+            results: dict[str, int] = {}
+
+            async def _one(campaign_key: str, coll_id: str):
+                ckey = _cache_key("shopify_orders_count_by_collection", {
+                    "store": store, "collection_id": coll_id,
+                    "start": s_date, "end": e_date,
+                    "include_closed": True, "aggregate": "sum_product_orders", "date_field": "processed",
+                })
+                try:
+                    cnt = await _cached(ckey, 60, lambda: run_in_threadpool(
+                        sum_product_order_counts_for_collection, coll_id, s_date, e_date, store=store, include_closed=True
+                    ))
+                    results[campaign_key] = int(cnt or 0)
+                except Exception:
+                    results[campaign_key] = 0
+
+            await asyncio.gather(*[_one(ck, cid) for ck, cid in collection_mappings.items()])
+            return results
+
+        product_briefs, order_counts, store_total, collection_counts = await asyncio.gather(
+            _fetch_product_briefs(),
+            _fetch_order_counts(),
+            _fetch_store_total(),
+            _fetch_collection_counts(),
+        )
+
+        return {
+            "data": {
+                "campaigns": campaigns,
+                "mappings": mappings or {},
+                "campaign_meta": campaign_meta or {},
+                "product_briefs": product_briefs or {},
+                "order_counts": order_counts or {},
+                "store_orders_total": store_total,
+                "collection_counts": collection_counts or {},
+            }
+        }
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------
 class ProfitCostsUpsertRequest(BaseModel):
     product_id: str
