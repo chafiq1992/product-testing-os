@@ -23,10 +23,6 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
-  const toggle = (val: string) => {
-    if(selected.includes(val)) onChange(selected.filter(s => s !== val))
-    else onChange([...selected, val])
-  }
   const display = selected.length === 0 ? label
     : selected.length === options.length ? 'All'
     : selected.map(s => options.find(o => o.value === s)?.label || s).join(', ')
@@ -34,6 +30,7 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
     <div ref={ref} className={`relative ${className||''}`}>
       <button
         onClick={() => setOpen(!open)}
+        type="button"
         className="rounded-xl border px-2 py-1 text-sm bg-white flex items-center gap-1 min-w-[120px] justify-between"
       >
         <span className="truncate max-w-[200px]">{display}</span>
@@ -41,18 +38,28 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-1 bg-white border rounded-xl shadow-lg z-[60] min-w-[180px] py-1">
-          {options.map(o => (
-            <label key={o.value} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-sm">
-              <span className={`w-4 h-4 rounded border flex items-center justify-center ${selected.includes(o.value) ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
-                {selected.includes(o.value) && <Check className="w-3 h-3"/>}
-              </span>
-              <span>{o.label}</span>
-            </label>
-          ))}
+          {options.map(o => {
+            const checked = selected.includes(o.value)
+            return (
+              <div
+                key={o.value}
+                onClick={() => {
+                  if(checked) onChange(selected.filter(s => s !== o.value))
+                  else onChange([...selected, o.value])
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-sm select-none"
+              >
+                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
+                  {checked && <Check className="w-3 h-3"/>}
+                </span>
+                <span>{o.label}</span>
+              </div>
+            )
+          })}
           {options.length > 1 && (
             <div className="border-t mt-1 pt-1 px-3 pb-1 flex gap-2">
-              <button onClick={() => onChange(options.map(o => o.value))} className="text-xs text-blue-600 hover:underline">All</button>
-              <button onClick={() => onChange([])} className="text-xs text-slate-500 hover:underline">None</button>
+              <button type="button" onClick={() => onChange(options.map(o => o.value))} className="text-xs text-blue-600 hover:underline">All</button>
+              <button type="button" onClick={() => onChange([])} className="text-xs text-slate-500 hover:underline">None</button>
             </div>
           )}
         </div>
@@ -270,31 +277,19 @@ export default function AdsManagementPage(){
       const metaParams = metaRangeParams(effPreset)
       const { start: rangeStart, end: rangeEnd } = effectiveYmdRange(effPreset)
 
-      // Phase 1: Fire parallel bundle calls for each store+adAccount combo
+      // Phase 1: One bundle call per ad account (campaigns come from Meta, not per-store).
+      // Mappings + meta come from first store. This keeps it to N calls (one per ad account).
       let allCampaigns: MetaCampaignRow[] = []
       let shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
       let allMeta: Record<string, any> = {}
       const primaryStore = effStores[0] || 'irrakids'
+      const acctList = effAdAccounts.length > 0 ? effAdAccounts : ['']
 
-      // Build list of (store, adAccount) pairs to fetch
-      const pairs: Array<{ store: string, adAccount: string }> = []
-      if(effAdAccounts.length > 0){
-        for(const acct of effAdAccounts){
-          for(const st of (effStores.length ? effStores : ['irrakids'])){
-            pairs.push({ store: st, adAccount: acct })
-          }
-        }
-      } else {
-        for(const st of (effStores.length ? effStores : ['irrakids'])){
-          pairs.push({ store: st, adAccount: '' })
-        }
-      }
-
-      const bundlePromises = pairs.map(({ store: st, adAccount: acct }) =>
+      const bundlePromises = acctList.map(acct =>
         fetchAdsManagementBundle({
           date_preset: metaParams.datePreset,
           ad_account: acct || undefined,
-          store: st,
+          store: primaryStore,
           start: metaParams.range?.start || rangeStart,
           end: metaParams.range?.end || rangeEnd,
         }).catch(() => null)
@@ -308,40 +303,48 @@ export default function AdsManagementPage(){
         if(r.status !== 'fulfilled' || !r.value) continue
         const bundle = (r.value as any)?.data
         if(!bundle) continue
-        const pair = pairs[idx]
+        const acct = acctList[idx]
 
-        // Apply ad account info from first result that has it
         const bundleAdAccount = bundle?.ad_account
         if(bundleAdAccount?.id){
           setAdAccountName(prev => prev || String(bundleAdAccount.name || ''))
         }
 
-        // Merge campaigns (dedupe by campaign_id, tag with store/account)
         for(const c of (bundle?.campaigns || [])){
           const cid = String(c.campaign_id || c.name || '')
-          const dedupeKey = `${cid}__${pair.adAccount}`
+          const dedupeKey = `${cid}__${acct}`
           if(!seenCampaignIds.has(dedupeKey)){
             seenCampaignIds.add(dedupeKey)
-            allCampaigns.push({ ...c, _store: pair.store, _adAccount: pair.adAccount } as any)
+            allCampaigns.push({ ...c, _store: primaryStore, _adAccount: acct } as any)
           }
         }
 
-        // Merge mappings
         const bundleMappings = bundle?.mappings || {}
         for(const k of Object.keys(bundleMappings)){
           const v = bundleMappings[k]
           if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
         }
-
-        // Merge campaign meta
         allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
       }
 
-      // If all bundles failed, try fallback for first pair
-      if(allCampaigns.length === 0 && pairs.length > 0){
+      // If extra stores selected, load their mappings + meta too (fast DB calls)
+      if(effStores.length > 1){
+        const extraMappings = await Promise.allSettled(
+          effStores.slice(1).map(st => campaignMappingsList(st).catch(() => ({})))
+        )
+        for(const r of extraMappings){
+          if(r.status !== 'fulfilled') continue
+          const map = ((r.value as any)?.data) || {}
+          for(const k of Object.keys(map)){
+            const v = map[k]
+            if(v && (v.kind==='product' || v.kind==='collection') && v.id && !shaped[k]) shaped[k] = { kind: v.kind, id: v.id }
+          }
+        }
+      }
+
+      if(allCampaigns.length === 0 && acctList.length > 0){
         try {
-          const p = pairs[0]
-          const res = await fetchMetaCampaigns(metaParams.datePreset, p.adAccount||undefined, metaParams.range)
+          const res = await fetchMetaCampaigns(metaParams.datePreset, acctList[0]||undefined, metaParams.range)
           if(loadToken !== loadSeqToken.current) return
           if(!(res as any)?.error) allCampaigns = (res as any)?.data || []
         } catch {}
@@ -509,6 +512,7 @@ export default function AdsManagementPage(){
     // Don't call load() here: the store-scoped bootstrap effect below loads the
     // default ad account first, then fetches campaigns once (avoids duplicate requests).
   },[])
+  const initialLoadDone = useRef(false)
   useEffect(()=>{
     const loadAccounts = async () => {
       try{
@@ -525,9 +529,12 @@ export default function AdsManagementPage(){
     }
     ;(async()=>{
       loadAccounts()
-      load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })
+      if(!initialLoadDone.current){
+        initialLoadDone.current = true
+        load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })
+      }
     })()
-  }, [selectedStores.join(','), selectedAdAccounts.join(',')])
+  }, [])
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
