@@ -1186,13 +1186,47 @@ async def api_ads_management_bundle(req: AdsManagementBundleRequest):
     store total orders, campaign mappings, and campaign meta ALL in parallel.
     Replaces 6-10+ sequential frontend requests with one backend call.
     """
-    try:
-        store = req.store or None
-        date_preset = req.date_preset or "last_7d"
-        start = req.start or None
-        end = req.end or None
+    return await _ads_management_bundle_impl(
+        date_preset=req.date_preset,
+        ad_account=req.ad_account,
+        store=req.store,
+        start=req.start,
+        end=req.end,
+    )
 
-        acct = _normalize_ad_acct_id(req.ad_account)
+
+@app.get("/api/ads-management/bundle")
+async def api_ads_management_bundle_get(
+    date_preset: str | None = None,
+    ad_account: str | None = None,
+    store: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+):
+    """GET variant for browser/CDN cacheability."""
+    return await _ads_management_bundle_impl(
+        date_preset=date_preset,
+        ad_account=ad_account,
+        store=store,
+        start=start,
+        end=end,
+    )
+
+
+async def _ads_management_bundle_impl(
+    date_preset: str | None = None,
+    ad_account: str | None = None,
+    store: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+):
+    try:
+        store = store or None
+        date_preset = date_preset or "last_7d"
+        start = start or None
+        end = end or None
+
+        acct = _normalize_ad_acct_id(ad_account)
         if not acct:
             try:
                 conf = db.get_app_setting(store, "meta_ad_account")
@@ -1200,6 +1234,22 @@ async def api_ads_management_bundle(req: AdsManagementBundleRequest):
             except Exception:
                 acct = None
 
+        # Whole-bundle cache: avoid re-computing the entire bundle within a short window
+        bundle_key = _cache_key("ads_mgmt_bundle", {
+            "acct": acct or None, "date_preset": date_preset,
+            "start": start, "end": end, "store": store,
+        })
+
+        async def _compute_bundle():
+            return await _ads_management_bundle_compute(acct, date_preset, start, end, store)
+
+        result = await _cached(bundle_key, 25, _compute_bundle)
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
         # Phase 1: Fetch campaigns + mappings + meta in parallel
         campaigns_key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset, "start": start, "end": end, "store": store})
 
@@ -1330,18 +1380,14 @@ async def api_ads_management_bundle(req: AdsManagementBundleRequest):
         )
 
         return {
-            "data": {
-                "campaigns": campaigns,
-                "mappings": mappings or {},
-                "campaign_meta": campaign_meta or {},
-                "product_briefs": product_briefs or {},
-                "order_counts": order_counts or {},
-                "store_orders_total": store_total,
-                "collection_counts": collection_counts or {},
-            }
+            "campaigns": campaigns,
+            "mappings": mappings or {},
+            "campaign_meta": campaign_meta or {},
+            "product_briefs": product_briefs or {},
+            "order_counts": order_counts or {},
+            "store_orders_total": store_total,
+            "collection_counts": collection_counts or {},
         }
-    except Exception as e:
-        return {"error": str(e), "data": {}}
 
 
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------
