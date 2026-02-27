@@ -4,6 +4,7 @@ python-multipart==0.0.9
 pydantic==2.10.6
 requests==2.32.3
 openai>=2.2,<3
+openai-agents==0.4.2
 celery==5.4.0
 redis==5.0.7
 tenacity==8.4.2
