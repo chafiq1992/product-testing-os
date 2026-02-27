@@ -606,10 +606,6 @@ export type AdsManagementBundle = {
   campaigns: MetaCampaignRow[],
   mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
   campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text: string, at: string }> }>,
-  product_briefs: Record<string, { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null }>,
-  order_counts: Record<string, number>,
-  store_orders_total: number,
-  collection_counts: Record<string, number>,
   ad_account?: { id?: string, name?: string },
 }
 export async function fetchAdsManagementBundle(payload: {
@@ -622,7 +618,7 @@ export async function fetchAdsManagementBundle(payload: {
   const url = `${base}/api/ads-management/bundle`
   const body = { ...payload }
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
-    const {data} = await axios.post(url, body)
+    const {data} = await axios.post(url, body, { timeout: 60000 })
     return data as { data?: AdsManagementBundle, error?: string }
   })
 }

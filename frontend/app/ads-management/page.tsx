@@ -197,65 +197,78 @@ export default function AdsManagementPage(){
       const metaParams = metaRangeParams(effPreset)
       const { start: rangeStart, end: rangeEnd } = effectiveYmdRange(effPreset)
 
-      const bundleRes = await fetchAdsManagementBundle({
-        date_preset: metaParams.datePreset,
-        ad_account: effAdAccount || undefined,
-        store: effStore,
-        start: metaParams.range?.start || rangeStart,
-        end: metaParams.range?.end || rangeEnd,
-      })
-      if(loadToken !== loadSeqToken.current) return
+      // Phase 1: Fast bundle - campaigns + mappings + meta + ad account (no Shopify)
+      // Falls back to direct /api/meta/campaigns if bundle fails
+      let campaigns: MetaCampaignRow[] = []
+      let shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
 
-      const bundle = (bundleRes as any)?.data
-      if((bundleRes as any)?.error){
-        setError(String((bundleRes as any).error))
-        setItems([])
-        return
+      try {
+        const bundleRes = await fetchAdsManagementBundle({
+          date_preset: metaParams.datePreset,
+          ad_account: effAdAccount || undefined,
+          store: effStore,
+          start: metaParams.range?.start || rangeStart,
+          end: metaParams.range?.end || rangeEnd,
+        })
+        if(loadToken !== loadSeqToken.current) return
+
+        const bundle = (bundleRes as any)?.data
+        if((bundleRes as any)?.error && !bundle?.campaigns?.length){
+          throw new Error(String((bundleRes as any).error))
+        }
+
+        campaigns = bundle?.campaigns || []
+
+        // Apply ad account info
+        const bundleAdAccount = bundle?.ad_account
+        if(bundleAdAccount?.id){
+          setAdAccount(String(bundleAdAccount.id || ''))
+          setAdAccountName(String(bundleAdAccount.name || ''))
+          try{ localStorage.setItem('ptos_ad_account', String(bundleAdAccount.id || '')) }catch{}
+        }
+
+        // Apply mappings
+        const bundleMappings = bundle?.mappings || {}
+        for(const k of Object.keys(bundleMappings)){
+          const v = bundleMappings[k]
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
+        }
+        setCampaignMeta(bundle?.campaign_meta || {})
+      } catch {
+        // Fallback: load campaigns directly
+        if(loadToken !== loadSeqToken.current) return
+        try {
+          const res = await fetchMetaCampaigns(metaParams.datePreset, effAdAccount||undefined, metaParams.range)
+          if(loadToken !== loadSeqToken.current) return
+          if((res as any)?.error){ setError(String((res as any).error)); setItems([]); return }
+          campaigns = (res as any)?.data || []
+        } catch(fallbackErr: any) {
+          setError(String(fallbackErr?.message || fallbackErr))
+          setItems([])
+          return
+        }
+        // Load mappings + meta in background
+        try {
+          const [mappingsRes, metaRes] = await Promise.allSettled([campaignMappingsList(effStore), campaignMetaList(effStore)])
+          if(mappingsRes.status === 'fulfilled'){
+            const map = ((mappingsRes.value as any)?.data) || {}
+            for(const k of Object.keys(map)){
+              const v = map[k]
+              if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
+            }
+          }
+          if(metaRes.status === 'fulfilled') setCampaignMeta(((metaRes.value as any)?.data) || {})
+        } catch {}
       }
 
-      const campaigns = bundle?.campaigns || []
       setItems(campaigns)
-      setProductBriefs(bundle?.product_briefs || {})
-      setShopifyCounts(bundle?.order_counts || {})
-      setStoreOrdersTotal(typeof bundle?.store_orders_total === 'number' ? bundle.store_orders_total : null)
-
-      // Apply ad account info from bundle (eliminates separate metaGetAdAccount call)
-      const bundleAdAccount = bundle?.ad_account
-      if(bundleAdAccount?.id){
-        setAdAccount(String(bundleAdAccount.id || ''))
-        setAdAccountName(String(bundleAdAccount.name || ''))
-        try{ localStorage.setItem('ptos_ad_account', String(bundleAdAccount.id || '')) }catch{}
-      }
-
-      // Apply mappings from bundle
-      const shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
-      const bundleMappings = bundle?.mappings || {}
-      for(const k of Object.keys(bundleMappings)){
-        const v = bundleMappings[k]
-        if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
-      }
       setManualIds(shaped)
 
-      // Apply campaign meta
-      setCampaignMeta(bundle?.campaign_meta || {})
-
-      // Apply collection counts to manual counts
-      const collCounts = bundle?.collection_counts || {}
-      const orderCounts = bundle?.order_counts || {}
-      const nextManualCounts: Record<string, number> = {}
-      for(const c of campaigns){
-        const rowKey = String((c as any).campaign_id || (c as any).name || '')
-        const mapping = shaped[rowKey]
-        if(!mapping) continue
-        if(mapping.kind === 'product' && mapping.id && /^\d+$/.test(mapping.id)){
-          nextManualCounts[rowKey] = Number(orderCounts[mapping.id] ?? 0) || 0
-        } else if(mapping.kind === 'collection'){
-          nextManualCounts[rowKey] = Number(collCounts[rowKey] ?? 0) || 0
-        }
-      }
-      setManualCounts(nextManualCounts)
-
-      // Reset expansion state
+      // Reset Shopify data + expansion state so they fill in progressively
+      setShopifyCounts({})
+      setProductBriefs({})
+      setManualCounts({})
+      setStoreOrdersTotal(null)
       setExpanded({})
       setCollectionProducts({})
       setCollectionCounts({})
@@ -266,6 +279,101 @@ export default function AdsManagementPage(){
       setAdsetOrdersByCampaign({})
       setAdsetOrdersLoading({})
       setAdsetOrdersExpanded({})
+
+      // Show table immediately - loading spinner ends here
+      setLoading(false)
+
+      // Phase 2: Progressive Shopify data loading in chunks of 4
+      const ordersToken = ++ordersSeqToken.current
+      const { start, end } = effectiveYmdRange(effPreset)
+
+      // Fire store-total in background (non-blocking)
+      ;(async()=>{
+        try{
+          const resTotal = await shopifyOrdersCountTotal({ start, end, store: effStore, include_closed: true, date_field: 'processed' }) as any
+          if(ordersToken !== ordersSeqToken.current) return
+          setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
+        }catch{
+          if(ordersToken !== ordersSeqToken.current) return
+          setStoreOrdersTotal(0)
+        }
+      })()
+
+      // Build prioritized product IDs (top spend first)
+      const ranked = (campaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+      const idsOrdered: string[] = []
+      const seen: Record<string, true> = {}
+      for(const c of ranked){
+        const rk = (c.campaign_id || c.name || '') as any
+        const manual = shaped[rk]
+        let pid: string | null = null
+        if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)) pid = manual.id
+        else pid = extractNumericId(c.name||'')
+        if(pid && !seen[pid]){
+          seen[pid] = true
+          idsOrdered.push(pid)
+        }
+      }
+
+      // Load product briefs + order counts in parallel chunks of 4
+      const chunkSize = 4
+      const countsById: Record<string, number> = {}
+
+      for(let i = 0; i < idsOrdered.length; i += chunkSize){
+        if(ordersToken !== ordersSeqToken.current) break
+        const chunk = idsOrdered.slice(i, i + chunkSize)
+
+        // Fetch briefs + counts for this chunk IN PARALLEL
+        const [pbRes, ocRes] = await Promise.allSettled([
+          shopifyProductsBrief({ ids: chunk, store: effStore }),
+          shopifyOrdersCountByTitle({ names: chunk, start, end, include_closed: true, date_field: 'processed' }),
+        ])
+        if(ordersToken !== ordersSeqToken.current) break
+
+        // Apply product briefs
+        if(pbRes.status === 'fulfilled'){
+          const data = ((pbRes.value as any)?.data) || {}
+          setProductBriefs(prev => ({ ...prev, ...data }))
+        }
+
+        // Apply order counts
+        const next: Record<string, number> = {}
+        if(ocRes.status === 'fulfilled'){
+          const map = ((ocRes.value as any)?.data) || {}
+          for(const id of chunk){
+            const v = Number(map[id] ?? 0) || 0
+            next[id] = v
+            countsById[id] = v
+          }
+        } else {
+          for(const id of chunk){
+            next[id] = 0
+            countsById[id] = 0
+          }
+        }
+        setShopifyCounts(prev => ({ ...prev, ...next }))
+      }
+
+      // Phase 3: Manual mapped rows (collections) - one by one
+      for(const row of ranked){
+        if(ordersToken !== ordersSeqToken.current) break
+        const rowKey = (row.campaign_id || row.name || '') as any
+        try{
+          const conf = shaped[rowKey]
+          if(!conf) continue
+          if(!conf.id || !/^\d+$/.test(conf.id)) continue
+          if(conf.kind === 'product'){
+            const count = Number(countsById[conf.id] ?? 0) || 0
+            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+          } else {
+            const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: effStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+            const count = Number(((oc as any)?.data||{})?.count ?? 0)
+            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+          }
+        }catch{
+          setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
+        }
+      }
 
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
