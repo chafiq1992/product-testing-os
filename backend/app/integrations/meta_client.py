@@ -65,21 +65,21 @@ def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeErro
             body_text = "<no body>"
         return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {body_text}")
 
-def _post(path: str, payload: dict, files=None, timeout: int = 30):
+def _post(path: str, payload: dict, files=None):
     payload = {**payload, "access_token": ACCESS}
     url = f"{BASE}/{path}"
     try:
-        r = requests.post(url, data=payload, files=files, timeout=timeout)
+        r = requests.post(url, data=payload, files=files, timeout=120)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
         raise _format_meta_error(r, url, "POST") from e
 
-def _get(path: str, params: dict | None = None, timeout: int = 30):
+def _get(path: str, params: dict | None = None):
     params = {**(params or {}), "access_token": ACCESS}
     url = f"{BASE}/{path}"
     try:
-        r = requests.get(url, params=params, timeout=timeout)
+        r = requests.get(url, params=params, timeout=120)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
