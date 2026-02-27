@@ -1,8 +1,65 @@
 "use client"
-import { useEffect, useMemo, useRef, useState, Fragment } from 'react'
+import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator } from 'lucide-react'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle } from '@/lib/api'
+
+const ALL_STORES = [
+  { value: 'irrakids', label: 'irrakids' },
+  { value: 'irranova', label: 'irranova' },
+]
+
+function MultiCheckDropdown({ label, options, selected, onChange, className }: {
+  label: string,
+  options: Array<{ value: string, label: string }>,
+  selected: string[],
+  onChange: (next: string[]) => void,
+  className?: string,
+}){
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    const handler = (e: MouseEvent) => { if(ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+  const toggle = (val: string) => {
+    if(selected.includes(val)) onChange(selected.filter(s => s !== val))
+    else onChange([...selected, val])
+  }
+  const display = selected.length === 0 ? label
+    : selected.length === options.length ? 'All'
+    : selected.map(s => options.find(o => o.value === s)?.label || s).join(', ')
+  return (
+    <div ref={ref} className={`relative ${className||''}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="rounded-xl border px-2 py-1 text-sm bg-white flex items-center gap-1 min-w-[120px] justify-between"
+      >
+        <span className="truncate max-w-[200px]">{display}</span>
+        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-white border rounded-xl shadow-lg z-[60] min-w-[180px] py-1">
+          {options.map(o => (
+            <label key={o.value} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-sm">
+              <span className={`w-4 h-4 rounded border flex items-center justify-center ${selected.includes(o.value) ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
+                {selected.includes(o.value) && <Check className="w-3 h-3"/>}
+              </span>
+              <span>{o.label}</span>
+            </label>
+          ))}
+          {options.length > 1 && (
+            <div className="border-t mt-1 pt-1 px-3 pb-1 flex gap-2">
+              <button onClick={() => onChange(options.map(o => o.value))} className="text-xs text-blue-600 hover:underline">All</button>
+              <button onClick={() => onChange([])} className="text-xs text-slate-500 hover:underline">None</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
@@ -14,12 +71,28 @@ export default function AdsManagementPage(){
   const [error, setError] = useState<string|undefined>(undefined)
   const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
   const ordersSeqToken = useRef(0)
-  const [store, setStore] = useState<string>(()=>{
-    try{ return localStorage.getItem('ptos_store')||'irrakids' }catch{ return 'irrakids' }
+  // Multi-store and multi-ad-account selection
+  const [selectedStores, setSelectedStores] = useState<string[]>(()=>{
+    try{
+      const saved = localStorage.getItem('ptos_stores_multi')
+      if(saved){ const parsed = JSON.parse(saved); if(Array.isArray(parsed) && parsed.length) return parsed }
+    }catch{}
+    try{ const s = localStorage.getItem('ptos_store'); if(s) return [s] }catch{}
+    return ['irrakids']
   })
-  const [adAccount, setAdAccount] = useState<string>(()=>{
-    try{ return localStorage.getItem('ptos_ad_account')||'' }catch{ return '' }
+  const [selectedAdAccounts, setSelectedAdAccounts] = useState<string[]>(()=>{
+    try{
+      const saved = localStorage.getItem('ptos_ad_accounts_multi')
+      if(saved){ const parsed = JSON.parse(saved); if(Array.isArray(parsed) && parsed.length) return parsed }
+    }catch{}
+    try{ const s = localStorage.getItem('ptos_ad_account'); if(s) return [s] }catch{}
+    return []
   })
+  // Keep legacy single-value for backward compat with other parts of the code
+  const store = selectedStores[0] || 'irrakids'
+  const adAccount = selectedAdAccounts[0] || ''
+  const setStore = (v: string) => { setSelectedStores([v]); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify([v])) }catch{} }
+  const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
   const [adAccountName, setAdAccountName] = useState<string>('')
@@ -187,84 +260,98 @@ export default function AdsManagementPage(){
     return computeRange(preset)
   }
 
-  async function load(preset?: string, opts?: { store?: string, adAccount?: string }){
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[] }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
       const effPreset = preset||datePreset
-      const effStore = opts?.store ?? store
-      const effAdAccount = opts?.adAccount ?? adAccount
+      const effStores = opts?.stores ?? selectedStores
+      const effAdAccounts = opts?.adAccounts ?? selectedAdAccounts
       const metaParams = metaRangeParams(effPreset)
       const { start: rangeStart, end: rangeEnd } = effectiveYmdRange(effPreset)
 
-      // Phase 1: Fast bundle - campaigns + mappings + meta + ad account (no Shopify)
-      // Falls back to direct /api/meta/campaigns if bundle fails
-      let campaigns: MetaCampaignRow[] = []
+      // Phase 1: Fire parallel bundle calls for each store+adAccount combo
+      let allCampaigns: MetaCampaignRow[] = []
       let shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
+      let allMeta: Record<string, any> = {}
+      const primaryStore = effStores[0] || 'irrakids'
 
-      try {
-        const bundleRes = await fetchAdsManagementBundle({
+      // Build list of (store, adAccount) pairs to fetch
+      const pairs: Array<{ store: string, adAccount: string }> = []
+      if(effAdAccounts.length > 0){
+        for(const acct of effAdAccounts){
+          for(const st of (effStores.length ? effStores : ['irrakids'])){
+            pairs.push({ store: st, adAccount: acct })
+          }
+        }
+      } else {
+        for(const st of (effStores.length ? effStores : ['irrakids'])){
+          pairs.push({ store: st, adAccount: '' })
+        }
+      }
+
+      const bundlePromises = pairs.map(({ store: st, adAccount: acct }) =>
+        fetchAdsManagementBundle({
           date_preset: metaParams.datePreset,
-          ad_account: effAdAccount || undefined,
-          store: effStore,
+          ad_account: acct || undefined,
+          store: st,
           start: metaParams.range?.start || rangeStart,
           end: metaParams.range?.end || rangeEnd,
-        })
-        if(loadToken !== loadSeqToken.current) return
+        }).catch(() => null)
+      )
+      const bundleResults = await Promise.allSettled(bundlePromises)
+      if(loadToken !== loadSeqToken.current) return
 
-        const bundle = (bundleRes as any)?.data
-        if((bundleRes as any)?.error && !bundle?.campaigns?.length){
-          throw new Error(String((bundleRes as any).error))
-        }
+      const seenCampaignIds = new Set<string>()
+      for(let idx = 0; idx < bundleResults.length; idx++){
+        const r = bundleResults[idx]
+        if(r.status !== 'fulfilled' || !r.value) continue
+        const bundle = (r.value as any)?.data
+        if(!bundle) continue
+        const pair = pairs[idx]
 
-        campaigns = bundle?.campaigns || []
-
-        // Apply ad account info
+        // Apply ad account info from first result that has it
         const bundleAdAccount = bundle?.ad_account
         if(bundleAdAccount?.id){
-          setAdAccount(String(bundleAdAccount.id || ''))
-          setAdAccountName(String(bundleAdAccount.name || ''))
-          try{ localStorage.setItem('ptos_ad_account', String(bundleAdAccount.id || '')) }catch{}
+          setAdAccountName(prev => prev || String(bundleAdAccount.name || ''))
         }
 
-        // Apply mappings
+        // Merge campaigns (dedupe by campaign_id, tag with store/account)
+        for(const c of (bundle?.campaigns || [])){
+          const cid = String(c.campaign_id || c.name || '')
+          const dedupeKey = `${cid}__${pair.adAccount}`
+          if(!seenCampaignIds.has(dedupeKey)){
+            seenCampaignIds.add(dedupeKey)
+            allCampaigns.push({ ...c, _store: pair.store, _adAccount: pair.adAccount } as any)
+          }
+        }
+
+        // Merge mappings
         const bundleMappings = bundle?.mappings || {}
         for(const k of Object.keys(bundleMappings)){
           const v = bundleMappings[k]
           if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
         }
-        setCampaignMeta(bundle?.campaign_meta || {})
-      } catch {
-        // Fallback: load campaigns directly
-        if(loadToken !== loadSeqToken.current) return
+
+        // Merge campaign meta
+        allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
+      }
+
+      // If all bundles failed, try fallback for first pair
+      if(allCampaigns.length === 0 && pairs.length > 0){
         try {
-          const res = await fetchMetaCampaigns(metaParams.datePreset, effAdAccount||undefined, metaParams.range)
+          const p = pairs[0]
+          const res = await fetchMetaCampaigns(metaParams.datePreset, p.adAccount||undefined, metaParams.range)
           if(loadToken !== loadSeqToken.current) return
-          if((res as any)?.error){ setError(String((res as any).error)); setItems([]); return }
-          campaigns = (res as any)?.data || []
-        } catch(fallbackErr: any) {
-          setError(String(fallbackErr?.message || fallbackErr))
-          setItems([])
-          return
-        }
-        // Load mappings + meta in background
-        try {
-          const [mappingsRes, metaRes] = await Promise.allSettled([campaignMappingsList(effStore), campaignMetaList(effStore)])
-          if(mappingsRes.status === 'fulfilled'){
-            const map = ((mappingsRes.value as any)?.data) || {}
-            for(const k of Object.keys(map)){
-              const v = map[k]
-              if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
-            }
-          }
-          if(metaRes.status === 'fulfilled') setCampaignMeta(((metaRes.value as any)?.data) || {})
+          if(!(res as any)?.error) allCampaigns = (res as any)?.data || []
         } catch {}
       }
 
-      setItems(campaigns)
+      setItems(allCampaigns)
       setManualIds(shaped)
+      setCampaignMeta(allMeta)
 
-      // Reset Shopify data + expansion state so they fill in progressively
+      // Reset Shopify data + expansion state
       setShopifyCounts({})
       setProductBriefs({})
       setManualCounts({})
@@ -280,19 +367,26 @@ export default function AdsManagementPage(){
       setAdsetOrdersLoading({})
       setAdsetOrdersExpanded({})
 
-      // Show table immediately - loading spinner ends here
       setLoading(false)
 
       // Phase 2: Progressive Shopify data loading in chunks of 4
       const ordersToken = ++ordersSeqToken.current
       const { start, end } = effectiveYmdRange(effPreset)
 
-      // Fire store-total in background (non-blocking)
+      // Fire store-total in background for each store
       ;(async()=>{
         try{
-          const resTotal = await shopifyOrdersCountTotal({ start, end, store: effStore, include_closed: true, date_field: 'processed' }) as any
+          const totals = await Promise.allSettled(
+            (effStores.length ? effStores : ['irrakids']).map(st =>
+              shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
+            )
+          )
           if(ordersToken !== ordersSeqToken.current) return
-          setStoreOrdersTotal(Number(((resTotal||{}).data||{}).count||0))
+          let sum = 0
+          for(const t of totals){
+            if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
+          }
+          setStoreOrdersTotal(sum)
         }catch{
           if(ordersToken !== ordersSeqToken.current) return
           setStoreOrdersTotal(0)
@@ -300,7 +394,7 @@ export default function AdsManagementPage(){
       })()
 
       // Build prioritized product IDs (top spend first)
-      const ranked = (campaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+      const ranked = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
       const idsOrdered: string[] = []
       const seen: Record<string, true> = {}
       for(const c of ranked){
@@ -323,41 +417,45 @@ export default function AdsManagementPage(){
         if(ordersToken !== ordersSeqToken.current) break
         const chunk = idsOrdered.slice(i, i + chunkSize)
 
-        // Fetch briefs + counts for this chunk IN PARALLEL
-        const [pbRes, ocRes] = await Promise.allSettled([
-          shopifyProductsBrief({ ids: chunk, store: effStore }),
-          shopifyOrdersCountByTitle({ names: chunk, start, end, include_closed: true, date_field: 'processed' }),
+        // Fetch briefs + counts per store in parallel, then merge
+        const storeList = effStores.length ? effStores : [primaryStore]
+        const [pbResults, ocResults] = await Promise.all([
+          Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st }))),
+          Promise.allSettled(storeList.map(st => shopifyOrdersCountByTitle({ names: chunk, start, end, store: st, include_closed: true, date_field: 'processed' }))),
         ])
         if(ordersToken !== ordersSeqToken.current) break
 
-        // Apply product briefs
-        if(pbRes.status === 'fulfilled'){
-          const data = ((pbRes.value as any)?.data) || {}
-          setProductBriefs(prev => ({ ...prev, ...data }))
+        // Merge product briefs (first store that has image wins)
+        const mergedBriefs: Record<string, any> = {}
+        for(const pbRes of pbResults){
+          if(pbRes.status === 'fulfilled'){
+            const data = ((pbRes.value as any)?.data) || {}
+            for(const [k, v] of Object.entries(data)){
+              if(!mergedBriefs[k]) mergedBriefs[k] = v
+              else if(!mergedBriefs[k].image && (v as any)?.image) mergedBriefs[k] = v
+            }
+          }
         }
+        setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
 
-        // Apply order counts
+        // Merge order counts (sum across stores)
         const next: Record<string, number> = {}
-        if(ocRes.status === 'fulfilled'){
-          const map = ((ocRes.value as any)?.data) || {}
-          for(const id of chunk){
-            const v = Number(map[id] ?? 0) || 0
-            next[id] = v
-            countsById[id] = v
-          }
-        } else {
-          for(const id of chunk){
-            next[id] = 0
-            countsById[id] = 0
+        for(const id of chunk) next[id] = 0
+        for(const ocRes of ocResults){
+          if(ocRes.status === 'fulfilled'){
+            const map = ((ocRes.value as any)?.data) || {}
+            for(const id of chunk) next[id] = (next[id] || 0) + (Number(map[id] ?? 0) || 0)
           }
         }
+        for(const id of chunk) countsById[id] = next[id]
         setShopifyCounts(prev => ({ ...prev, ...next }))
       }
 
-      // Phase 3: Manual mapped rows (collections) - one by one
+      // Phase 3: Manual mapped rows (collections)
       for(const row of ranked){
         if(ordersToken !== ordersSeqToken.current) break
         const rowKey = (row.campaign_id || row.name || '') as any
+        const rowStore = (row as any)._store || primaryStore
         try{
           const conf = shaped[rowKey]
           if(!conf) continue
@@ -366,7 +464,7 @@ export default function AdsManagementPage(){
             const count = Number(countsById[conf.id] ?? 0) || 0
             setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
           } else {
-            const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: effStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+            const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
             const count = Number(((oc as any)?.data||{})?.count ?? 0)
             setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
           }
@@ -425,16 +523,11 @@ export default function AdsManagementPage(){
         setAdAccounts(Object.values(byId))
       }catch{ setAdAccounts([]) }
     }
-    let cancelled = false
     ;(async()=>{
-      // Load ad accounts list in background (non-blocking)
       loadAccounts()
-      // Bundle call fetches everything: campaigns + mappings + meta + shopify data + ad account info
-      // No need for a separate metaGetAdAccount call - the bundle resolves it server-side
-      load(undefined, { store, adAccount: adAccount || undefined })
+      load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })
     })()
-    return ()=>{ cancelled = true }
-  }, [store])
+  }, [selectedStores.join(','), selectedAdAccounts.join(',')])
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
@@ -597,36 +690,21 @@ export default function AdsManagementPage(){
           <h1 className="font-semibold text-lg">Ads management</h1>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <select value={store} onChange={(e)=>{ const v=e.target.value; setStore(v); try{ localStorage.setItem('ptos_store', v) }catch{} }} className="rounded-xl border px-2 py-1 text-sm bg-white">
-            <option value="irrakids">irrakids</option>
-            <option value="irranova">irranova</option>
-          </select>
-          <div className="flex items-center gap-1">
-            <select
-              value={adAccount}
-              onChange={async (e)=>{
-                const v = e.target.value
-                setAdAccount(v)
-                try{ localStorage.setItem('ptos_ad_account', v) }catch{}
-                try{
-                  const res = await metaSetAdAccount({ id: v, store })
-                  const data = (res as any)?.data||{}
-                  setAdAccountName(String((data && data.name) ? data.name : (adAccounts.find(a=> a.id===v)?.name || '')))
-                }catch{}
-                // Refresh campaigns instantly when ad account changes
-                load(undefined, { adAccount: v })
-              }}
-              className="rounded-xl border px-2 py-1 text-sm bg-white w-44 sm:w-56 md:w-72"
-            >
-              <option value="">Select ad account…</option>
-              {adAccounts.map(a=> (
-                <option key={a.id} value={a.id}>{a.name||a.id} ({a.id})</option>
-              ))}
-            </select>
-            {adAccountName? (<span className="text-xs text-slate-600">{adAccountName}</span>) : null}
-          </div>
+          <MultiCheckDropdown
+            label="Stores"
+            options={ALL_STORES}
+            selected={selectedStores}
+            onChange={(next) => { setSelectedStores(next); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(next)) }catch{} }}
+          />
+          <MultiCheckDropdown
+            label="Ad accounts"
+            options={adAccounts.map(a => ({ value: a.id, label: a.name || a.id }))}
+            selected={selectedAdAccounts}
+            onChange={(next) => { setSelectedAdAccounts(next); try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{} }}
+            className="min-w-[180px]"
+          />
           <div className="flex items-center gap-2">
-            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
+            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="last_3d_incl_today">Last 3 days (including today)</option>
@@ -641,11 +719,11 @@ export default function AdsManagementPage(){
                 <input type="date" value={customStart} onChange={(e)=> setCustomStart(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
                 <span>to</span>
                 <input type="date" value={customEnd} onChange={(e)=> setCustomEnd(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
-                <button onClick={()=> load('custom')} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">Apply</button>
+                <button onClick={()=> load('custom', { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">Apply</button>
               </div>
             )}
           </div>
-          <button onClick={()=>load()} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
+          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
           </button>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
@@ -663,7 +741,7 @@ export default function AdsManagementPage(){
               <div>
                 <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
                 <div className="text-lg font-semibold">{adAccountName || adAccount || '—'}</div>
-                <div className="text-xs opacity-80">Range: {datePreset==='custom'? `${customStart||'—'} to ${customEnd||'—'}` : presetLabel(datePreset)} • Store: {store}</div>
+                <div className="text-xs opacity-80">Range: {datePreset==='custom'? `${customStart||'—'} to ${customEnd||'—'}` : presetLabel(datePreset)} • Store{selectedStores.length>1?'s':''}: {selectedStores.join(', ')||'—'}</div>
               </div>
               <div className="text-sm opacity-90 flex items-center gap-2">
                 <Rocket className="w-4 h-4"/>
