@@ -129,16 +129,15 @@ export default function AdsManagementPage(){
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
-  // Selection + Merging state
+  // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
   })
-  const [mergedWith, setMergedWith] = useState<Record<string, string>>(()=>{
-    try{ return JSON.parse(localStorage.getItem('ptos_ads_merged')||'{}') }catch{ return {} }
-  })
+  const [groupExpanded, setGroupExpanded] = useState<Record<string, boolean>>({})
   const [groupNotes, setGroupNotes] = useState<Record<string, string>>(()=>{
-    try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes')||'{}') }catch{ return {} }
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes_by_product')||'{}') }catch{ return {} }
   })
+  const [groupTarget, setGroupTarget] = useState<string>('') // product id
   const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?:Array<{text:string, at:string}> }>>({})
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
@@ -149,33 +148,28 @@ export default function AdsManagementPage(){
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
-    // Sum orders while respecting merged groups (count each group once)
-    const rowByKey: Record<string, MetaCampaignRow> = {}
+    // Sum orders while respecting product-grouping (count each product once)
+    const pidToAnyRow: Record<string, MetaCampaignRow> = {}
+    const ungrouped: MetaCampaignRow[] = []
     for(const r of (items||[])){
-      const k = String(r.campaign_id||r.name||'')
-      rowByKey[k] = r
-    }
-    const visited: Record<string, true> = {}
-    let sum = 0
-    for(const r of (items||[])){
-      const k = String(r.campaign_id||r.name||'')
-      if(visited[k]) continue
-      const partner = mergedWith[k]
-      if(partner){
-        const r2 = rowByKey[partner]
-        const o1 = getOrders(r) || 0
-        // For merged pairs, only count orders from one row to avoid double counting
-        sum += o1
-        visited[k] = true
-        visited[partner] = true
+      const pid = getProductIdForRow(r)
+      if(pid){
+        if(!pidToAnyRow[pid]) pidToAnyRow[pid] = r
       }else{
-        const v = getOrders(r)
-        if(typeof v==='number' && v>0) sum += v
-        visited[k] = true
+        ungrouped.push(r)
       }
     }
+    let sum = 0
+    for(const pid of Object.keys(pidToAnyRow)){
+      const v = getOrdersByProductId(pid)
+      if(typeof v==='number' && v>0) sum += v
+    }
+    for(const r of ungrouped){
+      const v = getOrders(r)
+      if(typeof v==='number' && v>0) sum += v
+    }
     return sum
-  }, [items, shopifyCounts, manualCounts, manualIds, mergedWith])
+  }, [items, shopifyCounts, manualCounts, manualIds])
   const totalCPP = useMemo(()=> (tableOrdersTotal>0? (totalSpend / tableOrdersTotal) : null), [totalSpend, tableOrdersTotal])
   const storeCPP = useMemo(()=> ((storeOrdersTotal||0)>0? (totalSpend / Number(storeOrdersTotal||0)) : null), [totalSpend, storeOrdersTotal])
 
@@ -614,66 +608,219 @@ export default function AdsManagementPage(){
     }
     return sortDir==='asc'? res : -res
   }
-  const sortedItems = useMemo(()=>{
-    const arr = (items||[]).slice()
-    try{ arr.sort(compareRows) }catch{}
-    // Reorder to keep merged pairs adjacent
-    const rowByKey: Record<string, MetaCampaignRow> = {}
-    for(const r of arr){ rowByKey[String(r.campaign_id||r.name||'')] = r }
-    const seen: Record<string, true> = {}
-    const out: MetaCampaignRow[] = []
-    for(const r of arr){
-      const k = String(r.campaign_id||r.name||'')
-      if(seen[k]) continue
-      const partner = mergedWith[k]
-      if(partner && rowByKey[partner]){
-        out.push(r)
-        out.push(rowByKey[partner])
-        seen[k] = true; seen[partner] = true
+  function rowKeyOf(r: MetaCampaignRow){
+    return String(r.campaign_id||r.name||'')
+  }
+
+  function getProductIdForRow(r: MetaCampaignRow): string | null{
+    const rk = rowKeyOf(r) as any
+    const manual = (manualIds as any)[rk]
+    if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(String(manual.id))) return String(manual.id)
+    const pid = extractNumericId((r.name||'').trim())
+    if(pid && /^\d+$/.test(pid)) return pid
+    return null
+  }
+
+  function getOrdersByProductId(pid: string): number | null{
+    const v = shopifyCounts[String(pid)]
+    if(typeof v === 'number') return v
+    // Fallback: if a row is manually mapped to this product, use its computed manual count
+    for(const k of Object.keys(manualIds||{})){
+      const m = (manualIds as any)[k]
+      if(m && m.kind==='product' && String(m.id)===String(pid)){
+        const c = (manualCounts as any)[String(k)]
+        if(typeof c === 'number') return c
+      }
+    }
+    return null
+  }
+
+  type ParentRow =
+    | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
+    | { kind:'single', row: MetaCampaignRow }
+
+  const parentRows = useMemo<ParentRow[]>(()=>{
+    const byPid: Record<string, MetaCampaignRow[]> = {}
+    const singles: MetaCampaignRow[] = []
+    for(const r of (items||[])){
+      const pid = getProductIdForRow(r)
+      if(pid){
+        ;(byPid[pid] ||= []).push(r)
       }else{
-        out.push(r)
-        seen[k] = true
+        singles.push(r)
+      }
+    }
+    const out: ParentRow[] = []
+    for(const pid of Object.keys(byPid)){
+      const rows = byPid[pid] || []
+      if(rows.length<=1){
+        if(rows[0]) singles.push(rows[0])
+        continue
+      }
+      const primary = rows.slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))[0] || rows[0]
+      out.push({ kind:'group', productId: pid, rows, primary })
+    }
+    for(const r of singles){
+      out.push({ kind:'single', row: r })
+    }
+    return out
+  }, [items, manualIds, shopifyCounts, manualCounts])
+
+  function parentMetric(p: ParentRow){
+    if(p.kind==='group'){
+      const spend = p.rows.reduce((acc,r)=> acc + Number(r.spend||0), 0)
+      const purchases = p.rows.reduce((acc,r)=> acc + Number(r.purchases||0), 0)
+      const add_to_cart = p.rows.reduce((acc,r)=> acc + Number(r.add_to_cart||0), 0)
+      const orders = getOrdersByProductId(p.productId)
+      const trueCpp = (orders!=null && orders>0) ? (spend / orders) : null
+      const cpp = purchases>0 ? (spend / purchases) : null
+      let ctr: number | null = null
+      try{
+        const sumSpend = p.rows.reduce((acc,r)=> acc + Number(r.spend||0), 0)
+        const ctrSpend = p.rows.reduce((acc,r)=> {
+          const v = (r.ctr==null ? null : Number(r.ctr))
+          if(v==null) return acc
+          const w = Number(r.spend||0)
+          return acc + (v * (w||0))
+        }, 0)
+        const ctrCount = p.rows.reduce((acc,r)=> (r.ctr==null ? acc : acc+1), 0)
+        if(sumSpend>0 && ctrSpend>0) ctr = ctrSpend / sumSpend
+        else if(ctrCount>0) ctr = p.rows.reduce((acc,r)=> acc + (r.ctr==null?0:Number(r.ctr)), 0) / ctrCount
+      }catch{}
+      const brief = productBriefs[p.productId]
+      const inventory = brief && typeof brief.total_available==='number' ? Number(brief.total_available||0) : null
+      const zero_variant = brief ? (typeof (brief as any).zero_sizes==='number' ? Number((brief as any).zero_sizes||0) : (typeof brief.zero_variants==='number' ? Number(brief.zero_variants||0) : null)) : null
+      const active = p.rows.filter(r=> String(r.status||'').toUpperCase()==='ACTIVE').length
+      const paused = p.rows.length - active
+      return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
+    }
+    const row = p.row
+    const spend = Number(row.spend||0)
+    const purchases = Number(row.purchases||0)
+    const add_to_cart = Number(row.add_to_cart||0)
+    const orders = getOrders(row)
+    const trueCpp = (orders!=null && orders>0) ? (spend / orders) : null
+    const cpp = row.cpp==null ? (purchases>0 ? (spend/purchases) : null) : Number(row.cpp)
+    const ctr = row.ctr==null ? null : Number(row.ctr)
+    const inventory = getInventory(row)
+    const zero_variant = getZeroVariants(row)
+    const active = String(row.status||'').toUpperCase()==='ACTIVE' ? 1 : 0
+    const paused = 1 - active
+    return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
+  }
+
+  function compareParents(a: ParentRow, b: ParentRow){
+    const am = parentMetric(a) as any
+    const bm = parentMetric(b) as any
+    const av = (()=>{
+      switch(sortKey){
+        case 'campaign': return (a.kind==='group'? (a.primary.name||a.productId) : (a.row.name||'')).toLowerCase()
+        case 'spend': return am.spend
+        case 'purchases': return am.purchases
+        case 'cpp': return am.cpp
+        case 'ctr': return am.ctr
+        case 'add_to_cart': return am.add_to_cart
+        case 'shopify_orders': return am.orders
+        case 'true_cpp': return am.trueCpp
+        case 'inventory': return am.inventory
+        case 'zero_variant': return am.zero_variant
+        default: return null
+      }
+    })()
+    const bv = (()=>{
+      switch(sortKey){
+        case 'campaign': return (b.kind==='group'? (b.primary.name||b.productId) : (b.row.name||'')).toLowerCase()
+        case 'spend': return bm.spend
+        case 'purchases': return bm.purchases
+        case 'cpp': return bm.cpp
+        case 'ctr': return bm.ctr
+        case 'add_to_cart': return bm.add_to_cart
+        case 'shopify_orders': return bm.orders
+        case 'true_cpp': return bm.trueCpp
+        case 'inventory': return bm.inventory
+        case 'zero_variant': return bm.zero_variant
+        default: return null
+      }
+    })()
+    const aNull = (av==null)
+    const bNull = (bv==null)
+    if(aNull && bNull) return 0
+    if(aNull && !bNull) return 1
+    if(!aNull && bNull) return -1
+    let res = 0
+    if(typeof av==='string' || typeof bv==='string'){
+      res = String(av).localeCompare(String(bv))
+    }else{
+      res = (Number(av)||0) - (Number(bv)||0)
+    }
+    return sortDir==='asc'? res : -res
+  }
+
+  const sortedParents = useMemo(()=>{
+    const arr = parentRows.slice()
+    try{ arr.sort(compareParents) }catch{}
+    return arr
+  }, [parentRows, sortKey, sortDir, shopifyCounts, productBriefs, manualIds, manualCounts])
+
+  type DisplayRow =
+    | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
+    | { kind:'campaign', row: MetaCampaignRow, groupProductId?: string, isChild?: boolean }
+
+  const displayRows = useMemo<DisplayRow[]>(()=>{
+    const out: DisplayRow[] = []
+    for(const p of sortedParents){
+      if(p.kind==='group'){
+        out.push({ kind:'group', productId: p.productId, rows: p.rows, primary: p.primary })
+        if(groupExpanded[p.productId]){
+          const children = (p.rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+          for(const r of children){
+            out.push({ kind:'campaign', row: r, groupProductId: p.productId, isChild: true })
+          }
+        }
+      }else{
+        out.push({ kind:'campaign', row: p.row, isChild: false })
       }
     }
     return out
-  }, [items, sortKey, sortDir, shopifyCounts, productBriefs, mergedWith])
+  }, [sortedParents, groupExpanded])
 
-  function groupIdFor(a:string, b:string){
-    return [a,b].map(String).sort().join('||')
-  }
-  function isMergedKey(k:string){ return !!mergedWith[k] }
+  const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
+  const productIdToCount = useMemo(()=>{
+    const map: Record<string, number> = {}
+    for(const r of (items||[])){
+      const pid = getProductIdForRow(r)
+      if(!pid) continue
+      map[pid] = (map[pid]||0) + 1
+    }
+    return map
+  }, [items, manualIds])
+  const productIdOptions = useMemo(()=>{
+    const ids = Object.keys(productIdToCount||{})
+    ids.sort((a,b)=> (Number(a)||0) - (Number(b)||0))
+    return ids
+  }, [productIdToCount])
+
   function toggleSelect(k:string, v?:boolean){
     setSelectedKeys(prev=>{ const next={...prev, [k]: v==null? !prev[k] : !!v}; try{ localStorage.setItem('ptos_ads_selected', JSON.stringify(next)) }catch{}; return next })
   }
   function clearSelection(){ setSelectedKeys(()=>{ try{ localStorage.setItem('ptos_ads_selected','{}') }catch{}; return {} }) }
-  function doMergeSelected(){
+  async function addSelectedToGroupProduct(targetProductId: string){
+    const pid = String(targetProductId||'').trim()
+    if(!pid || !/^\d+$/.test(pid)){ alert('Select a valid product ID group.'); return }
     const keys = Object.keys(selectedKeys).filter(k=> !!selectedKeys[k])
-    if(keys.length!==2){ alert('Select exactly 2 rows to merge.'); return }
-    const [a,b] = keys
-    setMergedWith(prev=>{
+    if(keys.length===0){ alert('Select at least 1 campaign to add.'); return }
+    // Assign selected campaigns to the target product id (so they auto-merge into one group row)
+    setManualIds(prev=> {
       const next = { ...prev }
-      // Unmerge existing pairs containing a or b
-      const pa = next[a]; const pb = next[b]
-      if(pa){ delete next[pa]; delete next[a] }
-      if(pb){ delete next[pb]; delete next[b] }
-      next[a] = b; next[b] = a
-      try{ localStorage.setItem('ptos_ads_merged', JSON.stringify(next)) }catch{}
+      for(const rk of keys){
+        ;(next as any)[rk] = { kind:'product', id: pid }
+      }
       return next
     })
-    // Initialize shared group note if empty
-    const gid = groupIdFor(a,b)
-    setGroupNotes(prev=>{ const next={...prev}; if(next[gid]==null){ next[gid]='' } try{ localStorage.setItem('ptos_ads_group_notes', JSON.stringify(next)) }catch{} return next })
+    for(const rk of keys){
+      try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: 'product', id: pid, store }) }catch{}
+    }
     clearSelection()
-  }
-  function unmergeKey(k:string){
-    setMergedWith(prev=>{
-      const partner = prev[k]
-      if(!partner) return prev
-      const next = { ...prev }
-      delete next[k]; delete next[partner]
-      try{ localStorage.setItem('ptos_ads_merged', JSON.stringify(next)) }catch{}
-      return next
-    })
   }
 
   function toggleSort(key: typeof sortKey){
@@ -779,14 +926,32 @@ export default function AdsManagementPage(){
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm text-slate-600">Select 2 rows to merge Shopify metrics.</div>
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-2">
+          <div className="text-sm text-slate-600">
+            Auto-merged by Product ID. Shopify Orders are counted once per product (spend is summed).
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={groupTarget}
+              onChange={(e)=> setGroupTarget(e.target.value)}
+              className="rounded-xl border px-2 py-1 text-sm bg-white min-w-56"
+              title="Choose a product ID group"
+            >
+              <option value="">Add selected campaigns to group…</option>
+              {productIdOptions.map(pid=> (
+                <option key={pid} value={pid}>{pid} ({productIdToCount[pid]||0} campaigns)</option>
+              ))}
+            </select>
             <button
-              onClick={doMergeSelected}
+              onClick={()=> addSelectedToGroupProduct(groupTarget)}
+              disabled={!groupTarget || selectedCount===0}
               className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm disabled:opacity-60"
-              disabled={Object.keys(selectedKeys).filter(k=> selectedKeys[k]).length!==2}
-            >Merge 2</button>
+            >Add selected</button>
+            <button
+              onClick={clearSelection}
+              disabled={selectedCount===0}
+              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-sm disabled:opacity-60"
+            >Clear selection</button>
           </div>
         </div>
         <div className="overflow-x-auto bg-white border rounded-none">
@@ -879,16 +1044,146 @@ export default function AdsManagementPage(){
                   <td colSpan={17} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
-              {!loading && sortedItems.map((c)=>{
+              {!loading && displayRows.map((d)=>{
+                if(d.kind==='group'){
+                  const pid = d.productId
+                  const m = parentMetric({ kind:'group', productId: pid, rows: d.rows, primary: d.primary } as any)
+                  const orders = m.orders
+                  const trueCppVal = m.trueCpp
+                  const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
+                  const ctr = m.ctr!=null? `${(m.ctr*100).toFixed(2)}%` : '—'
+                  const cpp = m.cpp!=null? `$${m.cpp.toFixed(2)}` : '—'
+                  const brief = productBriefs[pid]
+                  const img = brief? brief.image : null
+                  const inv = m.inventory
+                  const zeros = m.zero_variant
+                  const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
+                  const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
+                  const active = Number((m as any).active||0)
+                  const paused = Number((m as any).paused||0)
+                  const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
+                  const statusClass = active===0 ? 'bg-slate-200 text-slate-700' : (paused===0 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800')
+                  const noteVal = groupNotes[pid] || ''
+                  return (
+                    <Fragment key={`group-${pid}`}>
+                      <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
+                        <td className="px-3 py-2"></td>
+                        <td className="px-3 py-2">
+                          {img ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
+                          ) : (
+                            <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
+                          )}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
+                              className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
+                              title="Show merged campaigns"
+                            >{groupExpanded[pid]? '▾' : '▸'}</button>
+                            <span className="font-medium">{d.primary.name || `Product ${pid}`}</span>
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{d.rows.length} campaigns</span>
+                            <span className="text-xs text-slate-500 font-mono">ID {pid}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
+                        </td>
+                        <td className="px-3 py-2 text-right">${Number(m.spend||0).toFixed(2)}</td>
+                        <td className="px-3 py-2 text-right">{Number(m.purchases||0)}</td>
+                        <td className="px-3 py-2 text-right">{cpp}</td>
+                        <td className="px-3 py-2 text-right">{ctr}</td>
+                        <td className="px-3 py-2 text-right">{Number(m.add_to_cart||0)}</td>
+                        <td className="px-3 py-2">
+                          {orders==null ? (
+                            <span className="text-slate-400">—</span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                        <td className="px-3 py-2"><span className="text-slate-400">—</span></td>
+                        <td className="px-3 py-2"><span className="text-slate-400">—</span></td>
+                        <td className="px-3 py-2 text-right">
+                          {inv==null ? <span className="text-slate-400">—</span> : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {zeros==null ? <span className="text-slate-400">—</span> : (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            value={noteVal}
+                            onChange={(e)=>{
+                              const v = e.target.value
+                              setGroupNotes(prev=>{ const next={...prev, [pid]: v}; try{ localStorage.setItem('ptos_ads_group_notes_by_product', JSON.stringify(next)) }catch{}; return next })
+                            }}
+                            placeholder="Group notes"
+                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={async()=>{
+                              setPerfOpen(true)
+                              setPerfLoading(true)
+                              try{
+                                const ids = (d.rows||[]).map(r=> String(r.campaign_id||'')).filter(Boolean)
+                                const results = await Promise.all(ids.map(cid=> fetchCampaignPerformance(cid, 6, browserTz).catch(()=> null as any)))
+                                const daysByDate: Record<string, { date:string, spend:number, purchases:number, add_to_cart:number }> = {}
+                                for(const res of results){
+                                  const days = (((res as any)?.data||{}).days)||[]
+                                  for(const dd of (days||[])){
+                                    const date = String(dd.date||'')
+                                    if(!date) continue
+                                    const cur = (daysByDate[date] ||= { date, spend:0, purchases:0, add_to_cart:0 })
+                                    cur.spend += Number(dd.spend||0)
+                                    cur.purchases += Number(dd.purchases||0)
+                                    cur.add_to_cart += Number((dd as any).add_to_cart||0)
+                                  }
+                                }
+                                const dates = Object.keys(daysByDate).sort()
+                                const mergedDays = dates.map(date=>{
+                                  const x = daysByDate[date]
+                                  const cpp = (x.purchases||0)>0 ? (x.spend / x.purchases) : null
+                                  return { date, spend: x.spend, purchases: x.purchases, cpp, ctr: null, add_to_cart: x.add_to_cart }
+                                })
+                                setPerfMetrics(mergedDays)
+                                setPerfCampaign({ id: pid, name: `Merged (${d.rows.length} campaigns)` })
+                                // Orders per day: use the product id once (avoid double counting)
+                                const mergedOrders: number[] = []
+                                for(const day of mergedDays){
+                                  let o1 = 0
+                                  try{
+                                    const oc = await shopifyOrdersCountByTitle({ names: [pid], start: day.date, end: day.date, include_closed: true, date_field: 'processed' })
+                                    o1 = Number(((oc as any)?.data||{})[pid] ?? 0)
+                                  }catch{}
+                                  mergedOrders.push((o1||0))
+                                }
+                                setPerfOrders(mergedOrders)
+                              }finally{
+                                setPerfLoading(false)
+                              }
+                            }}
+                            className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
+                          >Performance</button>
+                        </td>
+                      </tr>
+                    </Fragment>
+                  )
+                }
+                const c = d.row
+                const isChild = !!d.isChild
                 const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
                 const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
                 const rowKey = String(c.campaign_id||c.name||'')
-                const partnerKey = mergedWith[rowKey]
-                const partnerRow = (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===partnerKey)
-                const singleOrders = getOrders(c)
-                // Do not sum orders across merged rows; use this row's orders only
-                const orders = singleOrders
-                const trueCppVal = (orders!=null && orders>0)? (((c.spend||0) + (partnerRow?.spend||0)) / orders) : null
+                const orders = isChild ? null : getOrders(c)
+                const trueCppVal = (!isChild && orders!=null && orders>0)? ((Number(c.spend||0)) / orders) : null
                 const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
                 // Resolve product id from manual mapping (product) or numeric id in name
                 const rkSelf = (c.campaign_id || c.name || '') as any
@@ -898,22 +1193,14 @@ export default function AdsManagementPage(){
                 const img = briefSelf? briefSelf.image : null
                 const invSelf = briefSelf? briefSelf.total_available : null
                 const zerosSelf = briefSelf? briefSelf.zero_variants : null
-                // Partner resolution
-                const rkPartner = partnerRow? (partnerRow.campaign_id || partnerRow.name || '') : null
-                const confPartner = rkPartner? (manualIds as any)[rkPartner as any] : undefined
-                const pidPartner = partnerRow? ((confPartner && confPartner.kind==='product' && confPartner.id)? confPartner.id : extractNumericId((partnerRow.name||'').trim())) : null
-                const briefPartner = pidPartner? productBriefs[pidPartner] : undefined
-                const invPartner = briefPartner? briefPartner.total_available : null
-                const zerosPartner = briefPartner? briefPartner.zero_variants : null
-                // Do not sum inventory/zero-variants across merged rows; show this row's values only
                 const inv = (invSelf==null || invSelf==undefined)? null : Number(invSelf||0)
                 const zeros = (zerosSelf==null || zerosSelf==undefined)? null : Number(zerosSelf||0)
-                const hasAnyPid = !!pidSelf || !!pidPartner
+                const hasAnyPid = !!pidSelf
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
-                const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
+                const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 return (
-                  <Fragment key={c.campaign_id || c.name}>
-                  <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
+                  <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
+                  <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent} ${isChild? 'opacity-95' : ''}`}>
                     <td className="px-3 py-2">
                       <input
                         type="checkbox"
@@ -1114,7 +1401,13 @@ export default function AdsManagementPage(){
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                    <td className="px-3 py-2 text-right">
+                      {isChild ? (
+                        <span className="text-slate-400">—</span>
+                      ) : (
+                        orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       {(()=>{
                         const rk = String(rowKey)
@@ -1182,124 +1475,53 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     <td className="px-3 py-2">
-                      {(()=>{
-                        const pk = mergedWith[String(rowKey)]
-                        if(pk){
-                          const gid = groupIdFor(String(rowKey), String(pk))
-                          const val = groupNotes[gid]||''
-                          return (
-                            <input
-                              value={val}
-                              onChange={(e)=>{
-                                const v = e.target.value
-                                setGroupNotes(prev=>{ const next={...prev, [gid]: v}; try{ localStorage.setItem('ptos_ads_group_notes', JSON.stringify(next)) }catch{}; return next })
-                              }}
-                              placeholder="Group notes"
-                              className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
-                            />
-                          )
-                        }
-                        return (
-                          <input
-                            value={notes[rowKey as any]||''}
-                            onChange={(e)=>{
-                              const v = e.target.value
-                              setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
-                            }}
-                            placeholder="Notes"
-                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
-                          />
-                        )
-                      })()}
+                      <input
+                        value={notes[rowKey as any]||''}
+                        onChange={(e)=>{
+                          const v = e.target.value
+                          setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
+                        }}
+                        placeholder={isChild? 'Notes (campaign)' : 'Notes'}
+                        className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                      />
                     </td>
                     <td className="px-3 py-2 text-right">
                       <button
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
-                          const pk = mergedWith[String(rowKey)]
-                          const partner = pk? (sortedItems||[]).find(r=> String(r.campaign_id||r.name||'')===pk) : null
                           setPerfOpen(true)
                           setPerfLoading(true)
                           try{
-                            if(partner && partner.campaign_id){
-                              // Merged performance view: sum days and orders
-                              const cid2 = String(partner.campaign_id||'')
-                              const [res1, res2] = await Promise.all([
-                                fetchCampaignPerformance(cid, 6, browserTz),
-                                fetchCampaignPerformance(cid2, 6, browserTz)
-                              ])
-                              const d1 = ((((res1 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
-                              const d2 = ((((res2 as any)?.data||{}).days)||[]) as Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>
-                              // Index by date
-                              const allDatesSet: Record<string,true> = {}
-                              for(const d of d1){ allDatesSet[d.date]=true }
-                              for(const d of d2){ allDatesSet[d.date]=true }
-                              const dates = Object.keys(allDatesSet).sort()
-                              const days = dates.map(date=>{
-                                const a = d1.find(x=> x.date===date) || { date, spend:0, purchases:0, add_to_cart:0 }
-                                const b = d2.find(x=> x.date===date) || { date, spend:0, purchases:0, add_to_cart:0 }
-                                const spend = Number(a.spend||0)+Number(b.spend||0)
-                                const purchases = Number(a.purchases||0)+Number(b.purchases||0)
-                                const add_to_cart = Number((a as any).add_to_cart||0)+Number((b as any).add_to_cart||0)
-                                const cpp = purchases>0? (spend/purchases) : null
-                                return { date, spend, purchases, cpp, ctr: null, add_to_cart }
-                              })
-                              setPerfMetrics(days)
-                              setPerfCampaign({ id: `${cid}+${cid2}` , name: `Merged` })
-                              // Orders per day: use ONLY the base row's mapping to avoid double counting
-                              const rk1 = (c.campaign_id || c.name || '') as any
-                              const conf1 = (manualIds as any)[rk1]
-                              const useProduct1 = conf1? (conf1.kind==='product') : /^\d+$/.test((c.name||'').trim())
-                              const prodId1 = useProduct1? (conf1? conf1.id : (c.name||'').trim()) : undefined
-                              const collId1 = (!useProduct1 && conf1 && conf1.kind==='collection')? conf1.id : undefined
-                              const mergedOrders: number[] = []
-                              for(const d of days){
-                                const start = d.date; const end = d.date
-                                let o1 = 0
-                                try{
-                                  if(prodId1){
-                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId1], start, end, include_closed: true, date_field: 'processed' })
-                                    o1 = Number(((oc as any)?.data||{})[prodId1] ?? 0)
-                                  }else if(collId1){
-                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId1, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                    o1 = Number(((oc as any)?.data||{})?.count ?? 0)
-                                  }
-                                }catch{}
-                                mergedOrders.push((o1||0))
-                              }
-                              setPerfOrders(mergedOrders)
-                            }else{
-                              if(!cid) return
-                              setPerfCampaign({ id: cid, name: c.name||'' })
-                              const res = await fetchCampaignPerformance(cid, 6, browserTz)
-                              const days = (((res as any)?.data||{}).days)||[]
-                              setPerfMetrics(days)
-                              // Load Shopify orders per day based on mapping or numeric id
-                              const rk = (c.campaign_id || c.name || '') as any
-                              const conf = (manualIds as any)[rk]
-                              const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
-                              const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
-                              const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
-                              const ordersPerDay: number[] = []
-                              for(const d of (days||[])){
-                                const start = d.date
-                                const end = d.date
-                                try{
-                                  if(prodId){
-                                    const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
-                                    const count = ((oc as any)?.data||{})[prodId] ?? 0
-                                    ordersPerDay.push(Number(count||0))
-                                  }else if(collId){
-                                    const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                    const count = Number(((oc as any)?.data||{})?.count ?? 0)
-                                    ordersPerDay.push(Number(count||0))
-                                  }else{
-                                    ordersPerDay.push(0)
-                                  }
-                                }catch{ ordersPerDay.push(0) }
-                              }
-                              setPerfOrders(ordersPerDay)
+                            if(!cid) return
+                            setPerfCampaign({ id: cid, name: c.name||'' })
+                            const res = await fetchCampaignPerformance(cid, 6, browserTz)
+                            const days = (((res as any)?.data||{}).days)||[]
+                            setPerfMetrics(days)
+                            // Load Shopify orders per day based on mapping or numeric id
+                            const rk = (c.campaign_id || c.name || '') as any
+                            const conf = (manualIds as any)[rk]
+                            const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
+                            const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
+                            const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
+                            const ordersPerDay: number[] = []
+                            for(const d of (days||[])){
+                              const start = d.date
+                              const end = d.date
+                              try{
+                                if(prodId){
+                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
+                                  const count = ((oc as any)?.data||{})[prodId] ?? 0
+                                  ordersPerDay.push(Number(count||0))
+                                }else if(collId){
+                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                  const count = Number(((oc as any)?.data||{})?.count ?? 0)
+                                  ordersPerDay.push(Number(count||0))
+                                }else{
+                                  ordersPerDay.push(0)
+                                }
+                              }catch{ ordersPerDay.push(0) }
                             }
+                            setPerfOrders(ordersPerDay)
                           }finally{
                             setPerfLoading(false)
                           }
@@ -1313,12 +1535,6 @@ export default function AdsManagementPage(){
                         }}
                         className="ml-2 px-2 py-1 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
                       >Timeline</button>
-                      {partnerKey && (
-                        <button
-                          onClick={()=> unmergeKey(String(rowKey))}
-                          className="ml-2 px-2 py-1 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
-                        >Unmerge</button>
-                      )}
                     </td>
                   </tr>
                   {(()=>{
