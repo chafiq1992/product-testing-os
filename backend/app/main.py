@@ -4491,10 +4491,10 @@ async def api_wholesale_upload_image(request: Request, image: UploadFile = File(
         filename = f"wholesale_{file_id}_{safe_name}"
         data = await image.read()
         url_path = save_file(filename, data)
-        # Build absolute URL
-        abs_base = _abs_base_url(request)
+        # Build absolute URL using BASE_URL from config
+        base = (BASE_URL or "").rstrip("/")
         encoded_path = quote(url_path, safe="/:")
-        abs_url = f"{abs_base}{encoded_path}"
+        abs_url = f"{base}{encoded_path}" if base else encoded_path
         return {"data": {"url": abs_url, "filename": filename}}
     except Exception as e:
         return {"error": str(e)}

@@ -33,7 +33,7 @@ def _oauth_enabled_for_store(store: str | None) -> bool:
         if allowed:
             parts = [p.strip().lower() for p in allowed.split(",") if p.strip()]
             return s in set(parts)
-        return s == "irranova"
+        return s in {"irranova", "mmd"}
     except Exception:
         return False
 
