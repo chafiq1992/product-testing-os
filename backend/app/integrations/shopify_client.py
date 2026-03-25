@@ -90,13 +90,14 @@ def _get_store_config(store: str | None) -> dict:
 
     if store:
         suf = _store_suffix(store)
-        shop_raw = _env_with_suffix("SHOPIFY_SHOP_DOMAIN", suf) or os.getenv("SHOPIFY_SHOP_DOMAIN", "")
-        token = _env_with_suffix("SHOPIFY_ACCESS_TOKEN", suf) or os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+        # First: try store-specific env vars (e.g. SHOPIFY_SHOP_DOMAIN_MMD)
+        shop_raw = _env_with_suffix("SHOPIFY_SHOP_DOMAIN", suf)
+        token = _env_with_suffix("SHOPIFY_ACCESS_TOKEN", suf)
         api_key = _env_with_suffix("SHOPIFY_API_KEY", suf) or os.getenv("SHOPIFY_API_KEY", "")
         password = _env_with_suffix("SHOPIFY_PASSWORD", suf) or os.getenv("SHOPIFY_PASSWORD", "")
         version = _env_with_suffix("SHOPIFY_API_VERSION", suf) or os.getenv("SHOPIFY_API_VERSION", "2025-07")
-        # If env isn't set, optionally fall back to stored OAuth token (Option B).
-        # IMPORTANT: we only enable this for configured stores so others can keep the old method.
+        # Second: for OAuth-enabled stores, check DB-stored OAuth credentials
+        # (these are stored during the Shopify OAuth flow on /shopify-connect)
         if _db and _oauth_enabled_for_store(store) and (not token or not shop_raw):
             try:
                 rec = _db.get_app_setting(store, "shopify_oauth") or {}
@@ -107,6 +108,11 @@ def _get_store_config(store: str | None) -> dict:
                         token = str(rec.get("access_token") or "")
             except Exception:
                 pass
+        # Third: only fall back to base env vars if STILL empty
+        if not shop_raw:
+            shop_raw = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        if not token:
+            token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
     else:
         shop_raw = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
         token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
