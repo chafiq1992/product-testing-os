@@ -4347,6 +4347,213 @@ async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
     )
     return res
 
+
+# ===================== Wholesale Vendor Dashboard (MMD Store) =====================
+
+WHOLESALE_STORE = "mmd"  # internal store label for the MMD Shopify store
+
+
+def _wholesale_vendor_key(vendor_id: str) -> str:
+    return f"wholesale_vendor:{vendor_id}"
+
+
+def _hash_password(pw: str) -> str:
+    return hashlib.sha256((pw or "").encode("utf-8")).hexdigest()
+
+
+class WholesaleVendorCreate(BaseModel):
+    name: str
+    username: str
+    password: str
+
+
+class WholesaleProductCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    cog_price: Optional[float] = None
+    sale_price: Optional[float] = None
+    segment: Optional[str] = None
+    season: Optional[str] = None
+    colors: Optional[List[str]] = None
+    sizes: Optional[List[str]] = None
+    product_type: Optional[str] = None
+    size_groups: Optional[List[dict]] = None
+
+
+class WholesaleLogin(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/wholesale/vendors")
+async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
+    """Admin endpoint: create or update a wholesale vendor."""
+    try:
+        name = (req.name or "").strip()
+        username = (req.username or "").strip().lower()
+        password = (req.password or "").strip()
+        if not (name and username and password):
+            return {"error": "name, username, and password are required"}
+
+        vendor_id = username
+        key = _wholesale_vendor_key(vendor_id)
+        existing = db.get_app_setting(WHOLESALE_STORE, key) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+
+        vendor_data = {
+            "id": vendor_id,
+            "name": name,
+            "username": username,
+            "password_hash": _hash_password(password),
+            "created_at": existing.get("created_at") or datetime.utcnow().isoformat() + "Z",
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        db.set_app_setting(WHOLESALE_STORE, key, vendor_data)
+        safe = {k: v for k, v in vendor_data.items() if k != "password_hash"}
+        return {"data": safe}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/wholesale/vendors")
+async def api_wholesale_list_vendors():
+    """Admin endpoint: list all wholesale vendors."""
+    try:
+        from sqlalchemy import text as sa_text
+        with db.SessionLocal() as session:
+            rows = session.query(db.AppSetting).filter(
+                db.AppSetting.store == WHOLESALE_STORE,
+                db.AppSetting.key.like("wholesale_vendor:%"),
+            ).all()
+        vendors = []
+        for r in rows:
+            try:
+                val = json.loads(r.value) if r.value else {}
+                if isinstance(val, dict):
+                    safe = {k: v for k, v in val.items() if k != "password_hash"}
+                    vendors.append(safe)
+            except Exception:
+                continue
+        return {"data": vendors}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/wholesale/login")
+async def api_wholesale_login(req: WholesaleLogin):
+    """Vendor login: validate credentials and return vendor info."""
+    try:
+        username = (req.username or "").strip().lower()
+        password = (req.password or "").strip()
+        if not (username and password):
+            return {"error": "username and password are required"}
+
+        vendor_id = username
+        key = _wholesale_vendor_key(vendor_id)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not isinstance(vendor, dict):
+            return {"error": "invalid_credentials"}
+
+        stored_hash = vendor.get("password_hash", "")
+        if _hash_password(password) != stored_hash:
+            return {"error": "invalid_credentials"}
+
+        safe = {k: v for k, v in vendor.items() if k != "password_hash"}
+        return {"data": safe}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/wholesale/vendors/{vendor_id}/products")
+async def api_wholesale_vendor_products(vendor_id: str):
+    """List products for a specific vendor from the MMD Shopify store."""
+    try:
+        vid = (vendor_id or "").strip().lower()
+        if not vid:
+            return {"error": "vendor_id is required"}
+
+        # Verify vendor exists
+        key = _wholesale_vendor_key(vid)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not isinstance(vendor, dict):
+            return {"error": "vendor_not_found"}
+
+        vendor_name = vendor.get("name", vid)
+        from app.integrations.shopify_client import list_products_by_vendor
+        products = list_products_by_vendor(vendor_name, store=WHOLESALE_STORE, limit=250)
+        return {"data": products}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/wholesale/vendors/{vendor_id}/products")
+async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCreate):
+    """Create a product on the MMD Shopify store tagged with the vendor name."""
+    try:
+        vid = (vendor_id or "").strip().lower()
+        if not vid:
+            return {"error": "vendor_id is required"}
+
+        # Verify vendor exists
+        key = _wholesale_vendor_key(vid)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not isinstance(vendor, dict):
+            return {"error": "vendor_not_found"}
+
+        vendor_name = vendor.get("name", vid)
+        title = (req.title or "").strip()
+        if not title:
+            return {"error": "title is required"}
+
+        # Build description HTML
+        desc_html = None
+        if req.description:
+            desc_html = f"<p>{req.description}</p>"
+        if req.segment or req.season:
+            parts = []
+            if req.segment:
+                parts.append(f"Segment: {req.segment}")
+            if req.season:
+                parts.append(f"Season: {req.season}")
+            extra = " | ".join(parts)
+            desc_html = (desc_html or "") + f"<p><em>{extra}</em></p>"
+
+        # Tags for filtering
+        tags_list = [f"vendor:{vendor_name}"]
+        if req.segment:
+            tags_list.append(f"segment:{req.segment}")
+        if req.season:
+            tags_list.append(f"season:{req.season}")
+
+        # Determine price: use sale_price if provided
+        price = req.sale_price
+
+        # Calculate total quantity from size groups if provided
+        total_qty = None
+        if req.size_groups:
+            total_qty = sum(int(sg.get("qty") or 0) for sg in req.size_groups)
+
+        from app.integrations.shopify_client import create_product_only as _create_product
+        result = await run_in_threadpool(
+            _create_product,
+            title=title,
+            description_html=desc_html,
+            status="ACTIVE",
+            price=price,
+            sizes=req.sizes,
+            colors=req.colors,
+            product_type=req.product_type,
+            vendor=vendor_name,
+            tags=tags_list,
+            track_quantity=True if total_qty is not None else None,
+            quantity=total_qty,
+            store=WHOLESALE_STORE,
+        )
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Mount static files last so that API routes have precedence.
 # The directory is configurable via STATIC_DIR env var, otherwise we look for
 #   - /app/static (inside container)

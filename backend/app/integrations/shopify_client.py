@@ -2284,6 +2284,25 @@ def configure_variants_for_product(
         return {"ok": False, "errors": [str(e)]}
 
 
+def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit: int = 50) -> list[dict]:
+    """List products from a Shopify store filtered by vendor name."""
+    from urllib.parse import urlencode
+    products: list[dict] = []
+    try:
+        lim = max(1, min(limit or 50, 250))
+        params = {
+            "vendor": vendor_name,
+            "limit": lim,
+            "fields": "id,title,vendor,product_type,status,tags,variants,images,created_at,updated_at",
+        }
+        path = "/products.json?" + urlencode(params)
+        data = _rest_get_store(store, path)
+        products = (data or {}).get("products") or []
+    except Exception:
+        products = []
+    return products
+
+
 def create_product_only(
     title: str,
     description_html: str | None = None,
@@ -2293,6 +2312,8 @@ def create_product_only(
     colors: list[str] | None = None,
     product_type: str | None = None,
     *,
+    vendor: str | None = None,
+    tags: list[str] | None = None,
     track_quantity: bool | None = None,
     quantity: int | None = None,
     variants: list[dict] | None = None,
@@ -2307,6 +2328,10 @@ def create_product_only(
     if product_type:
         # Shopify product organization: productType (string)
         inp["productType"] = product_type
+    if vendor:
+        inp["vendor"] = vendor
+    if tags:
+        inp["tags"] = tags
     data = _gql_store(store, PRODUCT_CREATE, {"input": inp})
     prod = data["productCreate"]["product"]
     # Configure variants and inventory via REST
