@@ -456,6 +456,14 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
     sizeGroups: [{ from: 20, to: 25, qty: 10 }]
   })
   const [sizeInput, setSizeInput] = useState('')
+  // Image capture state
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [aiStatus, setAiStatus] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const netProfit = useMemo(() => {
     const sale = parseFloat(form.salePrice) || 0
@@ -488,6 +496,71 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
     setForm(f => ({ ...f, sizeGroups: f.sizeGroups.filter((_, i) => i !== idx) }))
   }
 
+  // Handle image selection (camera or file)
+  async function handleImageCapture(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImageFile(file)
+    // Show local preview
+    const reader = new FileReader()
+    reader.onload = (ev) => setImagePreview(ev.target?.result as string)
+    reader.readAsDataURL(file)
+    // Upload to server
+    setUploading(true)
+    setAiStatus('Uploading image...')
+    try {
+      const fd = new FormData()
+      fd.append('image', file)
+      const res = await fetch(`${API}/api/wholesale/upload-image`, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (data?.data?.url) {
+        setImageUrl(data.data.url)
+        setAiStatus('Image uploaded! Tap "Analyze with AI" to auto-fill product details.')
+      } else {
+        setAiStatus('Upload failed. Please try again.')
+      }
+    } catch {
+      setAiStatus('Upload error. Please try again.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // Send image to ChatGPT for analysis
+  async function handleAnalyzeImage() {
+    if (!imageUrl) return
+    setAnalyzing(true)
+    setAiStatus('🤖 Analyzing product with AI... This may take a few seconds.')
+    try {
+      const res = await apiPost('/api/wholesale/analyze-image', { image_url: imageUrl })
+      if (res?.data) {
+        const ai = res.data
+        setForm(f => ({
+          ...f,
+          title: ai.title || f.title,
+          description: (ai.benefits || []).join('. ') || f.description,
+          colors: (ai.colors && ai.colors.length > 0) ? ai.colors : f.colors,
+          sizes: (ai.sizes && ai.sizes.length > 0) ? ai.sizes : f.sizes,
+        }))
+        setAiStatus('✅ AI analysis complete! Title and description updated.')
+      } else {
+        setAiStatus('AI analysis returned no data. Please fill manually.')
+      }
+    } catch {
+      setAiStatus('AI analysis failed. Please fill manually.')
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  function removeImage() {
+    setImageFile(null)
+    setImagePreview(null)
+    setImageUrl(null)
+    setAiStatus(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
   async function handleSubmit() {
     if (!form.title.trim()) { alert('Please enter a product title.'); return }
     setSaving(true)
@@ -502,6 +575,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
         colors: form.colors.length > 0 ? form.colors : undefined,
         sizes: form.sizes.length > 0 ? form.sizes : undefined,
         size_groups: form.sizeGroups,
+        image_url: imageUrl || undefined,
       })
       if (res?.error) { alert('Error: ' + res.error); return }
       onDone()
@@ -512,20 +586,97 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-24 animate-in">
-      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
-        <div>
-          <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">Add Product</h2>
-          <p className="text-slate-500 text-sm">Create a new product on the MMD Shopify store.</p>
-        </div>
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-60 flex items-center gap-2"
-        >
-          {saving && <Loader2 className="animate-spin" size={18} />}
-          Finalize & Save
-        </button>
+      <div>
+        <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">Add Product</h2>
+        <p className="text-slate-500 text-sm">Create a new product on the MMD Shopify store.</p>
       </div>
+
+      {/* ── CAMERA / IMAGE CAPTURE SECTION ── */}
+      <section className="bg-gradient-to-br from-blue-50 via-indigo-50 to-violet-50 p-5 rounded-3xl border border-blue-200 shadow-sm">
+        <h3 className="text-[10px] font-bold uppercase text-blue-600 mb-4 flex items-center gap-2 tracking-widest">
+          <Camera size={14} /> Product Photo
+        </h3>
+        {!imagePreview ? (
+          <div className="flex flex-col items-center gap-4 py-8">
+            <div className="w-20 h-20 bg-white/80 rounded-3xl flex items-center justify-center shadow-inner border-2 border-dashed border-blue-300">
+              <Camera size={36} className="text-blue-400" />
+            </div>
+            <p className="text-sm text-blue-600 font-medium text-center">Take a photo or upload an image of your product</p>
+            <p className="text-[10px] text-blue-400 text-center">AI will analyze the image to auto‑fill title & description</p>
+            <div className="flex gap-3">
+              <label className="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 text-sm">
+                <Camera size={18} />
+                Take Photo
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleImageCapture}
+                  className="hidden"
+                />
+              </label>
+              <label className="cursor-pointer bg-white hover:bg-slate-50 text-blue-600 px-6 py-3 rounded-2xl font-bold shadow-md border border-blue-200 transition-all active:scale-95 flex items-center gap-2 text-sm">
+                <ImageIcon size={18} />
+                Upload
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageCapture}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="relative rounded-2xl overflow-hidden border-2 border-blue-200 shadow-md bg-white">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={imagePreview} alt="Product preview" className="w-full max-h-80 object-contain bg-white" />
+              <button
+                onClick={removeImage}
+                className="absolute top-3 right-3 bg-red-500 hover:bg-red-600 text-white p-2 rounded-full shadow-lg transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {/* AI Analyze Button */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleAnalyzeImage}
+                disabled={analyzing || !imageUrl}
+                className="flex-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white px-6 py-3.5 rounded-2xl font-bold shadow-lg shadow-violet-200 transition-all active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2 text-sm"
+              >
+                {analyzing ? <Loader2 className="animate-spin" size={18} /> : <span className="text-lg">🤖</span>}
+                {analyzing ? 'Analyzing...' : 'Analyze with AI'}
+              </button>
+              <label className="cursor-pointer bg-white hover:bg-slate-50 text-blue-600 px-5 py-3.5 rounded-2xl font-bold shadow-md border border-blue-200 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm">
+                <RefreshCw size={16} />
+                Retake
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleImageCapture}
+                  className="hidden"
+                />
+              </label>
+            </div>
+            {/* Status */}
+            {aiStatus && (
+              <div className={`px-4 py-3 rounded-xl text-xs font-bold ${aiStatus.startsWith('✅') ? 'bg-green-50 text-green-700 border border-green-200' : aiStatus.startsWith('🤖') ? 'bg-violet-50 text-violet-700 border border-violet-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                {aiStatus}
+              </div>
+            )}
+          </div>
+        )}
+        {uploading && (
+          <div className="flex items-center gap-2 mt-3 text-blue-600">
+            <Loader2 className="animate-spin" size={16} />
+            <span className="text-xs font-bold">Uploading image...</span>
+          </div>
+        )}
+      </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LEFT COLUMN */}
@@ -671,6 +822,18 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
             <p className="text-[10px] text-blue-500 mt-1">This name will appear as the vendor field on Shopify</p>
           </div>
         </div>
+      </div>
+
+      {/* ── SAVE BUTTON AT BOTTOM ── */}
+      <div className="pt-4">
+        <button
+          onClick={handleSubmit}
+          disabled={saving}
+          className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-blue-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider"
+        >
+          {saving && <Loader2 className="animate-spin" size={20} />}
+          Save & Send to Store
+        </button>
       </div>
     </div>
   )

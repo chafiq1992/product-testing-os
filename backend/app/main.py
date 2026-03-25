@@ -4394,6 +4394,7 @@ class WholesaleProductCreate(BaseModel):
     sizes: Optional[List[str]] = None
     product_type: Optional[str] = None
     size_groups: Optional[List[dict]] = None
+    image_url: Optional[str] = None
 
 
 class WholesaleLogin(BaseModel):
@@ -4481,6 +4482,41 @@ async def api_wholesale_login(req: WholesaleLogin):
         return {"error": str(e)}
 
 
+@app.post("/api/wholesale/upload-image")
+async def api_wholesale_upload_image(request: Request, image: UploadFile = File(...)):
+    """Upload a product image and return its public URL."""
+    try:
+        file_id = str(uuid4())
+        safe_name = (image.filename or "photo.jpg").replace("/", "_").replace("\\", "_")
+        filename = f"wholesale_{file_id}_{safe_name}"
+        data = await image.read()
+        url_path = save_file(filename, data)
+        # Build absolute URL
+        abs_base = _abs_base_url(request)
+        encoded_path = quote(url_path, safe="/:")
+        abs_url = f"{abs_base}{encoded_path}"
+        return {"data": {"url": abs_url, "filename": filename}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class WholesaleAnalyzeImageRequest(BaseModel):
+    image_url: str
+
+
+@app.post("/api/wholesale/analyze-image")
+async def api_wholesale_analyze_image(req: WholesaleAnalyzeImageRequest):
+    """Send a product image to ChatGPT and return AI-generated title and description."""
+    try:
+        image_url = (req.image_url or "").strip()
+        if not image_url:
+            return {"error": "image_url is required"}
+        data = await run_in_threadpool(gen_product_from_image, image_url)
+        return {"data": data, "image_url": image_url}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/wholesale/vendors/{vendor_id}/products")
 async def api_wholesale_vendor_products(vendor_id: str):
     """List products for a specific vendor from the MMD Shopify store."""
@@ -4551,6 +4587,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             total_qty = sum(int(sg.get("qty") or 0) for sg in req.size_groups)
 
         from app.integrations.shopify_client import create_product_only as _create_product
+        from app.integrations.shopify_client import upload_images_to_product as _upload_images
         result = await run_in_threadpool(
             _create_product,
             title=title,
@@ -4566,6 +4603,23 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             quantity=total_qty,
             store=WHOLESALE_STORE,
         )
+
+        # Upload product image to Shopify if provided
+        image_url = (req.image_url or "").strip() if req.image_url else None
+        if image_url and result and isinstance(result, dict):
+            try:
+                product_gid = (result.get("product") or {}).get("id")
+                if product_gid:
+                    await run_in_threadpool(
+                        _upload_images,
+                        product_gid,
+                        [image_url],
+                        [title],
+                        store=WHOLESALE_STORE,
+                    )
+            except Exception:
+                pass  # best-effort image upload
+
         return {"data": result}
     except Exception as e:
         return {"error": str(e)}
