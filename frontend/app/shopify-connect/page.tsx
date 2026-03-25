@@ -80,6 +80,7 @@ export default function ShopifyConnectPage(){
               }} className="w-full rounded-lg border px-3 py-2 text-sm">
                 <option value="irrakids">irrakids</option>
                 <option value="irranova">irranova</option>
+                <option value="mmd">mmd</option>
               </select>
               <div className="text-[11px] text-slate-500 mt-1">This must match what your app uses (e.g. in the Confirmation store dropdown).</div>
             </div>
