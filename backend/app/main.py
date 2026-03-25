@@ -427,6 +427,13 @@ async def api_shopify_oauth_status(store: str | None = None):
     except Exception as e:
         return {"error": str(e), "data": {"connected": False}}
 
+def _get_shopify_oauth_credentials(store: str) -> tuple[str, str]:
+    """Return the store-specific OAuth credentials, falling back to the default ones."""
+    store_upper = (store or "").strip().upper()
+    client_id = os.getenv(f"SHOPIFY_CLIENT_ID_{store_upper}") or SHOPIFY_CLIENT_ID
+    client_secret = os.getenv(f"SHOPIFY_CLIENT_SECRET_{store_upper}") or SHOPIFY_CLIENT_SECRET
+    return client_id, client_secret
+
 
 @app.get("/api/shopify/oauth/start")
 async def api_shopify_oauth_start(request: Request, store: str, shop: str):
@@ -436,11 +443,14 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
       /api/shopify/oauth/start?store=irranova&shop=your-shop.myshopify.com
     """
     try:
-        if not (SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET):
-            return {"error": "missing_shopify_client_credentials"}
         store_label = (store or "").strip()
         if not store_label:
             return {"error": "missing_store"}
+            
+        client_id, client_secret = _get_shopify_oauth_credentials(store_label)
+        if not (client_id and client_secret):
+            return {"error": "missing_shopify_client_credentials"}
+            
         shop = _extract_shop_domain(shop)
         if not _is_valid_shop_domain(shop or ""):
             return {"error": "invalid_shop_domain"}
@@ -458,7 +468,7 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
         redirect_uri = f"{_abs_base_url(request)}/api/shopify/oauth/callback"
         scopes = _shopify_oauth_scopes()
         params = {
-            "client_id": SHOPIFY_CLIENT_ID,
+            "client_id": client_id,
             "scope": scopes,
             "redirect_uri": redirect_uri,
             "state": state,
@@ -473,8 +483,6 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
 async def api_shopify_oauth_callback(request: Request):
     """OAuth callback endpoint. Shopify redirects here with code/shop/hmac/state."""
     try:
-        if not (SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET):
-            return {"error": "missing_shopify_client_credentials"}
         qp = dict(request.query_params)
         shop = str(qp.get("shop") or "").strip().lower()
         state = str(qp.get("state") or "").strip()
@@ -486,6 +494,11 @@ async def api_shopify_oauth_callback(request: Request):
         store_label = str(st.get("store") or "").strip()
         if not store_label:
             return {"error": "missing_store_in_state"}
+            
+        client_id, client_secret = _get_shopify_oauth_credentials(store_label)
+        if not (client_id and client_secret):
+            return {"error": "missing_shopify_client_credentials"}
+            
         if not _is_valid_shop_domain(shop):
             return {"error": "invalid_shop_domain"}
         if not (state and code):
@@ -496,7 +509,7 @@ async def api_shopify_oauth_callback(request: Request):
 
         # Verify Shopify HMAC (recommended). If this fails in your environment, you can temporarily bypass
         # it for internal installs by setting SHOPIFY_OAUTH_SKIP_HMAC=1.
-        hmac_ok = _verify_shopify_hmac_request(request, SHOPIFY_CLIENT_SECRET)
+        hmac_ok = _verify_shopify_hmac_request(request, client_secret)
         if not hmac_ok:
             skip = (os.getenv("SHOPIFY_OAUTH_SKIP_HMAC", "") or "").strip().lower() in ("1", "true", "yes", "y")
             if not skip:
@@ -522,8 +535,8 @@ async def api_shopify_oauth_callback(request: Request):
         # Exchange code for token
         token_url = f"https://{shop}/admin/oauth/access_token"
         resp = requests.post(token_url, json={
-            "client_id": SHOPIFY_CLIENT_ID,
-            "client_secret": SHOPIFY_CLIENT_SECRET,
+            "client_id": client_id,
+            "client_secret": client_secret,
             "code": code,
         }, timeout=30)
         resp.raise_for_status()
