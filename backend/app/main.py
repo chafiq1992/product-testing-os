@@ -4369,6 +4369,49 @@ async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
 WHOLESALE_STORE = "mmd"  # internal store label for the MMD Shopify store
 
 
+@app.get("/api/wholesale/debug-store-config")
+async def api_wholesale_debug_store_config():
+    """Debug endpoint: show how _get_store_config resolves for the MMD store."""
+    try:
+        from app.integrations.shopify_client import _get_store_config, _store_suffix, _env_with_suffix, _oauth_enabled_for_store
+        suf = _store_suffix(WHOLESALE_STORE)
+        env_domain = _env_with_suffix("SHOPIFY_SHOP_DOMAIN", suf)
+        env_token = _env_with_suffix("SHOPIFY_ACCESS_TOKEN", suf)
+        base_domain = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        oauth_enabled = _oauth_enabled_for_store(WHOLESALE_STORE)
+        # Check DB
+        db_rec = None
+        try:
+            db_rec = db.get_app_setting(WHOLESALE_STORE, "shopify_oauth")
+        except Exception as e:
+            db_rec = {"error": str(e)}
+        # Resolve final config
+        try:
+            cfg = _get_store_config(WHOLESALE_STORE)
+            resolved_shop = cfg.get("SHOP", "")
+            resolved_has_token = bool(cfg.get("TOKEN"))
+        except Exception as e:
+            resolved_shop = f"ERROR: {e}"
+            resolved_has_token = False
+        return {
+            "store_label": WHOLESALE_STORE,
+            "suffix": suf,
+            "env_SHOPIFY_SHOP_DOMAIN_MMD": env_domain or "(not set)",
+            "env_SHOPIFY_ACCESS_TOKEN_MMD": "(set)" if env_token else "(not set)",
+            "base_SHOPIFY_SHOP_DOMAIN": base_domain,
+            "oauth_enabled_for_mmd": oauth_enabled,
+            "db_oauth_record": {
+                "shop": (db_rec or {}).get("shop") if isinstance(db_rec, dict) else db_rec,
+                "has_token": bool((db_rec or {}).get("access_token")) if isinstance(db_rec, dict) else False,
+                "scopes": (db_rec or {}).get("scopes") if isinstance(db_rec, dict) else None,
+            },
+            "resolved_shop": resolved_shop,
+            "resolved_has_token": resolved_has_token,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _wholesale_vendor_key(vendor_id: str) -> str:
     return f"wholesale_vendor:{vendor_id}"
 
