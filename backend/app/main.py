@@ -503,9 +503,12 @@ async def api_shopify_oauth_callback(request: Request):
             return {"error": "invalid_shop_domain"}
         if not (state and code):
             return {"error": "missing_state_or_code"}
-        # Optional: ensure the same shop
+        # Log if shop doesn't match (Shopify can remap domains), but don't block
         if st.get("shop") and str(st.get("shop")).strip().lower() != shop:
-            return {"error": "shop_mismatch"}
+            try:
+                logger.warning(f"[shopify] Shop domain changed during OAuth: expected={st.get('shop')} got={shop} store={store_label}")
+            except Exception:
+                pass
 
         # Verify Shopify HMAC (recommended). If this fails in your environment, you can temporarily bypass
         # it for internal installs by setting SHOPIFY_OAUTH_SKIP_HMAC=1.
