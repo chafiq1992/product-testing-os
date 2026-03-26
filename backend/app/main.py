@@ -4775,6 +4775,8 @@ class WholesaleOrderCreate(BaseModel):
 # ─── Wholesale Create Order ────────────────────────────────────────────
 @app.post("/api/wholesale/vendors/{vendor_id}/orders")
 async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
+    import logging
+    _log = logging.getLogger("wholesale.orders")
     try:
         key = _wholesale_vendor_key(vendor_id)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
@@ -4830,8 +4832,26 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         if req.note:
             order_payload["order"]["note"] = req.note
 
-        from app.integrations.shopify_client import _rest_post_store
-        result = await run_in_threadpool(_rest_post_store, WHOLESALE_STORE, "/orders.json", order_payload)
+        _log.info(f"Creating wholesale order for vendor={vendor_name}, payload keys={list(order_payload['order'].keys())}")
+
+        # Call Shopify - capture response body on errors
+        import requests as _requests
+        from app.integrations.shopify_client import _get_store_config
+        cfg = _get_store_config(WHOLESALE_STORE)
+        url = f"{cfg['BASE']}/orders.json"
+        auth = None
+        if not cfg["TOKEN"]:
+            if cfg["API_KEY"] and cfg["PASSWORD"]:
+                auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        r = _requests.post(url, headers=cfg["HEADERS"], json=order_payload, timeout=60, auth=auth)
+        if r.status_code >= 400:
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = r.text
+            _log.error(f"Shopify order creation failed: status={r.status_code}, body={err_body}")
+            return {"error": f"Shopify {r.status_code}: {err_body}"}
+        result = r.json() if r.content else {}
         order = result.get("order", {})
         return {
             "data": {
@@ -4844,6 +4864,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
             }
         }
     except Exception as e:
+        _log.error(f"Wholesale order creation exception: {e}", exc_info=True)
         return {"error": str(e)}
 
 
