@@ -1987,21 +1987,47 @@ def list_product_images(product_gid: str, *, store: str | None = None) -> list[d
         return []
 
 
+LOCATIONS_QUERY = """
+query { locations(first: 10) { nodes { id name isActive } } }
+"""
+
 def _get_primary_location_id(store: str | None = None) -> str | None:
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    # Try REST first
     try:
         data = _rest_get_store(store, "/locations.json")
         locs = (data or {}).get("locations") or []
+        _log.info(f"REST locations.json returned {len(locs)} locations")
         for loc in locs:
             try:
                 if loc.get("active", True):
-                    return str(loc.get("id"))
+                    loc_id = str(loc.get("id"))
+                    _log.info(f"Using REST location: {loc_id} ({loc.get('name')})")
+                    return loc_id
             except Exception:
                 continue
-        # Fallback to first location if none marked active
         if locs:
-            return str(locs[0].get("id"))
-    except Exception:
-        return None
+            loc_id = str(locs[0].get("id"))
+            _log.info(f"Using first REST location fallback: {loc_id}")
+            return loc_id
+    except Exception as e:
+        _log.warning(f"REST /locations.json failed: {e}")
+    # Fallback to GraphQL
+    try:
+        data = _gql_store(store, LOCATIONS_QUERY, {})
+        nodes = ((data or {}).get("locations") or {}).get("nodes") or []
+        _log.info(f"GraphQL locations returned {len(nodes)} locations")
+        for node in nodes:
+            loc_gid = node.get("id") or ""
+            if loc_gid:
+                # Extract numeric ID from GID
+                numeric = loc_gid.split("/")[-1]
+                _log.info(f"Using GraphQL location: {numeric} (GID={loc_gid}, name={node.get('name')})")
+                return numeric
+    except Exception as e:
+        _log.error(f"GraphQL locations also failed: {e}")
+    _log.error("No location found via REST or GraphQL!")
     return None
 
 
@@ -2279,6 +2305,10 @@ def _configure_variants_for_product(
             except Exception as list_err:
                 _inv_log.error(f"Failed to list variants for inventory: {list_err}")
                 report["errors"].append(f"list_variants: {list_err}")
+        else:
+            report["errors"].append(f"loc_id is None — could not determine Shopify location for store={store}")
+            import logging
+            logging.getLogger("shopify_client.inventory").error(f"loc_id is None for store={store}, skipping inventory")
         return report
 
     # Fallback: sizes/colors combos with base price
