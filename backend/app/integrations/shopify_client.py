@@ -2013,16 +2013,54 @@ def _set_inventory_tracked(inventory_item_id: str, tracked: bool = True, *, stor
         pass
 
 
+INVENTORY_SET_QUANTITIES = """
+mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+  inventorySetQuantities(input: $input) {
+    inventoryAdjustmentGroup { reason }
+    userErrors { field message }
+  }
+}
+"""
+
+
 def _set_inventory_level(location_id: str, inventory_item_id: str, available: int, *, store: str | None = None) -> None:
+    """Set inventory quantity using GraphQL inventorySetQuantities (works on API 2023-10+).
+
+    Falls back to REST /inventory_levels/set.json for older API versions.
+    """
     try:
-        _rest_post_store(store, "/inventory_levels/set.json", {
-            "location_id": int(location_id),
-            "inventory_item_id": int(inventory_item_id),
-            "available": int(available)
-        })
-    except Exception:
-        # best-effort; do not raise to avoid blocking the flow
-        pass
+        # Build GIDs from numeric IDs
+        loc_gid = f"gid://shopify/Location/{location_id}"
+        inv_gid = f"gid://shopify/InventoryItem/{inventory_item_id}"
+        variables = {
+            "input": {
+                "reason": "correction",
+                "name": "available",
+                "quantities": [
+                    {
+                        "inventoryItemId": inv_gid,
+                        "locationId": loc_gid,
+                        "quantity": int(available),
+                    }
+                ],
+            }
+        }
+        data = _gql_store(store, INVENTORY_SET_QUANTITIES, variables)
+        ue = ((data or {}).get("inventorySetQuantities") or {}).get("userErrors") or []
+        if ue:
+            import logging
+            logging.getLogger("shopify_client").warning(f"inventorySetQuantities userErrors: {ue}")
+    except Exception as e:
+        # Fallback to REST for older API versions
+        try:
+            _rest_post_store(store, "/inventory_levels/set.json", {
+                "location_id": int(location_id),
+                "inventory_item_id": int(inventory_item_id),
+                "available": int(available)
+            })
+        except Exception:
+            import logging
+            logging.getLogger("shopify_client").warning(f"_set_inventory_level failed for item={inventory_item_id}: {e}")
 
 
 def _set_inventory_item_cost(inventory_item_id: str, cost: float, *, store: str | None = None) -> None:

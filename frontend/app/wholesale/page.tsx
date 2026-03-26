@@ -452,7 +452,8 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
   const [form, setForm] = useState({
     title: '', description: '', cogPrice: '', salePrice: '',
     colors: [] as string[], segment: 'Men', season: 'Summer',
-    sizeGroups: [{ from: 20, to: 25, qty: 10 }]
+    sizeGroups: [{ from: 20, to: 25, qty: 10 }],
+    variantGroupId: ''
   })
   // Image capture state
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -564,6 +565,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
         colors: form.colors.length > 0 ? form.colors : undefined,
         size_groups: form.sizeGroups,
         image_url: imageUrl || undefined,
+        variant_group_id: form.variantGroupId.trim() || undefined,
       })
       if (res?.error) { alert('Error: ' + res.error); return }
       onDone()
@@ -782,6 +784,18 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
                   )}
                 </div>
               ))}
+            </div>
+          </section>
+
+          {/* Variant Group ID */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+            <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+              <TagIcon size={14} /> Variant Group ID (SKU)
+            </h3>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Group ID</label>
+              <input type="text" value={form.variantGroupId} onChange={e => setForm({...form, variantGroupId: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="e.g. SKU-0828-2" />
+              <p className="text-[10px] text-slate-400 mt-2">This ID will be set as the SKU on all variants in Shopify</p>
             </div>
           </section>
 

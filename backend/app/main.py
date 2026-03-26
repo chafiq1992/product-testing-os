@@ -4445,6 +4445,7 @@ class WholesaleProductCreate(BaseModel):
     product_type: Optional[str] = None
     size_groups: Optional[List[dict]] = None
     image_url: Optional[str] = None
+    variant_group_id: Optional[str] = None
 
 
 class WholesaleLogin(BaseModel):
@@ -4660,14 +4661,19 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 }
                 if combined_color:
                     v["color"] = combined_color
+                if req.variant_group_id:
+                    v["sku"] = req.variant_group_id.strip()
                 explicit_variants.append(v)
         elif combined_color:
             # No size groups but have colors
-            explicit_variants.append({
+            v_color: dict = {
                 "color": combined_color,
                 "price": req.sale_price,
                 "track_quantity": True,
-            })
+            }
+            if req.variant_group_id:
+                v_color["sku"] = req.variant_group_id.strip()
+            explicit_variants.append(v_color)
 
         from app.integrations.shopify_client import create_product_only as _create_product
         from app.integrations.shopify_client import upload_images_to_product as _upload_images
