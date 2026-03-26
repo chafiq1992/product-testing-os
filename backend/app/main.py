@@ -4776,7 +4776,7 @@ class WholesaleOrderCreate(BaseModel):
 @app.post("/api/wholesale/vendors/{vendor_id}/orders")
 async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
     try:
-        key = f"wholesale_vendor_{vendor_id}"
+        key = _wholesale_vendor_key(vendor_id)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
@@ -4849,7 +4849,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
 @app.get("/api/wholesale/vendors/{vendor_id}/orders")
 async def api_wholesale_vendor_orders(vendor_id: str):
     try:
-        key = f"wholesale_vendor_{vendor_id}"
+        key = _wholesale_vendor_key(vendor_id)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
