@@ -61,6 +61,11 @@ import secrets
 import requests
 import asyncio
 
+# Ensure MMD store is enabled for DB-backed OAuth tokens
+# (This env var is checked by shopify_client._oauth_enabled_for_store)
+if not os.getenv("SHOPIFY_OAUTH_STORES"):
+    os.environ["SHOPIFY_OAUTH_STORES"] = "irranova,mmd"
+
 # Optional ChatKit server-mode support
 try:
     from chatkit.server import StreamingResult as _CKStreamingResult  # type: ignore
