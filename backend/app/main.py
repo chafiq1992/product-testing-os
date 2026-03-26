@@ -63,8 +63,10 @@ import asyncio
 
 # Ensure MMD store is enabled for DB-backed OAuth tokens
 # (This env var is checked by shopify_client._oauth_enabled_for_store)
-if not os.getenv("SHOPIFY_OAUTH_STORES"):
-    os.environ["SHOPIFY_OAUTH_STORES"] = "irranova,mmd"
+_oauth_stores = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
+if "mmd" not in _oauth_stores.lower():
+    _oauth_stores = f"{_oauth_stores},irranova,mmd" if _oauth_stores else "irranova,mmd"
+    os.environ["SHOPIFY_OAUTH_STORES"] = _oauth_stores
 
 # Optional ChatKit server-mode support
 try:
