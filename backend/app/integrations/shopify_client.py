@@ -2142,36 +2142,84 @@ def _configure_variants_for_product(
                     uniq_colors.append(cv)
             except Exception:
                 continue
-        if uniq_sizes or uniq_colors:
-            _update_product_options(numeric_id, uniq_sizes or None, uniq_colors or None, store=store)
+
+        # Build a single PUT payload with options AND variants together.
+        # This avoids the issue where updating options first remaps the default variant,
+        # then POST-ing new variants fails silently due to duplicates.
+        product_update: dict = {"id": int(numeric_id)}
+        options_list: list[dict] = []
+        if uniq_sizes:
+            options_list.append({"name": "Size", "values": uniq_sizes})
+        if uniq_colors:
+            options_list.append({"name": "Color", "values": uniq_colors})
+        if options_list:
+            product_update["options"] = options_list
             report["options_updated"] = {"size_count": len(uniq_sizes), "color_count": len(uniq_colors)}
+
+        # Build variant payloads for the PUT (replaces default variant)
+        variant_payloads: list[dict] = []
         for v in explicit_variants:
+            vp: dict = {}
+            sv = (v.get("size") or "").strip()
+            cv = (v.get("color") or "").strip()
+            # option1 = first option (Size if present, else Color)
+            # option2 = second option (Color if Size is also present)
+            if uniq_sizes and uniq_colors:
+                if sv:
+                    vp["option1"] = sv
+                if cv:
+                    vp["option2"] = cv
+            elif uniq_sizes:
+                if sv:
+                    vp["option1"] = sv
+            elif uniq_colors:
+                if cv:
+                    vp["option1"] = cv
+            price_val = v.get("price", base_price)
+            if price_val is not None:
+                vp["price"] = str(price_val)
+            sku_val = (v.get("sku") or "")
+            if isinstance(sku_val, str) and sku_val.strip():
+                vp["sku"] = sku_val.strip()
+            barcode_val = (v.get("barcode") or "")
+            if isinstance(barcode_val, str) and barcode_val.strip():
+                vp["barcode"] = barcode_val.strip()
+            variant_payloads.append(vp)
+
+        if variant_payloads:
+            product_update["variants"] = variant_payloads
+
+        try:
+            _rest_put_store(store, f"/products/{numeric_id}.json", {"product": product_update})
+            report["variants_created"] = len(variant_payloads)
+        except Exception as e:
+            report["ok"] = False
+            report["errors"].append(f"PUT product with variants failed: {e}")
+            return report
+
+        # After PUT, fetch the created variants to set inventory tracking and levels
+        if loc_id:
             try:
-                sv = (v.get("size") or None)
-                cv = (v.get("color") or None)
-                price = v.get("price", base_price)
-                sku = (v.get("sku") or None)
-                barcode = (v.get("barcode") or None)
-                created = _create_variant(numeric_id, sv, cv, price, sku=sku if isinstance(sku, str) and sku.strip() else None, barcode=barcode if isinstance(barcode, str) and barcode.strip() else None, store=store)
-                if created:
-                    report["variants_created"] += 1
-                if created and loc_id:
-                    inv_item_id = str((created or {}).get("inventory_item_id"))
-                    if inv_item_id and inv_item_id != "None":
-                        # Per-variant track flag wins; else global; else default True
-                        tq_raw = v.get("track_quantity")
+                created_variants = _list_variants(numeric_id, store=store)
+                for idx, cv_data in enumerate(created_variants):
+                    try:
+                        inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
+                        if not inv_item_id or inv_item_id == "None":
+                            continue
+                        # Get the matching explicit variant config for this index
+                        v_cfg = explicit_variants[idx] if idx < len(explicit_variants) else {}
+                        tq_raw = v_cfg.get("track_quantity")
                         eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
                         _set_inventory_tracked(inv_item_id, eff_tq, store=store)
-                        # Per-variant quantity wins; else global quantity; else leave as-is (no set)
-                        q_raw = v.get("quantity")
+                        q_raw = v_cfg.get("quantity")
                         eff_q = q_raw if (q_raw is not None) else quantity
                         if eff_q is not None:
                             _set_inventory_level(loc_id, inv_item_id, int(eff_q), store=store)
                             report["inventory_items_updated"] += 1
-            except Exception as e:
-                report["ok"] = False
-                report["errors"].append(str(e))
-                continue
+                    except Exception:
+                        continue
+            except Exception:
+                pass
         return report
 
     # Fallback: sizes/colors combos with base price
