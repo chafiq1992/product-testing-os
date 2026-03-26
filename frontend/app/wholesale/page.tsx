@@ -843,7 +843,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
 // ═══════════════════════════════════════════════════
 function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: any[]; onDone: () => void }) {
   const [search, setSearch] = useState('')
-  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string }[]>([])
+  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string }[]>([])
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [address, setAddress] = useState({ address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' })
@@ -851,6 +851,7 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
   const searchRef = useRef<HTMLDivElement>(null)
+  const invoiceRef = useRef<HTMLDivElement>(null)
 
   // Flatten variants for search
   const allVariants = useMemo(() => {
@@ -884,7 +885,7 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
     if (existing) {
       setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: li.quantity + 1 } : li))
     } else {
-      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: `${v.title} - ${v.variant_title}`, sku: v.sku, price: v.price }])
+      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title }])
     }
     setSearch('')
     setShowProducts(false)
@@ -930,6 +931,56 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
     finally { setSaving(false) }
   }
 
+  // Download invoice as image
+  async function downloadInvoice() {
+    if (!invoiceRef.current) return
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const canvas = await html2canvas(invoiceRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+      })
+      const link = document.createElement('a')
+      link.download = `invoice-${success?.name || success?.order_number || 'order'}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (err) {
+      console.error('Failed to generate invoice image:', err)
+      alert('Failed to generate invoice image. Please try again.')
+    }
+  }
+
+  // Share invoice as image (mobile share API or fallback to download)
+  async function shareInvoice() {
+    if (!invoiceRef.current) return
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const canvas = await html2canvas(invoiceRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+      })
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) { downloadInvoice(); return }
+      if (navigator.share && navigator.canShare) {
+        const file = new File([blob], `invoice-${success?.name || 'order'}.png`, { type: 'image/png' })
+        const shareData = { files: [file], title: `Invoice ${success?.name || ''}`, text: `Invoice from ${vendor.name}` }
+        if (navigator.canShare(shareData)) {
+          await navigator.share(shareData)
+          return
+        }
+      }
+      // Fallback: download
+      downloadInvoice()
+    } catch (err) {
+      console.error('Share failed:', err)
+      downloadInvoice()
+    }
+  }
+
   // Close dropdown on outside click
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -939,15 +990,123 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  const invoiceDate = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+  const invoiceTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const totalItems = lineItems.reduce((s, li) => s + li.quantity, 0)
+
   if (success) {
     return (
-      <div className="max-w-lg mx-auto py-20 text-center animate-in">
-        <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-6">
-          <CheckCircle size={40} className="text-emerald-600" />
+      <div className="max-w-2xl mx-auto space-y-6 pb-28 animate-in">
+        {/* Action buttons above the invoice */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button onClick={downloadInvoice} className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download Invoice
+          </button>
+          <button onClick={shareInvoice} className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            Share Invoice
+          </button>
         </div>
-        <h2 className="text-2xl font-bold text-slate-900 mb-2">Order Created!</h2>
-        <p className="text-slate-500 mb-6">Order <span className="font-bold text-emerald-600">{success.name || `#${success.order_number}`}</span> has been sent to Shopify.</p>
-        <p className="text-lg font-bold text-slate-900 mb-8">Total: ${success.total_price}</p>
+
+        {/* ═══ PROFESSIONAL INVOICE ═══ */}
+        <div ref={invoiceRef} style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", background: '#fff', padding: '32px', borderRadius: '0px' }}>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '28px', paddingBottom: '20px', borderBottom: '3px solid #1e40af' }}>
+            <div>
+              <div style={{ fontSize: '28px', fontWeight: 900, color: '#1e3a5f', letterSpacing: '-0.5px', lineHeight: 1 }}>INVOICE</div>
+              <div style={{ fontSize: '11px', color: '#64748b', marginTop: '6px', fontWeight: 600, letterSpacing: '0.5px' }}>
+                {success.name || `#${success.order_number}`}
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '18px', fontWeight: 800, color: '#1e40af', letterSpacing: '-0.3px' }}>{vendor.name}</div>
+              <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Wholesale Vendor</div>
+            </div>
+          </div>
+
+          {/* Info Grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '24px' }}>
+            <div style={{ background: '#f8fafc', borderRadius: '12px', padding: '14px 16px', border: '1px solid #e2e8f0' }}>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px' }}>Customer</div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>{customerName}</div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginTop: '2px' }}>{customerPhone}</div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>{address.city}, {address.country}</div>
+            </div>
+            <div style={{ background: '#f8fafc', borderRadius: '12px', padding: '14px 16px', border: '1px solid #e2e8f0' }}>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1.5px', marginBottom: '6px' }}>Invoice Details</div>
+              <div style={{ fontSize: '12px', color: '#334155' }}><span style={{ fontWeight: 700 }}>Date: </span>{invoiceDate}</div>
+              <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}><span style={{ fontWeight: 700 }}>Time: </span>{invoiceTime}</div>
+              <div style={{ fontSize: '12px', color: '#334155', marginTop: '2px' }}><span style={{ fontWeight: 700 }}>Status: </span><span style={{ color: '#16a34a', fontWeight: 700 }}>Confirmed</span></div>
+            </div>
+          </div>
+
+          {/* Items Table */}
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: '0', background: '#1e40af', borderRadius: '10px 10px 0 0', padding: '10px 16px' }}>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#fff', textTransform: 'uppercase', letterSpacing: '1.2px' }}>Item</div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#fff', textTransform: 'uppercase', letterSpacing: '1.2px', textAlign: 'center' }}>Qty</div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#fff', textTransform: 'uppercase', letterSpacing: '1.2px', textAlign: 'center' }}>Price</div>
+              <div style={{ fontSize: '9px', fontWeight: 800, color: '#fff', textTransform: 'uppercase', letterSpacing: '1.2px', textAlign: 'right' }}>Total</div>
+            </div>
+            {lineItems.map((li, idx) => (
+              <div key={li.variant_id} style={{
+                display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: '0',
+                padding: '12px 16px', alignItems: 'center',
+                background: idx % 2 === 0 ? '#ffffff' : '#f8fafc',
+                borderLeft: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0',
+                borderBottom: '1px solid #e2e8f0',
+                ...(idx === lineItems.length - 1 ? { borderRadius: '0 0 10px 10px' } : {}),
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  {li.image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={li.image} alt="" style={{ width: '36px', height: '36px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #e2e8f0', flexShrink: 0 }} crossOrigin="anonymous" />
+                  ) : (
+                    <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: '#f1f5f9', border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Package size={14} color="#94a3b8" />
+                    </div>
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: '#0f172a', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{li.title}</div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '1px' }}>
+                      {li.variantTitle !== 'Default Title' && li.variantTitle}{li.sku && ` · SKU: ${li.sku}`}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155', textAlign: 'center' }}>{li.quantity}</div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#64748b', textAlign: 'center' }}>${li.price}</div>
+                <div style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a', textAlign: 'right' }}>${(parseFloat(li.price) * li.quantity).toFixed(2)}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Totals */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '24px' }}>
+            <div style={{ width: '220px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: '12px', color: '#64748b' }}>
+                <span>Subtotal ({totalItems} items)</span>
+                <span style={{ fontWeight: 700 }}>${orderTotal}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: '12px', color: '#64748b' }}>
+                <span>Shipping</span>
+                <span style={{ fontWeight: 700 }}>Free</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', marginTop: '6px', borderTop: '2px solid #1e40af', fontSize: '16px', fontWeight: 900, color: '#1e3a5f' }}>
+                <span>TOTAL</span>
+                <span>${success.total_price || orderTotal}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div style={{ textAlign: 'center', paddingTop: '16px', borderTop: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>Thank you for your business!</div>
+            <div style={{ fontSize: '9px', color: '#cbd5e1', marginTop: '4px' }}>{vendor.name} · MMD Wholesale · {invoiceDate}</div>
+          </div>
+        </div>
+
+        {/* Bottom actions */}
         <div className="flex gap-3 justify-center">
           <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone('') }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">New Order</button>
           <button onClick={onDone} className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700">Back to Overview</button>
@@ -1009,7 +1168,7 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
             {lineItems.map(li => (
               <div key={li.variant_id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold truncate">{li.title}</p>
+                  <p className="text-sm font-bold truncate">{li.title} - {li.variantTitle}</p>
                   <p className="text-[10px] text-slate-400">{li.sku && `SKU: ${li.sku} · `}${li.price} each</p>
                 </div>
                 <div className="flex items-center gap-1.5">
