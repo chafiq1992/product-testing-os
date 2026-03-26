@@ -2006,11 +2006,11 @@ def _get_primary_location_id(store: str | None = None) -> str | None:
 
 
 def _set_inventory_tracked(inventory_item_id: str, tracked: bool = True, *, store: str | None = None) -> None:
+    import logging
     try:
         _rest_put_store(store, f"/inventory_items/{inventory_item_id}.json", {"inventory_item": {"id": int(inventory_item_id), "tracked": bool(tracked)}})
-    except Exception:
-        # best-effort; do not raise to avoid blocking the flow
-        pass
+    except Exception as e:
+        logging.getLogger("shopify_client").warning(f"_set_inventory_tracked failed for item={inventory_item_id}: {e}")
 
 
 INVENTORY_SET_QUANTITIES = """
@@ -2028,29 +2028,36 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
 
     Falls back to REST /inventory_levels/set.json for older API versions.
     """
-    try:
-        # Build GIDs from numeric IDs
-        loc_gid = f"gid://shopify/Location/{location_id}"
-        inv_gid = f"gid://shopify/InventoryItem/{inventory_item_id}"
-        variables = {
-            "input": {
-                "reason": "correction",
-                "name": "available",
-                "quantities": [
-                    {
-                        "inventoryItemId": inv_gid,
-                        "locationId": loc_gid,
-                        "quantity": int(available),
-                    }
-                ],
-            }
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    # Build GIDs from numeric IDs
+    loc_gid = f"gid://shopify/Location/{location_id}"
+    inv_gid = f"gid://shopify/InventoryItem/{inventory_item_id}"
+    _log.info(f"inventorySetQuantities: item={inv_gid}, loc={loc_gid}, qty={available}")
+    variables = {
+        "input": {
+            "reason": "correction",
+            "name": "available",
+            "quantities": [
+                {
+                    "inventoryItemId": inv_gid,
+                    "locationId": loc_gid,
+                    "quantity": int(available),
+                }
+            ],
         }
+    }
+    try:
         data = _gql_store(store, INVENTORY_SET_QUANTITIES, variables)
+        _log.info(f"inventorySetQuantities response: {data}")
         ue = ((data or {}).get("inventorySetQuantities") or {}).get("userErrors") or []
         if ue:
-            import logging
-            logging.getLogger("shopify_client").warning(f"inventorySetQuantities userErrors: {ue}")
-    except Exception as e:
+            _log.error(f"inventorySetQuantities userErrors: {ue}")
+            raise RuntimeError(f"Shopify userErrors: {ue}")
+    except RuntimeError:
+        raise  # Re-raise our own errors
+    except Exception as gql_err:
+        _log.warning(f"GraphQL inventorySetQuantities failed: {gql_err}, trying REST fallback")
         # Fallback to REST for older API versions
         try:
             _rest_post_store(store, "/inventory_levels/set.json", {
@@ -2058,9 +2065,10 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
                 "inventory_item_id": int(inventory_item_id),
                 "available": int(available)
             })
-        except Exception:
-            import logging
-            logging.getLogger("shopify_client").warning(f"_set_inventory_level failed for item={inventory_item_id}: {e}")
+            _log.info(f"REST inventory_levels/set.json succeeded for item={inventory_item_id}")
+        except Exception as rest_err:
+            _log.error(f"REST fallback also failed for item={inventory_item_id}: {rest_err}")
+            raise RuntimeError(f"Both GraphQL and REST inventory set failed: gql={gql_err}, rest={rest_err}")
 
 
 def _set_inventory_item_cost(inventory_item_id: str, cost: float, *, store: str | None = None) -> None:
@@ -2236,28 +2244,41 @@ def _configure_variants_for_product(
             return report
 
         # After PUT, fetch the created variants to set inventory tracking and levels
+        import logging, time
+        _inv_log = logging.getLogger("shopify_client.inventory")
         if loc_id:
             try:
                 created_variants = _list_variants(numeric_id, store=store)
+                _inv_log.info(f"Setting inventory for {len(created_variants)} variants, loc={loc_id}")
                 for idx, cv_data in enumerate(created_variants):
                     try:
                         inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
                         if not inv_item_id or inv_item_id == "None":
+                            _inv_log.warning(f"Variant {idx}: no inventory_item_id, skipping")
                             continue
                         # Get the matching explicit variant config for this index
                         v_cfg = explicit_variants[idx] if idx < len(explicit_variants) else {}
                         tq_raw = v_cfg.get("track_quantity")
                         eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
+                        _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}")
                         _set_inventory_tracked(inv_item_id, eff_tq, store=store)
+                        # Brief pause to let Shopify propagate tracking state
+                        time.sleep(1.0)
                         q_raw = v_cfg.get("quantity")
                         eff_q = q_raw if (q_raw is not None) else quantity
                         if eff_q is not None:
+                            _inv_log.info(f"Variant {idx}: setting qty={eff_q} at loc={loc_id}")
                             _set_inventory_level(loc_id, inv_item_id, int(eff_q), store=store)
                             report["inventory_items_updated"] += 1
-                    except Exception:
+                        else:
+                            _inv_log.info(f"Variant {idx}: no quantity to set")
+                    except Exception as inv_err:
+                        _inv_log.error(f"Variant {idx} inventory error: {inv_err}")
+                        report["errors"].append(f"inv_variant_{idx}: {inv_err}")
                         continue
-            except Exception:
-                pass
+            except Exception as list_err:
+                _inv_log.error(f"Failed to list variants for inventory: {list_err}")
+                report["errors"].append(f"list_variants: {list_err}")
         return report
 
     # Fallback: sizes/colors combos with base price
