@@ -4887,7 +4887,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         total_orders = len(orders)
         total_units = 0
         total_revenue = 0.0
-        recent_orders = []
+        all_orders = []
         for o in orders:
             line_items = o.get("line_items", [])
             order_units = sum(li.get("quantity", 0) for li in line_items)
@@ -4896,27 +4896,83 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 total_revenue += float(o.get("total_price", 0))
             except (ValueError, TypeError):
                 pass
-            if len(recent_orders) < 10:
-                recent_orders.append({
-                    "id": o.get("id"),
-                    "name": o.get("name"),
-                    "order_number": o.get("order_number"),
-                    "total_price": o.get("total_price"),
-                    "created_at": o.get("created_at"),
-                    "items_count": len(line_items),
-                    "units": order_units,
-                    "financial_status": o.get("financial_status"),
-                    "customer_name": f"{o.get('customer', {}).get('first_name', '')} {o.get('customer', {}).get('last_name', '')}".strip() if o.get("customer") else "N/A",
+
+            # Get customer name
+            customer = o.get("customer") or {}
+            customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip() or "N/A"
+
+            # Build line items detail
+            items_detail = []
+            for li in line_items:
+                items_detail.append({
+                    "title": li.get("title", ""),
+                    "variant_title": li.get("variant_title", ""),
+                    "sku": li.get("sku", ""),
+                    "quantity": li.get("quantity", 0),
+                    "price": li.get("price", "0.00"),
                 })
+
+            # Load DB payment data for this order
+            order_id = str(o.get("id", ""))
+            payment_key = f"wholesale_order_payment:{vendor_id}:{order_id}"
+            payment_data = db.get_app_setting(WHOLESALE_STORE, payment_key)
+            if not isinstance(payment_data, dict):
+                payment_data = {}
+
+            all_orders.append({
+                "id": o.get("id"),
+                "name": o.get("name"),
+                "order_number": o.get("order_number"),
+                "total_price": o.get("total_price"),
+                "created_at": o.get("created_at"),
+                "items_count": len(line_items),
+                "units": order_units,
+                "financial_status": o.get("financial_status"),
+                "customer_name": customer_name,
+                "customer_phone": (o.get("shipping_address") or {}).get("phone", ""),
+                "line_items": items_detail,
+                # DB-stored payment tracking
+                "payment_status": payment_data.get("payment_status", "unpaid"),
+                "amount_paid": payment_data.get("amount_paid", 0),
+                "payment_note": payment_data.get("payment_note", ""),
+            })
 
         return {
             "data": {
                 "total_orders": total_orders,
                 "total_units_sold": total_units,
                 "total_revenue": round(total_revenue, 2),
-                "recent_orders": recent_orders,
+                "recent_orders": all_orders[:10],
+                "all_orders": all_orders,
             }
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─── Wholesale Order Payment Tracking ──────────────────────────────────
+class WholesaleOrderPaymentUpdate(BaseModel):
+    payment_status: str = "unpaid"  # "unpaid" | "partially_paid" | "paid"
+    amount_paid: float = 0
+    payment_note: str = ""
+
+@app.patch("/api/wholesale/vendors/{vendor_id}/orders/{order_id}/payment")
+async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req: WholesaleOrderPaymentUpdate):
+    try:
+        key = _wholesale_vendor_key(vendor_id)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not vendor:
+            return {"error": "Vendor not found"}
+
+        payment_key = f"wholesale_order_payment:{vendor_id}:{order_id}"
+        payment_data = {
+            "payment_status": req.payment_status,
+            "amount_paid": req.amount_paid,
+            "payment_note": req.payment_note,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        db.set_app_setting(WHOLESALE_STORE, payment_key, payment_data)
+        return {"data": payment_data}
     except Exception as e:
         return {"error": str(e)}
 

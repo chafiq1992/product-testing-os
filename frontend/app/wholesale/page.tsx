@@ -6,7 +6,8 @@ import {
   LayoutDashboard, PlusCircle, Package, Camera, Settings, Trash2, Plus, Loader2,
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
   Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
-  ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin
+  ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin, ClipboardList, FileText,
+  CreditCard, AlertCircle, ChevronRight, Edit3
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -22,6 +23,12 @@ async function apiPost(path: string, body: object) {
 }
 async function apiGet(path: string) {
   const res = await fetch(`${API}${path}`)
+  return res.json()
+}
+async function apiPatch(path: string, body: object) {
+  const res = await fetch(`${API}${path}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  })
   return res.json()
 }
 
@@ -169,7 +176,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
       case 'inventory': return <InventoryTab products={products} loading={loadingProducts} />
       case 'create-order': return <CreateOrderTab vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} />
-      case 'settings': return <SettingsTab vendor={vendor} onLogout={onLogout} />
+      case 'orders': return <OrdersTab vendor={vendor} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
     }
   }
@@ -188,6 +195,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
         <div className="flex-1 p-4 space-y-2">
           <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Overview" />
           <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Inventory" />
+          <NavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
           <button onClick={()=>setActiveTab('create-order')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab==='create-order' ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'}`}>
             <ShoppingCart size={20}/>
             <span className="font-bold text-sm">Create Order</span>
@@ -195,10 +203,17 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
           <NavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add Product" />
         </div>
         <div className="p-4 border-t border-slate-100">
-          <NavItem active={activeTab==='settings'} onClick={()=>setActiveTab('settings')} icon={<Settings size={20}/>} label="Profile" />
-          <div className="mt-4 p-3 bg-blue-50 rounded-xl">
-            <p className="text-[10px] text-blue-600 font-bold uppercase tracking-tight">Vendor</p>
-            <p className="text-sm font-mono font-bold text-blue-900">{vendor.name}</p>
+          <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
+            <div className="w-9 h-9 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center text-white text-sm font-black flex-shrink-0">
+              {(vendor.name || 'V').charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-blue-900 truncate">{vendor.name}</p>
+              <p className="text-[10px] text-blue-500">Vendor</p>
+            </div>
+            <button onClick={onLogout} className="text-red-400 hover:text-red-600 transition-colors" title="Logout">
+              <LogOut size={16} />
+            </button>
           </div>
         </div>
       </nav>
@@ -207,16 +222,16 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
       <main className="flex-1 overflow-y-auto pb-24 md:pb-8 p-4 md:p-8">{renderContent()}</main>
 
       {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-3 flex justify-between items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
-        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={22}/>} label="Home" />
-        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={22}/>} label="Stock" />
-        <div className="relative -top-6">
-          <button onClick={()=>setActiveTab('create-order')} className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 ${activeTab==='create-order'?'bg-emerald-600 text-white shadow-emerald-300':'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-300'}`}>
-            <ShoppingCart size={28} />
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-2 py-2 flex justify-around items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Home" />
+        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Stock" />
+        <div className="relative -top-5">
+          <button onClick={()=>setActiveTab('create-order')} className={`w-13 h-13 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 p-3 ${activeTab==='create-order'?'bg-emerald-600 text-white shadow-emerald-300':'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-300'}`}>
+            <ShoppingCart size={24} />
           </button>
         </div>
-        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={22}/>} label="Add" />
-        <MobileNavItem active={activeTab==='settings'} onClick={()=>setActiveTab('settings')} icon={<Settings size={22}/>} label="More" />
+        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
+        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add" />
       </nav>
     </div>
   )
@@ -1244,39 +1259,287 @@ function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: a
 // ═══════════════════════════════════════════════════
 //  SETTINGS TAB
 // ═══════════════════════════════════════════════════
-function SettingsTab({ vendor, onLogout }: { vendor: any; onLogout: () => void }) {
+// ─── Orders Tab ──────────────────────────────────────────
+function OrdersTab({ vendor }: { vendor: any }) {
+  const [orders, setOrders] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState<'unpaid'|'newest'|'oldest'>('unpaid')
+  const [customerFilter, setCustomerFilter] = useState('')
+  const [expandedOrder, setExpandedOrder] = useState<string|null>(null)
+  const [paymentModal, setPaymentModal] = useState<any>(null)
+  const [payStatus, setPayStatus] = useState('unpaid')
+  const [payAmount, setPayAmount] = useState('')
+  const [payNote, setPayNote] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function fetchOrders() {
+    setLoading(true)
+    try {
+      const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/orders`)
+      setOrders(res?.data?.all_orders || [])
+    } catch { setOrders([]) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { fetchOrders() }, [vendor.id])
+
+  // Unique customer names for filter
+  const customers = useMemo(() => {
+    const names = new Set(orders.map((o: any) => o.customer_name).filter(Boolean))
+    return Array.from(names).sort()
+  }, [orders])
+
+  // Filtered + sorted
+  const filtered = useMemo(() => {
+    let list = [...orders]
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      list = list.filter((o: any) =>
+        (o.name || '').toLowerCase().includes(q) ||
+        (o.customer_name || '').toLowerCase().includes(q) ||
+        (o.line_items || []).some((li: any) => (li.title || '').toLowerCase().includes(q))
+      )
+    }
+    if (customerFilter) {
+      list = list.filter((o: any) => o.customer_name === customerFilter)
+    }
+    if (sortBy === 'unpaid') {
+      const priority: Record<string, number> = { unpaid: 0, partially_paid: 1, paid: 2 }
+      list.sort((a: any, b: any) => {
+        const pa = priority[a.payment_status] ?? 0
+        const pb = priority[b.payment_status] ?? 0
+        if (pa !== pb) return pa - pb
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      })
+    } else if (sortBy === 'newest') {
+      list.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    } else {
+      list.sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    }
+    return list
+  }, [orders, search, customerFilter, sortBy])
+
+  function openPaymentModal(order: any) {
+    setPaymentModal(order)
+    setPayStatus(order.payment_status || 'unpaid')
+    setPayAmount(String(order.amount_paid || 0))
+    setPayNote(order.payment_note || '')
+  }
+
+  async function savePayment() {
+    if (!paymentModal) return
+    setSaving(true)
+    try {
+      await apiPatch(`/api/wholesale/vendors/${vendor.id}/orders/${paymentModal.id}/payment`, {
+        payment_status: payStatus,
+        amount_paid: parseFloat(payAmount) || 0,
+        payment_note: payNote,
+      })
+      // Update local state
+      setOrders(prev => prev.map(o =>
+        o.id === paymentModal.id ? { ...o, payment_status: payStatus, amount_paid: parseFloat(payAmount) || 0, payment_note: payNote } : o
+      ))
+      setPaymentModal(null)
+    } catch { /* ignore */ }
+    finally { setSaving(false) }
+  }
+
+  const statusBadge = (status: string) => {
+    if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ Paid</span>
+    if (status === 'partially_paid') return <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">◐ Partial</span>
+    return <span className="px-2.5 py-1 bg-red-100 text-red-600 text-[11px] font-bold rounded-full">● Unpaid</span>
+  }
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="animate-spin text-blue-600" size={32} />
+    </div>
+  )
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6 pb-24 animate-in">
-      <h2 className="text-2xl font-bold">Profile Settings</h2>
-      <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
-        <div className="flex items-center gap-6">
-          <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl flex items-center justify-center text-white text-3xl font-black shadow-lg shadow-blue-100">
-            {(vendor.name || 'V').charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <h3 className="text-xl font-bold">{vendor.name}</h3>
-            <p className="text-slate-500 text-sm">Wholesale Vendor Partner</p>
-          </div>
+    <div className="max-w-4xl mx-auto space-y-4 pb-24 animate-in">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">Orders</h2>
+          <p className="text-sm text-slate-500">{orders.length} total orders</p>
         </div>
-        <div className="space-y-6">
-          <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Username</label>
-            <code className="block bg-white border border-slate-200 rounded-xl px-4 py-3 text-blue-600 font-bold font-mono text-sm tracking-widest">{vendor.username}</code>
-          </div>
-          <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Vendor ID</label>
-            <code className="block bg-white border border-slate-200 rounded-xl px-4 py-3 text-indigo-600 font-bold font-mono text-sm tracking-widest">{vendor.id}</code>
-          </div>
-          <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
-            <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest block mb-2">Connected Store</label>
-            <p className="text-sm font-bold text-blue-900">MMD Shopify Store</p>
-            <p className="text-[10px] text-blue-500 mt-1">Products you create are pushed directly to this store</p>
-          </div>
-        </div>
-        <button onClick={onLogout} className="w-full py-4 bg-red-50 text-red-600 font-black rounded-2xl hover:bg-red-100 transition-all text-sm uppercase tracking-widest flex items-center justify-center gap-2">
-          <LogOut size={18} /> Logout
+        <button onClick={fetchOrders} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
+          <RefreshCw size={18} className="text-slate-500" />
         </button>
       </div>
+
+      {/* Search + Filters */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search orders, customers, products..."
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <select value={customerFilter} onChange={e => setCustomerFilter(e.target.value)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All Customers</option>
+            {customers.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <div className="flex bg-slate-100 rounded-xl p-0.5">
+            {(['unpaid', 'newest', 'oldest'] as const).map(s => (
+              <button key={s} onClick={() => setSortBy(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${sortBy === s ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                {s === 'unpaid' ? 'Unpaid First' : s === 'newest' ? 'Newest' : 'Oldest'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Orders List */}
+      {filtered.length === 0 ? (
+        <div className="text-center py-16 text-slate-400">
+          <ClipboardList size={48} className="mx-auto mb-4 opacity-40" />
+          <p className="font-semibold">No orders found</p>
+          <p className="text-sm mt-1">Try adjusting your search or filters</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((order: any) => {
+            const isExpanded = expandedOrder === String(order.id)
+            const total = parseFloat(order.total_price || '0')
+            const remaining = total - (order.amount_paid || 0)
+            return (
+              <div key={order.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                {/* Order Header */}
+                <button onClick={() => setExpandedOrder(isExpanded ? null : String(order.id))}
+                  className="w-full p-4 flex items-center gap-3 text-left">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-sm text-blue-600">{order.name}</span>
+                      {statusBadge(order.payment_status)}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {order.customer_name} · {order.units} items · {new Date(order.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="font-bold text-sm">{total.toFixed(2)} MAD</p>
+                    {order.payment_status === 'partially_paid' && (
+                      <p className="text-[10px] text-amber-600 font-medium">Remaining: {remaining.toFixed(2)}</p>
+                    )}
+                  </div>
+                  <ChevronRight size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                </button>
+
+                {/* Expanded Content */}
+                {isExpanded && (
+                  <div className="border-t border-slate-100 p-4 space-y-3 bg-slate-50/50">
+                    {/* Line Items */}
+                    <div className="space-y-2">
+                      {(order.line_items || []).map((li: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between bg-white rounded-xl p-3 border border-slate-100">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold truncate">{li.title}</p>
+                            <p className="text-[11px] text-slate-500">
+                              {li.variant_title && <span>{li.variant_title} · </span>}
+                              {li.sku && <span>SKU: {li.sku} · </span>}
+                              Qty: {li.quantity}
+                            </p>
+                          </div>
+                          <p className="text-sm font-bold text-slate-700 ml-3">{(parseFloat(li.price) * li.quantity).toFixed(2)}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Payment Note */}
+                    {order.payment_note && (
+                      <div className="bg-amber-50 border border-amber-100 rounded-xl p-3">
+                        <p className="text-[10px] font-bold text-amber-600 uppercase">Payment Note</p>
+                        <p className="text-sm text-amber-800 mt-0.5">{order.payment_note}</p>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex gap-2">
+                      <button onClick={() => openPaymentModal(order)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-colors">
+                        <CreditCard size={16} /> Update Payment
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Payment Modal */}
+      {paymentModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setPaymentModal(null)}>
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-100">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold">Update Payment</h3>
+                <button onClick={() => setPaymentModal(null)} className="p-1.5 hover:bg-slate-100 rounded-lg">
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="text-sm text-slate-500 mt-1">{paymentModal.name} · {paymentModal.customer_name}</p>
+              <p className="text-lg font-bold mt-2">Total: {parseFloat(paymentModal.total_price || '0').toFixed(2)} MAD</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase block mb-2">Payment Status</label>
+                <div className="flex gap-2">
+                  {[{v:'unpaid',l:'Unpaid',c:'red'},{v:'partially_paid',l:'Partial',c:'amber'},{v:'paid',l:'Paid',c:'emerald'}].map(s => (
+                    <button key={s.v} onClick={() => {
+                      setPayStatus(s.v)
+                      if (s.v === 'paid') setPayAmount(String(parseFloat(paymentModal.total_price || '0')))
+                      if (s.v === 'unpaid') setPayAmount('0')
+                    }}
+                      className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all border-2 ${
+                        payStatus === s.v
+                          ? s.c === 'red' ? 'border-red-500 bg-red-50 text-red-600'
+                          : s.c === 'amber' ? 'border-amber-500 bg-amber-50 text-amber-600'
+                          : 'border-emerald-500 bg-emerald-50 text-emerald-600'
+                          : 'border-slate-200 text-slate-500 hover:border-slate-300'
+                      }`}>
+                      {s.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {payStatus !== 'unpaid' && (
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase block mb-2">Amount Paid (MAD)</label>
+                  <input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="0.00" step="0.01" />
+                </div>
+              )}
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase block mb-2">Note (optional)</label>
+                <textarea value={payNote} onChange={e => setPayNote(e.target.value)}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  rows={2} placeholder="Any payment notes..." />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setPaymentModal(null)} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-xl hover:bg-slate-200 transition-colors text-sm">
+                Cancel
+              </button>
+              <button onClick={savePayment} disabled={saving}
+                className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition-colors text-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
