@@ -5,7 +5,8 @@ import Link from 'next/link'
 import {
   LayoutDashboard, PlusCircle, Package, Camera, Settings, Trash2, Plus, Loader2,
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
-  Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff
+  Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
+  ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -142,6 +143,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
   const [activeTab, setActiveTab] = useState('overview')
   const [products, setProducts] = useState<any[]>([])
   const [loadingProducts, setLoadingProducts] = useState(true)
+  const [orderStats, setOrderStats] = useState<any>(null)
 
   async function refreshProducts() {
     setLoadingProducts(true)
@@ -152,15 +154,23 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
     finally { setLoadingProducts(false) }
   }
 
-  useEffect(() => { refreshProducts() }, [vendor.id])
+  async function refreshOrders() {
+    try {
+      const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/orders`)
+      setOrderStats(res?.data || null)
+    } catch { /* ignore */ }
+  }
+
+  useEffect(() => { refreshProducts(); refreshOrders() }, [vendor.id])
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'overview': return <OverviewTab products={products} loading={loadingProducts} />
+      case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
       case 'inventory': return <InventoryTab products={products} loading={loadingProducts} />
+      case 'create-order': return <CreateOrderTab vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} />
       case 'settings': return <SettingsTab vendor={vendor} onLogout={onLogout} />
-      default: return <OverviewTab products={products} loading={loadingProducts} />
+      default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
     }
   }
 
@@ -178,6 +188,10 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
         <div className="flex-1 p-4 space-y-2">
           <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Overview" />
           <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Inventory" />
+          <button onClick={()=>setActiveTab('create-order')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab==='create-order' ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'}`}>
+            <ShoppingCart size={20}/>
+            <span className="font-bold text-sm">Create Order</span>
+          </button>
           <NavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add Product" />
         </div>
         <div className="p-4 border-t border-slate-100">
@@ -193,16 +207,16 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
       <main className="flex-1 overflow-y-auto pb-24 md:pb-8 p-4 md:p-8">{renderContent()}</main>
 
       {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-3 flex justify-between items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
-        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={24}/>} label="Home" />
-        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={24}/>} label="Stock" />
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-4 py-3 flex justify-between items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={22}/>} label="Home" />
+        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={22}/>} label="Stock" />
         <div className="relative -top-6">
-          <button onClick={()=>setActiveTab('add-new')} className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 ${activeTab==='add-new'?'bg-blue-600 text-white shadow-blue-300':'bg-white text-blue-600 border-2 border-blue-600'}`}>
-            <Plus size={32} />
+          <button onClick={()=>setActiveTab('create-order')} className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 ${activeTab==='create-order'?'bg-emerald-600 text-white shadow-emerald-300':'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-300'}`}>
+            <ShoppingCart size={28} />
           </button>
         </div>
-        <MobileNavItem active={activeTab==='settings'} onClick={()=>setActiveTab('settings')} icon={<Settings size={24}/>} label="Settings" />
-        <div className="w-12 h-12 flex flex-col items-center justify-center opacity-0 pointer-events-none" />
+        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={22}/>} label="Add" />
+        <MobileNavItem active={activeTab==='settings'} onClick={()=>setActiveTab('settings')} icon={<Settings size={22}/>} label="More" />
       </nav>
     </div>
   )
@@ -245,7 +259,7 @@ function StatsCard({ label, value, sub, icon }: any) {
 // ═══════════════════════════════════════════════════
 //  OVERVIEW TAB
 // ═══════════════════════════════════════════════════
-function OverviewTab({ products, loading }: { products: any[]; loading: boolean }) {
+function OverviewTab({ products, loading, orderStats }: { products: any[]; loading: boolean; orderStats: any }) {
   const totalStock = useMemo(() => products.reduce((a, p) => {
     const vars = p.variants || []
     return a + vars.reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
@@ -283,10 +297,11 @@ function OverviewTab({ products, loading }: { products: any[]; loading: boolean 
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
         <StatsCard label="Inventory Level" value={loading ? '...' : totalStock.toLocaleString()} sub="Total units in stock" icon={<Box size={20} className="text-blue-600" />} />
         <StatsCard label="Inventory Value" value={loading ? '...' : `$${totalValue.toLocaleString()}`} sub="Current market value" icon={<DollarSign size={20} className="text-green-600" />} />
-        <StatsCard label="Product Types" value={loading ? '...' : segmentData.length} sub="Unique segments" icon={<TrendingUp size={20} className="text-orange-600" />} />
+        <StatsCard label="Orders" value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `$${orderStats.total_revenue} revenue` : 'Loading...'} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
+        <StatsCard label="Units Sold" value={orderStats ? orderStats.total_units_sold : '...'} sub="Total items ordered" icon={<TrendingUp size={20} className="text-orange-600" />} />
       </div>
 
       {/* Segment breakdown */}
@@ -819,6 +834,250 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
           Save & Send to Store
         </button>
       </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════
+//  CREATE ORDER TAB
+// ═══════════════════════════════════════════════════
+function CreateOrderTab({ vendor, products, onDone }: { vendor: any; products: any[]; onDone: () => void }) {
+  const [search, setSearch] = useState('')
+  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string }[]>([])
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [address, setAddress] = useState({ address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' })
+  const [saving, setSaving] = useState(false)
+  const [success, setSuccess] = useState<any>(null)
+  const [showProducts, setShowProducts] = useState(false)
+  const searchRef = useRef<HTMLDivElement>(null)
+
+  // Flatten variants for search
+  const allVariants = useMemo(() => {
+    const arr: any[] = []
+    products.forEach(p => {
+      (p.variants || []).forEach((v: any) => {
+        arr.push({
+          variant_id: v.id,
+          title: p.title,
+          variant_title: v.title,
+          sku: v.sku || '',
+          price: v.price || '0.00',
+          inventory: v.inventory_quantity || 0,
+          image: p.images?.[0]?.src || null,
+        })
+      })
+    })
+    return arr
+  }, [products])
+
+  const filtered = useMemo(() => {
+    if (!search) return allVariants.slice(0, 20)
+    const q = search.toLowerCase()
+    return allVariants.filter(v =>
+      v.title.toLowerCase().includes(q) || v.sku.toLowerCase().includes(q) || v.variant_title.toLowerCase().includes(q)
+    ).slice(0, 20)
+  }, [allVariants, search])
+
+  function addItem(v: any) {
+    const existing = lineItems.find(li => li.variant_id === v.variant_id)
+    if (existing) {
+      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: li.quantity + 1 } : li))
+    } else {
+      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: `${v.title} - ${v.variant_title}`, sku: v.sku, price: v.price }])
+    }
+    setSearch('')
+    setShowProducts(false)
+  }
+
+  function updateQty(variantId: number, delta: number) {
+    setLineItems(lineItems.map(li => {
+      if (li.variant_id === variantId) {
+        const newQty = Math.max(1, li.quantity + delta)
+        return { ...li, quantity: newQty }
+      }
+      return li
+    }))
+  }
+
+  function removeItem(variantId: number) {
+    setLineItems(lineItems.filter(li => li.variant_id !== variantId))
+  }
+
+  const orderTotal = useMemo(() => {
+    return lineItems.reduce((sum, li) => sum + (parseFloat(li.price) || 0) * li.quantity, 0).toFixed(2)
+  }, [lineItems])
+
+  async function handleSubmit() {
+    if (!customerName.trim() || !customerPhone.trim()) { alert('Customer name and phone are required'); return }
+    if (lineItems.length === 0) { alert('Add at least one product'); return }
+    setSaving(true)
+    try {
+      const body = {
+        customer_name: customerName.trim(),
+        customer_phone: customerPhone.trim(),
+        customer_address1: address.address1,
+        customer_city: address.city,
+        customer_province: address.province,
+        customer_zip: address.zip,
+        customer_country: address.country,
+        line_items: lineItems.map(li => ({ variant_id: li.variant_id, quantity: li.quantity })),
+      }
+      const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/orders`, body)
+      if (res?.error) { alert('Error: ' + res.error); setSaving(false); return }
+      setSuccess(res?.data)
+    } catch (e: any) { alert('Failed: ' + e.message) }
+    finally { setSaving(false) }
+  }
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowProducts(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  if (success) {
+    return (
+      <div className="max-w-lg mx-auto py-20 text-center animate-in">
+        <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-6">
+          <CheckCircle size={40} className="text-emerald-600" />
+        </div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-2">Order Created!</h2>
+        <p className="text-slate-500 mb-6">Order <span className="font-bold text-emerald-600">{success.name || `#${success.order_number}`}</span> has been sent to Shopify.</p>
+        <p className="text-lg font-bold text-slate-900 mb-8">Total: ${success.total_price}</p>
+        <div className="flex gap-3 justify-center">
+          <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone('') }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">New Order</button>
+          <button onClick={onDone} className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700">Back to Overview</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6 pb-28 animate-in">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+          <div className="p-2 bg-emerald-100 rounded-xl"><ShoppingCart size={22} className="text-emerald-600" /></div>
+          Create Order
+        </h2>
+        <p className="text-slate-500 text-sm mt-1">Select products by SKU and enter customer details.</p>
+      </div>
+
+      {/* Product Search & Selection */}
+      <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 tracking-widest">Add Products</h3>
+        <div ref={searchRef} className="relative">
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <Search size={16} className="text-slate-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => { setSearch(e.target.value); setShowProducts(true) }}
+              onFocus={() => setShowProducts(true)}
+              placeholder="Search by product name or SKU..."
+              className="bg-transparent flex-1 text-sm font-medium outline-none"
+            />
+          </div>
+          {showProducts && (
+            <div className="absolute z-40 left-0 right-0 mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-64 overflow-y-auto">
+              {filtered.length === 0 && <p className="p-4 text-sm text-slate-400 text-center">No products found</p>}
+              {filtered.map(v => (
+                <button key={v.variant_id} onClick={() => addItem(v)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left border-b border-slate-50 last:border-0">
+                  <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center flex-shrink-0">
+                    {v.image ? <img src={v.image} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-slate-300" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{v.title}</p>
+                    <p className="text-[10px] text-slate-400">{v.variant_title} {v.sku && `· SKU: ${v.sku}`}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-sm font-bold text-emerald-600">${v.price}</p>
+                    <p className="text-[10px] text-slate-400">{v.inventory} in stock</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Selected Line Items */}
+        {lineItems.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {lineItems.map(li => (
+              <div key={li.variant_id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold truncate">{li.title}</p>
+                  <p className="text-[10px] text-slate-400">{li.sku && `SKU: ${li.sku} · `}${li.price} each</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => updateQty(li.variant_id, -1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Minus size={14}/></button>
+                  <span className="w-8 text-center text-sm font-bold">{li.quantity}</span>
+                  <button onClick={() => updateQty(li.variant_id, 1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Plus size={14}/></button>
+                </div>
+                <button onClick={() => removeItem(li.variant_id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button>
+              </div>
+            ))}
+            <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+              <span className="text-sm font-bold text-slate-500">Order Total</span>
+              <span className="text-lg font-black text-emerald-600">${orderTotal}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Customer Info */}
+      <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 tracking-widest flex items-center gap-2"><User size={14}/> Customer Details</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Full Name *</label>
+            <input type="text" value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/30" placeholder="Ahmed Bennani" />
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Phone *</label>
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+              <Phone size={14} className="text-slate-400" />
+              <input type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="bg-transparent flex-1 text-sm font-bold outline-none" placeholder="+212 600 000000" />
+            </div>
+          </div>
+        </div>
+        {/* Collapsible Address (pre-filled) */}
+        <details className="mt-4">
+          <summary className="text-[10px] font-bold text-slate-400 uppercase cursor-pointer hover:text-slate-600 flex items-center gap-1"><MapPin size={12}/> Address (auto-filled — click to edit)</summary>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Address</label>
+              <input type="text" value={address.address1} onChange={e => setAddress({...address, address1: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">City</label>
+              <input type="text" value={address.city} onChange={e => setAddress({...address, city: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Province</label>
+              <input type="text" value={address.province} onChange={e => setAddress({...address, province: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">ZIP</label>
+              <input type="text" value={address.zip} onChange={e => setAddress({...address, zip: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+          </div>
+        </details>
+      </section>
+
+      {/* Submit */}
+      <button
+        onClick={handleSubmit}
+        disabled={saving || lineItems.length === 0}
+        className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-emerald-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider"
+      >
+        {saving && <Loader2 className="animate-spin" size={20} />}
+        <ShoppingCart size={20} />
+        Place Order ({lineItems.length} {lineItems.length === 1 ? 'item' : 'items'} · ${orderTotal})
+      </button>
     </div>
   )
 }

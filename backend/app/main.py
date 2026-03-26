@@ -4755,6 +4755,148 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
     except Exception as e:
         return {"error": str(e)}
 
+
+# ─── Wholesale Order Models ────────────────────────────────────────────
+class WholesaleOrderLineItem(BaseModel):
+    variant_id: int
+    quantity: int = 1
+
+class WholesaleOrderCreate(BaseModel):
+    customer_name: str  # "First Last"
+    customer_phone: str
+    customer_address1: Optional[str] = "NA"
+    customer_city: Optional[str] = "Casablanca"
+    customer_province: Optional[str] = "Casablanca-Settat"
+    customer_zip: Optional[str] = "20000"
+    customer_country: Optional[str] = "MA"
+    line_items: List[WholesaleOrderLineItem]
+    note: Optional[str] = None
+
+# ─── Wholesale Create Order ────────────────────────────────────────────
+@app.post("/api/wholesale/vendors/{vendor_id}/orders")
+async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
+    try:
+        key = f"wholesale_vendor_{vendor_id}"
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not vendor:
+            return {"error": "Vendor not found"}
+        vendor_name = vendor.get("name", vendor_id)
+
+        # Split customer name into first/last
+        name_parts = req.customer_name.strip().split(" ", 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        # Build Shopify order payload
+        order_payload = {
+            "order": {
+                "line_items": [
+                    {"variant_id": li.variant_id, "quantity": li.quantity}
+                    for li in req.line_items
+                ],
+                "customer": {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "phone": req.customer_phone.strip(),
+                },
+                "shipping_address": {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "address1": req.customer_address1 or "NA",
+                    "city": req.customer_city or "Casablanca",
+                    "province": req.customer_province or "Casablanca-Settat",
+                    "zip": req.customer_zip or "20000",
+                    "country": req.customer_country or "MA",
+                    "phone": req.customer_phone.strip(),
+                },
+                "billing_address": {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "address1": req.customer_address1 or "NA",
+                    "city": req.customer_city or "Casablanca",
+                    "province": req.customer_province or "Casablanca-Settat",
+                    "zip": req.customer_zip or "20000",
+                    "country": req.customer_country or "MA",
+                    "phone": req.customer_phone.strip(),
+                },
+                "tags": f"wholesale, vendor:{vendor_name}",
+                "financial_status": "pending",
+                "send_receipt": False,
+                "send_fulfillment_receipt": False,
+            }
+        }
+        if req.note:
+            order_payload["order"]["note"] = req.note
+
+        from app.integrations.shopify_client import _rest_post_store
+        result = await run_in_threadpool(_rest_post_store, WHOLESALE_STORE, "/orders.json", order_payload)
+        order = result.get("order", {})
+        return {
+            "data": {
+                "id": order.get("id"),
+                "order_number": order.get("order_number"),
+                "name": order.get("name"),
+                "total_price": order.get("total_price"),
+                "created_at": order.get("created_at"),
+                "tags": order.get("tags"),
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ─── Wholesale Order Analytics ─────────────────────────────────────────
+@app.get("/api/wholesale/vendors/{vendor_id}/orders")
+async def api_wholesale_vendor_orders(vendor_id: str):
+    try:
+        key = f"wholesale_vendor_{vendor_id}"
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not vendor:
+            return {"error": "Vendor not found"}
+        vendor_name = vendor.get("name", vendor_id)
+
+        from app.integrations.shopify_client import _rest_get_store
+        # Fetch orders tagged with this vendor (up to 250)
+        path = f"/orders.json?tag=vendor:{vendor_name}&status=any&limit=250"
+        result = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path)
+        orders = result.get("orders", [])
+
+        total_orders = len(orders)
+        total_units = 0
+        total_revenue = 0.0
+        recent_orders = []
+        for o in orders:
+            line_items = o.get("line_items", [])
+            order_units = sum(li.get("quantity", 0) for li in line_items)
+            total_units += order_units
+            try:
+                total_revenue += float(o.get("total_price", 0))
+            except (ValueError, TypeError):
+                pass
+            if len(recent_orders) < 10:
+                recent_orders.append({
+                    "id": o.get("id"),
+                    "name": o.get("name"),
+                    "order_number": o.get("order_number"),
+                    "total_price": o.get("total_price"),
+                    "created_at": o.get("created_at"),
+                    "items_count": len(line_items),
+                    "units": order_units,
+                    "financial_status": o.get("financial_status"),
+                    "customer_name": f"{o.get('customer', {}).get('first_name', '')} {o.get('customer', {}).get('last_name', '')}".strip() if o.get("customer") else "N/A",
+                })
+
+        return {
+            "data": {
+                "total_orders": total_orders,
+                "total_units_sold": total_units,
+                "total_revenue": round(total_revenue, 2),
+                "recent_orders": recent_orders,
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # Mount static files last so that API routes have precedence.
 # The directory is configurable via STATIC_DIR env var, otherwise we look for
 #   - /app/static (inside container)
