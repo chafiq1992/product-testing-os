@@ -2272,24 +2272,49 @@ def _configure_variants_for_product(
         # After PUT, fetch the created variants to set inventory tracking and levels
         import logging, time
         _inv_log = logging.getLogger("shopify_client.inventory")
+
+        # Allow Shopify to finalize variant creation before we fetch them
+        time.sleep(2.0)
+
         if loc_id:
             try:
                 created_variants = _list_variants(numeric_id, store=store)
                 _inv_log.info(f"Setting inventory for {len(created_variants)} variants, loc={loc_id}")
+
+                # Build a lookup map from explicit_variants by option values for reliable matching
+                # (Shopify may reorder variants after PUT, so index-based mapping is unreliable)
+                _ev_qty_map: dict[str, dict] = {}
+                for ev in explicit_variants:
+                    ev_size = (ev.get("size") or "").strip().lower()
+                    ev_color = (ev.get("color") or "").strip().lower()
+                    map_key = f"{ev_size}|{ev_color}"
+                    _ev_qty_map[map_key] = ev
+
                 for idx, cv_data in enumerate(created_variants):
                     try:
                         inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
                         if not inv_item_id or inv_item_id == "None":
                             _inv_log.warning(f"Variant {idx}: no inventory_item_id, skipping")
                             continue
-                        # Get the matching explicit variant config for this index
-                        v_cfg = explicit_variants[idx] if idx < len(explicit_variants) else {}
+
+                        # Match by option values first, fall back to index
+                        cv_o1 = (cv_data.get("option1") or "").strip().lower()
+                        cv_o2 = (cv_data.get("option2") or "").strip().lower()
+                        # Try size|color and color|size orderings
+                        v_cfg = (
+                            _ev_qty_map.get(f"{cv_o1}|{cv_o2}")
+                            or _ev_qty_map.get(f"{cv_o2}|{cv_o1}")
+                            or _ev_qty_map.get(f"{cv_o1}|")
+                            or _ev_qty_map.get(f"|{cv_o1}")
+                            or (explicit_variants[idx] if idx < len(explicit_variants) else {})
+                        )
+
                         tq_raw = v_cfg.get("track_quantity")
                         eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
-                        _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}")
+                        _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
                         _set_inventory_tracked(inv_item_id, eff_tq, store=store)
                         # Brief pause to let Shopify propagate tracking state
-                        time.sleep(1.0)
+                        time.sleep(1.5)
                         q_raw = v_cfg.get("quantity")
                         eff_q = q_raw if (q_raw is not None) else quantity
                         if eff_q is not None:
