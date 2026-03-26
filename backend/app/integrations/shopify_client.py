@@ -2025,6 +2025,17 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
         pass
 
 
+def _set_inventory_item_cost(inventory_item_id: str, cost: float, *, store: str | None = None) -> None:
+    """Set cost per item on a Shopify inventory item (used for COG price)."""
+    try:
+        _rest_put_store(store, f"/inventory_items/{inventory_item_id}.json", {
+            "inventory_item": {"id": int(inventory_item_id), "cost": str(cost)}
+        })
+    except Exception:
+        # best-effort; do not raise to avoid blocking the flow
+        pass
+
+
 def _numeric_product_id_from_gid(product_gid: str) -> str | None:
     try:
         return (product_gid or "").split("/")[-1] or None

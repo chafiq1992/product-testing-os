@@ -4628,31 +4628,106 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         if req.season:
             tags_list.append(f"season:{req.season}")
 
-        # Determine price: use sale_price if provided
-        price = req.sale_price
-
-        # Calculate total quantity from size groups if provided
-        total_qty = None
+        # ── Derive sizes from size_groups ──
+        # Each group {from, to, qty} becomes a size like "20-25" with its own qty
+        derived_sizes: list[str] = []
+        size_qty_map: dict[str, int] = {}
         if req.size_groups:
-            total_qty = sum(int(sg.get("qty") or 0) for sg in req.size_groups)
+            for sg in req.size_groups:
+                fr = sg.get("from", 0)
+                to = sg.get("to", 0)
+                qty = int(sg.get("qty") or 0)
+                size_label = f"{fr}-{to}"
+                derived_sizes.append(size_label)
+                size_qty_map[size_label] = qty
+
+        # ── Combine colors into a single value ──
+        # e.g., ["black", "green", "blue"] → "black/green/blue"
+        combined_color: str | None = None
+        if req.colors and len(req.colors) > 0:
+            combined_color = "/".join(c.strip() for c in req.colors if c.strip())
+
+        # ── Build explicit variants ──
+        # Each size gets its own variant with the combined color, sale_price, and per-size qty
+        explicit_variants: list[dict] = []
+        if derived_sizes:
+            for size_label in derived_sizes:
+                v: dict = {
+                    "size": size_label,
+                    "price": req.sale_price,
+                    "quantity": size_qty_map.get(size_label, 0),
+                    "track_quantity": True,
+                }
+                if combined_color:
+                    v["color"] = combined_color
+                explicit_variants.append(v)
+        elif combined_color:
+            # No size groups but have colors
+            explicit_variants.append({
+                "color": combined_color,
+                "price": req.sale_price,
+                "track_quantity": True,
+            })
 
         from app.integrations.shopify_client import create_product_only as _create_product
         from app.integrations.shopify_client import upload_images_to_product as _upload_images
+        from app.integrations.shopify_client import _set_inventory_item_cost
+
         result = await run_in_threadpool(
             _create_product,
             title=title,
             description_html=desc_html,
             status="ACTIVE",
-            price=price,
-            sizes=req.sizes,
-            colors=req.colors,
+            price=req.sale_price,
+            sizes=None,   # handled via explicit variants
+            colors=None,   # handled via explicit variants
             product_type=req.product_type,
             vendor=vendor_name,
             tags=tags_list,
-            track_quantity=True if total_qty is not None else None,
-            quantity=total_qty,
+            track_quantity=True,
+            quantity=None,  # per-variant quantities via explicit variants
+            variants=explicit_variants if explicit_variants else None,
             store=WHOLESALE_STORE,
         )
+
+        # ── Set COG price as cost per item on each variant ──
+        if req.cog_price is not None and result and isinstance(result, dict):
+            try:
+                product_data = result.get("product") or {}
+                variant_nodes = (product_data.get("variants") or {}).get("nodes") or []
+                for vnode in variant_nodes:
+                    inv_item = (vnode.get("inventoryItem") or {})
+                    inv_item_gid = inv_item.get("id") or ""
+                    inv_item_id = inv_item_gid.split("/")[-1] if inv_item_gid else ""
+                    if inv_item_id:
+                        await run_in_threadpool(
+                            _set_inventory_item_cost,
+                            inv_item_id,
+                            req.cog_price,
+                            store=WHOLESALE_STORE,
+                        )
+            except Exception:
+                pass  # best-effort cost update
+
+            # Also set cost on REST-created variants (from _configure_variants_for_product)
+            try:
+                from app.integrations.shopify_client import _list_variants, _numeric_product_id_from_gid
+                product_data = result.get("product") or {}
+                product_gid = product_data.get("id") or ""
+                numeric_id = _numeric_product_id_from_gid(product_gid)
+                if numeric_id:
+                    all_variants = await run_in_threadpool(_list_variants, numeric_id, store=WHOLESALE_STORE)
+                    for var in (all_variants or []):
+                        inv_id = str(var.get("inventory_item_id") or "")
+                        if inv_id and inv_id != "None":
+                            await run_in_threadpool(
+                                _set_inventory_item_cost,
+                                inv_id,
+                                req.cog_price,
+                                store=WHOLESALE_STORE,
+                            )
+            except Exception:
+                pass  # best-effort cost update
 
         # Upload product image to Shopify if provided
         image_url = (req.image_url or "").strip() if req.image_url else None

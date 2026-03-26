@@ -452,10 +452,8 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
   const [form, setForm] = useState({
     title: '', description: '', cogPrice: '', salePrice: '',
     colors: [] as string[], segment: 'Men', season: 'Summer',
-    sizes: [] as string[],
     sizeGroups: [{ from: 20, to: 25, qty: 10 }]
   })
-  const [sizeInput, setSizeInput] = useState('')
   // Image capture state
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
@@ -480,15 +478,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
   function removeColor(c: string) {
     setForm(f => ({ ...f, colors: f.colors.filter(x => x !== c) }))
   }
-  function addSize() {
-    const s = sizeInput.trim()
-    if (!s || form.sizes.includes(s)) return
-    setForm(f => ({ ...f, sizes: [...f.sizes, s] }))
-    setSizeInput('')
-  }
-  function removeSize(s: string) {
-    setForm(f => ({ ...f, sizes: f.sizes.filter(x => x !== s) }))
-  }
+
   function addSizeGroup() {
     setForm(f => ({ ...f, sizeGroups: [...f.sizeGroups, { from: 20, to: 25, qty: 10 }] }))
   }
@@ -540,7 +530,6 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
           title: ai.title || f.title,
           description: (ai.benefits || []).join('. ') || f.description,
           colors: (ai.colors && ai.colors.length > 0) ? ai.colors : f.colors,
-          sizes: (ai.sizes && ai.sizes.length > 0) ? ai.sizes : f.sizes,
         }))
         setAiStatus('✅ AI analysis complete! Title and description updated.')
       } else {
@@ -573,7 +562,6 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
         segment: form.segment,
         season: form.season,
         colors: form.colors.length > 0 ? form.colors : undefined,
-        sizes: form.sizes.length > 0 ? form.sizes : undefined,
         size_groups: form.sizeGroups,
         image_url: imageUrl || undefined,
       })
@@ -725,24 +713,6 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
                     </span>
                   ))}
                   {form.colors.length === 0 && <p className="text-[10px] text-slate-400 italic">No colors added yet.</p>}
-                </div>
-              </div>
-              {/* Sizes */}
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Sizes</label>
-                <div className="flex gap-2 mb-3">
-                  <input type="text" value={sizeInput} onChange={e => setSizeInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addSize())}
-                    placeholder="e.g. S, M, L, 42..." className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-medium outline-none" />
-                  <button onClick={addSize} className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs">Add</button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {form.sizes.map(s => (
-                    <span key={s} className="inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-full text-xs font-bold border border-indigo-100">
-                      {s} <button onClick={() => removeSize(s)}><X size={14} /></button>
-                    </span>
-                  ))}
-                  {form.sizes.length === 0 && <p className="text-[10px] text-slate-400 italic">No sizes added yet.</p>}
                 </div>
               </div>
             </div>
