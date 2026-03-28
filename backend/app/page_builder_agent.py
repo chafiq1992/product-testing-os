@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-# Use gpt-5.3-codex for page builder — fast structured JSON output
-PAGE_BUILDER_MODEL = "gpt-5.3-codex"
+# Use gpt-5.4-mini for page builder — fast structured JSON output
+PAGE_BUILDER_MODEL = "gpt-5.4-mini"
 from app.integrations.shopify_client import (
     create_page_template_json,
     update_page_template_json,
