@@ -131,7 +131,6 @@ def _build_single_section(
             "type": "text",
             "settings": {
                 "text": subheading or f"Discover the perfect {display_title.lower()}",
-                "text_style": "subtitle",
             },
         }
         block_order.append(bid_s)
@@ -436,20 +435,23 @@ def _build_single_section(
         }
 
     elif st == "countdown":
-        # Countdown using custom-liquid section
-        countdown_html = custom_liquid or f"""<div style="text-align:center;padding:40px 20px;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:16px;color:#fff;margin:20px 0;">
-  <h2 style="font-size:28px;margin:0 0 8px;">🔥 Limited Time Offer</h2>
-  <p style="font-size:16px;color:#e0e0e0;margin:0 0 20px;">Don't miss out on {display_title} — this deal won't last!</p>
-  <div id="countdown-timer" style="display:flex;justify-content:center;gap:16px;font-size:32px;font-weight:bold;">
-    <div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-hours">23</span><div style="font-size:11px;font-weight:normal;color:#aaa;">HOURS</div></div>
-    <div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-mins">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">MINUTES</div></div>
-    <div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-secs">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">SECONDS</div></div>
-  </div>
-  <a href="{f'/products/{product_handle}' if product_handle else '/collections/all'}" style="display:inline-block;margin-top:24px;padding:14px 36px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold;">Grab the Deal →</a>
-</div>
-<script>
-(function(){{var h=document.getElementById('cd-hours'),m=document.getElementById('cd-mins'),s=document.getElementById('cd-secs');if(!h||!m||!s)return;var t=86399;setInterval(function(){{t--;if(t<0)t=86399;h.textContent=String(Math.floor(t/3600)).padStart(2,'0');m.textContent=String(Math.floor((t%3600)/60)).padStart(2,'0');s.textContent=String(t%60).padStart(2,'0')}},1000)}})();
-</script>"""
+        # Countdown using custom-liquid section — wrap JS in {% raw %} to prevent Liquid parse errors
+        product_link = f'/products/{product_handle}' if product_handle else '/collections/all'
+        countdown_html = custom_liquid or (
+            f'<div style="text-align:center;padding:40px 20px;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:16px;color:#fff;margin:20px 0;">'
+            f'<h2 style="font-size:28px;margin:0 0 8px;">🔥 Limited Time Offer</h2>'
+            f'<p style="font-size:16px;color:#e0e0e0;margin:0 0 20px;">Don\'t miss out on {display_title} — this deal won\'t last!</p>'
+            f'<div id="countdown-timer" style="display:flex;justify-content:center;gap:16px;font-size:32px;font-weight:bold;">'
+            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-hours">23</span><div style="font-size:11px;font-weight:normal;color:#aaa;">HOURS</div></div>'
+            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-mins">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">MINUTES</div></div>'
+            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-secs">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">SECONDS</div></div>'
+            f'</div>'
+            f'<a href="{product_link}" style="display:inline-block;margin-top:24px;padding:14px 36px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold;">Grab the Deal →</a>'
+            f'</div>'
+            '{%raw%}<script>'
+            '(function(){var h=document.getElementById("cd-hours"),m=document.getElementById("cd-mins"),s=document.getElementById("cd-secs");if(!h||!m||!s)return;var t=86399;setInterval(function(){t--;if(t<0)t=86399;h.textContent=String(Math.floor(t/3600)).padStart(2,"0");m.textContent=String(Math.floor((t%3600)/60)).padStart(2,"0");s.textContent=String(t%60).padStart(2,"0");},1000);})();'
+            '</script>{%endraw%}'
+        )
         return {
             "type": "custom-liquid",
             "settings": {
