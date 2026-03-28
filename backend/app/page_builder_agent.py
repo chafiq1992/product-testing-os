@@ -86,6 +86,17 @@ OUTPUT: After any operation, briefly confirm with the page URL.""",
 
 # ==================== Section Template Builders ====================
 
+def _html_heading(text: str) -> str:
+    """Wrap plain text in <p> tags for Dawn inline_richtext heading settings.
+    
+    Dawn's heading blocks use inline_richtext type which requires HTML wrapper tags.
+    If the text already starts with an HTML tag, it's returned as-is.
+    """
+    if text.startswith("<"):
+        return text
+    return f"<p>{text}</p>"
+
+
 def _build_single_section(
     section_type: str,
     *,
@@ -120,7 +131,7 @@ def _build_single_section(
         blocks[bid_h] = {
             "type": "heading",
             "settings": {
-                "heading": heading or display_title,
+                "heading": _html_heading(heading or display_title),
                 "heading_size": "h0",
             },
         }
@@ -165,7 +176,7 @@ def _build_single_section(
     elif st == "product":
         blocks = {}
         block_order = []
-        for btype in ["title", "price", "variant_picker", "quantity_selector", "buy_buttons", "description", "share"]:
+        for btype in ["title", "price", "variant_picker", "quantity_selector", "buy_buttons"]:
             bid = f"product_{btype}"
             blocks[bid] = {"type": btype, "settings": {}}
             block_order.append(bid)
@@ -233,7 +244,7 @@ def _build_single_section(
         blocks = {
             "benefits_heading": {
                 "type": "heading",
-                "settings": {"heading": heading or f"Benefits of {display_title}"},
+                "settings": {"heading": _html_heading(heading or f"Benefits of {display_title}")},
             },
             "benefits_text": {
                 "type": "text",
@@ -252,7 +263,7 @@ def _build_single_section(
         blocks = {
             "desc_heading": {
                 "type": "heading",
-                "settings": {"heading": heading or f"About {display_title}"},
+                "settings": {"heading": _html_heading(heading or f"About {display_title}")},
             },
             "desc_text": {
                 "type": "text",
@@ -332,7 +343,7 @@ def _build_single_section(
         blocks = {
             "cta_heading": {
                 "type": "heading",
-                "settings": {"heading": heading or f"Ready to Get Your {display_title}?"},
+                "settings": {"heading": _html_heading(heading or f"Ready to Get Your {display_title}?")},
             },
             "cta_text": {
                 "type": "text",
@@ -360,7 +371,7 @@ def _build_single_section(
         blocks = {
             "it_heading": {
                 "type": "heading",
-                "settings": {"heading": heading or f"Why {display_title}?"},
+                "settings": {"heading": _html_heading(heading or f"Why {display_title}?")},
             },
             "it_text": {
                 "type": "text",
@@ -393,7 +404,7 @@ def _build_single_section(
 
     elif st == "newsletter":
         blocks = {
-            "nl_heading": {"type": "heading", "settings": {"heading": heading or "Stay in the Loop"}},
+            "nl_heading": {"type": "heading", "settings": {"heading": _html_heading(heading or "Stay in the Loop")}},
             "nl_text": {"type": "paragraph", "settings": {"text": subheading or "<p>Subscribe for exclusive deals, new arrivals, and insider tips.</p>"}},
             "nl_form": {"type": "email_form", "settings": {}},
         }
@@ -464,7 +475,7 @@ def _build_single_section(
         blocks = {
             "guarantee_heading": {
                 "type": "heading",
-                "settings": {"heading": heading or "100% Satisfaction Guaranteed"},
+                "settings": {"heading": _html_heading(heading or "100% Satisfaction Guaranteed")},
             },
             "guarantee_text": {
                 "type": "text",
