@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from app.integrations.openai_client import DEFAULT_LLM_MODEL
+# Use gpt-5.3-codex for page builder — fast structured JSON output
+PAGE_BUILDER_MODEL = "gpt-5.3-codex"
 from app.integrations.shopify_client import (
     create_page_template_json,
     update_page_template_json,
@@ -271,7 +272,7 @@ def run_page_builder_agent(
 
     for _ in range(max_iters):
         resp = client.chat.completions.create(
-            model=(model or DEFAULT_LLM_MODEL),
+            model=(model or PAGE_BUILDER_MODEL),
             messages=working,
             tools=PAGE_BUILDER_TOOLS,
             tool_choice="auto",
@@ -309,6 +310,17 @@ def run_page_builder_agent(
                     "name": fn_name,
                     "content": json.dumps(result, ensure_ascii=False),
                 })
+
+            # FAST PATH: If page was created, return immediately without another OpenAI round
+            # This saves 15-25s by skipping the AI summary generation
+            if page_url:
+                return {
+                    "text": f"✅ Page created successfully! View it here: {page_url}",
+                    "messages": working,
+                    "page_url": page_url,
+                    "slug": slug,
+                    "template_suffix": template_suffix,
+                }
             continue
 
         # No tool calls — final response
