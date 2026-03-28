@@ -100,7 +100,7 @@ def _build_sections_from_order(
         elif st == "product":
             blocks = {}
             block_order = []
-            for btype in ["title", "price", "variant_picker", "description", "buy_buttons"]:
+            for btype in ["title", "price", "variant_picker", "buy_buttons"]:
                 bid = f"product_{btype}"
                 blocks[bid] = {"type": btype, "settings": {}}
                 block_order.append(bid)
@@ -211,10 +211,10 @@ def _build_sections_from_order(
                     "settings": {"text": "<p>Order now and experience the difference. Limited stock available!</p>"},
                 },
                 "cta_button": {
-                    "type": "buttons",
+                    "type": "button",
                     "settings": {
-                        "button_label_1": "Order Now",
-                        "button_link_1": f"/products/{product_handle}" if product_handle else "/collections/all",
+                        "button_label": "Order Now",
+                        "button_link": f"/products/{product_handle}" if product_handle else "/collections/all",
                     },
                 },
             }
@@ -236,10 +236,10 @@ def _build_sections_from_order(
                     "settings": {"text": f"<p>Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.</p>"},
                 },
                 "it_button": {
-                    "type": "buttons",
+                    "type": "button",
                     "settings": {
-                        "button_label_1": "Learn More",
-                        "button_link_1": f"/products/{product_handle}" if product_handle else "/collections/all",
+                        "button_label": "Learn More",
+                        "button_link": f"/products/{product_handle}" if product_handle else "/collections/all",
                     },
                 },
             }
@@ -257,7 +257,7 @@ def _build_sections_from_order(
         elif st == "newsletter":
             blocks = {
                 "nl_heading": {"type": "heading", "settings": {"heading": "Stay in the Loop"}},
-                "nl_text": {"type": "paragraph", "settings": {"text": "<p>Subscribe for exclusive deals, new arrivals, and insider tips.</p>"}},
+                "nl_text": {"type": "text", "settings": {"text": "<p>Subscribe for exclusive deals, new arrivals, and insider tips.</p>"}},
                 "nl_form": {"type": "email_form", "settings": {}},
             }
             sections[sid] = {
@@ -297,7 +297,6 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                     "product_handle": {"type": "string", "description": "Shopify product handle for featured-product section"},
                     "product_title": {"type": "string", "description": "Product title for display in headings"},
                     "product_gid": {"type": "string", "description": "Product GID for metafield linking"},
-                    "layout": {"type": "string", "description": "Use 'none' to hide header/footer"},
                 },
                 "required": ["page_title", "slug", "section_types"],
             },
@@ -334,7 +333,6 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
             product_handle = args.get("product_handle", "")
             product_title = args.get("product_title", "")
             product_gid = args.get("product_gid")
-            layout = args.get("layout")
             section_types = args.get("section_types", ["hero", "product", "features", "faq", "cta"])
 
             # Build sections server-side from the section types list
@@ -348,7 +346,6 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
             # Write template to theme
             tmpl = create_page_template_json(
                 slug, sections, order,
-                layout=layout,
                 store=store,
             )
 
