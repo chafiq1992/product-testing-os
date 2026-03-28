@@ -5120,6 +5120,229 @@ async def api_page_builder_status(slug: str, store: str | None = None):
     except Exception as e:
         return {"error": str(e)}
 
+
+# ---- Widget JS serving ----
+
+@app.get("/api/page-builder/widget.js")
+async def api_page_builder_widget_js():
+    """Serve the AI page builder widget JS for theme injection."""
+    widget_path = Path(__file__).resolve().parent.parent / "static" / "page-builder-widget.js"
+    if not widget_path.exists():
+        return Response("// widget not found", media_type="application/javascript")
+    content = widget_path.read_text(encoding="utf-8")
+    return Response(
+        content,
+        media_type="application/javascript",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"},
+    )
+
+
+# ---- Theme snippet install/uninstall ----
+
+WIDGET_SNIPPET_KEY = "snippets/ai-page-builder-widget.liquid"
+WIDGET_LAYOUT_MARKER = "<!-- AI_PAGE_BUILDER_WIDGET -->"
+
+
+def _widget_snippet_liquid(api_base: str, store: str = "") -> str:
+    """Generate the Liquid snippet content that loads the widget."""
+    return f"""{{% comment %}}
+  AI Page Builder Widget — injected by Product Testing OS.
+  Renders a floating AI chat button on the storefront.
+  Visible inside the Shopify Theme Editor for real-time editing.
+{{% endcomment %}}
+<script
+  src="{api_base}/api/page-builder/widget.js"
+  data-api-base="{api_base}"
+  data-store="{store}"
+  defer
+></script>
+"""
+
+
+def _layout_include_tag() -> str:
+    """Return the Liquid include tag wrapped with a marker comment."""
+    return f"\n{WIDGET_LAYOUT_MARKER}\n{{% render 'ai-page-builder-widget' %}}\n{WIDGET_LAYOUT_MARKER}\n"
+
+
+class WidgetInstallRequest(BaseModel):
+    store: str | None = None
+
+
+@app.post("/api/page-builder/widget/install")
+async def api_page_builder_widget_install(req: WidgetInstallRequest, request: Request):
+    """Install the AI page builder widget into the active theme.
+
+    This does two things:
+    1. Creates snippets/ai-page-builder-widget.liquid with the widget loader.
+    2. Injects a {% render %} tag into layout/theme.liquid.
+    """
+    try:
+        from app.integrations.shopify_client import (
+            get_active_theme_gid,
+            _gql_store,
+        )
+        store = (req.store or "").strip() or None
+
+        # Determine API base URL
+        abs_base = ""
+        if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
+            abs_base = BASE_URL.rstrip("/")
+        else:
+            scheme = request.headers.get("x-forwarded-proto", "https")
+            host = request.headers.get("host", "")
+            abs_base = f"{scheme}://{host}"
+
+        theme_gid = await run_in_threadpool(get_active_theme_gid, store=store)
+
+        # Step 1: Create the snippet file
+        snippet_body = _widget_snippet_liquid(abs_base, store or "")
+
+        UPSERT = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+        READ = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 5) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+        # Upsert snippet
+        await run_in_threadpool(
+            _gql_store, store, UPSERT,
+            {
+                "themeId": theme_gid,
+                "files": [{
+                    "filename": WIDGET_SNIPPET_KEY,
+                    "body": {"type": "TEXT", "value": snippet_body},
+                }],
+            },
+        )
+
+        # Step 2: Read layout/theme.liquid and inject render tag if missing
+        layout_file = "layout/theme.liquid"
+        layout_data = await run_in_threadpool(
+            _gql_store, store, READ,
+            {"themeId": theme_gid, "filenames": [layout_file]},
+        )
+        layout_nodes = ((layout_data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+        layout_content = ""
+        for n in layout_nodes:
+            if n.get("filename") == layout_file:
+                layout_content = (n.get("body") or {}).get("content") or ""
+                break
+
+        if WIDGET_LAYOUT_MARKER not in layout_content:
+            # Inject before </body> (or at end)
+            include_tag = _layout_include_tag()
+            if "</body>" in layout_content:
+                layout_content = layout_content.replace("</body>", include_tag + "</body>")
+            else:
+                layout_content += include_tag
+
+            await run_in_threadpool(
+                _gql_store, store, UPSERT,
+                {
+                    "themeId": theme_gid,
+                    "files": [{
+                        "filename": layout_file,
+                        "body": {"type": "TEXT", "value": layout_content},
+                    }],
+                },
+            )
+
+        return {"data": {"installed": True, "snippet": WIDGET_SNIPPET_KEY, "api_base": abs_base}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/page-builder/widget/uninstall")
+async def api_page_builder_widget_uninstall(req: WidgetInstallRequest):
+    """Remove the AI page builder widget from the active theme."""
+    try:
+        from app.integrations.shopify_client import (
+            get_active_theme_gid,
+            _gql_store,
+        )
+        store = (req.store or "").strip() or None
+        theme_gid = await run_in_threadpool(get_active_theme_gid, store=store)
+
+        DELETE = """
+mutation ThemeFilesDelete($themeId: ID!, $files: [String!]!) {
+  themeFilesDelete(themeId: $themeId, files: $files) {
+    deletedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+        READ = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 5) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+        UPSERT = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+        # Delete snippet file
+        await run_in_threadpool(
+            _gql_store, store, DELETE,
+            {"themeId": theme_gid, "files": [WIDGET_SNIPPET_KEY]},
+        )
+
+        # Remove render tag from layout/theme.liquid
+        layout_file = "layout/theme.liquid"
+        layout_data = await run_in_threadpool(
+            _gql_store, store, READ,
+            {"themeId": theme_gid, "filenames": [layout_file]},
+        )
+        layout_nodes = ((layout_data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+        layout_content = ""
+        for n in layout_nodes:
+            if n.get("filename") == layout_file:
+                layout_content = (n.get("body") or {}).get("content") or ""
+                break
+
+        if WIDGET_LAYOUT_MARKER in layout_content:
+            import re as _re
+            pattern = _re.escape(WIDGET_LAYOUT_MARKER) + r".*?" + _re.escape(WIDGET_LAYOUT_MARKER)
+            layout_content = _re.sub(pattern, "", layout_content, flags=_re.DOTALL)
+            await run_in_threadpool(
+                _gql_store, store, UPSERT,
+                {
+                    "themeId": theme_gid,
+                    "files": [{
+                        "filename": layout_file,
+                        "body": {"type": "TEXT", "value": layout_content},
+                    }],
+                },
+            )
+
+        return {"data": {"uninstalled": True}}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Mount static files last so that API routes have precedence.
 # The directory is configurable via STATIC_DIR env var, otherwise we look for
 #   - /app/static (inside container)

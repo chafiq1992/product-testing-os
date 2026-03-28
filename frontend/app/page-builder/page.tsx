@@ -5,6 +5,8 @@ import {
   pageBuilderSearchProducts,
   pageBuilderGenerate,
   pageBuilderToggleLayout,
+  pageBuilderWidgetInstall,
+  pageBuilderWidgetUninstall,
 } from '@/lib/api'
 
 /* ───────── Types ───────── */
@@ -62,6 +64,10 @@ export default function PageBuilderPage() {
   // Layout toggles
   const [showHeader, setShowHeader] = useState(true)
   const [showFooter, setShowFooter] = useState(true)
+
+  // Widget install
+  const [widgetInstalled, setWidgetInstalled] = useState(false)
+  const [widgetLoading, setWidgetLoading] = useState(false)
 
   // Preview
   const [iframeKey, setIframeKey] = useState(0)
@@ -157,6 +163,29 @@ export default function PageBuilderPage() {
     } catch {}
   }
 
+  // Install/uninstall widget into theme
+  const handleWidgetToggle = async () => {
+    setWidgetLoading(true)
+    try {
+      if (widgetInstalled) {
+        await pageBuilderWidgetUninstall()
+        setWidgetInstalled(false)
+        setChat(prev => [...prev, { role: 'system', content: '✓ Widget removed from theme.' }])
+      } else {
+        const res = await pageBuilderWidgetInstall()
+        if (res.error) {
+          setChat(prev => [...prev, { role: 'system', content: `❌ Install failed: ${res.error}` }])
+        } else {
+          setWidgetInstalled(true)
+          setChat(prev => [...prev, { role: 'system', content: '✓ AI widget installed! Open the Shopify Theme Editor — you\'ll see a ✨ button in the preview pane.' }])
+        }
+      }
+    } catch (e: any) {
+      setChat(prev => [...prev, { role: 'system', content: `❌ ${e?.message || 'Error'}` }])
+    }
+    setWidgetLoading(false)
+  }
+
   // Enter to send (shift+enter for newline)
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -177,6 +206,18 @@ export default function PageBuilderPage() {
         </div>
         <span className="text-xs text-white/30">Shopify Theme Editor Integration</span>
         <div className="ml-auto flex items-center gap-3">
+          <button
+            onClick={handleWidgetToggle}
+            disabled={widgetLoading}
+            className={`flex items-center gap-1.5 text-xs border rounded-lg px-3 py-1.5 transition-colors ${
+              widgetInstalled
+                ? 'text-green-300 border-green-500/30 hover:bg-green-500/10'
+                : 'text-purple-300 border-purple-500/30 hover:bg-purple-500/10'
+            } disabled:opacity-50`}
+          >
+            <SparklesIcon />
+            {widgetLoading ? 'Working...' : widgetInstalled ? 'Widget Installed ✓' : 'Install in Theme Editor'}
+          </button>
           {currentPageUrl && (
             <a href={currentPageUrl} target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-1.5 text-xs text-purple-300 hover:text-purple-200 border border-purple-500/30 rounded-lg px-3 py-1.5 hover:bg-purple-500/10 transition-colors">

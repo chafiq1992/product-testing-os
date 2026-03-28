@@ -980,3 +980,19 @@ export async function pageBuilderStatus(slug: string, store?: string){
   const {data} = await axios.get(`${base}/api/page-builder/status/${encodeURIComponent(slug)}${q}`)
   return data as { data?: any, slug?: string, error?: string }
 }
+
+export async function pageBuilderWidgetInstall(store?: string){
+  const body: any = {}
+  const s = store ?? selectedStore()
+  if(s) body.store = s
+  const {data} = await axios.post(`${base}/api/page-builder/widget/install`, body)
+  return data as { data?: { installed: boolean, snippet?: string, api_base?: string }, error?: string }
+}
+
+export async function pageBuilderWidgetUninstall(store?: string){
+  const body: any = {}
+  const s = store ?? selectedStore()
+  if(s) body.store = s
+  const {data} = await axios.post(`${base}/api/page-builder/widget/uninstall`, body)
+  return data as { data?: { uninstalled: boolean }, error?: string }
+}
