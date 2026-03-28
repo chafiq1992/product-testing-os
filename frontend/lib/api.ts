@@ -931,3 +931,52 @@ export async function profitCampaignCardDelete(payload:{ campaign_id: string, st
   const {data} = await axios.delete(`${base}/api/profit_campaign_cards/${encodeURIComponent(payload.campaign_id)}${q}`)
   return data as { data?: { ok: boolean }, error?: string }
 }
+
+// -------- Page Builder (AI Agent) --------
+
+export async function pageBuilderSearchProducts(query?: string, store?: string){
+  const parts: string[] = []
+  if(query) parts.push(`query=${encodeURIComponent(query)}`)
+  const s = store ?? selectedStore()
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
+  const q = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/page-builder/products${q}`)
+  return data as { data: Array<{ id:string, title:string, handle:string, image?:string|null, price?:string|null, status?:string }>, error?: string }
+}
+
+export async function pageBuilderGenerate(payload:{
+  prompt: string,
+  product_handle?: string,
+  product_id?: string,
+  product_title?: string,
+  store?: string,
+  model?: string,
+  hide_header?: boolean,
+  hide_footer?: boolean,
+  messages?: any[],
+  slug?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/generate`, body, { timeout: 120000 })
+  return data as { text?: string, page_url?: string, slug?: string, template_suffix?: string, messages?: any[], error?: string }
+}
+
+export async function pageBuilderToggleLayout(payload:{
+  slug: string,
+  show_header?: boolean,
+  show_footer?: boolean,
+  store?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/toggle-layout`, body)
+  return data as { data?: any, layout?: string, error?: string }
+}
+
+export async function pageBuilderStatus(slug: string, store?: string){
+  const parts: string[] = []
+  const s = store ?? selectedStore()
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
+  const q = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/page-builder/status/${encodeURIComponent(slug)}${q}`)
+  return data as { data?: any, slug?: string, error?: string }
+}

@@ -10,10 +10,10 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-07")
 # Shopify OAuth (public apps / Dev Dashboard)
 SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "")  # Dev Dashboard "Client ID"
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")  # Dev Dashboard "Secret" (shpss_...)
-# Comma-separated scopes. Keep minimal but sufficient for current app features (orders + product/page creation).
+# Comma-separated scopes. Keep minimal but sufficient for current app features (orders + product/page creation + theme editing).
 SHOPIFY_OAUTH_SCOPES = os.getenv(
     "SHOPIFY_OAUTH_SCOPES",
-    "read_orders,write_orders,read_products,write_products,read_content,write_content,read_inventory,write_inventory",
+    "read_orders,write_orders,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_themes,write_themes",
 )
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")

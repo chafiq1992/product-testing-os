@@ -4976,6 +4976,150 @@ async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req:
     except Exception as e:
         return {"error": str(e)}
 
+# ==================== Page Builder (AI Agent) ====================
+
+from app.page_builder_agent import run_page_builder_agent
+from app.integrations.shopify_client import (
+    search_products_for_picker,
+    read_page_template_json,
+)
+
+
+@app.get("/api/page-builder/products")
+async def api_page_builder_products(query: str = "", store: str | None = None, limit: int = 10):
+    """Search products for the page builder product picker."""
+    try:
+        s = (store or "").strip()
+        products = await run_in_threadpool(
+            search_products_for_picker,
+            query=query,
+            limit=limit,
+            store=s or None,
+        )
+        return {"data": products}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+class PageBuilderGenerateRequest(BaseModel):
+    prompt: str
+    product_handle: str | None = None
+    product_id: str | None = None
+    product_title: str | None = None
+    store: str | None = None
+    model: str | None = None
+    hide_header: bool = False
+    hide_footer: bool = False
+    # For continuing conversations
+    messages: list | None = None
+    slug: str | None = None  # For edits to existing pages
+
+
+@app.post("/api/page-builder/generate")
+async def api_page_builder_generate(req: PageBuilderGenerateRequest):
+    """Generate a new page or edit an existing one via the AI agent."""
+    try:
+        store = (req.store or "").strip() or None
+
+        # Build user message with context
+        user_content_parts = [req.prompt]
+        if req.product_handle:
+            user_content_parts.append(f"\n\nProduct handle: {req.product_handle}")
+        if req.product_title:
+            user_content_parts.append(f"Product title: {req.product_title}")
+        if req.product_id:
+            user_content_parts.append(f"Product GID: gid://shopify/Product/{req.product_id}")
+        if req.hide_header or req.hide_footer:
+            user_content_parts.append("\nHide header and footer (use layout: 'none').")
+
+        user_msg = {"role": "user", "content": "\n".join(user_content_parts)}
+
+        # If editing an existing page, include current template
+        if req.slug:
+            current_tmpl = await run_in_threadpool(
+                read_page_template_json, req.slug, store=store
+            )
+            if current_tmpl:
+                import json as _j
+                tmpl_ctx = {
+                    "role": "system",
+                    "content": f"CURRENT TEMPLATE (slug: {req.slug}):\n```json\n{_j.dumps(current_tmpl, indent=2)}\n```\nModify this template based on the user's request. Use update_shopify_page tool.",
+                }
+                messages = (req.messages or []) + [tmpl_ctx, user_msg]
+            else:
+                messages = (req.messages or []) + [user_msg]
+        else:
+            messages = (req.messages or []) + [user_msg]
+
+        result = await run_in_threadpool(
+            run_page_builder_agent,
+            messages,
+            model=req.model,
+            store=store,
+        )
+
+        return {
+            "text": result.get("text", ""),
+            "page_url": result.get("page_url"),
+            "slug": result.get("slug"),
+            "template_suffix": result.get("template_suffix"),
+            "messages": result.get("messages", []),
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class PageBuilderLayoutRequest(BaseModel):
+    slug: str
+    show_header: bool = True
+    show_footer: bool = True
+    store: str | None = None
+
+
+@app.post("/api/page-builder/toggle-layout")
+async def api_page_builder_toggle_layout(req: PageBuilderLayoutRequest):
+    """Toggle header/footer visibility for an existing page template."""
+    try:
+        from app.integrations.shopify_client import update_page_template_json as _update_tmpl
+
+        store = (req.store or "").strip() or None
+        current = await run_in_threadpool(
+            read_page_template_json, req.slug, store=store
+        )
+        if not current:
+            return {"error": f"Template not found: {req.slug}"}
+
+        sections = current.get("sections", {})
+        order = current.get("order", [])
+        # If both hidden, use layout "none"; otherwise default
+        layout = None if (req.show_header and req.show_footer) else "none"
+
+        result = await run_in_threadpool(
+            _update_tmpl,
+            req.slug, sections, order,
+            layout=layout,
+            store=store,
+        )
+        return {"data": result, "layout": layout or "default"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/page-builder/status/{slug}")
+async def api_page_builder_status(slug: str, store: str | None = None):
+    """Get the current template JSON for a page."""
+    try:
+        s = (store or "").strip() or None
+        tmpl = await run_in_threadpool(
+            read_page_template_json, slug, store=s
+        )
+        if not tmpl:
+            return {"error": "not_found"}
+        return {"data": tmpl, "slug": slug}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Mount static files last so that API routes have precedence.
 # The directory is configurable via STATIC_DIR env var, otherwise we look for
 #   - /app/static (inside container)

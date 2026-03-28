@@ -2811,3 +2811,306 @@ def update_product_title(product_gid: str, title: str, *, store: str | None = No
     data = _gql_store(store, PRODUCT_UPDATE, {"input": inp})
     prod = data["productUpdate"]["product"]
     return prod
+
+
+# ==================== Theme API (Page Builder) ====================
+
+THEME_FILES_UPSERT = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+
+THEME_FILES_READ = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 10) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+
+
+def get_active_theme_id(*, store: str | None = None) -> str:
+    """Get the numeric Shopify theme ID for the currently active (published) theme."""
+    data = _rest_get_store(store, "/themes.json")
+    themes = (data or {}).get("themes") or []
+    for th in themes:
+        if str(th.get("role") or "").lower() == "main":
+            return str(th["id"])
+    raise RuntimeError("No active (main) theme found")
+
+
+def get_active_theme_gid(*, store: str | None = None) -> str:
+    """Get the GID for the active theme (e.g. gid://shopify/OnlineStoreTheme/12345)."""
+    tid = get_active_theme_id(store=store)
+    return f"gid://shopify/OnlineStoreTheme/{tid}"
+
+
+# ---- Dawn section type registry (static) ----
+# These are the standard section types available in the Dawn theme.
+# The AI agent uses this to know what building blocks it can use.
+DAWN_SECTIONS = {
+    "image-banner": {
+        "name": "Image banner",
+        "description": "Full-width hero banner with heading, subheading, and CTA buttons",
+        "key_settings": ["image", "image_overlay_opacity", "heading", "heading_size", "subheading", "button_label", "button_link", "button_label_2", "button_link_2", "color_scheme", "adapt_height_first_image", "show_text_below", "show_text_box", "desktop_content_position", "desktop_content_alignment", "mobile_content_alignment"],
+    },
+    "rich-text": {
+        "name": "Rich text",
+        "description": "Text section with heading, body text, and optional buttons",
+        "key_settings": ["color_scheme", "full_width"],
+        "blocks": ["heading", "text", "buttons"],
+    },
+    "featured-product": {
+        "name": "Featured product",
+        "description": "Displays a product with images, price, variants, and add-to-cart button",
+        "key_settings": ["product", "color_scheme", "secondary_background", "media_size", "media_fit", "media_position"],
+        "blocks": ["text", "title", "price", "quantity_selector", "variant_picker", "buy_buttons", "description", "share", "custom_liquid", "rating"],
+    },
+    "collapsible-content": {
+        "name": "Collapsible content / FAQ",
+        "description": "Accordion-style FAQ or collapsible info sections",
+        "key_settings": ["caption", "heading", "heading_size", "heading_alignment", "color_scheme", "container_color_scheme", "open_first_collapsible_row", "image", "image_ratio"],
+        "blocks": ["collapsible_row"],
+    },
+    "multicolumn": {
+        "name": "Multicolumn",
+        "description": "Grid of columns with images, titles, and text — great for features/benefits",
+        "key_settings": ["title", "heading_size", "columns_desktop", "color_scheme", "image_width", "image_ratio", "column_alignment", "swipe_on_mobile", "button_label", "button_link"],
+        "blocks": ["column"],
+    },
+    "image-with-text": {
+        "name": "Image with text",
+        "description": "Side-by-side layout with image and text content",
+        "key_settings": ["image", "height", "desktop_image_width", "layout", "desktop_content_position", "desktop_content_alignment", "color_scheme", "image_behavior"],
+        "blocks": ["heading", "text", "buttons"],
+    },
+    "video": {
+        "name": "Video",
+        "description": "Embedded or hosted video section",
+        "key_settings": ["heading", "heading_size", "video_url", "cover_image", "description", "full_width", "color_scheme"],
+    },
+    "featured-collection": {
+        "name": "Featured collection",
+        "description": "Display products from a collection in a grid",
+        "key_settings": ["title", "heading_size", "collection", "products_to_show", "columns_desktop", "color_scheme", "show_secondary_image", "show_vendor", "show_rating", "swipe_on_mobile", "enable_desktop_slider"],
+    },
+    "contact-form": {
+        "name": "Contact form",
+        "description": "A simple contact form section",
+        "key_settings": ["heading", "heading_size", "color_scheme"],
+    },
+    "custom-liquid": {
+        "name": "Custom Liquid",
+        "description": "Inject arbitrary Liquid/HTML code",
+        "key_settings": ["custom_liquid", "color_scheme"],
+    },
+    "newsletter": {
+        "name": "Newsletter / Email signup",
+        "description": "Email subscription form with heading and text",
+        "key_settings": ["color_scheme", "full_width"],
+        "blocks": ["heading", "paragraph", "email_form"],
+    },
+}
+
+
+def list_available_sections() -> list[dict]:
+    """Return the list of Dawn theme sections the AI can use."""
+    out = []
+    for key, info in DAWN_SECTIONS.items():
+        out.append({
+            "type": key,
+            "name": info["name"],
+            "description": info["description"],
+            "key_settings": info.get("key_settings", []),
+            "blocks": info.get("blocks", []),
+        })
+    return out
+
+
+def _template_filename(slug: str) -> str:
+    """Convert a slug into a Shopify template filename."""
+    safe = re.sub(r"[^a-z0-9_-]", "-", slug.lower().strip())[:60]
+    return f"templates/page.ai-{safe}.json"
+
+
+def create_page_template_json(
+    slug: str,
+    sections: dict,
+    order: list[str],
+    *,
+    layout: str | None = None,
+    store: str | None = None,
+) -> dict:
+    """Create a new JSON page template in the active theme using themeFilesUpsert.
+
+    Args:
+        slug: Short identifier (e.g. 'summer-shoes-landing')
+        sections: Dict of section_id -> section config (type, settings, blocks, etc.)
+        order: List of section IDs defining display order
+        layout: Optional layout override. Use 'none' to hide header/footer.
+        store: Multi-store label
+
+    Returns:
+        { template_name, filename, theme_id }
+    """
+    import json as _json
+
+    theme_gid = get_active_theme_gid(store=store)
+    filename = _template_filename(slug)
+    template_suffix = filename.replace("templates/page.", "").replace(".json", "")
+
+    template_body: dict = {
+        "sections": sections,
+        "order": order,
+    }
+    if layout:
+        template_body["layout"] = layout
+
+    body_str = _json.dumps(template_body, indent=2, ensure_ascii=False)
+
+    data = _gql_store(store, THEME_FILES_UPSERT, {
+        "themeId": theme_gid,
+        "files": [{
+            "filename": filename,
+            "body": {
+                "type": "TEXT",
+                "value": body_str,
+            },
+        }],
+    })
+
+    upserted = (data or {}).get("themeFilesUpsert", {}).get("upsertedThemeFiles") or []
+    ue = (data or {}).get("themeFilesUpsert", {}).get("userErrors") or []
+    if ue:
+        raise RuntimeError(f"themeFilesUpsert errors: {ue}")
+
+    return {
+        "template_suffix": template_suffix,
+        "filename": filename,
+        "theme_gid": theme_gid,
+        "upserted": [f.get("filename") for f in upserted],
+    }
+
+
+def update_page_template_json(
+    slug: str,
+    sections: dict,
+    order: list[str],
+    *,
+    layout: str | None = None,
+    store: str | None = None,
+) -> dict:
+    """Update an existing page template (same as create — upsert semantics)."""
+    return create_page_template_json(slug, sections, order, layout=layout, store=store)
+
+
+def read_page_template_json(slug: str, *, store: str | None = None) -> dict | None:
+    """Read the current JSON body of a page template from the theme."""
+    import json as _json
+    theme_gid = get_active_theme_gid(store=store)
+    filename = _template_filename(slug)
+    try:
+        data = _gql_store(store, THEME_FILES_READ, {
+            "themeId": theme_gid,
+            "filenames": [filename],
+        })
+        nodes = ((data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+        for node in nodes:
+            if node.get("filename") == filename:
+                body = (node.get("body") or {}).get("content")
+                if body:
+                    return _json.loads(body)
+        return None
+    except Exception:
+        return None
+
+
+def create_page_with_template(
+    title: str,
+    template_suffix: str,
+    *,
+    body_html: str = "",
+    store: str | None = None,
+) -> dict:
+    """Create a Shopify page that uses an AI-generated JSON template.
+
+    The template_suffix must match an existing templates/page.{suffix}.json file.
+    """
+    from uuid import uuid4
+
+    handle = f"ai-{abs(hash(title + template_suffix)) % 10_000_000}"
+    page_in = {
+        "title": title,
+        "handle": handle,
+        "templateSuffix": template_suffix,
+        "body": body_html or "",
+    }
+    try:
+        page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    except RuntimeError as e:
+        if "Handle has already been taken" in str(e):
+            page_in["handle"] = f"{handle}-{uuid4().hex[:6]}"
+            page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+        else:
+            raise
+
+    cfg = _get_store_config(store)
+    page_url = f"https://{cfg['SHOP']}/pages/{page['handle']}"
+
+    # Publish to all channels
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
+
+    return {
+        "page_gid": page["id"],
+        "page_handle": page["handle"],
+        "page_url": page_url,
+        "template_suffix": template_suffix,
+    }
+
+
+def search_products_for_picker(
+    *,
+    query: str = "",
+    limit: int = 10,
+    store: str | None = None,
+) -> list[dict]:
+    """Search products by title for the page builder product picker."""
+    from urllib.parse import urlencode, quote
+
+    lim = max(1, min(limit or 10, 50))
+    params: dict = {
+        "limit": lim,
+        "fields": "id,title,handle,images,status,variants",
+    }
+    if query and query.strip():
+        params["title"] = query.strip()
+    path = "/products.json?" + urlencode(params)
+    data = _rest_get_store(store, path)
+    products = (data or {}).get("products") or []
+    out = []
+    for p in products:
+        imgs = p.get("images") or []
+        first_img = imgs[0].get("src") if imgs else None
+        variants = p.get("variants") or []
+        price = variants[0].get("price") if variants else None
+        out.append({
+            "id": str(p.get("id")),
+            "title": p.get("title"),
+            "handle": p.get("handle"),
+            "image": first_img,
+            "price": price,
+            "status": p.get("status"),
+        })
+    return out
