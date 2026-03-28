@@ -5018,6 +5018,7 @@ class PageBuilderGenerateRequest(BaseModel):
 @app.post("/api/page-builder/generate")
 async def api_page_builder_generate(req: PageBuilderGenerateRequest):
     """Generate a new page or edit an existing one via the AI agent."""
+    import asyncio
     try:
         store = (req.store or "").strip() or None
 
@@ -5051,11 +5052,15 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
         else:
             messages = (req.messages or []) + [user_msg]
 
-        result = await run_in_threadpool(
-            run_page_builder_agent,
-            messages,
-            model=req.model,
-            store=store,
+        # Run with a 300s timeout to avoid 504 from Cloud Run gateway
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                run_page_builder_agent,
+                messages,
+                model=req.model,
+                store=store,
+            ),
+            timeout=300,
         )
 
         return {
@@ -5066,6 +5071,8 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
             "messages": result.get("messages", []),
             "error": result.get("error"),
         }
+    except asyncio.TimeoutError:
+        return {"error": "Page generation timed out. Please try again with a simpler prompt."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -5126,8 +5133,17 @@ async def api_page_builder_status(slug: str, store: str | None = None):
 @app.get("/api/page-builder/widget.js")
 async def api_page_builder_widget_js():
     """Serve the AI page builder widget JS for theme injection."""
-    widget_path = Path(__file__).resolve().parent.parent / "static" / "page-builder-widget.js"
-    if not widget_path.exists():
+    # Check container path first (backend_static/), then local dev path (backend/static/)
+    candidates = [
+        Path("/app/backend_static/page-builder-widget.js"),
+        Path(__file__).resolve().parent.parent / "static" / "page-builder-widget.js",
+    ]
+    widget_path = None
+    for p in candidates:
+        if p.exists():
+            widget_path = p
+            break
+    if not widget_path:
         return Response("// widget not found", media_type="application/javascript")
     content = widget_path.read_text(encoding="utf-8")
     return Response(

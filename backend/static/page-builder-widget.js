@@ -12,11 +12,20 @@
   'use strict';
 
   // ── Config ──
-  var API_BASE = (document.currentScript && document.currentScript.getAttribute('data-api-base')) || '';
-  var STORE = (document.currentScript && document.currentScript.getAttribute('data-store')) || '';
+  // document.currentScript can be null with 'defer', so find our script tag by src
+  var _script = document.currentScript || (function() {
+    var scripts = document.querySelectorAll('script[src*="page-builder/widget.js"]');
+    return scripts.length ? scripts[scripts.length - 1] : null;
+  })();
+  var API_BASE = (_script && _script.getAttribute('data-api-base')) || '';
+  var STORE = (_script && _script.getAttribute('data-store')) || '';
 
-  // Don't load in checkout
-  if (window.location.pathname.indexOf('/checkouts') === 0) return;
+  // Detect Shopify Theme Editor (designMode)
+  var IS_DESIGN_MODE = !!(window.Shopify && window.Shopify.designMode);
+  console.log('[AI Page Builder] Loaded. designMode=' + IS_DESIGN_MODE + ', API_BASE=' + API_BASE + ', STORE=' + STORE);
+
+  // Don't load in checkout (but always load in theme editor)
+  if (!IS_DESIGN_MODE && window.location.pathname.indexOf('/checkouts') === 0) return;
 
   // ── Styles ──
   var STYLES = `

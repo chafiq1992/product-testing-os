@@ -290,7 +290,7 @@ def run_page_builder_agent(
     *,
     model: Optional[str] = None,
     store: str | None = None,
-    max_iters: int = 10,
+    max_iters: int = 6,
 ) -> Dict[str, Any]:
     """Run the page builder agent loop with tool-calling.
 
@@ -321,6 +321,7 @@ def run_page_builder_agent(
             messages=working,
             tools=PAGE_BUILDER_TOOLS,
             tool_choice="auto",
+            timeout=90,
         )
         choice = resp.choices[0]
         msg = choice.message

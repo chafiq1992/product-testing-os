@@ -35,6 +35,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy backend code from build stage
 COPY --from=backend-build /app/app ./app
 
+# Copy backend static assets (page-builder-widget.js, etc.)
+COPY backend/static ./backend_static
+
 # Copy pre-built static frontend assets
 COPY --from=frontend-build /frontend/out ./static
 
