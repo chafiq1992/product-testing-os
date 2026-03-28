@@ -270,12 +270,14 @@ def run_page_builder_agent(
     slug: str | None = None
     template_suffix: str | None = None
 
-    for _ in range(max_iters):
+    for iteration in range(max_iters):
+        # Force tool call on first iteration; allow text responses after
+        choice_mode = "required" if iteration == 0 else "auto"
         resp = client.chat.completions.create(
             model=(model or PAGE_BUILDER_MODEL),
             messages=working,
             tools=PAGE_BUILDER_TOOLS,
-            tool_choice="auto",
+            tool_choice=choice_mode,
             timeout=50,
         )
         choice = resp.choices[0]
