@@ -3,12 +3,13 @@
 The agent uses Dawn theme sections (image-banner, rich-text, featured-product, etc.)
 to compose landing pages and product pages that appear natively in the Shopify Theme Editor.
 
-OPTIMIZED: Sections data is embedded in the system prompt to eliminate the list_available_sections
-tool call. The generate_page_template step is merged into create_shopify_page to reduce
-the total number of OpenAI round-trips from 3+ down to 2 (one tool call + one final response).
+ARCHITECTURE: The AI model decides WHICH sections to include and provides content/metadata.
+The backend _build_sections_from_order() generates the full sections JSON server-side,
+since LLMs struggle to produce large nested JSON in tool call arguments reliably.
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -27,83 +28,278 @@ from app.integrations.shopify_client import (
 client = OpenAI()
 
 
-# ==================== System Prompt (with embedded sections) ====================
+# ==================== System Prompt ====================
 
 PAGE_BUILDER_SYSTEM = {
     "role": "system",
-    "content": """You are the Shopify Page Builder Agent. Your job is to generate beautiful, high-converting landing pages and product pages using ONLY native Shopify Dawn theme sections.
+    "content": """You are the Shopify Page Builder Agent. You create beautiful landing pages for products.
 
-AVAILABLE DAWN SECTIONS (use ONLY these types):
-- "image-banner": Full-width hero banner. Settings: image, image_overlay_opacity, heading, heading_size, subheading, button_label, button_link, color_scheme, desktop_content_position, desktop_content_alignment.
-- "rich-text": Text section. Settings: color_scheme, full_width. Blocks: heading, text, buttons.
-- "featured-product": Product display with images, price, add-to-cart. Settings: product (handle), color_scheme, media_size, media_fit. Blocks: title, price, variant_picker, buy_buttons, description, rating.
-- "collapsible-content": FAQ accordion. Settings: caption, heading, heading_size, color_scheme, open_first_collapsible_row. Blocks: collapsible_row (each with heading + body).
-- "multicolumn": Grid columns for features/benefits. Settings: title, columns_desktop, color_scheme, image_width, image_ratio. Blocks: column (each with title, text, image).
-- "image-with-text": Side-by-side image + text. Settings: image, height, layout, color_scheme. Blocks: heading, text, buttons.
-- "video": Embedded video. Settings: heading, video_url, cover_image, color_scheme.
-- "featured-collection": Products grid from collection. Settings: title, collection, products_to_show, columns_desktop.
-- "contact-form": Contact form. Settings: heading, color_scheme.
-- "custom-liquid": Custom HTML/Liquid. Settings: custom_liquid, color_scheme.
-- "newsletter": Email signup. Settings: color_scheme. Blocks: heading, paragraph, email_form.
+WORKFLOW: Call create_shopify_page with page_title, slug, section_types, and product details.
+The backend will generate the full template JSON — you just pick which sections to include.
 
-WORKFLOW FOR CREATING A NEW PAGE:
-1. Call create_shopify_page with the full sections JSON, order array, page_title, and slug.
-   The tool will write the template to the theme AND create the page in one step.
-   DO NOT call any other tools first — go straight to create_shopify_page.
+AVAILABLE SECTION TYPES (pass these in section_types array):
+- "hero": Full-width hero banner with product title
+- "product": Featured product with images, price, add-to-cart
+- "features": 3-column benefits grid
+- "testimonials": Customer review quotes
+- "faq": Frequently asked questions accordion
+- "cta": Call-to-action section
+- "image_text": Image + text side-by-side
+- "newsletter": Email signup section
 
-WORKFLOW FOR EDITING AN EXISTING PAGE:
-1. The current template JSON will be provided in the conversation.
-2. Call update_shopify_page with the modified sections.
+RULES:
+- Always include "hero" and "product" sections.
+- Use 5-7 sections for a rich page.
+- Call create_shopify_page immediately with your chosen sections.
 
-SECTION RULES:
-- Each section needs a unique string ID (e.g., "hero", "features", "faq_section").
-- The "order" array must list section IDs in display order.
-- For product pages, ALWAYS include a "featured-product" section with the product handle in settings.product.
-- Use "image-banner" for hero sections with heading, subheading, and CTA button.
-- Use "rich-text" for text content with blocks for heading/text/buttons.
-- Use "multicolumn" for features/benefits grids with column blocks.
-- Use "collapsible-content" for FAQs with collapsible_row blocks (heading + body).
-
-COLLAPSIBLE_ROW BLOCK FORMAT:
-Each FAQ block must have type "collapsible_row" with settings: {"heading": "Question?", "row_content": "<p>Answer text</p>"}
-
-RICH-TEXT BLOCK FORMAT:
-- heading block: type "heading", settings: {"heading": "Text here"}
-- text block: type "text", settings: {"text": "<p>Paragraph text</p>"}
-- buttons block: type "buttons", settings: {"button_label_1": "Shop Now", "button_link_1": "/collections/all"}
-
-MULTICOLUMN BLOCK FORMAT:
-Each column block: type "column", settings: {"title": "Feature Title", "text": "<p>Description</p>"}
-
-DESIGN PRINCIPLES:
-- Create visually rich pages with 5-8 sections.
-- Always include: hero, product showcase, benefits/features, trust signals, CTA.
-- Use color_scheme settings (e.g., "scheme-1", "scheme-2") for visual variety between sections.
-- Keep text concise and benefit-focused.
-
-OUTPUT: Always respond with a brief summary of what you created and the page URL.""",
+OUTPUT: After the page is created, briefly confirm with the page URL.""",
 }
 
 
-# ==================== Tool Definitions (optimized — 3 tools only) ====================
+# ==================== Section Template Builders ====================
+
+def _build_sections_from_order(
+    section_types: List[str],
+    product_handle: str = "",
+    product_title: str = "",
+    page_title: str = "",
+    faq_items: List[Dict[str, str]] | None = None,
+    feature_items: List[Dict[str, str]] | None = None,
+    testimonial_items: List[Dict[str, str]] | None = None,
+) -> tuple[Dict[str, Any], List[str]]:
+    """Build full sections JSON + order array from a list of section type names.
+
+    This runs SERVER-SIDE so the LLM doesn't need to generate huge JSON.
+    Returns (sections_dict, order_list).
+    """
+    sections: Dict[str, Any] = {}
+    order: List[str] = []
+    display_title = product_title or page_title or "Shop Now"
+    color_schemes = ["scheme-1", "scheme-2", "scheme-3", "scheme-4"]
+
+    for i, st in enumerate(section_types):
+        cs = color_schemes[i % len(color_schemes)]
+        sid = st  # section ID = section type name
+
+        if st == "hero":
+            sections[sid] = {
+                "type": "image-banner",
+                "settings": {
+                    "heading": display_title,
+                    "heading_size": "h0",
+                    "subheading": f"Discover the perfect {display_title.lower()}",
+                    "button_label": "Shop Now",
+                    "button_link": f"/products/{product_handle}" if product_handle else "/collections/all",
+                    "color_scheme": cs,
+                    "desktop_content_position": "middle-center",
+                    "desktop_content_alignment": "center",
+                    "image_overlay_opacity": 40,
+                },
+            }
+
+        elif st == "product":
+            blocks = {}
+            block_order = []
+            for btype in ["title", "price", "variant_picker", "description", "buy_buttons"]:
+                bid = f"product_{btype}"
+                blocks[bid] = {"type": btype, "settings": {}}
+                block_order.append(bid)
+
+            sections[sid] = {
+                "type": "featured-product",
+                "settings": {
+                    "product": product_handle,
+                    "color_scheme": cs,
+                    "media_size": "large",
+                    "media_fit": "contain",
+                },
+                "blocks": blocks,
+                "block_order": block_order,
+            }
+
+        elif st == "features":
+            items = feature_items or [
+                {"title": "Premium Quality", "text": "<p>Crafted with the finest materials for lasting durability.</p>"},
+                {"title": "Fast Shipping", "text": "<p>Free express delivery on all orders. Get it in 2-3 days.</p>"},
+                {"title": "Easy Returns", "text": "<p>30-day hassle-free return policy. Shop with confidence.</p>"},
+            ]
+            blocks = {}
+            block_order = []
+            for j, item in enumerate(items):
+                bid = f"feature_{j}"
+                blocks[bid] = {
+                    "type": "column",
+                    "settings": {"title": item["title"], "text": item["text"]},
+                }
+                block_order.append(bid)
+
+            sections[sid] = {
+                "type": "multicolumn",
+                "settings": {
+                    "title": "Why Choose Us",
+                    "columns_desktop": 3,
+                    "color_scheme": cs,
+                },
+                "blocks": blocks,
+                "block_order": block_order,
+            }
+
+        elif st == "testimonials":
+            items = testimonial_items or [
+                {"title": "⭐⭐⭐⭐⭐ Amazing Quality!", "text": "<p>\"Absolutely love this product! Exceeded all my expectations.\" — Sarah M.</p>"},
+                {"title": "⭐⭐⭐⭐⭐ Best Purchase Ever", "text": "<p>\"Fast shipping and incredible quality. Will buy again!\" — James R.</p>"},
+                {"title": "⭐⭐⭐⭐⭐ Highly Recommend", "text": "<p>\"Perfect in every way. My friends are all ordering one too!\" — Emily K.</p>"},
+            ]
+            blocks = {}
+            block_order = []
+            for j, item in enumerate(items):
+                bid = f"testimonial_{j}"
+                blocks[bid] = {
+                    "type": "column",
+                    "settings": {"title": item["title"], "text": item["text"]},
+                }
+                block_order.append(bid)
+
+            sections[sid] = {
+                "type": "multicolumn",
+                "settings": {
+                    "title": "What Our Customers Say",
+                    "columns_desktop": 3,
+                    "color_scheme": cs,
+                },
+                "blocks": blocks,
+                "block_order": block_order,
+            }
+
+        elif st == "faq":
+            items = faq_items or [
+                {"heading": "What materials is this made from?", "row_content": f"<p>The {display_title} is crafted from premium, high-quality materials designed for lasting durability and everyday use.</p>"},
+                {"heading": "How long does shipping take?", "row_content": "<p>We offer free express shipping on all orders. Most orders arrive within 2-3 business days.</p>"},
+                {"heading": "What is your return policy?", "row_content": "<p>We offer a 30-day hassle-free return policy. If you're not completely satisfied, simply return the product for a full refund.</p>"},
+                {"heading": "Is this product suitable as a gift?", "row_content": f"<p>Absolutely! The {display_title} makes a perfect gift. We also offer gift wrapping options at checkout.</p>"},
+            ]
+            blocks = {}
+            block_order = []
+            for j, item in enumerate(items):
+                bid = f"faq_{j}"
+                blocks[bid] = {
+                    "type": "collapsible_row",
+                    "settings": {"heading": item["heading"], "row_content": item["row_content"]},
+                }
+                block_order.append(bid)
+
+            sections[sid] = {
+                "type": "collapsible-content",
+                "settings": {
+                    "heading": "Frequently Asked Questions",
+                    "heading_size": "h1",
+                    "color_scheme": cs,
+                    "open_first_collapsible_row": True,
+                },
+                "blocks": blocks,
+                "block_order": block_order,
+            }
+
+        elif st == "cta":
+            blocks = {
+                "cta_heading": {
+                    "type": "heading",
+                    "settings": {"heading": f"Ready to Get Your {display_title}?"},
+                },
+                "cta_text": {
+                    "type": "text",
+                    "settings": {"text": "<p>Order now and experience the difference. Limited stock available!</p>"},
+                },
+                "cta_button": {
+                    "type": "buttons",
+                    "settings": {
+                        "button_label_1": "Order Now",
+                        "button_link_1": f"/products/{product_handle}" if product_handle else "/collections/all",
+                    },
+                },
+            }
+            sections[sid] = {
+                "type": "rich-text",
+                "settings": {"color_scheme": cs, "full_width": True},
+                "blocks": blocks,
+                "block_order": ["cta_heading", "cta_text", "cta_button"],
+            }
+
+        elif st == "image_text":
+            blocks = {
+                "it_heading": {
+                    "type": "heading",
+                    "settings": {"heading": f"Why {display_title}?"},
+                },
+                "it_text": {
+                    "type": "text",
+                    "settings": {"text": f"<p>Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.</p>"},
+                },
+                "it_button": {
+                    "type": "buttons",
+                    "settings": {
+                        "button_label_1": "Learn More",
+                        "button_link_1": f"/products/{product_handle}" if product_handle else "/collections/all",
+                    },
+                },
+            }
+            sections[sid] = {
+                "type": "image-with-text",
+                "settings": {
+                    "height": "adapt",
+                    "layout": "image_first",
+                    "color_scheme": cs,
+                },
+                "blocks": blocks,
+                "block_order": ["it_heading", "it_text", "it_button"],
+            }
+
+        elif st == "newsletter":
+            blocks = {
+                "nl_heading": {"type": "heading", "settings": {"heading": "Stay in the Loop"}},
+                "nl_text": {"type": "paragraph", "settings": {"text": "<p>Subscribe for exclusive deals, new arrivals, and insider tips.</p>"}},
+                "nl_form": {"type": "email_form", "settings": {}},
+            }
+            sections[sid] = {
+                "type": "newsletter",
+                "settings": {"color_scheme": cs},
+                "blocks": blocks,
+                "block_order": ["nl_heading", "nl_text", "nl_form"],
+            }
+
+        else:
+            # Unknown section type — skip
+            continue
+
+        order.append(sid)
+
+    return sections, order
+
+
+# ==================== Tool Definitions ====================
 
 PAGE_BUILDER_TOOLS: List[dict] = [
     {
         "type": "function",
         "function": {
             "name": "create_shopify_page",
-            "description": "Create a new Shopify page with a JSON template. Generates the template and creates the page in one step. Call this directly — do not call any other tools first.",
+            "description": "Create a new Shopify landing page. Provide the section types you want and the backend auto-generates the full template. Call this directly.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "page_title": {"type": "string", "description": "Title of the page"},
-                    "slug": {"type": "string", "description": "URL-friendly slug (e.g., 'summer-shoes-landing'). Lowercase, hyphens only."},
-                    "sections": {"type": "object", "description": "Dict of section_id -> section config. Each section has 'type', 'settings', optionally 'blocks' and 'block_order'."},
-                    "order": {"type": "array", "items": {"type": "string"}, "description": "Array of section IDs in display order."},
-                    "layout": {"type": "string", "description": "Optional layout override. Use 'none' to hide header/footer."},
-                    "product_gid": {"type": "string", "description": "Optional product GID to link via metafield"},
+                    "slug": {"type": "string", "description": "URL-friendly slug. Lowercase, hyphens only."},
+                    "section_types": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["hero", "product", "features", "testimonials", "faq", "cta", "image_text", "newsletter"]},
+                        "description": "List of section types to include, in display order.",
+                    },
+                    "product_handle": {"type": "string", "description": "Shopify product handle for featured-product section"},
+                    "product_title": {"type": "string", "description": "Product title for display in headings"},
+                    "product_gid": {"type": "string", "description": "Product GID for metafield linking"},
+                    "layout": {"type": "string", "description": "Use 'none' to hide header/footer"},
                 },
-                "required": ["page_title", "slug", "sections", "order"],
+                "required": ["page_title", "slug", "section_types"],
             },
         },
     },
@@ -111,7 +307,7 @@ PAGE_BUILDER_TOOLS: List[dict] = [
         "type": "function",
         "function": {
             "name": "update_shopify_page",
-            "description": "Update an existing page template with modified sections. Use this for iterative edits.",
+            "description": "Update an existing page template with modified sections.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,21 +317,6 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                     "layout": {"type": "string", "description": "Optional layout override"},
                 },
                 "required": ["slug", "sections", "order"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_page_layout",
-            "description": "Change the layout of an existing page template to show or hide header/footer.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "slug": {"type": "string", "description": "The template slug"},
-                    "show_header_footer": {"type": "boolean", "description": "True = show header/footer, False = hide both"},
-                },
-                "required": ["slug", "show_header_footer"],
             },
         },
     },
@@ -149,27 +330,36 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
     try:
         if name == "create_shopify_page":
             slug = args.get("slug", "")
-            sections = args.get("sections", {})
-            order = args.get("order", [])
-            layout = args.get("layout")
             page_title = args.get("page_title", "AI Page")
+            product_handle = args.get("product_handle", "")
+            product_title = args.get("product_title", "")
             product_gid = args.get("product_gid")
+            layout = args.get("layout")
+            section_types = args.get("section_types", ["hero", "product", "features", "faq", "cta"])
 
-            # Step 1: Write template to theme
+            # Build sections server-side from the section types list
+            sections, order = _build_sections_from_order(
+                section_types,
+                product_handle=product_handle,
+                product_title=product_title,
+                page_title=page_title,
+            )
+
+            # Write template to theme
             tmpl = create_page_template_json(
                 slug, sections, order,
                 layout=layout,
                 store=store,
             )
 
-            # Step 2: Create the page using the template
+            # Create the page using the template
             page = create_page_with_template(
                 page_title,
                 tmpl["template_suffix"],
                 store=store,
             )
 
-            # Step 3: Link to product if provided
+            # Link to product if provided
             if product_gid and page.get("page_gid"):
                 try:
                     _link_product_landing_page(product_gid, page["page_gid"], store=store)
@@ -182,7 +372,6 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
                 "page_handle": page.get("page_handle"),
                 "template_suffix": tmpl.get("template_suffix"),
                 "slug": slug,
-                "theme_editor_url": f"https://admin.shopify.com/themes/current/editor?template=page.{tmpl.get('template_suffix', '')}",
             }
 
         if name == "update_shopify_page":
@@ -203,31 +392,6 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
                 "slug": slug,
             }
 
-        if name == "set_page_layout":
-            slug = args.get("slug", "")
-            show = args.get("show_header_footer", True)
-
-            # Read current template
-            current = read_page_template_json(slug, store=store)
-            if not current:
-                return {"error": f"Template not found for slug: {slug}"}
-
-            sections = current.get("sections", {})
-            order = current.get("order", [])
-            layout = None if show else "none"
-
-            tmpl = update_page_template_json(
-                slug, sections, order,
-                layout=layout,
-                store=store,
-            )
-
-            return {
-                "status": "layout_updated",
-                "layout": layout or "default",
-                "slug": slug,
-            }
-
         return {"error": f"Unknown tool: {name}"}
 
     except Exception as e:
@@ -245,18 +409,9 @@ def run_page_builder_agent(
 ) -> Dict[str, Any]:
     """Run the page builder agent loop with tool-calling.
 
-    Optimized flow (2 OpenAI rounds for page creation):
-      Round 1: AI sees prompt → calls create_shopify_page with full JSON
-      Round 2: AI sees tool result → returns summary text
-
-    Args:
-        messages: Chat history (user + assistant messages).
-        model: OpenAI model to use.
-        store: Multi-store label for Shopify API calls.
-        max_iters: Max tool-calling iterations.
-
-    Returns:
-        { text: str, messages: list, page_url?: str, slug?: str, template_suffix?: str }
+    Optimized flow:
+      Round 1: AI sees prompt → calls create_shopify_page with section_types list
+      Backend builds full JSON and creates page → returns page_url immediately.
     """
     if not isinstance(messages, list):
         raise ValueError("messages must be a list")
@@ -296,6 +451,26 @@ def run_page_builder_agent(
                     args = json.loads(tc.function.arguments or "{}")
                 except Exception:
                     args = {}
+
+                # Extract product info from conversation if not in args
+                if fn_name == "create_shopify_page":
+                    # Search messages for product context
+                    for m in messages:
+                        content = m.get("content", "")
+                        if isinstance(content, str):
+                            if not args.get("product_handle"):
+                                match = re.search(r"Product handle:\s*(.+)", content)
+                                if match:
+                                    args["product_handle"] = match.group(1).strip()
+                            if not args.get("product_title"):
+                                match = re.search(r"Product title:\s*(.+)", content)
+                                if match:
+                                    args["product_title"] = match.group(1).strip()
+                            if not args.get("product_gid"):
+                                match = re.search(r"Product GID:\s*(gid://shopify/Product/\d+)", content)
+                                if match:
+                                    args["product_gid"] = match.group(1).strip()
+
                 result = _dispatch_page_builder_tool(fn_name, args, store=store)
 
                 # Capture page URL if created
@@ -313,8 +488,7 @@ def run_page_builder_agent(
                     "content": json.dumps(result, ensure_ascii=False),
                 })
 
-            # FAST PATH: If page was created, return immediately without another OpenAI round
-            # This saves 15-25s by skipping the AI summary generation
+            # FAST PATH: If page was created, return immediately
             if page_url:
                 return {
                     "text": f"✅ Page created successfully! View it here: {page_url}",
