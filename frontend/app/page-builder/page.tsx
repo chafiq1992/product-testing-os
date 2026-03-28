@@ -103,6 +103,39 @@ export default function PageBuilderPage() {
   }, [productQuery, searchProducts])
 
   // Send prompt to AI agent
+  // Send a quick-action prompt directly
+  const sendQuickAction = (text: string) => {
+    if (generating) return
+    setChat(prev => [...prev, { role: 'user', content: text }])
+    setPrompt('')
+    setGenerating(true)
+    pageBuilderGenerate({
+      prompt: text,
+      product_handle: selectedProduct?.handle || undefined,
+      product_id: selectedProduct?.id || undefined,
+      product_title: selectedProduct?.title || undefined,
+      hide_header: !showHeader,
+      hide_footer: !showFooter,
+      messages: messages.length ? messages : undefined,
+      slug: currentSlug || undefined,
+    }).then(res => {
+      if (res.error) {
+        setChat(prev => [...prev, { role: 'assistant', content: `❌ Error: ${res.error}` }])
+      } else {
+        const msg: ChatMsg = { role: 'assistant', content: res.text || 'Done!', pageUrl: res.page_url || undefined, slug: res.slug || undefined }
+        setChat(prev => [...prev, msg])
+        if (res.messages) setMessages(res.messages)
+        if (res.slug) setCurrentSlug(res.slug)
+        if (res.page_url) { setCurrentPageUrl(res.page_url); setIframeKey(k => k + 1) }
+      }
+    }).catch((e: any) => {
+      setChat(prev => [...prev, { role: 'assistant', content: `❌ ${e?.message || 'Unknown error'}` }])
+    }).finally(() => {
+      setGenerating(false)
+      inputRef.current?.focus()
+    })
+  }
+
   const handleSend = async () => {
     const text = prompt.trim()
     if (!text || generating) return
@@ -321,9 +354,9 @@ export default function PageBuilderPage() {
                 </p>
                 <div className="mt-4 space-y-1.5 w-full max-w-[280px]">
                   {[
-                    'Create a luxury landing page with hero, features, and FAQ',
-                    'Build a product page with testimonials and urgency section',
-                    'Design a minimalist page with image gallery and CTA',
+                    'Create a landing page with hero, benefits, testimonials, FAQ, and CTA',
+                    'Build a product page with features, countdown timer, and guarantee section',
+                    'Design a high-converting page with comparison, benefits, and urgency',
                   ].map((ex, i) => (
                     <button key={i} onClick={() => setPrompt(ex)}
                       className="w-full text-left text-xs text-white/40 hover:text-white/60 bg-white/5 hover:bg-white/8 rounded-lg px-3 py-2 transition-colors">
@@ -366,6 +399,31 @@ export default function PageBuilderPage() {
 
             <div ref={chatEndRef} />
           </div>
+
+          {/* Quick-Action Section Buttons */}
+          {currentSlug && (
+            <div className="px-4 py-3 border-t border-white/5 bg-[#0e0e18]/30">
+              <div className="text-[10px] uppercase tracking-wider text-white/25 mb-2">Quick Add Section</div>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: '✅ Benefits', prompt: 'Add a bullet points benefits section' },
+                  { label: '⭐ Testimonials', prompt: 'Add a testimonials section' },
+                  { label: '❓ FAQ', prompt: 'Add an FAQ section' },
+                  { label: '🔥 Countdown', prompt: 'Add a countdown/urgency section' },
+                  { label: '🛡️ Guarantee', prompt: 'Add a guarantee section' },
+                  { label: '⚡ CTA', prompt: 'Add a call-to-action section' },
+                  { label: '📊 Comparison', prompt: 'Add a comparison section' },
+                  { label: '🎬 Video', prompt: 'Add a video section' },
+                ].map((action, i) => (
+                  <button key={i}
+                    onClick={() => sendQuickAction(action.prompt)}
+                    disabled={generating}
+                    className="text-[11px] text-white/50 hover:text-white/80 bg-white/5 hover:bg-purple-500/15 border border-white/5 hover:border-purple-500/30 rounded-lg px-2.5 py-1.5 transition-all disabled:opacity-30"
+                  >{action.label}</button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Input Area */}
           <div className="p-4 border-t border-white/5 bg-[#0e0e18]/50">
