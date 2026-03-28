@@ -5052,7 +5052,7 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
         else:
             messages = (req.messages or []) + [user_msg]
 
-        # Run with a 300s timeout to avoid 504 from Cloud Run gateway
+        # Run with a 55s timeout to return a proper error before the 60s gateway timeout
         result = await asyncio.wait_for(
             run_in_threadpool(
                 run_page_builder_agent,
@@ -5060,7 +5060,7 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
                 model=req.model,
                 store=store,
             ),
-            timeout=300,
+            timeout=55,
         )
 
         return {

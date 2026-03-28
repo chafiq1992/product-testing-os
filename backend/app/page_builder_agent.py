@@ -2,6 +2,10 @@
 
 The agent uses Dawn theme sections (image-banner, rich-text, featured-product, etc.)
 to compose landing pages and product pages that appear natively in the Shopify Theme Editor.
+
+OPTIMIZED: Sections data is embedded in the system prompt to eliminate the list_available_sections
+tool call. The generate_page_template step is merged into create_shopify_page to reduce
+the total number of OpenAI round-trips from 3+ down to 2 (one tool call + one final response).
 """
 
 import json
@@ -11,7 +15,6 @@ from openai import OpenAI
 
 from app.integrations.openai_client import DEFAULT_LLM_MODEL
 from app.integrations.shopify_client import (
-    list_available_sections,
     create_page_template_json,
     update_page_template_json,
     read_page_template_json,
@@ -23,115 +26,81 @@ from app.integrations.shopify_client import (
 client = OpenAI()
 
 
-# ==================== System Prompt ====================
+# ==================== System Prompt (with embedded sections) ====================
 
 PAGE_BUILDER_SYSTEM = {
     "role": "system",
     "content": """You are the Shopify Page Builder Agent. Your job is to generate beautiful, high-converting landing pages and product pages using ONLY native Shopify Dawn theme sections.
 
-WORKFLOW:
-1. When asked to create a page, FIRST call list_available_sections to see what section types you can use.
-2. Then call generate_page_template to produce the JSON template structure.
-3. Finally call create_shopify_page to write the template to Shopify and create the page.
+AVAILABLE DAWN SECTIONS (use ONLY these types):
+- "image-banner": Full-width hero banner. Settings: image, image_overlay_opacity, heading, heading_size, subheading, button_label, button_link, color_scheme, desktop_content_position, desktop_content_alignment.
+- "rich-text": Text section. Settings: color_scheme, full_width. Blocks: heading, text, buttons.
+- "featured-product": Product display with images, price, add-to-cart. Settings: product (handle), color_scheme, media_size, media_fit. Blocks: title, price, variant_picker, buy_buttons, description, rating.
+- "collapsible-content": FAQ accordion. Settings: caption, heading, heading_size, color_scheme, open_first_collapsible_row. Blocks: collapsible_row (each with heading + body).
+- "multicolumn": Grid columns for features/benefits. Settings: title, columns_desktop, color_scheme, image_width, image_ratio. Blocks: column (each with title, text, image).
+- "image-with-text": Side-by-side image + text. Settings: image, height, layout, color_scheme. Blocks: heading, text, buttons.
+- "video": Embedded video. Settings: heading, video_url, cover_image, color_scheme.
+- "featured-collection": Products grid from collection. Settings: title, collection, products_to_show, columns_desktop.
+- "contact-form": Contact form. Settings: heading, color_scheme.
+- "custom-liquid": Custom HTML/Liquid. Settings: custom_liquid, color_scheme.
+- "newsletter": Email signup. Settings: color_scheme. Blocks: heading, paragraph, email_form.
 
-WHEN EDITING an existing page:
+WORKFLOW FOR CREATING A NEW PAGE:
+1. Call create_shopify_page with the full sections JSON, order array, page_title, and slug.
+   The tool will write the template to the theme AND create the page in one step.
+   DO NOT call any other tools first — go straight to create_shopify_page.
+
+WORKFLOW FOR EDITING AN EXISTING PAGE:
 1. The current template JSON will be provided in the conversation.
-2. Analyze the user's requested changes.
-3. Call update_shopify_page with the modified sections.
+2. Call update_shopify_page with the modified sections.
 
 SECTION RULES:
-- Use ONLY the section types returned by list_available_sections.
-- Each section needs a unique string ID (e.g., "hero", "features", "product_showcase", "faq_section").
+- Each section needs a unique string ID (e.g., "hero", "features", "faq_section").
 - The "order" array must list section IDs in display order.
 - For product pages, ALWAYS include a "featured-product" section with the product handle in settings.product.
-- Use "image-banner" for hero sections.
-- Use "rich-text" for text content, headlines, CTAs.
-- Use "multicolumn" for features/benefits grids.
-- Use "collapsible-content" for FAQs.
-- Use "image-with-text" for feature spotlights.
+- Use "image-banner" for hero sections with heading, subheading, and CTA button.
+- Use "rich-text" for text content with blocks for heading/text/buttons.
+- Use "multicolumn" for features/benefits grids with column blocks.
+- Use "collapsible-content" for FAQs with collapsible_row blocks (heading + body).
 
-LAYOUT CONTROL:
-- Default: normal layout (with header/footer).
-- To hide header AND footer, set layout to "none".
-- When user asks to hide header/footer, use set_page_layout tool.
+COLLAPSIBLE_ROW BLOCK FORMAT:
+Each FAQ block must have type "collapsible_row" with settings: {"heading": "Question?", "row_content": "<p>Answer text</p>"}
+
+RICH-TEXT BLOCK FORMAT:
+- heading block: type "heading", settings: {"heading": "Text here"}
+- text block: type "text", settings: {"text": "<p>Paragraph text</p>"}
+- buttons block: type "buttons", settings: {"button_label_1": "Shop Now", "button_link_1": "/collections/all"}
+
+MULTICOLUMN BLOCK FORMAT:
+Each column block: type "column", settings: {"title": "Feature Title", "text": "<p>Description</p>"}
 
 DESIGN PRINCIPLES:
-- Create visually rich pages with 5-8 sections minimum.
+- Create visually rich pages with 5-8 sections.
 - Always include: hero, product showcase, benefits/features, trust signals, CTA.
-- For landing pages: add urgency, social proof, FAQ.
+- Use color_scheme settings (e.g., "scheme-1", "scheme-2") for visual variety between sections.
 - Keep text concise and benefit-focused.
-- Use color_scheme settings for visual variety between sections.
 
-OUTPUT: Always respond with a brief summary of what you created/changed and the page URL.""",
+OUTPUT: Always respond with a brief summary of what you created and the page URL.""",
 }
 
 
-# ==================== Tool Definitions ====================
+# ==================== Tool Definitions (optimized — 3 tools only) ====================
 
 PAGE_BUILDER_TOOLS: List[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "list_available_sections",
-            "description": "Get the list of Shopify Dawn theme sections available for building pages. Call this first to know what section types you can use.",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_page_template",
-            "description": "Generate a JSON template structure for a Shopify page. Returns the template spec that can be passed to create_shopify_page.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "page_title": {
-                        "type": "string",
-                        "description": "Title for the page",
-                    },
-                    "slug": {
-                        "type": "string",
-                        "description": "URL-friendly slug for the template (e.g., 'summer-shoes-landing'). Lowercase, hyphens only.",
-                    },
-                    "sections": {
-                        "type": "object",
-                        "description": "Dict of section_id -> section config. Each section must have 'type' (string matching a Dawn section type), 'settings' (object), and optionally 'blocks' (object of block_id -> block config) and 'block_order' (array of block IDs).",
-                    },
-                    "order": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Array of section IDs in display order.",
-                    },
-                    "layout": {
-                        "type": "string",
-                        "description": "Layout override. Use 'none' to hide header/footer. Omit for default layout.",
-                    },
-                    "product_handle": {
-                        "type": "string",
-                        "description": "Shopify product handle to link via featured-product section.",
-                    },
-                },
-                "required": ["page_title", "slug", "sections", "order"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "create_shopify_page",
-            "description": "Write the JSON template to the Shopify theme and create a page using it. Call this after generate_page_template.",
+            "description": "Create a new Shopify page with a JSON template. Generates the template and creates the page in one step. Call this directly — do not call any other tools first.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "page_title": {"type": "string", "description": "Title of the page"},
-                    "slug": {"type": "string", "description": "Same slug used in generate_page_template"},
-                    "sections": {"type": "object", "description": "The sections dict from generate_page_template"},
-                    "order": {"type": "array", "items": {"type": "string"}, "description": "The order array"},
-                    "layout": {"type": "string", "description": "Optional layout override ('none' to hide header/footer)"},
-                    "product_gid": {"type": "string", "description": "Optional product GID to link the page to the product via metafield"},
+                    "slug": {"type": "string", "description": "URL-friendly slug (e.g., 'summer-shoes-landing'). Lowercase, hyphens only."},
+                    "sections": {"type": "object", "description": "Dict of section_id -> section config. Each section has 'type', 'settings', optionally 'blocks' and 'block_order'."},
+                    "order": {"type": "array", "items": {"type": "string"}, "description": "Array of section IDs in display order."},
+                    "layout": {"type": "string", "description": "Optional layout override. Use 'none' to hide header/footer."},
+                    "product_gid": {"type": "string", "description": "Optional product GID to link via metafield"},
                 },
                 "required": ["page_title", "slug", "sections", "order"],
             },
@@ -163,7 +132,7 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                 "type": "object",
                 "properties": {
                     "slug": {"type": "string", "description": "The template slug"},
-                    "show_header_footer": {"type": "boolean", "description": "True = normal layout (show header/footer), False = 'none' layout (hide both)"},
+                    "show_header_footer": {"type": "boolean", "description": "True = show header/footer, False = hide both"},
                 },
                 "required": ["slug", "show_header_footer"],
             },
@@ -177,25 +146,6 @@ PAGE_BUILDER_TOOLS: List[dict] = [
 def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str | None = None) -> Dict[str, Any]:
     """Execute a page builder tool call."""
     try:
-        if name == "list_available_sections":
-            return {"sections": list_available_sections()}
-
-        if name == "generate_page_template":
-            # This is a "planning" step — the AI generates the template spec.
-            # We just return it so the agent can then call create_shopify_page.
-            return {
-                "template_spec": {
-                    "page_title": args.get("page_title", ""),
-                    "slug": args.get("slug", ""),
-                    "sections": args.get("sections", {}),
-                    "order": args.get("order", []),
-                    "layout": args.get("layout"),
-                    "product_handle": args.get("product_handle"),
-                },
-                "status": "ready_to_create",
-                "message": "Template spec generated. Call create_shopify_page to write it to Shopify.",
-            }
-
         if name == "create_shopify_page":
             slug = args.get("slug", "")
             sections = args.get("sections", {})
@@ -290,9 +240,13 @@ def run_page_builder_agent(
     *,
     model: Optional[str] = None,
     store: str | None = None,
-    max_iters: int = 6,
+    max_iters: int = 4,
 ) -> Dict[str, Any]:
     """Run the page builder agent loop with tool-calling.
+
+    Optimized flow (2 OpenAI rounds for page creation):
+      Round 1: AI sees prompt → calls create_shopify_page with full JSON
+      Round 2: AI sees tool result → returns summary text
 
     Args:
         messages: Chat history (user + assistant messages).
@@ -321,7 +275,7 @@ def run_page_builder_agent(
             messages=working,
             tools=PAGE_BUILDER_TOOLS,
             tool_choice="auto",
-            timeout=90,
+            timeout=50,
         )
         choice = resp.choices[0]
         msg = choice.message
