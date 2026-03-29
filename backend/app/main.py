@@ -5131,12 +5131,15 @@ async def api_page_builder_status(slug: str, store: str | None = None):
 @app.get("/api/page-builder/preview-proxy")
 async def api_page_builder_preview_proxy(url: str):
     """Proxy a Shopify page to strip X-Frame-Options / CSP so it can be previewed in an iframe."""
-    import httpx, re as _re
+    import requests as _req, re as _re
     if not url or not url.startswith("http"):
         return Response(content="Invalid URL", status_code=400)
+
+    def _fetch():
+        return _req.get(url, timeout=15, allow_redirects=True)
+
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
-            resp = await client.get(url)
+        resp = await run_in_threadpool(_fetch)
         html = resp.text
         # Inject <base> tag so relative links/images resolve to the Shopify domain
         from urllib.parse import urlparse
@@ -5147,6 +5150,13 @@ async def api_page_builder_preview_proxy(url: str):
             rf'\1<base href="{base_url}/" />',
             html,
             count=1,
+            flags=_re.IGNORECASE,
+        )
+        # Strip any CSP meta tags in the HTML itself
+        html = _re.sub(
+            r'<meta[^>]*http-equiv=["\']Content-Security-Policy["\'][^>]*>',
+            '',
+            html,
             flags=_re.IGNORECASE,
         )
         # Return with permissive headers (no X-Frame-Options, no restrictive CSP)
