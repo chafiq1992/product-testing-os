@@ -131,7 +131,7 @@ def _build_single_section(
         blocks[bid_h] = {
             "type": "heading",
             "settings": {
-                "heading": _html_heading(heading or display_title),
+                "heading": heading or display_title,
                 "heading_size": "h0",
             },
         }
