@@ -71,6 +71,8 @@ export default function PageBuilderPage() {
 
   // Preview
   const [iframeKey, setIframeKey] = useState(0)
+  const [previewDevice, setPreviewDevice] = useState<'desktop'|'tablet'|'mobile'>('desktop')
+  const [iframeError, setIframeError] = useState(false)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -126,7 +128,7 @@ export default function PageBuilderPage() {
         setChat(prev => [...prev, msg])
         if (res.messages) setMessages(res.messages)
         if (res.slug) setCurrentSlug(res.slug)
-        if (res.page_url) { setCurrentPageUrl(res.page_url); setIframeKey(k => k + 1) }
+        if (res.page_url) { setCurrentPageUrl(res.page_url); setIframeKey(k => k + 1); setIframeError(false) }
       }
     }).catch((e: any) => {
       setChat(prev => [...prev, { role: 'assistant', content: `❌ ${e?.message || 'Unknown error'}` }])
@@ -172,6 +174,7 @@ export default function PageBuilderPage() {
         if (res.page_url) {
           setCurrentPageUrl(res.page_url)
           setIframeKey(k => k + 1)
+          setIframeError(false)
         }
       }
     } catch (e: any) {
@@ -457,7 +460,35 @@ export default function PageBuilderPage() {
           {currentPageUrl ? (
             <>
               <div className="px-4 py-3 border-b border-white/5 flex items-center gap-3 bg-[#0e0e18]/50">
-                <span className="text-xs text-white/40 flex-1 truncate">{currentPageUrl}</span>
+                {/* Device viewport toggle */}
+                <div className="flex items-center bg-white/5 rounded-lg p-0.5">
+                  {([
+                    { mode: 'desktop' as const, label: 'Desktop', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                    )},
+                    { mode: 'tablet' as const, label: 'Tablet', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+                    )},
+                    { mode: 'mobile' as const, label: 'Mobile', icon: (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+                    )},
+                  ]).map(d => (
+                    <button key={d.mode}
+                      onClick={() => setPreviewDevice(d.mode)}
+                      title={d.label}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs transition-all ${
+                        previewDevice === d.mode
+                          ? 'bg-purple-600/30 text-purple-300 shadow-sm'
+                          : 'text-white/40 hover:text-white/60 hover:bg-white/5'
+                      }`}
+                    >
+                      {d.icon}
+                      <span className="hidden sm:inline">{d.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <span className="text-xs text-white/30 flex-1 truncate ml-2">{currentPageUrl}</span>
                 <button onClick={() => setIframeKey(k => k + 1)}
                   className="text-white/40 hover:text-white/60 transition-colors p-1.5 hover:bg-white/5 rounded-lg" title="Refresh">
                   <RefreshIcon />
@@ -467,13 +498,55 @@ export default function PageBuilderPage() {
                   <ExternalLinkIcon />
                 </a>
               </div>
-              <div className="flex-1 relative">
-                <iframe
-                  key={iframeKey}
-                  src={currentPageUrl}
-                  className="absolute inset-0 w-full h-full border-0"
-                  title="Page Preview"
-                />
+              <div className="flex-1 relative overflow-auto flex justify-center bg-[#060610]"
+                   style={{ background: previewDevice !== 'desktop' ? 'radial-gradient(circle at 50% 20%, #0e0e1f, #060610)' : undefined }}>
+                <div
+                  className="transition-all duration-300 ease-in-out h-full"
+                  style={{
+                    width: previewDevice === 'desktop' ? '100%'
+                         : previewDevice === 'tablet' ? '768px'
+                         : '375px',
+                    maxWidth: '100%',
+                    ...(previewDevice !== 'desktop' ? {
+                      margin: '16px auto',
+                      border: '2px solid rgba(255,255,255,0.08)',
+                      borderRadius: '16px',
+                      overflow: 'hidden',
+                      boxShadow: '0 0 40px rgba(0,0,0,0.5)',
+                      height: 'calc(100% - 32px)',
+                    } : {}),
+                  }}
+                >
+                  {iframeError ? (
+                    <div className="flex flex-col items-center justify-center h-full gap-4">
+                      <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center">
+                        <ExternalLinkIcon />
+                      </div>
+                      <p className="text-sm text-white/50">Preview blocked by store settings</p>
+                      <a href={currentPageUrl} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-2 text-sm text-purple-300 hover:text-purple-200 bg-purple-600/20 border border-purple-500/30 rounded-xl px-5 py-2.5 hover:bg-purple-600/30 transition-all">
+                        <ExternalLinkIcon /> Open page in new tab
+                      </a>
+                    </div>
+                  ) : (
+                    <iframe
+                      key={iframeKey}
+                      src={currentPageUrl}
+                      className="w-full h-full border-0"
+                      title="Page Preview"
+                      onError={() => setIframeError(true)}
+                      onLoad={(e) => {
+                        try {
+                          // If we can't access contentDocument, the frame is blocked
+                          const f = e.currentTarget;
+                          if (f.contentDocument === null && f.contentWindow === null) {
+                            setIframeError(true);
+                          }
+                        } catch { /* cross-origin is expected, iframe is rendering */ }
+                      }}
+                    />
+                  )}
+                </div>
               </div>
             </>
           ) : (
