@@ -36,51 +36,53 @@ client = OpenAI()
 
 PAGE_BUILDER_SYSTEM = {
     "role": "system",
-    "content": """You are the Shopify Page Builder Agent. You create beautiful, state-of-the-art landing pages and product pages.
+    "content": """You are the Shopify Page Builder Agent. Your ONLY job is to BUILD real Shopify pages by calling tools.
 
-WORKFLOW:
-- To CREATE a new page: call create_shopify_page with page_title, slug, section_types, and product details.
-- To ADD a section to an existing page: call add_section_to_page with slug and section_type.
-- To REMOVE a section: call remove_section_from_page with slug and section_id.
-- To REORDER sections: call reorder_sections with slug and the new order.
+CRITICAL RULES:
+1. You MUST ALWAYS call a tool. NEVER respond with text-only. NEVER write strategies, copy, or advice — BUILD THE PAGE.
+2. If the user gives a detailed prompt about conversion, copy, sections, etc. — extract the content and use it to BUILD a page with the right sections.
+3. ALWAYS call create_shopify_page immediately with all the section types and custom content.
+4. For editing existing pages: use add_section_to_page, remove_section_from_page, or reorder_sections.
 
-The backend generates all section JSON server-side — you never write raw JSON.
+WORKFLOW FOR NEW PAGES:
+1. Read the user's request and identify which sections to include.
+2. Extract any custom headings, benefits, FAQ content, testimonials from their prompt.
+3. Call create_shopify_page with:
+   - section_types: the ordered list of sections
+   - headings_by_type: custom heading per section (e.g. {"hero": "Dress Your Little One in Style"})
+   - subheadings_by_type: custom subtitle per section
+   - items_by_type: custom items per section (benefits, features, testimonials, faq, comparison)
 
-AVAILABLE SECTION TYPES (for section_types array and add_section_to_page):
-- "hero": Full-width hero banner with heading, subheading, and CTA button
-- "product": Featured product showcase with images, price, variants, add-to-cart
+AVAILABLE SECTION TYPES:
+- "hero": Full-width banner with heading, subheading, CTA button
+- "product": Product showcase with images, price, variants, add-to-cart
 - "features": 3-column benefits/features grid with icons
-- "benefits": Bullet-point benefits list (rich text with checkmarks)
+- "benefits": Bullet-point benefits (rich text with checkmarks)
 - "testimonials": Customer review quotes in 3 columns
 - "faq": Frequently asked questions accordion
-- "cta": Call-to-action section with heading, text, and button
-- "image_text": Image + text side-by-side layout
+- "cta": Call-to-action with heading, text, and button
+- "image_text": Image + text side-by-side
 - "newsletter": Email signup section
-- "video": Video embed section (YouTube/Vimeo URL)
+- "video": Video embed (YouTube/Vimeo)
 - "collection": Featured collection product grid
-- "countdown": Urgency/scarcity countdown section
-- "guarantee": Trust/guarantee section with badge
-- "comparison": Comparison/before-after columns
-- "custom_html": Custom HTML/Liquid section (provide custom_liquid content)
-- "description": Rich text description section
+- "countdown": Urgency/scarcity countdown
+- "guarantee": Trust/guarantee badge section
+- "comparison": Before/after comparison columns
+- "custom_html": Custom HTML/Liquid section
+- "description": Rich text description
 
-RULES:
-- Always include "hero" and "product" sections for product pages.
-- Use 5-8 sections for a rich, professional page.
-- When user asks to "add a section", use add_section_to_page (NOT create_shopify_page).
-- When user asks to "add bullet points of benefits", use section_type "benefits".
-- Call tools immediately — don't ask the user for confirmation.
+SECTION GUIDELINES:
+- Product pages: include hero, product, benefits, testimonials, faq, guarantee, cta (7+ sections).
+- Landing pages: include hero, features, benefits, comparison, testimonials, countdown, guarantee, cta (8+ sections).
+- High-converting pages: 8-12 sections with trust elements, urgency, and social proof.
 
-CUSTOMIZATION: Many tools accept optional content parameters:
-- heading: Custom heading text
-- subheading: Custom subtitle text
-- items: Array of {title, text} for features/benefits/testimonials
-- faq_items: Array of {heading, row_content} for FAQ
-- button_label / button_link: CTA button customization
-- video_url: YouTube/Vimeo URL for video section
-- custom_liquid: Raw HTML/Liquid for custom_html section
+EXAMPLE — User says: "Create a high-converting kids clothing page"
+You call create_shopify_page with:
+  section_types: ["hero", "product", "benefits", "features", "comparison", "testimonials", "guarantee", "faq", "countdown", "cta"]
+  headings_by_type: {"hero": "Adorable Style, Happy Kids", "benefits": "Why Parents Love It", ...}
+  items_by_type: {"benefits": [{"title": "Ultra-Soft Fabric", "text": "Gentle on sensitive skin..."}, ...], ...}
 
-OUTPUT: After any operation, briefly confirm with the page URL.""",
+REMEMBER: You are NOT a copywriter or strategist. You BUILD pages. Always call a tool.""",
 }
 
 
@@ -557,6 +559,7 @@ def _build_sections_from_order(
     testimonial_items: List[Dict[str, str]] | None = None,
     items_by_type: Dict[str, list] | None = None,
     headings_by_type: Dict[str, str] | None = None,
+    subheadings_by_type: Dict[str, str] | None = None,
 ) -> tuple[Dict[str, Any], List[str]]:
     """Build full sections JSON + order array from a list of section type names.
 
@@ -568,6 +571,7 @@ def _build_sections_from_order(
     color_schemes = ["scheme-1", "scheme-2", "scheme-3", "scheme-4"]
     items_map = items_by_type or {}
     headings_map = headings_by_type or {}
+    subheadings_map = subheadings_by_type or {}
 
     for i, st in enumerate(section_types):
         cs = color_schemes[i % len(color_schemes)]
@@ -579,6 +583,13 @@ def _build_sections_from_order(
             section_items = feature_items
         elif st == "testimonials" and not section_items:
             section_items = testimonial_items
+        # FAQ items can come from items_by_type or direct faq_items
+        section_faq = None
+        if st == "faq":
+            section_faq = items_map.get("faq") or faq_items
+            # Convert items format to faq format if needed
+            if section_faq and section_faq[0] and "title" in section_faq[0] and "heading" not in section_faq[0]:
+                section_faq = [{"heading": f.get("title",""), "row_content": f.get("text","")} for f in section_faq]
 
         section = _build_single_section(
             st,
@@ -587,8 +598,9 @@ def _build_sections_from_order(
             page_title=page_title,
             color_scheme=cs,
             heading=headings_map.get(st),
+            subheading=subheadings_map.get(st),
             items=section_items,
-            faq_items=faq_items if st == "faq" else None,
+            faq_items=section_faq,
         )
 
         if section is None:
@@ -607,7 +619,7 @@ PAGE_BUILDER_TOOLS: List[dict] = [
         "type": "function",
         "function": {
             "name": "create_shopify_page",
-            "description": "Create a new Shopify landing page. Provide the section types you want and the backend auto-generates the full template. Call this directly.",
+            "description": "Create a new Shopify landing page with the given sections and custom content. ALWAYS call this — never respond with text only.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -621,11 +633,29 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                             "collection", "countdown", "guarantee", "comparison",
                             "custom_html", "description",
                         ]},
-                        "description": "List of section types to include, in display order.",
+                        "description": "List of section types to include, in display order. Use 8-12 for high-converting pages.",
                     },
                     "product_handle": {"type": "string", "description": "Shopify product handle for featured-product section"},
                     "product_title": {"type": "string", "description": "Product title for display in headings"},
                     "product_gid": {"type": "string", "description": "Product GID for metafield linking"},
+                    "headings_by_type": {
+                        "type": "object",
+                        "description": "Custom heading per section type, e.g. {\"hero\": \"Dress Your Little One\", \"benefits\": \"Why Parents Love It\"}",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "subheadings_by_type": {
+                        "type": "object",
+                        "description": "Custom subheading/subtitle per section type.",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "items_by_type": {
+                        "type": "object",
+                        "description": "Custom items per section. Keys: section type. Values: array of {title, text} objects. For FAQ: {title, text} where title=question, text=answer.",
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"}}},
+                        },
+                    },
                 },
                 "required": ["page_title", "slug", "section_types"],
             },
@@ -740,12 +770,20 @@ def _dispatch_page_builder_tool(name: str, args: Dict[str, Any], *, store: str |
             product_gid = args.get("product_gid")
             section_types = args.get("section_types", ["hero", "product", "features", "faq", "cta"])
 
-            # Build sections server-side from the section types list
+            # Extract per-section custom content from tool args
+            headings_by_type = args.get("headings_by_type") or {}
+            subheadings_by_type = args.get("subheadings_by_type") or {}
+            items_by_type = args.get("items_by_type") or {}
+
+            # Build sections server-side from the section types list + custom content
             sections, order = _build_sections_from_order(
                 section_types,
                 product_handle=product_handle,
                 product_title=product_title,
                 page_title=page_title,
+                headings_by_type=headings_by_type,
+                subheadings_by_type=subheadings_by_type,
+                items_by_type=items_by_type,
             )
 
             # Write template to theme
@@ -976,13 +1014,12 @@ def run_page_builder_agent(
     last_result: Dict[str, Any] | None = None
 
     for iteration in range(max_iters):
-        # Force tool call on first iteration; allow text responses after
-        choice_mode = "required" if iteration == 0 else "auto"
+        # Force tool call on EVERY iteration — agent must always use tools
         resp = client.chat.completions.create(
             model=(model or PAGE_BUILDER_MODEL),
             messages=working,
             tools=PAGE_BUILDER_TOOLS,
-            tool_choice=choice_mode,
+            tool_choice="required",
             timeout=50,
         )
         choice = resp.choices[0]
