@@ -531,13 +531,12 @@ export default function PageBuilderPage() {
                   ) : (
                     <iframe
                       key={iframeKey}
-                      src={currentPageUrl}
+                      src={`/api/page-builder/preview-proxy?url=${encodeURIComponent(currentPageUrl)}`}
                       className="w-full h-full border-0"
                       title="Page Preview"
                       onError={() => setIframeError(true)}
                       onLoad={(e) => {
                         try {
-                          // If we can't access contentDocument, the frame is blocked
                           const f = e.currentTarget;
                           if (f.contentDocument === null && f.contentWindow === null) {
                             setIframeError(true);

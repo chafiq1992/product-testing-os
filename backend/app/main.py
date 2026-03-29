@@ -5128,6 +5128,40 @@ async def api_page_builder_status(slug: str, store: str | None = None):
         return {"error": str(e)}
 
 
+@app.get("/api/page-builder/preview-proxy")
+async def api_page_builder_preview_proxy(url: str):
+    """Proxy a Shopify page to strip X-Frame-Options / CSP so it can be previewed in an iframe."""
+    import httpx, re as _re
+    if not url or not url.startswith("http"):
+        return Response(content="Invalid URL", status_code=400)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url)
+        html = resp.text
+        # Inject <base> tag so relative links/images resolve to the Shopify domain
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        html = _re.sub(
+            r"(<head[^>]*>)",
+            rf'\1<base href="{base_url}/" />',
+            html,
+            count=1,
+            flags=_re.IGNORECASE,
+        )
+        # Return with permissive headers (no X-Frame-Options, no restrictive CSP)
+        return Response(
+            content=html,
+            media_type="text/html",
+            headers={
+                "X-Frame-Options": "ALLOWALL",
+                "Content-Security-Policy": "",
+            },
+        )
+    except Exception as e:
+        return Response(content=f"Proxy error: {e}", status_code=502)
+
+
 # ---- Widget JS serving ----
 
 @app.get("/api/page-builder/widget.js")
