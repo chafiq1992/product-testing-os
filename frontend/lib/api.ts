@@ -996,3 +996,12 @@ export async function pageBuilderWidgetUninstall(store?: string){
   const {data} = await axios.post(`${base}/api/page-builder/widget/uninstall`, body)
   return data as { data?: { uninstalled: boolean }, error?: string }
 }
+
+export async function pageBuilderListPages(store?: string){
+  const parts: string[] = []
+  const s = store ?? selectedStore()
+  if(s) parts.push(`store=${encodeURIComponent(s)}`)
+  const q = parts.length? `?${parts.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/page-builder/pages${q}`)
+  return data as { data: Array<{ id:string, title:string, handle:string, template_suffix:string, slug:string, url:string, created_at?:string, updated_at?:string }>, error?: string }
+}

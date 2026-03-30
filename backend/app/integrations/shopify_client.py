@@ -3121,4 +3121,44 @@ def search_products_for_picker(
             "price": price,
             "status": p.get("status"),
         })
-    return out
+    return out
+
+
+def list_ai_pages(*, store: str | None = None, limit: int = 50) -> list[dict]:
+    """List Shopify pages that use an AI-generated template (template_suffix starts with 'ai-').
+
+    Returns pages sorted by updated_at descending (most recently edited first).
+    Each item: { id, title, handle, template_suffix, slug, url, created_at, updated_at }
+    """
+    lim = max(1, min(limit, 250))
+    path = f"/pages.json?limit={lim}&fields=id,title,handle,template_suffix,created_at,updated_at,published_at"
+    data = _rest_get_store(store, path)
+    pages = (data or {}).get("pages") or []
+
+    # Filter to AI-generated pages only
+    ai_pages = []
+    for p in pages:
+        ts = p.get("template_suffix") or ""
+        if ts.startswith("ai-"):
+            slug = ts  # The slug IS the template_suffix
+            cfg = _get_store_config(store)
+            # Build the page URL
+            domain = cfg.get("DOMAIN") or cfg["BASE"].replace("/admin/api/2025-01", "").replace("https://", "").replace("http://", "")
+            handle = p.get("handle") or ""
+            page_url = f"https://{domain}/pages/{handle}" if handle else ""
+
+            ai_pages.append({
+                "id": str(p.get("id")),
+                "title": p.get("title") or "Untitled",
+                "handle": handle,
+                "template_suffix": ts,
+                "slug": slug.replace("ai-", "", 1),  # Remove prefix for slug
+                "url": page_url,
+                "created_at": p.get("created_at"),
+                "updated_at": p.get("updated_at"),
+            })
+
+    # Sort by updated_at descending
+    ai_pages.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return ai_pages
+

@@ -7,11 +7,13 @@ import {
   pageBuilderToggleLayout,
   pageBuilderWidgetInstall,
   pageBuilderWidgetUninstall,
+  pageBuilderListPages,
 } from '@/lib/api'
 
 /* ───────── Types ───────── */
 type Product = { id:string; title:string; handle:string; image?:string|null; price?:string|null; status?:string }
 type ChatMsg = { role:'user'|'assistant'|'system'; content:string; pageUrl?:string; slug?:string }
+type AiPage = { id:string; title:string; handle:string; template_suffix:string; slug:string; url:string; created_at?:string; updated_at?:string }
 
 /* ───────── Icons (inline SVGs) ───────── */
 const SendIcon = () => (
@@ -78,10 +80,26 @@ export default function PageBuilderPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const searchTimeoutRef = useRef<any>(null)
 
+  // Existing AI pages
+  const [aiPages, setAiPages] = useState<AiPage[]>([])
+  const [pagesLoading, setPagesLoading] = useState(false)
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chat, generating])
+
+  // Load existing AI pages on mount
+  const loadAiPages = useCallback(async () => {
+    setPagesLoading(true)
+    try {
+      const res = await pageBuilderListPages()
+      setAiPages(res.data || [])
+    } catch { setAiPages([]) }
+    setPagesLoading(false)
+  }, [])
+
+  useEffect(() => { loadAiPages() }, [loadAiPages])
 
   // Product search with debounce
   const searchProducts = useCallback(async (q: string) => {
@@ -128,7 +146,7 @@ export default function PageBuilderPage() {
         setChat(prev => [...prev, msg])
         if (res.messages) setMessages(res.messages)
         if (res.slug) setCurrentSlug(res.slug)
-        if (res.page_url) { setCurrentPageUrl(res.page_url); setIframeKey(k => k + 1); setIframeError(false) }
+        if (res.page_url) { setCurrentPageUrl(res.page_url); setIframeKey(k => k + 1); setIframeError(false); loadAiPages() }
       }
     }).catch((e: any) => {
       setChat(prev => [...prev, { role: 'assistant', content: `❌ ${e?.message || 'Unknown error'}` }])
@@ -175,6 +193,7 @@ export default function PageBuilderPage() {
           setCurrentPageUrl(res.page_url)
           setIframeKey(k => k + 1)
           setIframeError(false)
+          loadAiPages() // Refresh pages dropdown
         }
       }
     } catch (e: any) {
@@ -324,6 +343,45 @@ export default function PageBuilderPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Existing Pages Dropdown */}
+          <div className="px-4 py-3 border-b border-white/5">
+            <label className="text-xs font-medium text-white/50 mb-2 block">EXISTING AI PAGES</label>
+            <select
+              value={currentSlug || ''}
+              onChange={e => {
+                const slug = e.target.value
+                if (!slug) {
+                  setCurrentSlug(null)
+                  setCurrentPageUrl(null)
+                  setChat([])
+                  setMessages([])
+                  setIframeKey(k => k + 1)
+                  return
+                }
+                const page = aiPages.find(p => p.slug === slug)
+                if (page) {
+                  setCurrentSlug(page.slug)
+                  setCurrentPageUrl(page.url)
+                  setIframeKey(k => k + 1)
+                  setIframeError(false)
+                  setChat(prev => [...prev, { role: 'system', content: `📄 Loaded page: ${page.title}` }])
+                }
+              }}
+              className="w-full bg-[#141422] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white/80 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/20 transition-all appearance-none cursor-pointer"
+            >
+              <option value="">— New Page —</option>
+              {pagesLoading && <option disabled>Loading...</option>}
+              {aiPages.map(p => (
+                <option key={p.id} value={p.slug}>
+                  {p.title} {p.updated_at ? `(${new Date(p.updated_at).toLocaleDateString()})` : ''}
+                </option>
+              ))}
+            </select>
+            {aiPages.length > 0 && (
+              <div className="text-[10px] text-white/25 mt-1">{aiPages.length} page{aiPages.length !== 1 ? 's' : ''} • most recent first</div>
+            )}
           </div>
 
           {/* Layout Controls */}

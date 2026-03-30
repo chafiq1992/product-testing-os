@@ -1054,7 +1054,7 @@ def run_page_builder_agent(
     *,
     model: Optional[str] = None,
     store: str | None = None,
-    max_iters: int = 3,
+    max_iters: int = 5,
     user_prompt: str = "",
 ) -> Dict[str, Any]:
     """Run the page builder agent loop with tool-calling.
@@ -1065,7 +1065,7 @@ def run_page_builder_agent(
       3. Backend builds full JSON and creates page → returns immediately.
 
     For edits: AI uses add/remove/reorder tools — all server-side.
-    max_iters=3 is enough: 1 for create, 1-2 for edits. Content generation is server-side.
+    max_iters=5 is enough: 1 for create, 1-2 for edits, with retries. Content generation is server-side.
     """
     if not isinstance(messages, list):
         raise ValueError("messages must be a list")
@@ -1098,6 +1098,30 @@ def run_page_builder_agent(
                 break
 
     _log.info(f"Agent loop starting with {len(messages)} messages, max_iters={max_iters}, prompt_len={len(original_prompt)}")
+
+    # --- Simplify user message for the tool-calling model ---
+    # The full detailed prompt goes to _generate_section_content(), but the tool-calling
+    # model only needs a short instruction like "create a landing page for X".
+    # Long prompts with strategies/copy guidance confuse the tool-calling model.
+    for i, m in enumerate(working):
+        if m.get("role") == "user" and len(m.get("content", "")) > 500:
+            content = m["content"]
+            # Preserve product handle/title/GID lines
+            preserved_lines = []
+            simplified = ""
+            for line in content.split("\n"):
+                if line.startswith("Product handle:") or line.startswith("Product title:") or line.startswith("Product GID:") or line.startswith("Hide header"):
+                    preserved_lines.append(line)
+                elif not simplified:
+                    # Keep the first meaningful line as the instruction
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("WHAT") and not stripped.startswith("---"):
+                        simplified = stripped[:200]
+            if not simplified:
+                simplified = "Create a complete high-converting Shopify landing page"
+            short_msg = simplified + "\n\n" + "\n".join(preserved_lines)
+            working[i] = {**m, "content": short_msg.strip()}
+            _log.info(f"Simplified user message from {len(content)} to {len(short_msg)} chars for tool calling")
 
     for iteration in range(max_iters):
         _log.info(f"Agent iteration {iteration + 1}/{max_iters}")

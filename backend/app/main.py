@@ -5106,6 +5106,7 @@ from app.page_builder_agent import run_page_builder_agent
 from app.integrations.shopify_client import (
     search_products_for_picker,
     read_page_template_json,
+    list_ai_pages as _list_ai_pages,
 )
 
 
@@ -5121,6 +5122,24 @@ async def api_page_builder_products(query: str = "", store: str | None = None, l
             store=s or None,
         )
         return {"data": products}
+    except Exception as e:
+        return {"error": str(e), "data": []}
+
+
+@app.get("/api/page-builder/pages")
+async def api_page_builder_pages(store: str | None = None, limit: int = 50):
+    """List AI-generated pages (template_suffix starting with 'ai-').
+
+    Returns pages sorted by updated_at descending (most recently edited first).
+    """
+    try:
+        s = (store or "").strip()
+        pages = await run_in_threadpool(
+            _list_ai_pages,
+            store=s or None,
+            limit=limit,
+        )
+        return {"data": pages}
     except Exception as e:
         return {"error": str(e), "data": []}
 
@@ -5176,7 +5195,7 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
         else:
             messages = (req.messages or []) + [user_msg]
 
-        # Run with a 90s timeout — v2 has two OpenAI calls (section selection + content generation)
+        # Run with a 120s timeout — v2 has two OpenAI calls (section selection + content generation)
         result = await asyncio.wait_for(
             run_in_threadpool(
                 run_page_builder_agent,
@@ -5185,7 +5204,7 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
                 store=store,
                 user_prompt=req.prompt,
             ),
-            timeout=90,
+            timeout=120,
         )
 
         return {
