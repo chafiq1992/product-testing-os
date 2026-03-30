@@ -5052,15 +5052,16 @@ async def api_page_builder_generate(req: PageBuilderGenerateRequest):
         else:
             messages = (req.messages or []) + [user_msg]
 
-        # Run with a 55s timeout to return a proper error before the 60s gateway timeout
+        # Run with a 90s timeout — v2 has two OpenAI calls (section selection + content generation)
         result = await asyncio.wait_for(
             run_in_threadpool(
                 run_page_builder_agent,
                 messages,
                 model=req.model,
                 store=store,
+                user_prompt=req.prompt,
             ),
-            timeout=55,
+            timeout=90,
         )
 
         return {
