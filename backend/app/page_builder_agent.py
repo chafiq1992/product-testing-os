@@ -218,6 +218,21 @@ def _html_heading(text: str) -> str:
     return f"<p>{text}</p>"
 
 
+def _ensure_html(text: str) -> str:
+    """Ensure text is wrapped in valid HTML block-level tags for Shopify richtext settings.
+    
+    Shopify Dawn theme requires all top-level nodes in richtext settings to be
+    <p>, <ul>, <ol>, or <h1>-<h6> tags. Plain text causes schema validation errors.
+    """
+    if not text:
+        return "<p></p>"
+    text = text.strip()
+    # Already has block-level HTML wrapping
+    if text.startswith("<p>") or text.startswith("<ul>") or text.startswith("<ol>") or text.startswith("<h"):
+        return text
+    return f"<p>{text}</p>"
+
+
 def _build_single_section(
     section_type: str,
     *,
@@ -328,7 +343,7 @@ def _build_single_section(
             bid = f"feature_{j}"
             blocks[bid] = {
                 "type": "column",
-                "settings": {"title": item.get("title", ""), "text": item.get("text", "")},
+                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
             }
             block_order.append(bid)
 
@@ -410,7 +425,7 @@ def _build_single_section(
             bid = f"testimonial_{j}"
             blocks[bid] = {
                 "type": "column",
-                "settings": {"title": item.get("title", ""), "text": item.get("text", "")},
+                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
             }
             block_order.append(bid)
 
@@ -439,9 +454,10 @@ def _build_single_section(
         block_order = []
         for j, item in enumerate(faq_data):
             bid = f"faq_{j}"
+            row_content = item.get("row_content", "") or item.get("text", "")
             blocks[bid] = {
                 "type": "collapsible_row",
-                "settings": {"heading": item.get("heading", ""), "row_content": item.get("row_content", "")},
+                "settings": {"heading": item.get("heading", ""), "row_content": _ensure_html(row_content)},
             }
             block_order.append(bid)
 
@@ -499,13 +515,10 @@ def _build_single_section(
                 "settings": {"text": subheading or f"<p>Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.</p>"},
             },
             "it_button": {
-                "type": "buttons",
+                "type": "button",
                 "settings": {
-                    "button_label_1": button_label or "Learn More",
-                    "button_link_1": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                    "button_style_secondary_1": False,
-                    "button_label_2": "",
-                    "button_link_2": "",
+                    "button_label": button_label or "Learn More",
+                    "button_link": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
                 },
             },
         }
@@ -603,13 +616,10 @@ def _build_single_section(
                 "settings": {"text": subheading or f"<p>We stand behind the quality of every {display_title} we sell. If you're not completely satisfied with your purchase, simply return it within 30 days for a full refund — no questions asked. Your happiness is our priority.</p>"},
             },
             "guarantee_button": {
-                "type": "buttons",
+                "type": "button",
                 "settings": {
-                    "button_label_1": button_label or "Shop Risk-Free",
-                    "button_link_1": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                    "button_style_secondary_1": False,
-                    "button_label_2": "",
-                    "button_link_2": "",
+                    "button_label": button_label or "Shop Risk-Free",
+                    "button_link": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
                 },
             },
         }
@@ -638,7 +648,7 @@ def _build_single_section(
             bid = f"compare_{j}"
             blocks[bid] = {
                 "type": "column",
-                "settings": {"title": item.get("title", ""), "text": item.get("text", "")},
+                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
             }
             block_order.append(bid)
 
@@ -708,7 +718,7 @@ def _build_sections_from_order(
             section_faq = items_map.get("faq") or faq_items
             # Convert items format to faq format if needed
             if section_faq and section_faq[0] and "title" in section_faq[0] and "heading" not in section_faq[0]:
-                section_faq = [{"heading": f.get("title",""), "row_content": f.get("text","")} for f in section_faq]
+                section_faq = [{"heading": f.get("title",""), "row_content": _ensure_html(f.get("text",""))} for f in section_faq]
 
         section = _build_single_section(
             st,
