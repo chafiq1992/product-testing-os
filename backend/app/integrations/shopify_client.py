@@ -2891,7 +2891,7 @@ DAWN_SECTIONS = {
         "name": "Image with text",
         "description": "Side-by-side layout with image and text content",
         "key_settings": ["image", "height", "desktop_image_width", "layout", "desktop_content_position", "desktop_content_alignment", "color_scheme", "image_behavior"],
-        "blocks": ["heading", "text", "buttons"],
+        "blocks": ["heading", "caption", "text", "button"],
     },
     "video": {
         "name": "Video",
@@ -3086,21 +3086,29 @@ def search_products_for_picker(
     limit: int = 10,
     store: str | None = None,
 ) -> list[dict]:
-    """Search products by title for the page builder product picker."""
-    from urllib.parse import urlencode, quote
+    """Search products by title for the page builder product picker.
+    
+    Uses Shopify REST API with broad listing + client-side filtering,
+    since the REST 'title' param does exact match only.
+    """
+    from urllib.parse import urlencode
 
-    lim = max(1, min(limit or 10, 50))
+    lim = max(1, min(limit or 10, 250))
     params: dict = {
-        "limit": lim,
+        "limit": lim if not query else 250,  # Fetch more when filtering
         "fields": "id,title,handle,images,status,variants",
     }
-    if query and query.strip():
-        params["title"] = query.strip()
     path = "/products.json?" + urlencode(params)
     data = _rest_get_store(store, path)
     products = (data or {}).get("products") or []
+
+    # Client-side filtering by title substring
+    if query and query.strip():
+        q = query.strip().lower()
+        products = [p for p in products if q in (p.get("title") or "").lower() or q in (p.get("handle") or "").lower()]
+
     out = []
-    for p in products:
+    for p in products[:lim]:
         imgs = p.get("images") or []
         first_img = imgs[0].get("src") if imgs else None
         variants = p.get("variants") or []
