@@ -2867,7 +2867,7 @@ DAWN_SECTIONS = {
         "name": "Rich text",
         "description": "Text section with heading, body text, and optional buttons",
         "key_settings": ["color_scheme", "full_width"],
-        "blocks": ["heading", "text", "buttons"],
+        "blocks": ["heading", "caption", "text", "button"],
     },
     "featured-product": {
         "name": "Featured product",

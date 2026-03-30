@@ -403,7 +403,7 @@ def _build_single_section(
             },
             "desc_text": {
                 "type": "text",
-                "settings": {"text": subheading or f"<p>Discover everything you need to know about the {display_title}. Premium quality, thoughtful design, and exceptional value — all in one product.</p>"},
+                "settings": {"text": _ensure_html(subheading or f"Discover everything you need to know about the {display_title}. Premium quality, thoughtful design, and exceptional value — all in one product.")},
             },
         }
         return {
@@ -477,6 +477,8 @@ def _build_single_section(
         }
 
     elif st == "cta":
+        cta_link = button_link or (f"/products/{product_handle}" if product_handle else "/collections/all")
+        cta_label = button_label or "Order Now"
         blocks = {
             "cta_heading": {
                 "type": "heading",
@@ -484,24 +486,14 @@ def _build_single_section(
             },
             "cta_text": {
                 "type": "text",
-                "settings": {"text": subheading or "<p>Order now and experience the difference. Limited stock available!</p>"},
-            },
-            "cta_button": {
-                "type": "buttons",
-                "settings": {
-                    "button_label_1": button_label or "Order Now",
-                    "button_link_1": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                    "button_style_secondary_1": False,
-                    "button_label_2": "",
-                    "button_link_2": "",
-                },
+                "settings": {"text": _ensure_html(subheading or "Order now and experience the difference. Limited stock available!")},
             },
         }
         return {
             "type": "rich-text",
             "settings": {"color_scheme": color_scheme, "full_width": True},
             "blocks": blocks,
-            "block_order": ["cta_heading", "cta_text", "cta_button"],
+            "block_order": ["cta_heading", "cta_text"],
         }
 
     elif st == "image_text":
@@ -512,14 +504,7 @@ def _build_single_section(
             },
             "it_text": {
                 "type": "text",
-                "settings": {"text": subheading or f"<p>Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.</p>"},
-            },
-            "it_button": {
-                "type": "button",
-                "settings": {
-                    "button_label": button_label or "Learn More",
-                    "button_link": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                },
+                "settings": {"text": _ensure_html(subheading or f"Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.")},
             },
         }
         return {
@@ -533,7 +518,7 @@ def _build_single_section(
                 "color_scheme": color_scheme,
             },
             "blocks": blocks,
-            "block_order": ["it_heading", "it_text", "it_button"],
+            "block_order": ["it_heading", "it_text"],
         }
 
     elif st == "newsletter":
@@ -613,14 +598,7 @@ def _build_single_section(
             },
             "guarantee_text": {
                 "type": "text",
-                "settings": {"text": subheading or f"<p>We stand behind the quality of every {display_title} we sell. If you're not completely satisfied with your purchase, simply return it within 30 days for a full refund — no questions asked. Your happiness is our priority.</p>"},
-            },
-            "guarantee_button": {
-                "type": "button",
-                "settings": {
-                    "button_label": button_label or "Shop Risk-Free",
-                    "button_link": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                },
+                "settings": {"text": _ensure_html(subheading or f"We stand behind the quality of every {display_title} we sell. If you're not completely satisfied with your purchase, simply return it within 30 days for a full refund — no questions asked. Your happiness is our priority.")},
             },
         }
         return {
@@ -634,7 +612,7 @@ def _build_single_section(
                 "color_scheme": color_scheme,
             },
             "blocks": blocks,
-            "block_order": ["guarantee_heading", "guarantee_text", "guarantee_button"],
+            "block_order": ["guarantee_heading", "guarantee_text"],
         }
 
     elif st == "comparison":
