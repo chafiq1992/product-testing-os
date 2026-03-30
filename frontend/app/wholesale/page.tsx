@@ -7,7 +7,7 @@ import {
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
   Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
   ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin, ClipboardList, FileText,
-  CreditCard, AlertCircle, ChevronRight, Edit3
+  CreditCard, AlertCircle, ChevronRight, Edit3, Users
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -177,6 +177,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
       case 'create-order': return <CreateOrderTab vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} />
       case 'orders': return <OrdersTab vendor={vendor} />
+      case 'customers': return <CustomersTab vendor={vendor} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
     }
   }
@@ -196,6 +197,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
           <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Overview" />
           <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Inventory" />
           <NavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
+          <NavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label="Customers" />
           <button onClick={()=>setActiveTab('create-order')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab==='create-order' ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'}`}>
             <ShoppingCart size={20}/>
             <span className="font-bold text-sm">Create Order</span>
@@ -231,6 +233,7 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
           </button>
         </div>
         <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
+        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label="Customers" />
         <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add" />
       </nav>
     </div>
@@ -1537,6 +1540,191 @@ function OrdersTab({ vendor }: { vendor: any }) {
                 Save
               </button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Customers Tab ───────────────────────────────────────
+function CustomersTab({ vendor }: { vendor: any }) {
+  const [loading, setLoading] = useState(true)
+  const [customers, setCustomers] = useState<any[]>([])
+  const [totalUnpaid, setTotalUnpaid] = useState(0)
+  const [search, setSearch] = useState('')
+  const [selectedCustomerKey, setSelectedCustomerKey] = useState('')
+
+  async function fetchCustomers() {
+    setLoading(true)
+    try {
+      const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/customers`)
+      const list = res?.data?.customers || []
+      setCustomers(list)
+      setTotalUnpaid(Number(res?.data?.total_unpaid || 0))
+      setSelectedCustomerKey((prev: string) => {
+        if (prev && list.some((c: any) => c.key === prev)) return prev
+        return list[0]?.key || ''
+      })
+    } catch {
+      setCustomers([])
+      setTotalUnpaid(0)
+      setSelectedCustomerKey('')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchCustomers() }, [vendor.id])
+
+  const filteredCustomers = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return customers
+    return customers.filter((c: any) =>
+      (c.customer_name || '').toLowerCase().includes(q) ||
+      (c.customer_phone || '').toLowerCase().includes(q)
+    )
+  }, [customers, search])
+
+  const selectedCustomer = useMemo(
+    () => filteredCustomers.find((c: any) => c.key === selectedCustomerKey) || null,
+    [filteredCustomers, selectedCustomerKey]
+  )
+
+  const statusBadge = (status: string) => {
+    if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ Paid</span>
+    if (status === 'partially_paid') return <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">◐ Partial</span>
+    return <span className="px-2.5 py-1 bg-red-100 text-red-600 text-[11px] font-bold rounded-full">● Unpaid</span>
+  }
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-20">
+      <Loader2 className="animate-spin text-blue-600" size={32} />
+    </div>
+  )
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-4 pb-24 animate-in">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">Customers</h2>
+          <p className="text-sm text-slate-500">{customers.length} tagged customers · {totalUnpaid.toFixed(2)} MAD unpaid</p>
+        </div>
+        <button onClick={fetchCustomers} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
+          <RefreshCw size={18} className="text-slate-500" />
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search customers by name or phone..."
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+        </div>
+      </div>
+
+      {filteredCustomers.length === 0 ? (
+        <div className="text-center py-16 text-slate-400">
+          <Users size={48} className="mx-auto mb-4 opacity-40" />
+          <p className="font-semibold">No customers found</p>
+          <p className="text-sm mt-1">Try adjusting your search</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
+          <div className="space-y-2">
+            {filteredCustomers.map((c: any) => {
+              const selected = c.key === selectedCustomerKey
+              return (
+                <button
+                  key={c.key}
+                  onClick={() => setSelectedCustomerKey(c.key)}
+                  className={`w-full text-left rounded-2xl border p-4 transition-all ${
+                    selected ? 'bg-blue-50 border-blue-200 shadow-sm' : 'bg-white border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm truncate">{c.customer_name || 'N/A'}</p>
+                      <p className="text-[11px] text-slate-500 truncate">{c.customer_phone || 'No phone'}</p>
+                    </div>
+                    <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+                      {c.orders_count} orders
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between text-xs">
+                    <span className="text-slate-500">Pending</span>
+                    <span className={`font-bold ${Number(c.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {Number(c.total_unpaid || 0).toFixed(2)} MAD
+                    </span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 p-4">
+            {!selectedCustomer ? (
+              <div className="text-center py-16 text-slate-400">
+                <p className="font-semibold">Select a customer</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div>
+                    <h3 className="text-lg font-bold">{selectedCustomer.customer_name || 'N/A'}</h3>
+                    <p className="text-sm text-slate-500">{selectedCustomer.customer_phone || 'No phone'}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[11px] text-slate-500">Unpaid Total</p>
+                    <p className={`text-lg font-bold ${Number(selectedCustomer.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {Number(selectedCustomer.total_unpaid || 0).toFixed(2)} MAD
+                    </p>
+                  </div>
+                </div>
+
+                {(selectedCustomer.orders || []).length === 0 ? (
+                  <p className="text-sm text-slate-500">No orders found for this customer.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(selectedCustomer.orders || []).map((o: any) => {
+                      const total = Number(o.total_price || 0)
+                      const paid = Number(o.amount_paid || 0)
+                      const pending = Number(o.pending_amount || 0)
+                      return (
+                        <div key={o.id} className="rounded-xl border border-slate-200 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-bold text-sm text-blue-600">{o.name || `#${o.id}`}</p>
+                              <p className="text-[11px] text-slate-500">{o.created_at ? new Date(o.created_at).toLocaleString() : ''}</p>
+                            </div>
+                            {statusBadge(o.payment_status)}
+                          </div>
+                          <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                            <div className="rounded-lg bg-slate-50 p-2 border border-slate-100">
+                              <p className="text-slate-500">Total</p>
+                              <p className="font-bold text-slate-700">{total.toFixed(2)}</p>
+                            </div>
+                            <div className="rounded-lg bg-emerald-50 p-2 border border-emerald-100">
+                              <p className="text-emerald-700">Paid</p>
+                              <p className="font-bold text-emerald-700">{paid.toFixed(2)}</p>
+                            </div>
+                            <div className="rounded-lg bg-red-50 p-2 border border-red-100">
+                              <p className="text-red-600">Pending</p>
+                              <p className="font-bold text-red-600">{pending.toFixed(2)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

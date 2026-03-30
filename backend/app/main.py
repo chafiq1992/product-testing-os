@@ -4374,6 +4374,9 @@ async def api_shopify_configure_variants(req: ShopifyConfigureVariantsRequest):
 # ===================== Wholesale Vendor Dashboard (MMD Store) =====================
 
 WHOLESALE_STORE = "mmd"  # internal store label for the MMD Shopify store
+WHOLESALE_TAG = "wholesale"
+WHOLESALE_DASHBOARD_TAG = "wholesale_vendor_dashboard"
+WHOLESALE_CUSTOMER_TAG = "wholesale_vendor_customer"
 
 
 @app.get("/api/wholesale/debug-store-config")
@@ -4421,6 +4424,45 @@ async def api_wholesale_debug_store_config():
 
 def _wholesale_vendor_key(vendor_id: str) -> str:
     return f"wholesale_vendor:{vendor_id}"
+
+def _wholesale_vendor_name_tag(vendor_name: str) -> str:
+    return f"vendor:{(vendor_name or '').strip()}"
+
+def _wholesale_vendor_id_tag(vendor_id: str) -> str:
+    return f"vendor_id:{(vendor_id or '').strip().lower()}"
+
+def _wholesale_tags_csv(vendor_name: str, vendor_id: str, *, include_customer: bool = False) -> str:
+    tags = [
+        WHOLESALE_TAG,
+        WHOLESALE_DASHBOARD_TAG,
+        _wholesale_vendor_name_tag(vendor_name),
+        _wholesale_vendor_id_tag(vendor_id),
+    ]
+    if include_customer:
+        tags.append(WHOLESALE_CUSTOMER_TAG)
+    return ", ".join([t for t in tags if t])
+
+def _wholesale_tags_set(tags_raw: Any) -> set[str]:
+    if isinstance(tags_raw, list):
+        vals = [str(t).strip().lower() for t in tags_raw if str(t).strip()]
+        return set(vals)
+    return {t.strip().lower() for t in str(tags_raw or "").split(",") if t.strip()}
+
+def _wholesale_order_matches_vendor(order_obj: dict, vendor_name: str, vendor_id: str) -> bool:
+    tags = _wholesale_tags_set((order_obj or {}).get("tags"))
+    if not tags:
+        return False
+    vendor_name_tag = _wholesale_vendor_name_tag(vendor_name).lower()
+    vendor_id_tag = _wholesale_vendor_id_tag(vendor_id).lower()
+    has_vendor_tag = vendor_name_tag in tags or vendor_id_tag in tags
+    has_wholesale_source_tag = WHOLESALE_DASHBOARD_TAG.lower() in tags or WHOLESALE_TAG.lower() in tags
+    return has_vendor_tag and has_wholesale_source_tag
+
+def _wholesale_safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return default
 
 
 def _hash_password(pw: str) -> str:
@@ -4778,16 +4820,22 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
     import logging
     _log = logging.getLogger("wholesale.orders")
     try:
-        key = _wholesale_vendor_key(vendor_id)
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
-        vendor_name = vendor.get("name", vendor_id)
+        vendor_name = vendor.get("name", vendor_id_norm)
 
         # Split customer name into first/last
         name_parts = req.customer_name.strip().split(" ", 1)
         first_name = name_parts[0]
         last_name = name_parts[1] if len(name_parts) > 1 else ""
+
+        # Force a unique synthetic email so Shopify creates a fresh customer per dashboard order.
+        synthetic_email = f"wholesale-{vendor_id_norm}-{int(time.time() * 1000)}@mmd.local"
+        customer_tags = _wholesale_tags_csv(vendor_name, vendor_id_norm, include_customer=True)
+        order_tags = _wholesale_tags_csv(vendor_name, vendor_id_norm, include_customer=False)
 
         # Build Shopify order payload
         order_payload = {
@@ -4800,6 +4848,8 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
                     "first_name": first_name,
                     "last_name": last_name,
                     "phone": req.customer_phone.strip(),
+                    "email": synthetic_email,
+                    "tags": customer_tags,
                 },
                 "shipping_address": {
                     "first_name": first_name,
@@ -4823,7 +4873,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
                     "country_code": req.customer_country or "MA",
                     "phone": req.customer_phone.strip(),
                 },
-                "tags": f"wholesale, vendor:{vendor_name}",
+                "tags": order_tags,
                 "financial_status": "pending",
                 "send_receipt": False,
                 "send_fulfillment_receipt": False,
@@ -4872,17 +4922,30 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
 @app.get("/api/wholesale/vendors/{vendor_id}/orders")
 async def api_wholesale_vendor_orders(vendor_id: str):
     try:
-        key = _wholesale_vendor_key(vendor_id)
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
-        vendor_name = vendor.get("name", vendor_id)
+        vendor_name = vendor.get("name", vendor_id_norm)
 
         from app.integrations.shopify_client import _rest_get_store
-        # Fetch orders tagged with this vendor (up to 250)
-        path = f"/orders.json?tag=vendor:{vendor_name}&status=any&limit=250"
-        result = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path)
-        orders = result.get("orders", [])
+        # Fetch by strict dashboard tag first, then merge a legacy vendor-tag pull (old dashboard data).
+        orders_by_id: dict[str, dict] = {}
+        path_dashboard = f"/orders.json?tag={quote(WHOLESALE_DASHBOARD_TAG, safe='')}&status=any&limit=250"
+        result_dashboard = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path_dashboard)
+        for o in (result_dashboard or {}).get("orders", []) or []:
+            if _wholesale_order_matches_vendor(o, vendor_name, vendor_id_norm):
+                orders_by_id[str(o.get("id"))] = o
+
+        path_legacy = f"/orders.json?tag={quote(_wholesale_vendor_name_tag(vendor_name), safe='')}&status=any&limit=250"
+        result_legacy = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path_legacy)
+        for o in (result_legacy or {}).get("orders", []) or []:
+            if _wholesale_order_matches_vendor(o, vendor_name, vendor_id_norm):
+                orders_by_id[str(o.get("id"))] = o
+
+        orders = list(orders_by_id.values())
+        orders.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
 
         total_orders = len(orders)
         total_units = 0
@@ -4914,7 +4977,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
 
             # Load DB payment data for this order
             order_id = str(o.get("id", ""))
-            payment_key = f"wholesale_order_payment:{vendor_id}:{order_id}"
+            payment_key = f"wholesale_order_payment:{vendor_id_norm}:{order_id}"
             payment_data = db.get_app_setting(WHOLESALE_STORE, payment_key)
             if not isinstance(payment_data, dict):
                 payment_data = {}
@@ -4930,6 +4993,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "financial_status": o.get("financial_status"),
                 "customer_name": customer_name,
                 "customer_phone": (o.get("shipping_address") or {}).get("phone", ""),
+                "tags": o.get("tags", ""),
                 "line_items": items_detail,
                 # DB-stored payment tracking
                 "payment_status": payment_data.get("payment_status", "unpaid"),
@@ -4950,6 +5014,65 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         return {"error": str(e)}
 
 
+@app.get("/api/wholesale/vendors/{vendor_id}/customers")
+async def api_wholesale_vendor_customers(vendor_id: str):
+    try:
+        orders_res = await api_wholesale_vendor_orders(vendor_id)
+        if isinstance(orders_res, dict) and orders_res.get("error"):
+            return orders_res
+        all_orders = ((orders_res or {}).get("data") or {}).get("all_orders") or []
+
+        customers_map: dict[str, dict] = {}
+        for o in all_orders:
+            customer_name = (o.get("customer_name") or "N/A").strip() or "N/A"
+            customer_phone = (o.get("customer_phone") or "").strip()
+            customer_key = f"{customer_name.lower()}|{customer_phone.lower()}"
+            total_price = _wholesale_safe_float(o.get("total_price"), 0.0)
+            amount_paid = max(0.0, _wholesale_safe_float(o.get("amount_paid"), 0.0))
+            pending = max(0.0, total_price - amount_paid)
+
+            rec = customers_map.get(customer_key)
+            if not rec:
+                rec = {
+                    "key": customer_key,
+                    "customer_name": customer_name,
+                    "customer_phone": customer_phone,
+                    "orders_count": 0,
+                    "total_unpaid": 0.0,
+                    "total_paid": 0.0,
+                    "total_orders_value": 0.0,
+                    "orders": [],
+                }
+                customers_map[customer_key] = rec
+
+            rec["orders_count"] += 1
+            rec["total_unpaid"] += pending
+            rec["total_paid"] += amount_paid
+            rec["total_orders_value"] += total_price
+            rec["orders"].append({
+                "id": o.get("id"),
+                "name": o.get("name"),
+                "created_at": o.get("created_at"),
+                "total_price": round(total_price, 2),
+                "amount_paid": round(amount_paid, 2),
+                "pending_amount": round(pending, 2),
+                "payment_status": o.get("payment_status", "unpaid"),
+            })
+
+        customers = list(customers_map.values())
+        for c in customers:
+            c["total_unpaid"] = round(c["total_unpaid"], 2)
+            c["total_paid"] = round(c["total_paid"], 2)
+            c["total_orders_value"] = round(c["total_orders_value"], 2)
+            c["orders"].sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+
+        customers.sort(key=lambda c: (-float(c.get("total_unpaid") or 0), -int(c.get("orders_count") or 0)))
+        total_unpaid = round(sum(float(c.get("total_unpaid") or 0) for c in customers), 2)
+        return {"data": {"total_customers": len(customers), "total_unpaid": total_unpaid, "customers": customers}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ─── Wholesale Order Payment Tracking ──────────────────────────────────
 class WholesaleOrderPaymentUpdate(BaseModel):
     payment_status: str = "unpaid"  # "unpaid" | "partially_paid" | "paid"
@@ -4959,12 +5082,13 @@ class WholesaleOrderPaymentUpdate(BaseModel):
 @app.patch("/api/wholesale/vendors/{vendor_id}/orders/{order_id}/payment")
 async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req: WholesaleOrderPaymentUpdate):
     try:
-        key = _wholesale_vendor_key(vendor_id)
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
 
-        payment_key = f"wholesale_order_payment:{vendor_id}:{order_id}"
+        payment_key = f"wholesale_order_payment:{vendor_id_norm}:{order_id}"
         payment_data = {
             "payment_status": req.payment_status,
             "amount_paid": req.amount_paid,
