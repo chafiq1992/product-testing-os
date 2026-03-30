@@ -409,13 +409,17 @@ export default function PageBuilderPage() {
               <div className="text-[10px] uppercase tracking-wider text-white/25 mb-2">Quick Add Section</div>
               <div className="flex flex-wrap gap-1.5">
                 {[
-                  { label: '✅ Benefits', prompt: 'Add a bullet points benefits section' },
+                  { label: '✨ Features', prompt: 'Add a features section with icons' },
+                  { label: '✅ Benefits', prompt: 'Add a benefits section' },
                   { label: '⭐ Testimonials', prompt: 'Add a testimonials section' },
                   { label: '❓ FAQ', prompt: 'Add an FAQ section' },
                   { label: '🔥 Countdown', prompt: 'Add a countdown/urgency section' },
                   { label: '🛡️ Guarantee', prompt: 'Add a guarantee section' },
                   { label: '⚡ CTA', prompt: 'Add a call-to-action section' },
                   { label: '📊 Comparison', prompt: 'Add a comparison section' },
+                  { label: '🏪 Why Us', prompt: 'Add a why choose us section' },
+                  { label: '🎉 Promo', prompt: 'Add a promotional banner section' },
+                  { label: '📝 Description', prompt: 'Add a description section' },
                   { label: '🎬 Video', prompt: 'Add a video section' },
                 ].map((action, i) => (
                   <button key={i}

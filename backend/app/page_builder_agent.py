@@ -1,16 +1,13 @@
 """AI Page Builder Agent — generates Shopify OS 2.0 JSON page templates via OpenAI function-calling.
 
-The agent uses Dawn theme sections (image-banner, rich-text, featured-product, etc.)
-to compose landing pages and product pages that appear natively in the Shopify Theme Editor.
-
-ARCHITECTURE (v2 — Prompt-Aware Content Generation):
+ARCHITECTURE (v3 — Rich Custom-Liquid Visual Sections):
   1. The AI model picks WHICH sections to include (section_types list).
   2. A dedicated server-side OpenAI call (_generate_section_content) extracts/generates
      custom headings, benefits, FAQ, testimonials, etc. from the user's original prompt.
   3. _build_sections_from_order() combines everything into full Shopify JSON.
-
-This two-step approach is more reliable than asking the LLM to both select sections
-AND produce all custom content in a single tool-call with complex nested arguments.
+  4. Visual sections use rich custom-liquid HTML with embedded CSS, animations,
+     and responsive design via the page_builder_templates module.
+  5. Only product/video/newsletter/collection stay as native Dawn sections.
 """
 
 import json
@@ -31,6 +28,21 @@ from app.integrations.shopify_client import (
     read_page_template_json,
     create_page_with_template,
     _link_product_landing_page,
+)
+from app.page_builder_templates import (
+    render_hero,
+    render_features,
+    render_benefits,
+    render_testimonials,
+    render_faq,
+    render_cta,
+    render_countdown,
+    render_guarantee,
+    render_comparison,
+    render_why_us,
+    render_promo_banner,
+    render_image_text,
+    render_description,
 )
 
 
@@ -82,14 +94,18 @@ Generate a JSON object with this EXACT structure:
     "comparison": "comparison headline",
     "countdown": "urgency headline",
     "description": "description headline",
-    "image_text": "image+text headline"
+    "image_text": "image+text headline",
+    "why_us": "why choose us headline",
+    "promo_banner": "promotional banner headline"
   }},
   "subheadings_by_type": {{
     "hero": "compelling subtitle under the hero",
     "cta": "urgency-driven CTA subtitle",
-    "guarantee": "trust-building guarantee description (HTML: use <p> tags)",
-    "description": "detailed product description (HTML: use <p> tags)",
-    "image_text": "side-by-side text content (HTML: use <p> tags)"
+    "guarantee": "trust-building guarantee description",
+    "description": "detailed product description",
+    "image_text": "side-by-side text content",
+    "countdown": "urgency countdown subtitle",
+    "promo_banner": "promotional offer subtitle"
   }},
   "items_by_type": {{
     "benefits": [
@@ -100,14 +116,14 @@ Generate a JSON object with this EXACT structure:
       {{"text": "benefit point 5"}}
     ],
     "features": [
-      {{"title": "✨ Feature 1 Title", "text": "<p>Feature 1 description</p>"}},
-      {{"title": "🛡️ Feature 2 Title", "text": "<p>Feature 2 description</p>"}},
-      {{"title": "🚀 Feature 3 Title", "text": "<p>Feature 3 description</p>"}}
+      {{"title": "✨ Feature 1 Title", "text": "Feature 1 description"}},
+      {{"title": "🛡️ Feature 2 Title", "text": "Feature 2 description"}},
+      {{"title": "🚀 Feature 3 Title", "text": "Feature 3 description"}}
     ],
     "testimonials": [
-      {{"title": "⭐⭐⭐⭐⭐ Review Title", "text": "<p>\"Review quote\" — Customer Name</p>"}},
-      {{"title": "⭐⭐⭐⭐⭐ Review Title", "text": "<p>\"Review quote\" — Customer Name</p>"}},
-      {{"title": "⭐⭐⭐⭐⭐ Review Title", "text": "<p>\"Review quote\" — Customer Name</p>"}}
+      {{"title": "Amazing Quality!", "text": "\"Review quote\" — Customer Name"}},
+      {{"title": "Best Purchase Ever", "text": "\"Review quote\" — Customer Name"}},
+      {{"title": "Highly Recommend", "text": "\"Review quote\" — Customer Name"}}
     ],
     "faq": [
       {{"title": "Question 1?", "text": "Answer 1"}},
@@ -116,8 +132,15 @@ Generate a JSON object with this EXACT structure:
       {{"title": "Question 4?", "text": "Answer 4"}}
     ],
     "comparison": [
-      {{"title": "Without {display_title}", "text": "<p>❌ Problem 1<br>❌ Problem 2<br>❌ Problem 3</p>"}},
-      {{"title": "With {display_title}", "text": "<p>✅ Solution 1<br>✅ Solution 2<br>✅ Solution 3</p>"}}
+      {{"title": "Without {display_title}", "text": "❌ Problem 1\n❌ Problem 2\n❌ Problem 3"}},
+      {{"title": "With {display_title}", "text": "✅ Solution 1\n✅ Solution 2\n✅ Solution 3"}}
+    ],
+    "why_us": [
+      {{"title": "🚚 Fast Shipping", "text": "Express delivery to all cities"}},
+      {{"title": "🔄 Free Exchanges", "text": "Easy size exchanges at no cost"}},
+      {{"title": "💬 24/7 Support", "text": "Instant customer service"}},
+      {{"title": "💵 Cash on Delivery", "text": "Pay when you receive"}},
+      {{"title": "✅ Quality Guaranteed", "text": "100% premium quality"}}
     ]
   }}
 }}
@@ -129,6 +152,8 @@ RULES:
 - DO NOT use generic/placeholder text. Make it compelling and specific.
 - Write copy that makes parents/buyers WANT to purchase.
 - Keep it warm, trustworthy, and modern e-commerce style.
+- For testimonials: use realistic customer names, no star emojis in title.
+- For features: use emoji + title format (e.g. "✨ Premium Quality").
 - Return ONLY valid JSON, no markdown, no explanation."""
 
     try:
@@ -163,7 +188,7 @@ PAGE_BUILDER_SYSTEM = {
 CRITICAL RULES:
 1. You MUST ALWAYS call create_shopify_page on the FIRST turn. NEVER respond with text-only.
 2. NEVER write strategies, copy, advice, or analysis — just BUILD THE PAGE immediately.
-3. The backend will generate all custom content (headings, benefits, FAQ, etc.) from the user's prompt automatically. You do NOT need to extract or generate copy.
+3. The backend generates rich, visually stunning sections with animations, modern CSS, and professional design automatically. You do NOT need to extract or generate copy.
 4. For editing existing pages: use add_section_to_page, remove_section_from_page, or reorder_sections.
 
 YOUR ONLY JOB ON NEW PAGES:
@@ -173,35 +198,37 @@ YOUR ONLY JOB ON NEW PAGES:
 4. Do NOT fill headings_by_type or items_by_type — the backend auto-generates them from the prompt.
 
 AVAILABLE SECTION TYPES:
-- "hero": Full-width banner with heading, subheading, CTA button
+- "hero": Full-width gradient banner with animated heading, subheading, pulsing CTA button
 - "product": Product showcase with images, price, VARIANTS, ADD-TO-CART (REQUIRED when product handle exists)
-- "features": 3-column benefits/features grid with icons
-- "benefits": Bullet-point benefits (rich text with checkmarks)
-- "testimonials": Customer review quotes in 3 columns
-- "faq": Frequently asked questions accordion
-- "cta": Call-to-action with heading, text, and button
-- "image_text": Image + text side-by-side
+- "features": Animated card grid with emoji icons, hover effects, scroll-reveal
+- "benefits": Animated benefit cards with checkmarks, slide-in scroll animation
+- "testimonials": Styled review cards with avatars, star ratings, colored borders
+- "faq": Animated accordion with expand/collapse transitions
+- "cta": Gradient section with pulsing CTA button and urgency text
+- "image_text": Image + text side-by-side layout
 - "newsletter": Email signup section
 - "video": Video embed (YouTube/Vimeo)
 - "collection": Featured collection product grid
-- "countdown": Urgency/scarcity countdown
-- "guarantee": Trust/guarantee badge section
-- "comparison": Before/after comparison columns
+- "countdown": Dark gradient countdown timer with animated digits
+- "guarantee": Trust shield card with badge row
+- "comparison": Side-by-side red/green before-after columns
+- "why_us": Icon cards grid with trust points (shipping, returns, support)
+- "promo_banner": Gradient promotional announcement banner
+- "description": Rich text description section
 - "custom_html": Custom HTML/Liquid section
-- "description": Rich text description
 
 SECTION GUIDELINES:
 - ALWAYS use 8-12 sections for high-converting pages.
 - When product handle exists: MUST include "product" section for add-to-cart and variants.
-- Recommended structure: hero, product, features, benefits, comparison, testimonials, guarantee, faq, countdown, cta
+- Recommended structure: promo_banner, hero, product, features, benefits, comparison, testimonials, guarantee, why_us, faq, countdown, cta
 
 EXAMPLE — User says anything about creating a page with a product:
 You call create_shopify_page with:
-  section_types: ["hero", "product", "features", "benefits", "comparison", "testimonials", "guarantee", "faq", "countdown", "cta"]
+  section_types: ["hero", "product", "features", "benefits", "comparison", "testimonials", "guarantee", "why_us", "faq", "countdown", "cta"]
   product_handle: (from context)
   product_title: (from context)
 
-That's it. The backend handles ALL the copy and content. Just pick sections and call the tool.""",
+That's it. The backend handles ALL the copy, styling, and animations. Just pick sections and call the tool.""",
 }
 
 
@@ -251,63 +278,172 @@ def _build_single_section(
     collection_handle: str | None = None,
     position: str | None = None,
 ) -> dict | None:
-    """Build a single Dawn-compatible section dict.
+    """Build a single section dict.
 
     Returns the section config dict, or None if the type is unknown.
-    All sections are built to match the Dawn theme's actual schema.
+
+    v3: Most visual sections use rich custom-liquid with embedded CSS/JS.
+    Only product, video, newsletter, and collection stay as native Dawn sections.
     """
     display_title = product_title or page_title or "Shop Now"
     st = section_type
 
-    if st == "hero":
-        # Dawn image-banner: heading/subheading go in BLOCKS, not settings
-        blocks = {}
-        block_order = []
-        bid_h = "hero_heading"
-        blocks[bid_h] = {
-            "type": "heading",
-            "settings": {
-                "heading": heading or display_title,
-                "heading_size": "h0",
-            },
-        }
-        block_order.append(bid_h)
+    # ── Accent color: default purple, could be customized per page later ──
+    accent = "#6C27B0"
+    accent_light = "#9C4DCC"
 
-        bid_s = "hero_subheading"
-        blocks[bid_s] = {
-            "type": "text",
-            "settings": {
-                "text": subheading or f"Discover the perfect {display_title.lower()}",
-            },
-        }
-        block_order.append(bid_s)
-
-        bid_b = "hero_button"
-        blocks[bid_b] = {
-            "type": "buttons",
-            "settings": {
-                "button_label_1": button_label or "Shop Now",
-                "button_link_1": button_link or (f"/products/{product_handle}" if product_handle else "/collections/all"),
-                "button_style_secondary_1": False,
-                "button_label_2": "",
-                "button_link_2": "",
-            },
-        }
-        block_order.append(bid_b)
-
+    # Helper: wrap rich HTML into a custom-liquid section
+    def _custom_liquid_section(html: str) -> dict:
         return {
-            "type": "image-banner",
+            "type": "custom-liquid",
             "settings": {
-                "image_overlay_opacity": 40,
-                "color_scheme": color_scheme,
-                "desktop_content_position": "middle-center",
-                "desktop_content_alignment": "center",
-                "show_text_box": False,
-                "mobile_content_alignment": "center",
+                "custom_liquid": html,
+                "color_scheme": "",
             },
-            "blocks": blocks,
-            "block_order": block_order,
         }
+
+    # ==================== RICH CUSTOM-LIQUID SECTIONS ====================
+
+    if st == "hero":
+        link = button_link or (f"/products/{product_handle}" if product_handle else "/collections/all")
+        html = render_hero(
+            heading=heading or "",
+            subheading=subheading or "",
+            button_label=button_label or "Shop Now",
+            button_link=link,
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+            include_font=True,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "features":
+        html = render_features(
+            heading=heading or "",
+            items=items,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "benefits":
+        html = render_benefits(
+            heading=heading or "",
+            items=items,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "testimonials":
+        html = render_testimonials(
+            heading=heading or "",
+            items=items,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "faq":
+        # Normalize faq_items format
+        faq_data = faq_items or items
+        if faq_data and faq_data[0] and "title" in faq_data[0] and "heading" not in faq_data[0]:
+            faq_data = [{"heading": f.get("title",""), "text": f.get("text","")} for f in faq_data]
+        html = render_faq(
+            heading=heading or "",
+            items=faq_data,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "cta":
+        link = button_link or (f"/products/{product_handle}" if product_handle else "/collections/all")
+        html = render_cta(
+            heading=heading or "",
+            subheading=subheading or "",
+            button_label=button_label or "Order Now",
+            button_link=link,
+            product_handle=product_handle,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "countdown":
+        html = render_countdown(
+            heading=heading or "",
+            subheading=subheading or "",
+            button_label=button_label or "Grab the Deal",
+            button_link=button_link or "",
+            product_handle=product_handle,
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "guarantee":
+        html = render_guarantee(
+            heading=heading or "",
+            subheading=subheading or "",
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "comparison":
+        html = render_comparison(
+            heading=heading or "",
+            items=items,
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "why_us":
+        html = render_why_us(
+            heading=heading or "",
+            items=items,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "promo_banner":
+        html = render_promo_banner(
+            heading=heading or "",
+            subheading=subheading or "",
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "image_text":
+        html = render_image_text(
+            heading=heading or "",
+            subheading=subheading or "",
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    elif st == "description":
+        html = render_description(
+            heading=heading or "",
+            subheading=subheading or "",
+            product_title=display_title,
+            accent=accent,
+            accent_light=accent_light,
+        )
+        return _custom_liquid_section(html)
+
+    # ==================== NATIVE DAWN SECTIONS ====================
+    # These need Shopify platform features (add-to-cart, video player, etc.)
 
     elif st == "product":
         blocks = {}
@@ -329,196 +465,6 @@ def _build_single_section(
             },
             "blocks": blocks,
             "block_order": block_order,
-        }
-
-    elif st == "features":
-        feature_items = items or [
-            {"title": "✨ Premium Quality", "text": "<p>Crafted with the finest materials for lasting durability and everyday luxury.</p>"},
-            {"title": "🚚 Fast Shipping", "text": "<p>Free express delivery on all orders. Get it in 2-3 business days.</p>"},
-            {"title": "↩️ Easy Returns", "text": "<p>30-day hassle-free return policy. Shop with complete confidence.</p>"},
-        ]
-        blocks = {}
-        block_order = []
-        for j, item in enumerate(feature_items):
-            bid = f"feature_{j}"
-            blocks[bid] = {
-                "type": "column",
-                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
-            }
-            block_order.append(bid)
-
-        return {
-            "type": "multicolumn",
-            "settings": {
-                "title": heading or "Why Choose Us",
-                "heading_size": "h2",
-                "columns_desktop": 3,
-                "color_scheme": color_scheme,
-                "column_alignment": "center",
-                "swipe_on_mobile": True,
-            },
-            "blocks": blocks,
-            "block_order": block_order,
-        }
-
-    elif st == "benefits":
-        # Rich-text section with bullet-point benefits
-        benefit_items = items or [
-            {"text": f"Premium quality materials that last"},
-            {"text": f"Perfectly designed for everyday use"},
-            {"text": f"Loved by thousands of happy customers"},
-            {"text": f"Free shipping and easy returns"},
-            {"text": f"100% satisfaction guaranteed"},
-        ]
-        # Build benefit text as HTML list
-        benefits_html = "<ul>"
-        for item in benefit_items:
-            txt = item.get("text", item.get("title", ""))
-            benefits_html += f"<li>✅ {txt}</li>"
-        benefits_html += "</ul>"
-
-        blocks = {
-            "benefits_heading": {
-                "type": "heading",
-                "settings": {"heading": _html_heading(heading or f"Benefits of {display_title}")},
-            },
-            "benefits_text": {
-                "type": "text",
-                "settings": {"text": benefits_html},
-            },
-        }
-        return {
-            "type": "rich-text",
-            "settings": {"color_scheme": color_scheme, "full_width": False},
-            "blocks": blocks,
-            "block_order": ["benefits_heading", "benefits_text"],
-        }
-
-    elif st == "description":
-        # Rich-text description section
-        blocks = {
-            "desc_heading": {
-                "type": "heading",
-                "settings": {"heading": _html_heading(heading or f"About {display_title}")},
-            },
-            "desc_text": {
-                "type": "text",
-                "settings": {"text": _ensure_html(subheading or f"Discover everything you need to know about the {display_title}. Premium quality, thoughtful design, and exceptional value — all in one product.")},
-            },
-        }
-        return {
-            "type": "rich-text",
-            "settings": {"color_scheme": color_scheme, "full_width": False},
-            "blocks": blocks,
-            "block_order": ["desc_heading", "desc_text"],
-        }
-
-    elif st == "testimonials":
-        test_items = items or [
-            {"title": "⭐⭐⭐⭐⭐ Amazing Quality!", "text": '<p>"Absolutely love this product! Exceeded all my expectations." — Sarah M.</p>'},
-            {"title": "⭐⭐⭐⭐⭐ Best Purchase Ever", "text": '<p>"Fast shipping and incredible quality. Will buy again!" — James R.</p>'},
-            {"title": "⭐⭐⭐⭐⭐ Highly Recommend", "text": '<p>"Perfect in every way. My friends are all ordering one too!" — Emily K.</p>'},
-        ]
-        blocks = {}
-        block_order = []
-        for j, item in enumerate(test_items):
-            bid = f"testimonial_{j}"
-            blocks[bid] = {
-                "type": "column",
-                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
-            }
-            block_order.append(bid)
-
-        return {
-            "type": "multicolumn",
-            "settings": {
-                "title": heading or "What Our Customers Say",
-                "heading_size": "h2",
-                "columns_desktop": 3,
-                "color_scheme": color_scheme,
-                "column_alignment": "center",
-                "swipe_on_mobile": True,
-            },
-            "blocks": blocks,
-            "block_order": block_order,
-        }
-
-    elif st == "faq":
-        faq_data = faq_items or [
-            {"heading": "What materials is this made from?", "row_content": f"<p>The {display_title} is crafted from premium, high-quality materials designed for lasting durability and everyday use.</p>"},
-            {"heading": "How long does shipping take?", "row_content": "<p>We offer free express shipping on all orders. Most orders arrive within 2-3 business days.</p>"},
-            {"heading": "What is your return policy?", "row_content": "<p>We offer a 30-day hassle-free return policy. If you're not completely satisfied, simply return the product for a full refund.</p>"},
-            {"heading": "Is this product suitable as a gift?", "row_content": f"<p>Absolutely! The {display_title} makes a perfect gift. We also offer gift wrapping options at checkout.</p>"},
-        ]
-        blocks = {}
-        block_order = []
-        for j, item in enumerate(faq_data):
-            bid = f"faq_{j}"
-            row_content = item.get("row_content", "") or item.get("text", "")
-            blocks[bid] = {
-                "type": "collapsible_row",
-                "settings": {"heading": item.get("heading", ""), "row_content": _ensure_html(row_content)},
-            }
-            block_order.append(bid)
-
-        return {
-            "type": "collapsible-content",
-            "settings": {
-                "caption": "",
-                "heading": heading or "Frequently Asked Questions",
-                "heading_size": "h1",
-                "heading_alignment": "center",
-                "color_scheme": color_scheme,
-                "container_color_scheme": "",
-                "open_first_collapsible_row": True,
-            },
-            "blocks": blocks,
-            "block_order": block_order,
-        }
-
-    elif st == "cta":
-        cta_link = button_link or (f"/products/{product_handle}" if product_handle else "/collections/all")
-        cta_label = button_label or "Order Now"
-        blocks = {
-            "cta_heading": {
-                "type": "heading",
-                "settings": {"heading": _html_heading(heading or f"Ready to Get Your {display_title}?")},
-            },
-            "cta_text": {
-                "type": "text",
-                "settings": {"text": _ensure_html(subheading or "Order now and experience the difference. Limited stock available!")},
-            },
-        }
-        return {
-            "type": "rich-text",
-            "settings": {"color_scheme": color_scheme, "full_width": True},
-            "blocks": blocks,
-            "block_order": ["cta_heading", "cta_text"],
-        }
-
-    elif st == "image_text":
-        blocks = {
-            "it_heading": {
-                "type": "heading",
-                "settings": {"heading": _html_heading(heading or f"Why {display_title}?")},
-            },
-            "it_text": {
-                "type": "text",
-                "settings": {"text": _ensure_html(subheading or f"Experience premium quality and thoughtful design. The {display_title} combines style with functionality for the perfect everyday companion.")},
-            },
-        }
-        return {
-            "type": "image-with-text",
-            "settings": {
-                "height": "adapt",
-                "layout": "image_first",
-                "desktop_image_width": "medium",
-                "desktop_content_position": "middle",
-                "desktop_content_alignment": "left",
-                "color_scheme": color_scheme,
-            },
-            "blocks": blocks,
-            "block_order": ["it_heading", "it_text"],
         }
 
     elif st == "newsletter":
@@ -562,85 +508,6 @@ def _build_single_section(
                 "swipe_on_mobile": True,
                 "enable_desktop_slider": True,
             },
-        }
-
-    elif st == "countdown":
-        # Countdown using custom-liquid section — wrap JS in {% raw %} to prevent Liquid parse errors
-        product_link = f'/products/{product_handle}' if product_handle else '/collections/all'
-        countdown_html = custom_liquid or (
-            f'<div style="text-align:center;padding:40px 20px;background:linear-gradient(135deg,#1a1a2e,#16213e);border-radius:16px;color:#fff;margin:20px 0;">'
-            f'<h2 style="font-size:28px;margin:0 0 8px;">🔥 Limited Time Offer</h2>'
-            f'<p style="font-size:16px;color:#e0e0e0;margin:0 0 20px;">Don\'t miss out on {display_title} — this deal won\'t last!</p>'
-            f'<div id="countdown-timer" style="display:flex;justify-content:center;gap:16px;font-size:32px;font-weight:bold;">'
-            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-hours">23</span><div style="font-size:11px;font-weight:normal;color:#aaa;">HOURS</div></div>'
-            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-mins">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">MINUTES</div></div>'
-            f'<div style="background:rgba(255,255,255,0.1);padding:12px 20px;border-radius:12px;"><span id="cd-secs">59</span><div style="font-size:11px;font-weight:normal;color:#aaa;">SECONDS</div></div>'
-            f'</div>'
-            f'<a href="{product_link}" style="display:inline-block;margin-top:24px;padding:14px 36px;background:#e74c3c;color:#fff;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold;">Grab the Deal →</a>'
-            f'</div>'
-            '{%raw%}<script>'
-            '(function(){var h=document.getElementById("cd-hours"),m=document.getElementById("cd-mins"),s=document.getElementById("cd-secs");if(!h||!m||!s)return;var t=86399;setInterval(function(){t--;if(t<0)t=86399;h.textContent=String(Math.floor(t/3600)).padStart(2,"0");m.textContent=String(Math.floor((t%3600)/60)).padStart(2,"0");s.textContent=String(t%60).padStart(2,"0");},1000);})();'
-            '</script>{%endraw%}'
-        )
-        return {
-            "type": "custom-liquid",
-            "settings": {
-                "custom_liquid": countdown_html,
-                "color_scheme": color_scheme,
-            },
-        }
-
-    elif st == "guarantee":
-        blocks = {
-            "guarantee_heading": {
-                "type": "heading",
-                "settings": {"heading": _html_heading(heading or "100% Satisfaction Guaranteed")},
-            },
-            "guarantee_text": {
-                "type": "text",
-                "settings": {"text": _ensure_html(subheading or f"We stand behind the quality of every {display_title} we sell. If you're not completely satisfied with your purchase, simply return it within 30 days for a full refund — no questions asked. Your happiness is our priority.")},
-            },
-        }
-        return {
-            "type": "image-with-text",
-            "settings": {
-                "height": "adapt",
-                "layout": "text_first",
-                "desktop_image_width": "medium",
-                "desktop_content_position": "middle",
-                "desktop_content_alignment": "left",
-                "color_scheme": color_scheme,
-            },
-            "blocks": blocks,
-            "block_order": ["guarantee_heading", "guarantee_text"],
-        }
-
-    elif st == "comparison":
-        comp_items = items or [
-            {"title": "Without " + display_title, "text": "<p>❌ Ordinary quality<br>❌ Slow delivery<br>❌ No guarantee<br>❌ Generic design</p>"},
-            {"title": "With " + display_title, "text": "<p>✅ Premium quality<br>✅ Fast free shipping<br>✅ 30-day guarantee<br>✅ Unique, stylish design</p>"},
-        ]
-        blocks = {}
-        block_order = []
-        for j, item in enumerate(comp_items):
-            bid = f"compare_{j}"
-            blocks[bid] = {
-                "type": "column",
-                "settings": {"title": item.get("title", ""), "text": _ensure_html(item.get("text", ""))},
-            }
-            block_order.append(bid)
-
-        return {
-            "type": "multicolumn",
-            "settings": {
-                "title": heading or "See the Difference",
-                "heading_size": "h2",
-                "columns_desktop": 2,
-                "color_scheme": color_scheme,
-                "column_alignment": "center",
-            },
-            "blocks": blocks,
-            "block_order": block_order,
         }
 
     elif st == "custom_html":
@@ -738,7 +605,7 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                             "hero", "product", "features", "benefits", "testimonials",
                             "faq", "cta", "image_text", "newsletter", "video",
                             "collection", "countdown", "guarantee", "comparison",
-                            "custom_html", "description",
+                            "why_us", "promo_banner", "custom_html", "description",
                         ]},
                         "description": "List of section types to include, in display order. Use 8-12 for high-converting pages.",
                     },
@@ -783,7 +650,7 @@ PAGE_BUILDER_TOOLS: List[dict] = [
                             "hero", "product", "features", "benefits", "testimonials",
                             "faq", "cta", "image_text", "newsletter", "video",
                             "collection", "countdown", "guarantee", "comparison",
-                            "custom_html", "description",
+                            "why_us", "promo_banner", "custom_html", "description",
                         ],
                         "description": "Type of section to add",
                     },
