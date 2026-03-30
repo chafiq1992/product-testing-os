@@ -5329,18 +5329,24 @@ WIDGET_LAYOUT_MARKER = "<!-- AI_PAGE_BUILDER_WIDGET -->"
 
 
 def _widget_snippet_liquid(api_base: str, store: str = "") -> str:
-    """Generate the Liquid snippet content that loads the widget."""
+    """Generate the Liquid snippet content that loads the widget.
+
+    IMPORTANT: The widget is only rendered when the Shopify Theme Editor is open
+    (request.design_mode). Regular customers will never see it.
+    """
     return f"""{{% comment %}}
   AI Page Builder Widget — injected by Product Testing OS.
-  Renders a floating AI chat button on the storefront.
-  Visible inside the Shopify Theme Editor for real-time editing.
+  ONLY visible inside the Shopify Theme Editor (design mode).
+  Regular customers will never see this widget.
 {{% endcomment %}}
+{{% if request.design_mode %}}
 <script
   src="{api_base}/api/page-builder/widget.js"
   data-api-base="{api_base}"
   data-store="{store}"
   defer
 ></script>
+{{% endif %}}
 """
 
 

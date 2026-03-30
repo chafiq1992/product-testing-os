@@ -24,8 +24,11 @@
   var IS_DESIGN_MODE = !!(window.Shopify && window.Shopify.designMode);
   console.log('[AI Page Builder] Loaded. designMode=' + IS_DESIGN_MODE + ', API_BASE=' + API_BASE + ', STORE=' + STORE);
 
-  // Don't load in checkout (but always load in theme editor)
-  if (!IS_DESIGN_MODE && window.location.pathname.indexOf('/checkouts') === 0) return;
+  // Only show the widget inside the Shopify Theme Editor — never for regular customers
+  if (!IS_DESIGN_MODE) return;
+
+  // Don't load in checkout
+  if (window.location.pathname.indexOf('/checkouts') === 0) return;
 
   // ── Styles ──
   var STYLES = `

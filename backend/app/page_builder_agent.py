@@ -200,6 +200,8 @@ YOUR ONLY JOB ON NEW PAGES:
 AVAILABLE SECTION TYPES:
 - "hero": Full-width gradient banner with animated heading, subheading, pulsing CTA button
 - "product": Product showcase with images, price, VARIANTS, ADD-TO-CART (REQUIRED when product handle exists)
+    Supports: variant swatches (button) or dropdowns, title size (h1/h2/h3), image gallery size (large/medium/small), image position (left/right)
+    To customize: pass items_by_type.product = [{"picker_type": "button", "media_size": "large", "heading_size": "h2", "media_position": "left"}]
 - "features": Animated card grid with emoji icons, hover effects, scroll-reveal
 - "benefits": Animated benefit cards with checkmarks, slide-in scroll animation
 - "testimonials": Styled review cards with avatars, star ratings, colored borders
@@ -446,21 +448,64 @@ def _build_single_section(
     # These need Shopify platform features (add-to-cart, video player, etc.)
 
     elif st == "product":
+        # Extract product-specific display options from items if provided
+        product_opts = {}
+        if items and isinstance(items, list) and len(items) > 0 and isinstance(items[0], dict):
+            product_opts = items[0]
+
+        # Variant picker type: "dropdown" or "button" (button = color/size swatches)
+        picker_type = product_opts.get("picker_type", "button")
+        # Media settings
+        p_media_size = product_opts.get("media_size", "large")
+        p_media_fit = product_opts.get("media_fit", "contain")
+        p_media_position = product_opts.get("media_position", "left")
+        # Heading size for title block
+        p_heading_size = product_opts.get("heading_size", "h2")
+
         blocks = {}
         block_order = []
-        for btype in ["title", "price", "variant_picker", "quantity_selector", "buy_buttons"]:
-            bid = f"product_{btype}"
-            blocks[bid] = {"type": btype, "settings": {}}
-            block_order.append(bid)
+
+        # Title block with heading size
+        blocks["product_title"] = {
+            "type": "title",
+            "settings": {"heading_size": p_heading_size},
+        }
+        block_order.append("product_title")
+
+        # Price block
+        blocks["product_price"] = {"type": "price", "settings": {}}
+        block_order.append("product_price")
+
+        # Variant picker (button = swatches for colors/sizes, dropdown = select menus)
+        blocks["product_variant_picker"] = {
+            "type": "variant_picker",
+            "settings": {"picker_type": picker_type},
+        }
+        block_order.append("product_variant_picker")
+
+        # Quantity selector
+        blocks["product_quantity_selector"] = {"type": "quantity_selector", "settings": {}}
+        block_order.append("product_quantity_selector")
+
+        # Buy buttons with dynamic checkout
+        blocks["product_buy_buttons"] = {
+            "type": "buy_buttons",
+            "settings": {"show_dynamic_checkout": True},
+        }
+        block_order.append("product_buy_buttons")
+
+        # Description block (shows product description below buy buttons)
+        blocks["product_description"] = {"type": "description", "settings": {}}
+        block_order.append("product_description")
 
         return {
             "type": "featured-product",
             "settings": {
                 "product": product_handle,
                 "color_scheme": color_scheme,
-                "media_size": "large",
-                "media_fit": "contain",
-                "media_position": "left",
+                "media_size": p_media_size,
+                "media_fit": p_media_fit,
+                "media_position": p_media_position,
                 "secondary_background": False,
             },
             "blocks": blocks,
