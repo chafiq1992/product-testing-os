@@ -20,8 +20,8 @@ from openai import OpenAI
 
 _log = logging.getLogger("page_builder_agent")
 
-# Use gpt-5.4-mini for page builder — fast structured JSON output
-PAGE_BUILDER_MODEL = "gpt-5.4-mini"
+# Use gpt-5.4 for page builder — high quality, conversion-optimized content
+PAGE_BUILDER_MODEL = "gpt-5.4"
 from app.integrations.shopify_client import (
     create_page_template_json,
     update_page_template_json,
