@@ -14,6 +14,40 @@ const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
 const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall']
 type Lang = 'en' | 'ar'
+type StockVariantFormRow = {
+  from: number
+  to: number
+  pcsPerCrate: number
+  crateQty: number
+  sku: string
+}
+
+function createStockVariantRow(): StockVariantFormRow {
+  return { from: 20, to: 25, pcsPerCrate: 24, crateQty: 10, sku: '' }
+}
+
+function getLocale(lang: Lang) {
+  return lang === 'ar' ? 'ar-MA' : 'en-GB'
+}
+
+function toNumber(value: number | string | null | undefined) {
+  const parsed = typeof value === 'number' ? value : parseFloat(String(value ?? '0'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function formatDh(value: number | string | null | undefined, locale = 'en-GB') {
+  const amount = toNumber(value)
+  return `${amount.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH`
+}
+
+function buildVariantTitle(group: Pick<StockVariantFormRow, 'from' | 'to' | 'pcsPerCrate'>) {
+  const range = `${group.from}-${group.to}`
+  return group.pcsPerCrate > 0 ? `${range}*${group.pcsPerCrate}pcs` : range
+}
+
+function getVariantCratePrice(unitSalePrice: number, group: Pick<StockVariantFormRow, 'pcsPerCrate'>) {
+  return unitSalePrice * Math.max(0, group.pcsPerCrate || 0)
+}
 
 const WHOLESALE_COPY = {
   en: {
@@ -190,24 +224,32 @@ const WHOLESALE_TEXT = {
     noColorsYet: 'No colors added yet.',
     hiddenCatalogNote: 'Catalog data, title, and description are hidden here and will be generated after the product is submitted.',
     financialsTitle: 'Financials',
-    cogPrice: 'COG Price',
-    salePrice: 'Sale Price',
-    estimatedProfit: 'Est. Net Profit',
+    cogPrice: 'Unit Cost Price',
+    salePrice: 'Unit Sale Price',
+    estimatedProfit: 'Est. Unit Profit',
     stockVariants: 'Stock Variants',
     addRange: 'Add Range',
     sku: 'SKU',
     from: 'From',
     to: 'To',
-    qty: 'Qty',
-    stockVariantNote: 'Each stock variant uses its own SKU and quantity.',
+    qty: 'Crates',
+    piecesPerCrate: 'Pcs / Crate',
+    cratesLabel: 'crates',
+    variantPreview: 'Variant Preview',
+    cratePrice: 'Crate Price',
+    unitPriceNote: 'The sale price is the unit price. Each variant price is calculated automatically from the pieces per crate.',
+    stockVariantNote: 'Each stock variant uses its own SKU, crate count, and pieces per crate.',
     productsTaggedAs: 'Products will be tagged as',
     vendorFieldNote: 'This name will appear as the vendor field on Shopify',
     createProductCta: 'Create Product',
     creatingProduct: 'Creating Product...',
     uploadImageRequired: 'Please upload a product image.',
     colorRequired: 'Please add at least one color.',
+    unitSalePriceRequired: 'Please enter the unit sale price.',
     stockVariantRequired: 'Please add at least one stock variant.',
     skuRequired: 'Please enter a SKU for each stock variant.',
+    piecesPerCrateRequired: 'Please enter the pieces per crate for each stock variant.',
+    crateQuantityRequired: 'Please enter the number of crates for each stock variant.',
     errorPrefix: 'Error',
     saveProductError: 'Error saving product:',
     productCreatedSuccess: 'Product created successfully. Catalog data and analysis will finish in the background.',
@@ -217,7 +259,7 @@ const WHOLESALE_TEXT = {
     searchByProductOrSku: 'Search by product name or SKU...',
     noProductsFound: 'No products found',
     inStock: 'in stock',
-    each: 'each',
+    each: 'per crate',
     orderTotal: 'Order Total',
     customerDetails: 'Customer Details',
     fullName: 'Full Name *',
@@ -236,13 +278,19 @@ const WHOLESALE_TEXT = {
     downloadInvoice: 'Download Invoice',
     shareInvoice: 'Share Invoice',
     invoice: 'INVOICE',
+    invoiceNumber: 'Invoice No.',
+    issueDate: 'Issue Date',
     wholesaleVendor: 'Wholesale Vendor',
     customer: 'Customer',
+    billFrom: 'Bill from',
+    billTo: 'Bill to',
     invoiceDetails: 'Invoice Details',
     date: 'Date',
     time: 'Time',
     confirmed: 'Confirmed',
     itemColumn: 'Item',
+    unitPrice: 'Unit Price',
+    lineTotal: 'Line Total',
     subtotal: 'Subtotal',
     shipping: 'Shipping',
     free: 'Free',
@@ -266,7 +314,7 @@ const WHOLESALE_TEXT = {
     unpaid: 'Unpaid',
     partial: 'Partial',
     paid: 'Paid',
-    amountPaid: 'Amount Paid (MAD)',
+    amountPaid: 'Amount Paid (DH)',
     noteOptional: 'Note (optional)',
     anyPaymentNotes: 'Any payment notes...',
     cancel: 'Cancel',
@@ -464,6 +512,196 @@ const WHOLESALE_TEXT = {
 
 type AppCopy = (typeof WHOLESALE_TEXT)[Lang]
 
+const ARABIC_TEXT_OVERRIDES = {
+  brandTag: 'منصة إدارة البيع بالجملة',
+  portal: 'بوابة المورّد',
+  overview: 'نظرة عامة',
+  inventory: 'المخزون',
+  orders: 'الطلبات',
+  customers: 'العملاء',
+  createOrder: 'إنشاء طلب',
+  addProduct: 'إضافة منتج',
+  home: 'الرئيسية',
+  stock: 'المخزون',
+  add: 'إضافة',
+  languageLabel: 'العربية',
+  welcome: 'أدِر أعمال البيع بالجملة بسرعة ووضوح ومن مكان واحد.',
+  settingsTitle: 'إعدادات المورّد',
+  vendorName: 'اسم المورّد',
+  username: 'اسم المستخدم',
+  password: 'كلمة المرور',
+  passwordValue: 'محمي لأسباب أمنية',
+  passwordNote: 'لا نعرض كلمة المرور الفعلية هنا حفاظًا على الأمان.',
+  logout: 'تسجيل الخروج',
+  role: 'مورّد',
+  overviewTitle: 'لوحة المتابعة',
+  overviewSub: 'مؤشرات أداء منتجاتك في متجر MMD.',
+  totalProducts: 'إجمالي المنتجات',
+  inventoryLevel: 'مستوى المخزون',
+  inventoryLevelSub: 'إجمالي الوحدات المتاحة',
+  inventoryValue: 'قيمة المخزون',
+  inventoryValueSub: 'القيمة الحالية للمخزون',
+  ordersStat: 'الطلبات',
+  ordersStatSub: 'جارٍ التحميل...',
+  unitsSold: 'الوحدات المباعة',
+  unitsSoldSub: 'إجمالي القطع المطلوبة',
+  inventoryTitle: 'المخزون المباشر',
+  inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بـ MMD.',
+  searchProducts: 'ابحث عن المنتجات...',
+  allSegments: 'جميع الفئات',
+  noProducts: 'لم يتم العثور على منتجات.',
+  recentProducts: 'أحدث المنتجات',
+  productsBySegment: 'المنتجات حسب الفئة',
+  revenueLabel: 'إيراد',
+  productDetail: 'تفاصيل المنتج',
+  status: 'الحالة',
+  price: 'السعر',
+  loadingPortal: 'جارٍ تحميل البوابة...',
+  loadingProducts: 'جارٍ تحميل المنتجات...',
+  loginSubtitle: 'بوابة مورّدي الجملة',
+  usernamePlaceholder: 'أدخل اسم المستخدم',
+  passwordPlaceholder: 'أدخل كلمة المرور',
+  invalidCredentials: 'بيانات الدخول غير صحيحة',
+  unexpectedResponse: 'تم استلام استجابة غير متوقعة',
+  networkError: 'حدث خطأ في الاتصال',
+  signIn: 'تسجيل الدخول',
+  contactAdmin: 'تواصل مع المسؤول للحصول على بيانات دخول المورّد',
+  activeStatus: 'نشط',
+  inactiveStatus: 'غير نشط',
+  untitled: 'بدون عنوان',
+  addProductTitle: 'إضافة منتج',
+  addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل البيانات المالية، ثم أضف تنويعات المخزون. سيعمل التحليل وبيانات الكتالوج في الخلفية.',
+  productPhoto: 'صورة المنتج',
+  productPreview: 'معاينة المنتج',
+  takePhotoOrUpload: 'التقط صورة أو ارفع صورة للمنتج',
+  generatedAfterCreate: 'سيتم إنشاء العنوان والوصف والتحليل بعد إنشاء المنتج.',
+  takePhoto: 'التقاط صورة',
+  upload: 'رفع صورة',
+  retake: 'إعادة الالتقاط',
+  uploadingImage: 'جارٍ رفع الصورة...',
+  imageUploaded: 'تم رفع الصورة. ستكتمل بيانات الكتالوج في الخلفية بعد الحفظ.',
+  uploadFailed: 'فشل رفع الصورة. يُرجى المحاولة مرة أخرى.',
+  uploadError: 'حدث خطأ أثناء رفع الصورة. يُرجى المحاولة مرة أخرى.',
+  backgroundAnalysisStarts: 'سيبدأ التحليل في الخلفية بعد الحفظ',
+  colorsTitle: 'الألوان',
+  colorsLabel: 'ألوان المنتج',
+  colorPlaceholder: 'أدخل اسم اللون...',
+  addColor: 'إضافة',
+  noColorsYet: 'لم تتم إضافة أي ألوان بعد.',
+  hiddenCatalogNote: 'بيانات الكتالوج والعنوان والوصف مخفية هنا، وسيتم إنشاؤها بعد إرسال المنتج.',
+  financialsTitle: 'البيانات المالية',
+  cogPrice: 'سعر تكلفة الوحدة',
+  salePrice: 'سعر بيع الوحدة',
+  estimatedProfit: 'الربح المتوقع للوحدة',
+  stockVariants: 'تنويعات المخزون',
+  addRange: 'إضافة نطاق',
+  sku: 'رمز SKU',
+  from: 'من',
+  to: 'إلى',
+  qty: 'عدد الصناديق',
+  piecesPerCrate: 'القطع في الصندوق',
+  cratesLabel: 'صناديق',
+  variantPreview: 'معاينة التنويع',
+  cratePrice: 'سعر الصندوق',
+  unitPriceNote: 'سعر البيع الذي تدخله هو سعر الوحدة. يتم احتساب سعر كل تنويع تلقائيًا بحسب عدد القطع في الصندوق.',
+  stockVariantNote: 'لكل تنويع رمز SKU مستقل، وعدد قطع في الصندوق، وعدد صناديق خاص به.',
+  productsTaggedAs: 'سيتم وسم المنتجات باسم',
+  vendorFieldNote: 'سيظهر هذا الاسم كحقل المورّد في Shopify',
+  createProductCta: 'إنشاء المنتج',
+  creatingProduct: 'جارٍ إنشاء المنتج...',
+  uploadImageRequired: 'يرجى رفع صورة للمنتج.',
+  colorRequired: 'يرجى إضافة لون واحد على الأقل.',
+  unitSalePriceRequired: 'يرجى إدخال سعر بيع الوحدة.',
+  stockVariantRequired: 'يرجى إضافة تنويع مخزون واحد على الأقل.',
+  skuRequired: 'يرجى إدخال رمز SKU لكل تنويع مخزون.',
+  piecesPerCrateRequired: 'يرجى إدخال عدد القطع في الصندوق لكل تنويع.',
+  crateQuantityRequired: 'يرجى إدخال عدد الصناديق لكل تنويع.',
+  errorPrefix: 'خطأ',
+  saveProductError: 'حدث خطأ أثناء حفظ المنتج:',
+  productCreatedSuccess: 'تم إنشاء المنتج بنجاح. سيكتمل إنشاء بيانات الكتالوج والتحليل في الخلفية.',
+  createOrderTitle: 'إنشاء طلب',
+  createOrderSub: 'اختر المنتجات حسب SKU ثم أدخل بيانات العميل.',
+  addProducts: 'إضافة منتجات',
+  searchByProductOrSku: 'ابحث باسم المنتج أو رمز SKU...',
+  noProductsFound: 'لم يتم العثور على منتجات',
+  inStock: 'في المخزون',
+  each: 'للصندوق',
+  orderTotal: 'إجمالي الطلب',
+  customerDetails: 'بيانات العميل',
+  fullName: 'الاسم الكامل *',
+  phone: 'رقم الهاتف *',
+  addressSummary: 'العنوان (معبأ تلقائيًا، اضغط للتعديل)',
+  address: 'العنوان',
+  city: 'المدينة',
+  province: 'الجهة',
+  zip: 'الرمز البريدي',
+  placeOrder: 'تأكيد الطلب',
+  itemsLabel: 'أصناف',
+  customerNamePhoneRequired: 'اسم العميل ورقم الهاتف مطلوبان.',
+  addAtLeastOneProduct: 'أضف منتجًا واحدًا على الأقل.',
+  failedPrefix: 'تعذر التنفيذ',
+  invoiceImageFailed: 'تعذر إنشاء صورة الفاتورة. يُرجى المحاولة مرة أخرى.',
+  downloadInvoice: 'تنزيل الفاتورة',
+  shareInvoice: 'مشاركة الفاتورة',
+  invoice: 'فاتورة',
+  invoiceNumber: 'رقم الفاتورة',
+  issueDate: 'تاريخ الإصدار',
+  wholesaleVendor: 'مورّد الجملة',
+  customer: 'العميل',
+  billFrom: 'صادرة من',
+  billTo: 'صادرة إلى',
+  invoiceDetails: 'تفاصيل الفاتورة',
+  date: 'التاريخ',
+  time: 'الوقت',
+  confirmed: 'مؤكد',
+  itemColumn: 'الصنف',
+  unitPrice: 'سعر الوحدة',
+  lineTotal: 'إجمالي السطر',
+  subtotal: 'المجموع الفرعي',
+  shipping: 'الشحن',
+  free: 'مجاني',
+  total: 'الإجمالي',
+  thankYou: 'شكرًا لتعاملكم معنا',
+  newOrder: 'طلب جديد',
+  backToOverview: 'العودة إلى الرئيسية',
+  totalOrdersLabel: 'إجمالي الطلبات',
+  searchOrders: 'ابحث في الطلبات أو العملاء أو المنتجات...',
+  allCustomers: 'جميع العملاء',
+  unpaidFirst: 'غير المدفوع أولًا',
+  newest: 'الأحدث',
+  oldest: 'الأقدم',
+  noOrdersFound: 'لم يتم العثور على طلبات',
+  adjustSearchOrFilters: 'جرّب تعديل البحث أو عوامل التصفية',
+  remaining: 'المتبقي',
+  paymentNote: 'ملاحظة الدفع',
+  updatePayment: 'تحديث الدفع',
+  paymentStatus: 'حالة الدفع',
+  unpaid: 'غير مدفوع',
+  partial: 'مدفوع جزئيًا',
+  paid: 'مدفوع',
+  amountPaid: 'المبلغ المدفوع (DH)',
+  noteOptional: 'ملاحظة (اختياري)',
+  anyPaymentNotes: 'أي ملاحظات حول الدفع...',
+  cancel: 'إلغاء',
+  save: 'حفظ',
+  taggedCustomersLabel: 'عملاء مسجّلون',
+  unpaidLabel: 'غير مدفوع',
+  searchCustomers: 'ابحث عن العملاء بالاسم أو رقم الهاتف...',
+  adjustSearch: 'جرّب تعديل البحث',
+  notAvailable: 'غير متوفر',
+  noPhone: 'لا يوجد رقم هاتف',
+  ordersCountLabel: 'طلبات',
+  pending: 'معلّق',
+  selectCustomer: 'اختر عميلًا',
+  unpaidTotal: 'إجمالي غير المدفوع',
+  noOrdersForCustomer: 'لا توجد طلبات لهذا العميل.',
+} as const
+
+function getAppCopy(lang: Lang): AppCopy {
+  if (lang !== 'ar') return WHOLESALE_TEXT.en
+  return { ...WHOLESALE_TEXT.ar, ...ARABIC_TEXT_OVERRIDES }
+}
+
 const SEGMENT_LABELS: Record<string, Record<Lang, string>> = {
   Men: { en: 'Men', ar: 'رجال' },
   Women: { en: 'Women', ar: 'نساء' },
@@ -538,7 +776,7 @@ export default function WholesalePage() {
     setLang(next)
   }
 
-  const copy = WHOLESALE_TEXT[lang]
+  const copy = getAppCopy(lang)
 
   if (loading) return <LoadingScreen copy={copy} />
   if (!vendor) return <LoginScreen onLogin={onLogin} copy={copy} lang={lang} onLangChange={onLangChange} />
@@ -871,6 +1109,7 @@ function StatsCard({ label, value, sub, icon }: any) {
 //  OVERVIEW TAB
 // ═══════════════════════════════════════════════════
 function OverviewTab({ products, loading, orderStats, copy, lang }: { products: any[]; loading: boolean; orderStats: any; copy: AppCopy; lang: Lang }) {
+  const locale = getLocale(lang)
   const totalStock = useMemo(() => products.reduce((a, p) => {
     const vars = p.variants || []
     return a + vars.reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
@@ -909,9 +1148,9 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-        <StatsCard label={copy.inventoryLevel} value={loading ? '...' : totalStock.toLocaleString()} sub={copy.inventoryLevelSub} icon={<Box size={20} className="text-blue-600" />} />
-        <StatsCard label={copy.inventoryValue} value={loading ? '...' : `$${totalValue.toLocaleString()}`} sub={copy.inventoryValueSub} icon={<DollarSign size={20} className="text-green-600" />} />
-        <StatsCard label={copy.ordersStat} value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `$${orderStats.total_revenue} ${copy.revenueLabel}` : copy.ordersStatSub} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
+        <StatsCard label={copy.inventoryLevel} value={loading ? '...' : totalStock.toLocaleString(locale)} sub={copy.inventoryLevelSub} icon={<Box size={20} className="text-blue-600" />} />
+        <StatsCard label={copy.inventoryValue} value={loading ? '...' : formatDh(totalValue, locale)} sub={copy.inventoryValueSub} icon={<DollarSign size={20} className="text-green-600" />} />
+        <StatsCard label={copy.ordersStat} value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `${formatDh(orderStats.total_revenue, locale)} ${copy.revenueLabel}` : copy.ordersStatSub} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
         <StatsCard label={copy.unitsSold} value={orderStats ? orderStats.total_units_sold : '...'} sub={copy.unitsSoldSub} icon={<TrendingUp size={20} className="text-orange-600" />} />
       </div>
 
@@ -954,7 +1193,7 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
                 </div>
                 <div className="overflow-hidden">
                   <p className="text-sm font-bold truncate">{p.title}</p>
-                  <p className="text-[10px] text-slate-500">${p.variants?.[0]?.price || '0.00'}</p>
+                  <p className="text-[10px] text-slate-500">{formatDh(p.variants?.[0]?.price || '0.00', locale)}</p>
                 </div>
               </div>
             ))}
@@ -971,6 +1210,7 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
 function InventoryTab({ products, loading, copy, lang }: { products: any[]; loading: boolean; copy: AppCopy; lang: Lang }) {
   const [search, setSearch] = useState('')
   const [segFilter, setSegFilter] = useState('All')
+  const locale = getLocale(lang)
 
   const filtered = useMemo(() => {
     return products.filter(p => {
@@ -1050,7 +1290,7 @@ function InventoryTab({ products, loading, copy, lang }: { products: any[]; load
                     </span>
                   </td>
                   <td className="px-6 py-4 text-center font-bold text-sm">{qty}</td>
-                  <td className="px-6 py-4 text-right font-bold">${price}</td>
+                  <td className="px-6 py-4 text-right font-bold">{formatDh(price, locale)}</td>
                 </tr>
               )
             })}
@@ -1082,7 +1322,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     segment: SEGMENTS[0],
     season: SEASONS[0],
     colors: [] as string[],
-    sizeGroups: [{ from: 20, to: 25, qty: 10, sku: '' }],
+    sizeGroups: [createStockVariantRow()] as StockVariantFormRow[],
     variantGroupId: '',
   })
   const [imagePreview, setImagePreview] = useState<string | null>(null)
@@ -1094,11 +1334,12 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   const [aiStatus, setAiStatus] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const locale = getLocale(lang)
+  const unitSalePrice = toNumber(form.salePrice)
   const netProfit = useMemo(() => {
-    const sale = parseFloat(form.salePrice) || 0
-    const cog = parseFloat(form.cogPrice) || 0
-    return (sale - cog).toFixed(2)
-  }, [form.salePrice, form.cogPrice])
+    const cog = toNumber(form.cogPrice)
+    return unitSalePrice - cog
+  }, [form.cogPrice, unitSalePrice])
   const isArabic = lang === 'ar'
 
   function addColor() {
@@ -1112,10 +1353,20 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   }
 
   function addSizeGroup() {
-    setForm(f => ({ ...f, sizeGroups: [...f.sizeGroups, { from: 20, to: 25, qty: 10, sku: '' }] }))
+    setForm(f => ({ ...f, sizeGroups: [...f.sizeGroups, createStockVariantRow()] }))
   }
   function removeSizeGroup(idx: number) {
     setForm(f => ({ ...f, sizeGroups: f.sizeGroups.filter((_, i) => i !== idx) }))
+  }
+  function updateSizeGroup(idx: number, key: keyof StockVariantFormRow, value: string) {
+    setForm(f => ({
+      ...f,
+      sizeGroups: f.sizeGroups.map((group, groupIdx) => {
+        if (groupIdx !== idx) return group
+        if (key === 'sku') return { ...group, sku: value }
+        return { ...group, [key]: parseInt(value, 10) || 0 }
+      }),
+    }))
   }
 
   // Handle image selection (camera or file)
@@ -1188,18 +1439,22 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   async function handleSubmit() {
     if (!imageUrl) { alert(copy.uploadImageRequired); return }
     if (form.colors.length === 0) { alert(copy.colorRequired); return }
+    if (unitSalePrice <= 0) { alert(copy.unitSalePriceRequired); return }
     if (form.sizeGroups.length === 0) { alert(copy.stockVariantRequired); return }
     if (form.sizeGroups.some(group => !group.sku.trim())) { alert(copy.skuRequired); return }
+    if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { alert(copy.piecesPerCrateRequired); return }
+    if (form.sizeGroups.some(group => group.crateQty <= 0)) { alert(copy.crateQuantityRequired); return }
     setSaving(true)
     try {
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, {
         cog_price: parseFloat(form.cogPrice) || undefined,
-        sale_price: parseFloat(form.salePrice) || undefined,
+        sale_price: unitSalePrice || undefined,
         colors: form.colors.length > 0 ? form.colors : undefined,
         size_groups: form.sizeGroups.map(group => ({
           from: group.from,
           to: group.to,
-          qty: group.qty,
+          pcs_per_crate: group.pcsPerCrate,
+          crate_quantity: group.crateQty,
           sku: group.sku.trim(),
         })),
         image_url: imageUrl || undefined,
@@ -1382,9 +1637,12 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   <input type="number" value={form.salePrice} onChange={e => setForm({...form, salePrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
                 </div>
               </div>
+              <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
+                {copy.unitPriceNote}
+              </div>
               <div className="flex items-center justify-between p-4 bg-green-50 rounded-2xl border border-green-100 font-bold text-green-700">
                 <span className="text-xs uppercase">{copy.estimatedProfit}</span>
-                <span className="text-xl">${netProfit}</span>
+                <span className="text-xl">{formatDh(netProfit, locale)}</span>
               </div>
             </div>
           </section>
@@ -1399,31 +1657,52 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             </div>
             <div className="space-y-3">
               {form.sizeGroups.map((group, idx) => (
-                <div key={idx} className="flex flex-col md:flex-row md:items-center gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 relative">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1">
+                <div key={idx} className="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 relative">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.sku}</span>
                       <input type="text" value={group.sku}
-                        onChange={e => { const gs = [...form.sizeGroups]; gs[idx] = {...gs[idx], sku: e.target.value}; setForm({...form, sizeGroups: gs}) }}
+                        onChange={e => updateSizeGroup(idx, 'sku', e.target.value)}
                         className="font-bold text-sm outline-none w-full" placeholder="SKU-001" />
                     </div>
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.from}</span>
                       <input type="number" value={group.from}
-                        onChange={e => { const gs = [...form.sizeGroups]; gs[idx] = {...gs[idx], from: parseInt(e.target.value)||0}; setForm({...form, sizeGroups: gs}) }}
+                        onChange={e => updateSizeGroup(idx, 'from', e.target.value)}
                         className="font-bold text-sm outline-none w-full" />
                     </div>
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.to}</span>
                       <input type="number" value={group.to}
-                        onChange={e => { const gs = [...form.sizeGroups]; gs[idx] = {...gs[idx], to: parseInt(e.target.value)||0}; setForm({...form, sizeGroups: gs}) }}
+                        onChange={e => updateSizeGroup(idx, 'to', e.target.value)}
+                        className="font-bold text-sm outline-none w-full" />
+                    </div>
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.piecesPerCrate}</span>
+                      <input type="number" value={group.pcsPerCrate}
+                        onChange={e => updateSizeGroup(idx, 'pcsPerCrate', e.target.value)}
                         className="font-bold text-sm outline-none w-full" />
                     </div>
                     <div className="bg-blue-600 p-2 rounded-xl flex flex-col border border-blue-700">
                       <span className="text-[9px] text-blue-100 font-bold uppercase mb-1">{copy.qty}</span>
-                      <input type="number" value={group.qty}
-                        onChange={e => { const gs = [...form.sizeGroups]; gs[idx] = {...gs[idx], qty: parseInt(e.target.value)||0}; setForm({...form, sizeGroups: gs}) }}
+                      <input type="number" value={group.crateQty}
+                        onChange={e => updateSizeGroup(idx, 'crateQty', e.target.value)}
                         className="font-bold text-sm outline-none w-full text-white bg-transparent" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{copy.variantPreview}</p>
+                        <p className="mt-1 text-base font-bold text-slate-900">
+                          {buildVariantTitle(group)}
+                          <span className="text-sm font-semibold text-slate-500"> · {group.crateQty} {copy.cratesLabel}</span>
+                        </p>
+                      </div>
+                      <div className={`${isArabic ? 'sm:text-left' : 'sm:text-right'}`}>
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{copy.cratePrice}</p>
+                        <p className="mt-1 text-lg font-black text-emerald-600">{formatDh(getVariantCratePrice(unitSalePrice, group), locale)}</p>
+                      </div>
                     </div>
                   </div>
                   {form.sizeGroups.length > 1 && (
@@ -1487,7 +1766,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
   const searchRef = useRef<HTMLDivElement>(null)
   const invoiceRef = useRef<HTMLDivElement>(null)
   const isArabic = lang === 'ar'
-  const locale = isArabic ? 'ar-MA' : 'en-GB'
+  const locale = getLocale(lang)
 
   // Flatten variants for search
   const allVariants = useMemo(() => {
@@ -1544,6 +1823,8 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
   const orderTotal = useMemo(() => {
     return lineItems.reduce((sum, li) => sum + (parseFloat(li.price) || 0) * li.quantity, 0).toFixed(2)
   }, [lineItems])
+  const invoiceNumber = success?.name || `#${success?.order_number || ''}`
+  const invoiceTotal = toNumber(success?.total_price || orderTotal)
 
   async function handleSubmit() {
     if (!customerName.trim() || !customerPhone.trim()) { alert(copy.customerNamePhoneRequired); return }
@@ -1629,6 +1910,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
   const invoiceDate = new Date().toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' })
   const invoiceTime = new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
   const totalItems = lineItems.reduce((s, li) => s + li.quantity, 0)
+  const customerAddressLine = address.address1 && address.address1 !== 'NA' ? address.address1 : null
 
   if (success) {
     return (
