@@ -13,7 +13,7 @@ SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")  # Dev Dashboard 
 # Comma-separated scopes. Keep minimal but sufficient for current app features (orders + product/page creation + theme editing).
 SHOPIFY_OAUTH_SCOPES = os.getenv(
     "SHOPIFY_OAUTH_SCOPES",
-    "read_orders,write_orders,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_themes,write_themes",
+    "read_orders,write_orders,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_locations,read_themes,write_themes",
 )
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")

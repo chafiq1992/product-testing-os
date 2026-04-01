@@ -1987,9 +1987,31 @@ def list_product_images(product_gid: str, *, store: str | None = None) -> list[d
         return []
 
 
-LOCATIONS_QUERY = """
-query { locations(first: 10) { nodes { id name isActive } } }
-"""
+
+
+def _get_location_id_from_inventory_levels(inventory_item_ids: list[str] | None, *, store: str | None = None) -> str | None:
+    """Infer a usable location from inventory levels when locations scope is unavailable."""
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    ids = [str(i).strip() for i in (inventory_item_ids or []) if str(i).strip() and str(i).strip() != "None"]
+    if not ids:
+        return None
+    chunk = 50
+    for i in range(0, len(ids), chunk):
+        batch_ids = ids[i:i + chunk]
+        batch = ",".join(batch_ids)
+        try:
+            data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={batch}")
+            levels = (data or {}).get("inventory_levels") or []
+            _log.info(f"inventory_levels fallback returned {len(levels)} levels for {len(batch_ids)} inventory items")
+            for lv in levels:
+                loc_id = str((lv or {}).get("location_id") or "").strip()
+                if loc_id:
+                    _log.info(f"Using inventory_levels fallback location: {loc_id}")
+                    return loc_id
+        except Exception as e:
+            _log.warning(f"inventory_levels fallback failed for inventory_item_ids={batch}: {e}")
+    return None
 
 def _get_primary_location_id(store: str | None = None) -> str | None:
     import logging
@@ -2196,9 +2218,16 @@ def _configure_variants_for_product(
         report["ok"] = False
         report["errors"].append("Invalid product GID")
         return report
+    def _resolve_location_for_item(inv_item_id: str | None) -> str | None:
+        nonlocal loc_id
+        if loc_id:
+            return loc_id
+        resolved = _get_location_id_from_inventory_levels([inv_item_id or ""], store=store)
+        if resolved:
+            loc_id = resolved
+        return resolved
     # Location used for inventory level updates (best-effort)
     loc_id = _get_primary_location_id(store)
-
     # Explicit variants provided: honor per-variant price/sku/qty/track when present
     explicit_variants: list[dict] = [v for v in (variants or []) if isinstance(v, dict)]
     if explicit_variants:
@@ -2214,7 +2243,6 @@ def _configure_variants_for_product(
                     uniq_colors.append(cv)
             except Exception:
                 continue
-
         # Build a single PUT payload with options AND variants together.
         # This avoids the issue where updating options first remaps the default variant,
         # then POST-ing new variants fails silently due to duplicates.
@@ -2227,7 +2255,6 @@ def _configure_variants_for_product(
         if options_list:
             product_update["options"] = options_list
             report["options_updated"] = {"size_count": len(uniq_sizes), "color_count": len(uniq_colors)}
-
         # Build variant payloads for the PUT (replaces default variant)
         variant_payloads: list[dict] = []
         for v in explicit_variants:
@@ -2257,10 +2284,8 @@ def _configure_variants_for_product(
             if isinstance(barcode_val, str) and barcode_val.strip():
                 vp["barcode"] = barcode_val.strip()
             variant_payloads.append(vp)
-
         if variant_payloads:
             product_update["variants"] = variant_payloads
-
         try:
             _rest_put_store(store, f"/products/{numeric_id}.json", {"product": product_update})
             report["variants_created"] = len(variant_payloads)
@@ -2268,74 +2293,73 @@ def _configure_variants_for_product(
             report["ok"] = False
             report["errors"].append(f"PUT product with variants failed: {e}")
             return report
-
         # After PUT, fetch the created variants to set inventory tracking and levels
         import logging, time
         _inv_log = logging.getLogger("shopify_client.inventory")
-
         # Allow Shopify to finalize variant creation before we fetch them
         time.sleep(2.0)
-
-        if loc_id:
-            try:
-                created_variants = _list_variants(numeric_id, store=store)
+        try:
+            created_variants = _list_variants(numeric_id, store=store)
+            if loc_id:
                 _inv_log.info(f"Setting inventory for {len(created_variants)} variants, loc={loc_id}")
-
-                # Build a lookup map from explicit_variants by option values for reliable matching
-                # (Shopify may reorder variants after PUT, so index-based mapping is unreliable)
-                _ev_qty_map: dict[str, dict] = {}
-                for ev in explicit_variants:
-                    ev_size = (ev.get("size") or "").strip().lower()
-                    ev_color = (ev.get("color") or "").strip().lower()
-                    map_key = f"{ev_size}|{ev_color}"
-                    _ev_qty_map[map_key] = ev
-
-                for idx, cv_data in enumerate(created_variants):
-                    try:
-                        inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
-                        if not inv_item_id or inv_item_id == "None":
-                            _inv_log.warning(f"Variant {idx}: no inventory_item_id, skipping")
-                            continue
-
-                        # Match by option values first, fall back to index
-                        cv_o1 = (cv_data.get("option1") or "").strip().lower()
-                        cv_o2 = (cv_data.get("option2") or "").strip().lower()
-                        # Try size|color and color|size orderings
-                        v_cfg = (
-                            _ev_qty_map.get(f"{cv_o1}|{cv_o2}")
-                            or _ev_qty_map.get(f"{cv_o2}|{cv_o1}")
-                            or _ev_qty_map.get(f"{cv_o1}|")
-                            or _ev_qty_map.get(f"|{cv_o1}")
-                            or (explicit_variants[idx] if idx < len(explicit_variants) else {})
-                        )
-
-                        tq_raw = v_cfg.get("track_quantity")
-                        eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
-                        _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
-                        _set_inventory_tracked(inv_item_id, eff_tq, store=store)
-                        # Brief pause to let Shopify propagate tracking state
-                        time.sleep(1.5)
-                        q_raw = v_cfg.get("quantity")
-                        eff_q = q_raw if (q_raw is not None) else quantity
-                        if eff_q is not None:
-                            _inv_log.info(f"Variant {idx}: setting qty={eff_q} at loc={loc_id}")
-                            _set_inventory_level(loc_id, inv_item_id, int(eff_q), store=store)
-                            report["inventory_items_updated"] += 1
-                        else:
-                            _inv_log.info(f"Variant {idx}: no quantity to set")
-                    except Exception as inv_err:
-                        _inv_log.error(f"Variant {idx} inventory error: {inv_err}")
-                        report["errors"].append(f"inv_variant_{idx}: {inv_err}")
+            else:
+                _inv_log.warning(f"Primary location unavailable for store={store}; trying per-item inventory_levels fallback")
+            # Build a lookup map from explicit_variants by option values for reliable matching
+            # (Shopify may reorder variants after PUT, so index-based mapping is unreliable)
+            _ev_qty_map: dict[str, dict] = {}
+            for ev in explicit_variants:
+                ev_size = (ev.get("size") or "").strip().lower()
+                ev_color = (ev.get("color") or "").strip().lower()
+                map_key = f"{ev_size}|{ev_color}"
+                _ev_qty_map[map_key] = ev
+            missing_location = False
+            for idx, cv_data in enumerate(created_variants):
+                try:
+                    inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
+                    if not inv_item_id or inv_item_id == "None":
+                        _inv_log.warning(f"Variant {idx}: no inventory_item_id, skipping")
                         continue
-            except Exception as list_err:
-                _inv_log.error(f"Failed to list variants for inventory: {list_err}")
-                report["errors"].append(f"list_variants: {list_err}")
-        else:
-            report["errors"].append(f"loc_id is None — could not determine Shopify location for store={store}")
-            import logging
-            logging.getLogger("shopify_client.inventory").error(f"loc_id is None for store={store}, skipping inventory")
+                    # Match by option values first, fall back to index
+                    cv_o1 = (cv_data.get("option1") or "").strip().lower()
+                    cv_o2 = (cv_data.get("option2") or "").strip().lower()
+                    # Try size|color and color|size orderings
+                    v_cfg = (
+                        _ev_qty_map.get(f"{cv_o1}|{cv_o2}")
+                        or _ev_qty_map.get(f"{cv_o2}|{cv_o1}")
+                        or _ev_qty_map.get(f"{cv_o1}|")
+                        or _ev_qty_map.get(f"|{cv_o1}")
+                        or (explicit_variants[idx] if idx < len(explicit_variants) else {})
+                    )
+                    tq_raw = v_cfg.get("track_quantity")
+                    eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
+                    _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
+                    _set_inventory_tracked(inv_item_id, eff_tq, store=store)
+                    # Brief pause to let Shopify propagate tracking state
+                    time.sleep(1.5)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    q_raw = v_cfg.get("quantity")
+                    eff_q = q_raw if (q_raw is not None) else quantity
+                    if eff_q is not None:
+                        if not eff_loc_id:
+                            missing_location = True
+                            _inv_log.error(f"Variant {idx}: could not infer a Shopify location for inventory_item_id={inv_item_id}")
+                            report["errors"].append(f"inv_variant_{idx}: could not determine Shopify location")
+                            continue
+                        _inv_log.info(f"Variant {idx}: setting qty={eff_q} at loc={eff_loc_id}")
+                        _set_inventory_level(eff_loc_id, inv_item_id, int(eff_q), store=store)
+                        report["inventory_items_updated"] += 1
+                    else:
+                        _inv_log.info(f"Variant {idx}: no quantity to set")
+                except Exception as inv_err:
+                    _inv_log.error(f"Variant {idx} inventory error: {inv_err}")
+                    report["errors"].append(f"inv_variant_{idx}: {inv_err}")
+                    continue
+            if missing_location and not loc_id:
+                report["errors"].append(f"loc_id is None - could not determine Shopify location for store={store}")
+        except Exception as list_err:
+            _inv_log.error(f"Failed to list variants for inventory: {list_err}")
+            report["errors"].append(f"list_variants: {list_err}")
         return report
-
     # Fallback: sizes/colors combos with base price
     values_size = [s.strip() for s in (sizes or []) if isinstance(s, str) and s.strip()]
     values_color = [c.strip() for c in (colors or []) if isinstance(c, str) and c.strip()]
@@ -2362,19 +2386,22 @@ def _configure_variants_for_product(
                     created_variants.append(v)
         report["variants_created"] = len(created_variants)
         # Enable inventory and set stock per provided quantity (default 2)
-        if loc_id:
-            for v in created_variants:
-                try:
-                    inv_item_id = str((v or {}).get("inventory_item_id"))
-                    if inv_item_id and inv_item_id != "None":
-                        _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True, store=store)
-                        if quantity is not None:
-                            _set_inventory_level(loc_id, inv_item_id, int(quantity), store=store)
-                        else:
-                            _set_inventory_level(loc_id, inv_item_id, 2, store=store)
-                        report["inventory_items_updated"] += 1
-                except Exception:
-                    continue
+        for v in created_variants:
+            try:
+                inv_item_id = str((v or {}).get("inventory_item_id"))
+                if inv_item_id and inv_item_id != "None":
+                    _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True, store=store)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    if not eff_loc_id:
+                        report["errors"].append(f"inventory_location_missing:{inv_item_id}")
+                        continue
+                    if quantity is not None:
+                        _set_inventory_level(eff_loc_id, inv_item_id, int(quantity), store=store)
+                    else:
+                        _set_inventory_level(eff_loc_id, inv_item_id, 2, store=store)
+                    report["inventory_items_updated"] += 1
+            except Exception:
+                continue
         if base_price is None:
             report["skipped"].append({"field": "base_price", "reason": "missing"})
     else:
@@ -2392,13 +2419,17 @@ def _configure_variants_for_product(
                 pass
             try:
                 inv_item_id = str(first.get("inventory_item_id"))
-                if loc_id and inv_item_id and inv_item_id != "None":
+                if inv_item_id and inv_item_id != "None":
                     _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True, store=store)
-                    if quantity is not None:
-                        _set_inventory_level(loc_id, inv_item_id, int(quantity), store=store)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    if not eff_loc_id:
+                        report["errors"].append(f"inventory_location_missing:{inv_item_id}")
                     else:
-                        _set_inventory_level(loc_id, inv_item_id, 2, store=store)
-                    report["inventory_items_updated"] += 1
+                        if quantity is not None:
+                            _set_inventory_level(eff_loc_id, inv_item_id, int(quantity), store=store)
+                        else:
+                            _set_inventory_level(eff_loc_id, inv_item_id, 2, store=store)
+                        report["inventory_items_updated"] += 1
             except Exception:
                 pass
         else:
@@ -2409,7 +2440,6 @@ def _configure_variants_for_product(
     if colors is not None and not values_color:
         report["skipped"].append({"field": "colors", "reason": "empty"})
     return report
-
 
 def publish_product_all_channels(product_gid: str, *, store: str | None = None) -> dict:
     """Publish a product to all available sales channels (publications)."""
@@ -3161,4 +3191,3 @@ def list_ai_pages(*, store: str | None = None, limit: int = 50) -> list[dict]:
     # Sort by updated_at descending
     ai_pages.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
     return ai_pages
-
