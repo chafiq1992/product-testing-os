@@ -1005,3 +1005,12 @@ export async function pageBuilderListPages(store?: string){
   const {data} = await axios.get(`${base}/api/page-builder/pages${q}`)
   return data as { data: Array<{ id:string, title:string, handle:string, template_suffix:string, slug:string, url:string, created_at?:string, updated_at?:string }>, error?: string }
 }
+
+export async function pageBuilderTranslate(payload:{
+  slug: string,
+  store?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/translate`, body, { timeout: 180000 })
+  return data as { ok?: boolean, translated_sections?: number, total_sections?: number, error?: string }
+}

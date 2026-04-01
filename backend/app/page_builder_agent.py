@@ -1203,3 +1203,151 @@ def run_page_builder_agent(
         "template_suffix": template_suffix,
         "error": None if page_url else "max_iters_exceeded",
     }
+
+
+# ==================== Page Translation ====================
+
+def _build_locale_conditional(en_html: str, fr_html: str, ar_html: str) -> str:
+    """Wrap HTML in Liquid locale conditionals."""
+    parts = []
+    if fr_html and ar_html:
+        parts.append("{% if request.locale.iso_code == 'fr' %}")
+        parts.append(fr_html)
+        parts.append("{% elsif request.locale.iso_code == 'ar' %}")
+        parts.append(ar_html)
+        parts.append("{% else %}")
+        parts.append(en_html)
+        parts.append("{% endif %}")
+    elif fr_html:
+        parts.append("{% if request.locale.iso_code == 'fr' %}")
+        parts.append(fr_html)
+        parts.append("{% else %}")
+        parts.append(en_html)
+        parts.append("{% endif %}")
+    elif ar_html:
+        parts.append("{% if request.locale.iso_code == 'ar' %}")
+        parts.append(ar_html)
+        parts.append("{% else %}")
+        parts.append(en_html)
+        parts.append("{% endif %}")
+    else:
+        return en_html
+    return "\n".join(parts)
+
+
+def _translate_sections_batch(
+    sections_html: dict[str, str],
+    locale: str,
+    lang_name: str,
+) -> dict[str, str]:
+    """Translate multiple HTML sections to a target language using OpenAI."""
+    if not sections_html:
+        return {}
+
+    rtl_note = (
+        "\n8. Add dir=\"rtl\" to the first/outermost container div of each section."
+        "\n9. Use natural, fluent Arabic perfect for a kids fashion e-commerce store."
+        if locale == "ar"
+        else "\n8. Use natural, fluent French perfect for a kids fashion e-commerce store."
+    )
+
+    system_prompt = (
+        f"You are a professional e-commerce translator. "
+        f"Translate HTML sections from English to {lang_name}.\n\n"
+        "CRITICAL RULES:\n"
+        "1. Keep ALL HTML tags, CSS <style> blocks, class names, IDs, data attributes EXACTLY unchanged.\n"
+        "2. Keep ALL <script> blocks and JavaScript code EXACTLY unchanged.\n"
+        "3. Only translate visible text: headings, paragraphs, button labels, badge labels, list items.\n"
+        "4. Do NOT translate CSS properties, URLs, emoji characters, or numbers.\n"
+        "5. Preserve all HTML structure, nesting, and attributes identically.\n"
+        "6. Preserve all emoji and special characters.\n"
+        "7. Keep brand names untranslated.\n"
+        f"{rtl_note}\n\n"
+        'Return a JSON object: {"translations": {"section_id": "translated_html", ...}}'
+    )
+
+    user_parts = ["Translate these HTML sections:\n"]
+    for sid, html in sections_html.items():
+        user_parts.append(f"=== SECTION: {sid} ===\n{html}\n")
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "\n".join(user_parts)},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+        result = json.loads(resp.choices[0].message.content)
+        return result.get("translations", result)
+    except Exception as e:
+        _log.error(f"Translation to {locale} failed: {e}")
+        return {}
+
+
+def translate_page_template(slug: str, *, store: str | None = None) -> dict:
+    """Translate all custom-liquid sections of a page template to Arabic and French.
+
+    Uses Liquid ``request.locale.iso_code`` conditionals so the store
+    automatically serves the right language based on the visitor's locale.
+    The product section is skipped because its content comes from Shopify
+    Liquid (product title, price, description) which is already multilingual.
+    """
+    template = read_page_template_json(slug, store=store)
+    if not template:
+        return {"error": f"Template not found: {slug}"}
+
+    sections = template.get("sections", {})
+    order = template.get("order", [])
+    layout = template.get("layout")
+
+    # Collect translatable custom-liquid sections
+    translatable: dict[str, str] = {}
+    for sid, sec in sections.items():
+        if sec.get("type") != "custom-liquid":
+            continue
+        cl = (sec.get("settings") or {}).get("custom_liquid", "")
+        if not cl.strip():
+            continue
+        # Skip product section (uses Liquid for product data — already multilingual)
+        if "aip-product" in cl or "all_products" in cl:
+            continue
+        # Skip if already translated
+        if "request.locale.iso_code" in cl:
+            continue
+        translatable[sid] = cl
+
+    if not translatable:
+        return {"error": "No new sections to translate (already translated or no content sections found)."}
+
+    _log.info(f"Translating {len(translatable)} sections for slug={slug}")
+
+    # Translate to French and Arabic
+    fr_map = _translate_sections_batch(translatable, "fr", "French")
+    ar_map = _translate_sections_batch(translatable, "ar", "Arabic")
+
+    # Apply locale conditionals to each section
+    translated_count = 0
+    for sid, original_html in translatable.items():
+        fr_html = fr_map.get(sid, "")
+        ar_html = ar_map.get(sid, "")
+        if not fr_html and not ar_html:
+            continue
+        multi_html = _build_locale_conditional(original_html, fr_html, ar_html)
+        sections[sid]["settings"]["custom_liquid"] = multi_html
+        translated_count += 1
+
+    if translated_count == 0:
+        return {"error": "Translation returned empty for all sections. Please try again."}
+
+    # Write updated template back
+    result = update_page_template_json(slug, sections, order, layout=layout, store=store)
+    _log.info(f"Translation complete: {translated_count}/{len(translatable)} sections translated")
+    return {
+        "ok": True,
+        "translated_sections": translated_count,
+        "total_sections": len(sections),
+        **result,
+    }

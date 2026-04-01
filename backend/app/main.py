@@ -4642,12 +4642,39 @@ class WholesaleAnalyzeImageRequest(BaseModel):
 @app.post("/api/wholesale/analyze-image")
 async def api_wholesale_analyze_image(req: WholesaleAnalyzeImageRequest):
     """Send a product image to ChatGPT and return AI-generated title and description."""
+    """Send a product image to ChatGPT and return AI-generated title and description."""
     try:
         image_url = (req.image_url or "").strip()
         if not image_url:
             return {"error": "image_url is required"}
         data = await run_in_threadpool(gen_product_from_image, image_url)
         return {"data": data, "image_url": image_url}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class PageBuilderTranslateRequest(BaseModel):
+    slug: str
+    store: str | None = None
+
+
+@app.post("/api/page-builder/translate")
+async def api_page_builder_translate(req: PageBuilderTranslateRequest):
+    """Translate an AI page's content sections to Arabic and French."""
+    import asyncio
+    try:
+        store = (req.store or "").strip() or None
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                translate_page_template,
+                req.slug,
+                store=store,
+            ),
+            timeout=180,
+        )
+        return result
+    except asyncio.TimeoutError:
+        return {"error": "Translation timed out. Please try again."}
     except Exception as e:
         return {"error": str(e)}
 
@@ -5179,7 +5206,7 @@ async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req:
 
 # ==================== Page Builder (AI Agent) ====================
 
-from app.page_builder_agent import run_page_builder_agent
+from app.page_builder_agent import run_page_builder_agent, translate_page_template
 from app.integrations.shopify_client import (
     search_products_for_picker,
     read_page_template_json,

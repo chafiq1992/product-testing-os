@@ -8,6 +8,7 @@ import {
   pageBuilderWidgetInstall,
   pageBuilderWidgetUninstall,
   pageBuilderListPages,
+  pageBuilderTranslate,
 } from '@/lib/api'
 
 /* ───────── Types ───────── */
@@ -70,6 +71,9 @@ export default function PageBuilderPage() {
   // Widget install
   const [widgetInstalled, setWidgetInstalled] = useState(false)
   const [widgetLoading, setWidgetLoading] = useState(false)
+
+  // Translation
+  const [translating, setTranslating] = useState(false)
 
   // Preview
   const [iframeKey, setIframeKey] = useState(0)
@@ -384,9 +388,9 @@ export default function PageBuilderPage() {
             )}
           </div>
 
-          {/* Layout Controls */}
+          {/* Layout Controls + Translate */}
           {currentSlug && (
-            <div className="px-4 py-3 border-b border-white/5 flex items-center gap-4">
+            <div className="px-4 py-3 border-b border-white/5 flex items-center gap-4 flex-wrap">
               <div className="flex items-center gap-1.5 text-white/40 text-xs"><LayoutIcon /> Layout</div>
               <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
                 <input type="checkbox" checked={showHeader}
@@ -400,6 +404,31 @@ export default function PageBuilderPage() {
                   className="w-3.5 h-3.5 rounded border-white/20 bg-white/5 text-purple-500 focus:ring-purple-500/30 accent-purple-500" />
                 <span className="text-white/60">Footer</span>
               </label>
+              <div className="ml-auto">
+                <button
+                  onClick={async () => {
+                    if (!currentSlug || translating) return
+                    setTranslating(true)
+                    setChat(prev => [...prev, { role: 'system', content: '🌐 Translating page to Arabic and French...' }])
+                    try {
+                      const res = await pageBuilderTranslate({ slug: currentSlug })
+                      if (res.error) {
+                        setChat(prev => [...prev, { role: 'system', content: `❌ Translation failed: ${res.error}` }])
+                      } else {
+                        setChat(prev => [...prev, { role: 'system', content: `✅ Translated ${res.translated_sections} sections to Arabic and French!` }])
+                        setIframeKey(k => k + 1)
+                      }
+                    } catch (e: any) {
+                      setChat(prev => [...prev, { role: 'system', content: `❌ ${e?.message || 'Translation error'}` }])
+                    }
+                    setTranslating(false)
+                  }}
+                  disabled={translating}
+                  className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-300 border border-emerald-500/30 rounded-lg px-3 py-1.5 hover:bg-emerald-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {translating ? '⏳ Translating...' : '🌐 Translate AR/FR'}
+                </button>
+              </div>
             </div>
           )}
 
