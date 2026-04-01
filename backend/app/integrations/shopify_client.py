@@ -2086,6 +2086,7 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
         "input": {
             "reason": "correction",
             "name": "available",
+            "ignoreCompareQuantity": True,
             "quantities": [
                 {
                     "inventoryItemId": inv_gid,
@@ -2102,8 +2103,6 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
         if ue:
             _log.error(f"inventorySetQuantities userErrors: {ue}")
             raise RuntimeError(f"Shopify userErrors: {ue}")
-    except RuntimeError:
-        raise  # Re-raise our own errors
     except Exception as gql_err:
         _log.warning(f"GraphQL inventorySetQuantities failed: {gql_err}, trying REST fallback")
         # Fallback to REST for older API versions
@@ -2116,6 +2115,7 @@ def _set_inventory_level(location_id: str, inventory_item_id: str, available: in
             _log.info(f"REST inventory_levels/set.json succeeded for item={inventory_item_id}")
         except Exception as rest_err:
             _log.error(f"REST fallback also failed for item={inventory_item_id}: {rest_err}")
+            raise RuntimeError(f"GraphQL inventory update failed: {gql_err}; REST fallback failed: {rest_err}")
             raise RuntimeError(f"Both GraphQL and REST inventory set failed: gql={gql_err}, rest={rest_err}")
 
 

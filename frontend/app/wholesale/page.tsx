@@ -483,16 +483,20 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
   const [saving, setSaving] = useState(false)
   const [colorInput, setColorInput] = useState('')
   const [form, setForm] = useState({
-    title: '', description: '', cogPrice: '', salePrice: '',
-    colors: [] as string[], segment: 'Men', season: 'Summer',
-    sizeGroups: [{ from: 20, to: 25, qty: 10 }],
-    variantGroupId: ''
+    title: '',
+    description: '',
+    cogPrice: '', salePrice: '',
+    segment: SEGMENTS[0],
+    season: SEASONS[0],
+    colors: [] as string[],
+    sizeGroups: [{ from: 20, to: 25, qty: 10, sku: '' }],
+    variantGroupId: '',
   })
-  // Image capture state
-  const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null)
+  const [imageFile, setImageFile] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [aiStatus, setAiStatus] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -514,7 +518,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
   }
 
   function addSizeGroup() {
-    setForm(f => ({ ...f, sizeGroups: [...f.sizeGroups, { from: 20, to: 25, qty: 10 }] }))
+    setForm(f => ({ ...f, sizeGroups: [...f.sizeGroups, { from: 20, to: 25, qty: 10, sku: '' }] }))
   }
   function removeSizeGroup(idx: number) {
     setForm(f => ({ ...f, sizeGroups: f.sizeGroups.filter((_, i) => i !== idx) }))
@@ -525,12 +529,11 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
     const file = e.target.files?.[0]
     if (!file) return
     setImageFile(file)
-    // Show local preview
     const reader = new FileReader()
     reader.onload = (ev) => setImagePreview(ev.target?.result as string)
     reader.readAsDataURL(file)
-    // Upload to server
     setUploading(true)
+    setUploadStatus('Uploading image...')
     setAiStatus('Uploading image...')
     try {
       const fd = new FormData()
@@ -539,11 +542,14 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
       const data = await res.json()
       if (data?.data?.url) {
         setImageUrl(data.data.url)
-        setAiStatus('Image uploaded! Tap "Analyze with AI" to auto-fill product details.')
+        setUploadStatus('Image uploaded. Catalog data will finish in the background after save.')
+        setAiStatus('Image uploaded. Catalog data will finish in the background after save.')
       } else {
+        setUploadStatus('Upload failed. Please try again.')
         setAiStatus('Upload failed. Please try again.')
       }
     } catch {
+      setUploadStatus('Upload error. Please try again.')
       setAiStatus('Upload error. Please try again.')
     } finally {
       setUploading(false)
@@ -581,26 +587,31 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
     setImagePreview(null)
     setImageUrl(null)
     setAiStatus(null)
+    setUploadStatus(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   async function handleSubmit() {
-    if (!form.title.trim()) { alert('Please enter a product title.'); return }
+    if (!imageUrl) { alert('Please upload a product image.'); return }
+    if (form.colors.length === 0) { alert('Please add at least one color.'); return }
+    if (form.sizeGroups.length === 0) { alert('Please add at least one stock variant.'); return }
+    if (form.sizeGroups.some(group => !group.sku.trim())) { alert('Please enter a SKU for each stock variant.'); return }
     setSaving(true)
     try {
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, {
-        title: form.title,
-        description: form.description,
         cog_price: parseFloat(form.cogPrice) || undefined,
         sale_price: parseFloat(form.salePrice) || undefined,
-        segment: form.segment,
-        season: form.season,
         colors: form.colors.length > 0 ? form.colors : undefined,
-        size_groups: form.sizeGroups,
+        size_groups: form.sizeGroups.map(group => ({
+          from: group.from,
+          to: group.to,
+          qty: group.qty,
+          sku: group.sku.trim(),
+        })),
         image_url: imageUrl || undefined,
-        variant_group_id: form.variantGroupId.trim() || undefined,
       })
       if (res?.error) { alert('Error: ' + res.error); return }
+      alert('Product created successfully. Catalog data and analysis will finish in the background.')
       onDone()
     } catch (e: any) {
       alert('Error saving product: ' + (e?.message || e))
@@ -611,7 +622,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
     <div className="max-w-4xl mx-auto space-y-6 pb-24 animate-in">
       <div>
         <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">Add Product</h2>
-        <p className="text-slate-500 text-sm">Create a new product on the MMD Shopify store.</p>
+        <p className="text-slate-500 text-sm">Upload the image, choose colors, enter financials, and add stock variants. Analysis and catalog data will run in the background.</p>
       </div>
 
       {/* ── CAMERA / IMAGE CAPTURE SECTION ── */}
@@ -625,7 +636,7 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
               <Camera size={36} className="text-blue-400" />
             </div>
             <p className="text-sm text-blue-600 font-medium text-center">Take a photo or upload an image of your product</p>
-            <p className="text-[10px] text-blue-400 text-center">AI will analyze the image to auto‑fill title & description</p>
+            <p className="text-[10px] text-blue-400 text-center">Title, description, and analysis will be generated after the product is created.</p>
             <div className="flex gap-3">
               <label className="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 text-sm">
                 <Camera size={18} />
@@ -665,10 +676,13 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
             </div>
             {/* AI Analyze Button */}
             <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex-1 bg-white/80 text-slate-500 px-6 py-3.5 rounded-2xl font-bold border border-blue-100 text-sm text-center">
+                Background analysis starts after save
+              </div>
               <button
                 onClick={handleAnalyzeImage}
                 disabled={analyzing || !imageUrl}
-                className="flex-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white px-6 py-3.5 rounded-2xl font-bold shadow-lg shadow-violet-200 transition-all active:scale-95 disabled:opacity-60 flex items-center justify-center gap-2 text-sm"
+                className="hidden"
               >
                 {analyzing ? <Loader2 className="animate-spin" size={18} /> : <span className="text-lg">🤖</span>}
                 {analyzing ? 'Analyzing...' : 'Analyze with AI'}
@@ -704,21 +718,20 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LEFT COLUMN */}
         <div className="space-y-6">
-          {/* Catalog Data */}
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
-              <TagIcon size={14} /> Catalog Data
+              <TagIcon size={14} /> Colors
             </h3>
             <div className="space-y-4">
-              <div>
+              <div className="hidden">
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Product Title</label>
                 <input type="text" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="Enter product title" />
               </div>
-              <div>
+              <div className="hidden">
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Description</label>
                 <textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium outline-none resize-none h-24" placeholder="Product description..." />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="hidden grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Segment</label>
                   <select value={form.segment} onChange={e => setForm({...form, segment: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-sm outline-none">
@@ -749,6 +762,9 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
                   ))}
                   {form.colors.length === 0 && <p className="text-[10px] text-slate-400 italic">No colors added yet.</p>}
                 </div>
+              </div>
+              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+                Catalog data, title, and description are hidden here and will be generated after the product is submitted.
               </div>
             </div>
           </section>
@@ -790,7 +806,13 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
             <div className="space-y-3">
               {form.sizeGroups.map((group, idx) => (
                 <div key={idx} className="flex flex-col md:flex-row md:items-center gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 relative">
-                  <div className="grid grid-cols-3 gap-3 flex-1">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 flex-1">
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">SKU</span>
+                      <input type="text" value={group.sku}
+                        onChange={e => { const gs = [...form.sizeGroups]; gs[idx] = {...gs[idx], sku: e.target.value}; setForm({...form, sizeGroups: gs}) }}
+                        className="font-bold text-sm outline-none w-full" placeholder="SKU-001" />
+                    </div>
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">From</span>
                       <input type="number" value={group.from}
@@ -818,10 +840,10 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
                 </div>
               ))}
             </div>
+            <p className="text-[10px] text-slate-400 mt-3">Each stock variant uses its own SKU and quantity.</p>
           </section>
 
-          {/* Variant Group ID */}
-          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+          <section className="hidden bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
               <TagIcon size={14} /> Variant Group ID (SKU)
             </h3>
@@ -845,11 +867,11 @@ function AddNewTab({ vendor, onDone }: { vendor: any; onDone: () => void }) {
       <div className="pt-4">
         <button
           onClick={handleSubmit}
-          disabled={saving}
+          disabled={saving || uploading}
           className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-blue-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider"
         >
           {saving && <Loader2 className="animate-spin" size={20} />}
-          Save & Send to Store
+          {saving ? 'Creating Product...' : 'Create Product'}
         </button>
       </div>
     </div>

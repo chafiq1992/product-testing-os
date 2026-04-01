@@ -4476,7 +4476,7 @@ class WholesaleVendorCreate(BaseModel):
 
 
 class WholesaleProductCreate(BaseModel):
-    title: str
+    title: Optional[str] = None
     description: Optional[str] = None
     cog_price: Optional[float] = None
     sale_price: Optional[float] = None
@@ -4610,6 +4610,96 @@ async def api_wholesale_analyze_image(req: WholesaleAnalyzeImageRequest):
         return {"error": str(e)}
 
 
+def _wholesale_placeholder_title(vendor_name: str) -> str:
+    stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return f"{vendor_name} Product {stamp}"
+
+
+def _wholesale_build_description_html(description: str | None, segment: str | None, season: str | None) -> str | None:
+    desc_html = None
+    if description:
+        desc_html = f"<p>{description}</p>"
+    if segment or season:
+        parts = []
+        if segment:
+            parts.append(f"Segment: {segment}")
+        if season:
+            parts.append(f"Season: {season}")
+        extra = " | ".join(parts)
+        desc_html = (desc_html or "") + f"<p><em>{extra}</em></p>"
+    return desc_html
+
+
+def _wholesale_finalize_product_background(
+    product_gid: str,
+    initial_title: str,
+    image_url: str | None,
+    title: str | None,
+    description: str | None,
+    segment: str | None,
+    season: str | None,
+    cog_price: float | None,
+) -> None:
+    try:
+        from app.integrations.shopify_client import (
+            _list_variants,
+            _numeric_product_id_from_gid,
+            _set_inventory_item_cost,
+            update_product_description,
+            update_product_title,
+            upload_images_to_product,
+        )
+
+        final_title = (title or "").strip() or initial_title
+        final_description = (description or "").strip()
+
+        if image_url:
+            try:
+                ai_data = gen_product_from_image(image_url) or {}
+                ai_title = str((ai_data or {}).get("title") or "").strip()
+                if ai_title:
+                    final_title = ai_title
+                if not final_description:
+                    benefits = (ai_data or {}).get("benefits") or []
+                    final_description = ". ".join(str(b).strip() for b in benefits if str(b).strip())
+            except Exception:
+                pass
+
+        final_desc_html = _wholesale_build_description_html(final_description or None, segment, season)
+
+        if final_title and final_title != initial_title:
+            try:
+                update_product_title(product_gid, final_title, store=WHOLESALE_STORE)
+            except Exception:
+                pass
+
+        if final_desc_html:
+            try:
+                update_product_description(product_gid, final_desc_html, store=WHOLESALE_STORE)
+            except Exception:
+                pass
+
+        if image_url:
+            try:
+                upload_images_to_product(product_gid, [image_url], [final_title], store=WHOLESALE_STORE)
+            except Exception:
+                pass
+
+        if cog_price is not None:
+            try:
+                numeric_id = _numeric_product_id_from_gid(product_gid)
+                if numeric_id:
+                    all_variants = _list_variants(numeric_id, store=WHOLESALE_STORE)
+                    for var in (all_variants or []):
+                        inv_id = str(var.get("inventory_item_id") or "")
+                        if inv_id and inv_id != "None":
+                            _set_inventory_item_cost(inv_id, cog_price, store=WHOLESALE_STORE)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.get("/api/wholesale/vendors/{vendor_id}/products")
 async def api_wholesale_vendor_products(vendor_id: str):
     """List products for a specific vendor from the MMD Shopify store."""
@@ -4647,22 +4737,8 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             return {"error": "vendor_not_found"}
 
         vendor_name = vendor.get("name", vid)
-        title = (req.title or "").strip()
-        if not title:
-            return {"error": "title is required"}
-
-        # Build description HTML
-        desc_html = None
-        if req.description:
-            desc_html = f"<p>{req.description}</p>"
-        if req.segment or req.season:
-            parts = []
-            if req.segment:
-                parts.append(f"Segment: {req.segment}")
-            if req.season:
-                parts.append(f"Season: {req.season}")
-            extra = " | ".join(parts)
-            desc_html = (desc_html or "") + f"<p><em>{extra}</em></p>"
+        title = (req.title or "").strip() or _wholesale_placeholder_title(vendor_name)
+        desc_html = _wholesale_build_description_html(req.description, req.segment, req.season)
 
         # Tags for filtering
         tags_list = [f"vendor:{vendor_name}"]
@@ -4673,16 +4749,17 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
 
         # ── Derive sizes from size_groups ──
         # Each group {from, to, qty} becomes a size like "20-25" with its own qty
-        derived_sizes: list[str] = []
-        size_qty_map: dict[str, int] = {}
+        variant_specs: list[dict[str, Any]] = []
         if req.size_groups:
             for sg in req.size_groups:
                 fr = sg.get("from", 0)
                 to = sg.get("to", 0)
                 qty = int(sg.get("qty") or 0)
-                size_label = f"{fr}-{to}"
-                derived_sizes.append(size_label)
-                size_qty_map[size_label] = qty
+                variant_specs.append({
+                    "size": f"{fr}-{to}",
+                    "quantity": qty,
+                    "sku": str(sg.get("sku") or req.variant_group_id or "").strip(),
+                })
 
         # ── Combine colors into a single value ──
         # e.g., ["black", "green", "blue"] → "black/green/blue"
@@ -4693,21 +4770,20 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         # ── Build explicit variants ──
         # Each size gets its own variant with the combined color, sale_price, and per-size qty
         explicit_variants: list[dict] = []
-        if derived_sizes:
-            for size_label in derived_sizes:
+        if variant_specs:
+            for spec in variant_specs:
                 v: dict = {
-                    "size": size_label,
+                    "size": spec["size"],
                     "price": req.sale_price,
-                    "quantity": size_qty_map.get(size_label, 0),
+                    "quantity": spec["quantity"],
                     "track_quantity": True,
                 }
                 if combined_color:
                     v["color"] = combined_color
-                if req.variant_group_id:
-                    v["sku"] = req.variant_group_id.strip()
+                if spec["sku"]:
+                    v["sku"] = spec["sku"]
                 explicit_variants.append(v)
         elif combined_color:
-            # No size groups but have colors
             v_color: dict = {
                 "color": combined_color,
                 "price": req.sale_price,
@@ -4718,8 +4794,6 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             explicit_variants.append(v_color)
 
         from app.integrations.shopify_client import create_product_only as _create_product
-        from app.integrations.shopify_client import upload_images_to_product as _upload_images
-        from app.integrations.shopify_client import _set_inventory_item_cost
 
         result = await run_in_threadpool(
             _create_product,
@@ -4739,61 +4813,25 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         )
 
         # ── Set COG price as cost per item on each variant ──
-        if req.cog_price is not None and result and isinstance(result, dict):
-            try:
-                product_data = result.get("product") or {}
-                variant_nodes = (product_data.get("variants") or {}).get("nodes") or []
-                for vnode in variant_nodes:
-                    inv_item = (vnode.get("inventoryItem") or {})
-                    inv_item_gid = inv_item.get("id") or ""
-                    inv_item_id = inv_item_gid.split("/")[-1] if inv_item_gid else ""
-                    if inv_item_id:
-                        await run_in_threadpool(
-                            _set_inventory_item_cost,
-                            inv_item_id,
-                            req.cog_price,
-                            store=WHOLESALE_STORE,
-                        )
-            except Exception:
-                pass  # best-effort cost update
-
-            # Also set cost on REST-created variants (from _configure_variants_for_product)
-            try:
-                from app.integrations.shopify_client import _list_variants, _numeric_product_id_from_gid
-                product_data = result.get("product") or {}
-                product_gid = product_data.get("id") or ""
-                numeric_id = _numeric_product_id_from_gid(product_gid)
-                if numeric_id:
-                    all_variants = await run_in_threadpool(_list_variants, numeric_id, store=WHOLESALE_STORE)
-                    for var in (all_variants or []):
-                        inv_id = str(var.get("inventory_item_id") or "")
-                        if inv_id and inv_id != "None":
-                            await run_in_threadpool(
-                                _set_inventory_item_cost,
-                                inv_id,
-                                req.cog_price,
-                                store=WHOLESALE_STORE,
-                            )
-            except Exception:
-                pass  # best-effort cost update
-
-        # Upload product image to Shopify if provided
         image_url = (req.image_url or "").strip() if req.image_url else None
-        if image_url and result and isinstance(result, dict):
-            try:
-                product_gid = (result.get("product") or {}).get("id")
-                if product_gid:
-                    await run_in_threadpool(
-                        _upload_images,
-                        product_gid,
-                        [image_url],
-                        [title],
-                        store=WHOLESALE_STORE,
-                    )
-            except Exception:
-                pass  # best-effort image upload
+        product_gid = ((result or {}).get("product") or {}).get("id") if isinstance(result, dict) else None
+        if product_gid:
+            threading.Thread(
+                target=_wholesale_finalize_product_background,
+                args=(
+                    product_gid,
+                    title,
+                    image_url,
+                    req.title,
+                    req.description,
+                    req.segment,
+                    req.season,
+                    req.cog_price,
+                ),
+                daemon=True,
+            ).start()
 
-        return {"data": result}
+        return {"data": result, "background_processing": bool(product_gid)}
     except Exception as e:
         return {"error": str(e)}
 
