@@ -10,6 +10,7 @@ import {
   pageBuilderListPages,
   pageBuilderTranslate,
 } from '@/lib/api'
+import MarketingTab from './MarketingTab'
 
 /* ───────── Types ───────── */
 type Product = { id:string; title:string; handle:string; image?:string|null; price?:string|null; status?:string }
@@ -79,6 +80,9 @@ export default function PageBuilderPage() {
   const [iframeKey, setIframeKey] = useState(0)
   const [previewDevice, setPreviewDevice] = useState<'desktop'|'tablet'|'mobile'>('desktop')
   const [iframeError, setIframeError] = useState(false)
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'builder'|'marketing'>('builder')
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -292,6 +296,32 @@ export default function PageBuilderPage() {
         {/* Left: Chat Panel */}
         <div className="lg:w-[480px] w-full flex flex-col border-r border-white/5 bg-[#0c0c14]">
 
+          {/* Tab Switcher */}
+          <div className="flex border-b border-white/5">
+            <button onClick={() => setActiveTab('builder')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-xs font-medium transition-all ${
+                activeTab === 'builder'
+                  ? 'text-purple-300 border-b-2 border-purple-500 bg-purple-500/5'
+                  : 'text-white/40 hover:text-white/60 hover:bg-white/5'
+              }`}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+              Page Builder
+            </button>
+            <button onClick={() => setActiveTab('marketing')}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-xs font-medium transition-all ${
+                activeTab === 'marketing'
+                  ? 'text-pink-300 border-b-2 border-pink-500 bg-pink-500/5'
+                  : 'text-white/40 hover:text-white/60 hover:bg-white/5'
+              }`}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+              Marketing
+            </button>
+          </div>
+
+          {activeTab === 'marketing' ? (
+            <MarketingTab currentPageUrl={currentPageUrl} selectedProduct={selectedProduct} />
+          ) : (
+          <>
           {/* Product Picker */}
           <div className="p-4 border-b border-white/5">
             <label className="text-xs font-medium text-white/50 mb-2 block">SELECT PRODUCT</label>
@@ -544,6 +574,8 @@ export default function PageBuilderPage() {
               Press Enter to send · Shift+Enter for new line
             </div>
           </div>
+          </>
+          )}
         </div>
 
         {/* Right: Preview Panel */}

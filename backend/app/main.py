@@ -16,6 +16,7 @@ from urllib.parse import quote, urlencode
 
 from app.tasks import pipeline_launch, run_pipeline_sync
 from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_copy_full, gen_title_and_description, gen_landing_copy, gen_product_from_image, analyze_landing_page, translate_texts
+from app.integrations.openai_client import marketing_strategist, marketing_copywriter, marketing_media_buyer
 from app.agent import run_agent_until_final, run_ads_agent
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
@@ -4699,6 +4700,11 @@ def _wholesale_build_description_html(description: str | None, segment: str | No
     return desc_html
 
 
+def _wholesale_variant_title(size_from: Any, size_to: Any, pcs_per_crate: int) -> str:
+    base = f"{size_from}-{size_to}"
+    return f"{base}*{pcs_per_crate}pcs" if pcs_per_crate > 0 else base
+
+
 def _wholesale_finalize_product_background(
     product_gid: str,
     initial_title: str,
@@ -4819,14 +4825,18 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         # ── Derive sizes from size_groups ──
         # Each group {from, to, qty} becomes a size like "20-25" with its own qty
         variant_specs: list[dict[str, Any]] = []
+        base_sale_price = float(req.sale_price or 0)
         if req.size_groups:
             for sg in req.size_groups:
                 fr = sg.get("from", 0)
                 to = sg.get("to", 0)
-                qty = int(sg.get("qty") or 0)
+                pcs_per_crate = int(sg.get("pcs_per_crate") or sg.get("pcs") or 0)
+                crate_quantity = int(sg.get("crate_quantity") or sg.get("qty") or 0)
+                variant_price = round(base_sale_price * pcs_per_crate, 2) if pcs_per_crate > 0 else base_sale_price
                 variant_specs.append({
-                    "size": f"{fr}-{to}",
-                    "quantity": qty,
+                    "size": _wholesale_variant_title(fr, to, pcs_per_crate),
+                    "quantity": crate_quantity,
+                    "price": variant_price,
                     "sku": str(sg.get("sku") or req.variant_group_id or "").strip(),
                 })
 
@@ -4843,7 +4853,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             for spec in variant_specs:
                 v: dict = {
                     "size": spec["size"],
-                    "price": req.sale_price,
+                    "price": spec["price"],
                     "quantity": spec["quantity"],
                     "track_quantity": True,
                 }
@@ -4869,7 +4879,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             title=title,
             description_html=desc_html,
             status="ACTIVE",
-            price=req.sale_price,
+            price=explicit_variants[0]["price"] if explicit_variants else req.sale_price,
             sizes=None,   # handled via explicit variants
             colors=None,   # handled via explicit variants
             product_type=req.product_type,
@@ -5656,6 +5666,78 @@ mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFil
         return {"data": {"uninstalled": True}}
     except Exception as e:
         return {"error": str(e)}
+
+# ─────────────── Marketing Hub Endpoints ───────────────
+
+class MarketingStrategistRequest(BaseModel):
+    page_url: str | None = None
+    product_info: dict | None = None
+    store: str | None = None
+    model: str | None = None
+
+
+@app.post("/api/page-builder/marketing/strategist")
+async def api_marketing_strategist(req: MarketingStrategistRequest):
+    """Strategist agent: analyze product/page and return 3 marketing angles."""
+    try:
+        result = await run_in_threadpool(
+            marketing_strategist,
+            page_url=req.page_url,
+            product_info=req.product_info,
+            model=req.model,
+        )
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {"angles": []}}
+
+
+class MarketingCopywriterRequest(BaseModel):
+    angle: dict
+    product_info: dict | None = None
+    page_url: str | None = None
+    store: str | None = None
+    model: str | None = None
+
+
+@app.post("/api/page-builder/marketing/copywriter")
+async def api_marketing_copywriter(req: MarketingCopywriterRequest):
+    """Copywriter agent: generate headlines, sub-headlines, and ad copy from a selected angle."""
+    try:
+        result = await run_in_threadpool(
+            marketing_copywriter,
+            angle=req.angle,
+            product_info=req.product_info,
+            page_url=req.page_url,
+            model=req.model,
+        )
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+class MarketingMediaBuyerRequest(BaseModel):
+    angle: dict
+    copy: dict
+    product_info: dict | None = None
+    store: str | None = None
+    model: str | None = None
+
+
+@app.post("/api/page-builder/marketing/media-buyer")
+async def api_marketing_media_buyer(req: MarketingMediaBuyerRequest):
+    """Media buyer agent: generate image prompts, video concepts, and format recommendations."""
+    try:
+        result = await run_in_threadpool(
+            marketing_media_buyer,
+            angle=req.angle,
+            copy=req.copy,
+            product_info=req.product_info,
+            model=req.model,
+        )
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
 
 # Mount static files last so that API routes have precedence.
 # The directory is configurable via STATIC_DIR env var, otherwise we look for

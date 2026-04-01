@@ -618,3 +618,237 @@ def analyze_landing_page(url: str, model: str | None = None, prompt_override: st
         out["angles"] = []
     out["prompt_used"] = system
     return out
+
+
+# ─────────────── Marketing Hub Agents ───────────────
+
+STRATEGIST_PROMPT = (
+    "You are a senior marketing strategist and media planning expert.\n\n"
+    "Task: Analyze the provided PRODUCT/PAGE information and generate EXACTLY 3 distinct marketing angles.\n"
+    "For each angle, determine the optimal audience, marketing method, and timing.\n\n"
+    "Output Contract — return ONE valid JSON object:\n"
+    "{\n"
+    '  "product_summary": string (1-2 sentence summary of what is being marketed),\n'
+    '  "angles": [\n'
+    "    {\n"
+    '      "name": string (short angle name, e.g. "Comfort-First Parents"),\n'
+    '      "big_idea": string (the core persuasive insight in 1–2 sentences),\n'
+    '      "target_audience": {\n'
+    '        "description": string (detailed audience persona),\n'
+    '        "demographics": string (age, gender, location),\n'
+    '        "interests": string[] (3-5 Facebook/Instagram interest targets),\n'
+    '        "lookalike_suggestion": string\n'
+    "      },\n"
+    '      "method": {\n'
+    '        "primary": string (e.g. "Meta Ads - Single Image", "Meta Ads - Video", "Google Shopping", "Influencer Collab"),\n'
+    '        "secondary": string,\n'
+    '        "budget_split": string (e.g. "70% primary / 30% secondary"),\n'
+    '        "funnel_stage": string (e.g. "TOF Awareness", "MOF Consideration", "BOF Conversion")\n'
+    "      },\n"
+    '      "timing": {\n'
+    '        "best_days": string[] (e.g. ["Thursday", "Friday", "Saturday"]),\n'
+    '        "best_hours": string (e.g. "18:00–22:00 local time"),\n'
+    '        "seasonality_note": string,\n'
+    '        "launch_tip": string\n'
+    "      },\n"
+    '      "estimated_cpa_range": string (e.g. "$5–$12"),\n'
+    '      "confidence_score": number (1-10)\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Rules:\n"
+    "- Be concrete and specific. No vague generalities.\n"
+    "- If region is Morocco/MENA, factor in local shopping patterns (peak evenings, weekends, COD preference).\n"
+    "- Each angle must target a DIFFERENT audience segment or use a DIFFERENT persuasion strategy.\n"
+    "- Rank angles by confidence_score (highest first).\n"
+    "- Match language of product info.\n"
+    "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
+)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def marketing_strategist(*, page_url: str | None = None, product_info: dict | None = None, model: str | None = None) -> dict:
+    """Strategist agent: analyzes product/page and returns 3 marketing angles with audience, method, timing."""
+    context_parts: list[str] = []
+    page_html = ""
+
+    # Fetch page HTML if URL provided
+    if page_url:
+        try:
+            r = requests.get(page_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            page_html = r.text[:60000]  # limit to avoid token overflow
+            context_parts.append(f"LANDING PAGE URL: {page_url}")
+            context_parts.append(f"PAGE HTML (truncated):\n{page_html[:30000]}")
+        except Exception:
+            context_parts.append(f"LANDING PAGE URL: {page_url} (could not fetch)")
+
+    if product_info:
+        context_parts.append("PRODUCT INFO:\n" + json.dumps(product_info, ensure_ascii=False))
+
+    if not context_parts:
+        return {"error": "No page_url or product_info provided", "angles": []}
+
+    messages = [
+        {"role": "system", "content": "Respond ONLY with a JSON object. No prose, no markdown."},
+        {"role": "user", "content": STRATEGIST_PROMPT + "\n".join(context_parts)},
+    ]
+    resp = client.chat.completions.create(
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    text = resp.choices[0].message.content
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {"angles": []}
+    if not isinstance(data.get("angles"), list):
+        data["angles"] = []
+    return data
+
+
+COPYWRITER_PROMPT = (
+    "You are an elite direct-response copywriter who has written for top DTC brands.\n\n"
+    "Task: Given the selected MARKETING ANGLE and PRODUCT INFO, write high-converting ad copy.\n\n"
+    "Output Contract — return ONE valid JSON object:\n"
+    "{\n"
+    '  "angle_name": string,\n'
+    '  "headlines": string[] (EXACTLY 6 headlines, each ≤10 words, punchy, benefit-led, with relevant emoji),\n'
+    '  "sub_headlines": string[] (EXACTLY 6 sub-headlines, each ≤15 words, supporting the headline),\n'
+    '  "ad_copy": {\n'
+    '    "short": string (2-3 lines, for Stories/Reels overlay),\n'
+    '    "medium": string (4-6 lines, for feed ads),\n'
+    '    "long": string (8-12 lines, for long-form persuasion)\n'
+    "  },\n"
+    '  "cta_options": string[] (4 CTA button texts, e.g. "Shop Now", "Get Yours Today"),\n'
+    '  "hooks": string[] (3 opening hooks for video ads, each ≤8 words),\n'
+    '  "hashtags": string[] (5-8 relevant hashtags)\n'
+    "}\n\n"
+    "Rules:\n"
+    "- Headlines: start with a HOOK word/emoji, include ONE concrete benefit, create urgency or curiosity.\n"
+    "- Sub-headlines: complement the headline, add proof or specificity.\n"
+    "- Ad copy: use PAS (Problem-Agitation-Solution) or AIDA framework. Include social proof cues, overcome objections.\n"
+    "- Every piece must be mobile-optimized (short lines, scannable).\n"
+    "- Match the language of the product/angle info.\n"
+    "- For Morocco/MENA: include trust signals (COD, fast delivery, WhatsApp support).\n"
+    "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
+)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def marketing_copywriter(*, angle: dict, product_info: dict | None = None, page_url: str | None = None, model: str | None = None) -> dict:
+    """Copywriter agent: generates 6 headlines, sub-headlines, and ad copy variants from a selected angle."""
+    context_parts = [
+        "SELECTED ANGLE:\n" + json.dumps(angle, ensure_ascii=False),
+    ]
+    if product_info:
+        context_parts.append("PRODUCT INFO:\n" + json.dumps(product_info, ensure_ascii=False))
+    if page_url:
+        context_parts.append(f"LANDING PAGE URL: {page_url}")
+
+    messages = [
+        {"role": "system", "content": "Respond ONLY with a JSON object. No prose, no markdown."},
+        {"role": "user", "content": COPYWRITER_PROMPT + "\n".join(context_parts)},
+    ]
+    resp = client.chat.completions.create(
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    text = resp.choices[0].message.content
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    # Normalize
+    if not isinstance(data.get("headlines"), list):
+        data["headlines"] = []
+    if not isinstance(data.get("sub_headlines"), list):
+        data["sub_headlines"] = []
+    if not isinstance(data.get("ad_copy"), dict):
+        data["ad_copy"] = {"short": "", "medium": "", "long": ""}
+    if not isinstance(data.get("cta_options"), list):
+        data["cta_options"] = []
+    if not isinstance(data.get("hooks"), list):
+        data["hooks"] = []
+    if not isinstance(data.get("hashtags"), list):
+        data["hashtags"] = []
+    return data
+
+
+MEDIA_BUYER_PROMPT = (
+    "You are a senior media buyer and creative director specializing in performance marketing visuals.\n\n"
+    "Task: Given the MARKETING ANGLE and AD COPY, generate detailed image/video generation prompts.\n\n"
+    "Output Contract — return ONE valid JSON object:\n"
+    "{\n"
+    '  "image_prompts": [\n'
+    "    {\n"
+    '      "prompt": string (detailed, specific image generation prompt for AI image generators like Midjourney/DALL-E),\n'
+    '      "format": string (e.g. "1:1 Feed", "4:5 Feed", "9:16 Story", "16:9 Banner"),\n'
+    '      "style": string (e.g. "Lifestyle", "Product-on-white", "UGC-style", "Before/After"),\n'
+    '      "platform": string (e.g. "Meta Feed", "Instagram Stories", "Google Display"),\n'
+    '      "headline_overlay": string (short text to overlay on the image, ≤6 words)\n'
+    "    }\n"
+    "  ] (EXACTLY 5 prompts),\n"
+    '  "video_concepts": [\n'
+    "    {\n"
+    '      "title": string,\n'
+    '      "duration": string (e.g. "15s", "30s", "60s"),\n'
+    '      "hook": string (first 3 seconds script — must stop the scroll),\n'
+    '      "body": string (middle section script/description),\n'
+    '      "cta": string (closing CTA),\n'
+    '      "style": string (e.g. "UGC testimonial", "Product demo", "Problem-solution"),\n'
+    '      "music_mood": string (e.g. "Upbeat", "Emotional", "Trending audio")\n'
+    "    }\n"
+    "  ] (EXACTLY 3 concepts),\n"
+    '  "format_recommendations": [\n'
+    "    {\n"
+    '      "format": string (e.g. "Carousel", "Single Image", "Video Reel"),\n'
+    '      "why": string (1 sentence reason),\n'
+    '      "platform": string\n'
+    "    }\n"
+    "  ] (3-4 recommendations),\n"
+    '  "creative_notes": string (2-3 sentences of overall creative direction tips)\n'
+    "}\n\n"
+    "Rules:\n"
+    "- Image prompts must be specific about: subject, composition, lighting, background, mood, colors, props.\n"
+    "- Include at least 1 lifestyle shot, 1 product-on-white, and 1 UGC-style prompt.\n"
+    "- Video concepts must have scroll-stopping hooks (question, bold claim, or visual surprise).\n"
+    "- Match language of the ad copy for any text overlays.\n"
+    "- For e-commerce: emphasize showing the product in use, unboxing, or transformation.\n"
+    "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
+)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def marketing_media_buyer(*, angle: dict, copy: dict, product_info: dict | None = None, model: str | None = None) -> dict:
+    """Media buyer agent: generates image prompts, video concepts, and format recommendations."""
+    context_parts = [
+        "MARKETING ANGLE:\n" + json.dumps(angle, ensure_ascii=False),
+        "AD COPY:\n" + json.dumps(copy, ensure_ascii=False),
+    ]
+    if product_info:
+        context_parts.append("PRODUCT INFO:\n" + json.dumps(product_info, ensure_ascii=False))
+
+    messages = [
+        {"role": "system", "content": "Respond ONLY with a JSON object. No prose, no markdown."},
+        {"role": "user", "content": MEDIA_BUYER_PROMPT + "\n".join(context_parts)},
+    ]
+    resp = client.chat.completions.create(
+        model=(model or DEFAULT_LLM_MODEL),
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    text = resp.choices[0].message.content
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    if not isinstance(data.get("image_prompts"), list):
+        data["image_prompts"] = []
+    if not isinstance(data.get("video_concepts"), list):
+        data["video_concepts"] = []
+    if not isinstance(data.get("format_recommendations"), list):
+        data["format_recommendations"] = []
+    return data

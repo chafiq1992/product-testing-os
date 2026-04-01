@@ -1014,3 +1014,40 @@ export async function pageBuilderTranslate(payload:{
   const {data} = await axios.post(`${base}/api/page-builder/translate`, body, { timeout: 180000 })
   return data as { ok?: boolean, translated_sections?: number, total_sections?: number, error?: string }
 }
+
+// -------- Marketing Hub (AI Agents) --------
+
+export async function marketingStrategist(payload:{
+  page_url?: string,
+  product_info?: object,
+  store?: string,
+  model?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/marketing/strategist`, body, { timeout: 90000 })
+  return data as { data?: { product_summary?: string, angles: Array<{ name: string, big_idea: string, target_audience: { description: string, demographics: string, interests: string[], lookalike_suggestion: string }, method: { primary: string, secondary: string, budget_split: string, funnel_stage: string }, timing: { best_days: string[], best_hours: string, seasonality_note: string, launch_tip: string }, estimated_cpa_range: string, confidence_score: number }> }, error?: string }
+}
+
+export async function marketingCopywriter(payload:{
+  angle: any,
+  product_info?: object,
+  page_url?: string,
+  store?: string,
+  model?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/marketing/copywriter`, body, { timeout: 90000 })
+  return data as { data?: { angle_name?: string, headlines: string[], sub_headlines: string[], ad_copy: { short: string, medium: string, long: string }, cta_options: string[], hooks: string[], hashtags: string[] }, error?: string }
+}
+
+export async function marketingMediaBuyer(payload:{
+  angle: any,
+  copy: any,
+  product_info?: object,
+  store?: string,
+  model?: string,
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/page-builder/marketing/media-buyer`, body, { timeout: 90000 })
+  return data as { data?: { image_prompts: Array<{ prompt: string, format: string, style: string, platform: string, headline_overlay: string }>, video_concepts: Array<{ title: string, duration: string, hook: string, body: string, cta: string, style: string, music_mood: string }>, format_recommendations: Array<{ format: string, why: string, platform: string }>, creative_notes: string }, error?: string }
+}
