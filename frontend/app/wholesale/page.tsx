@@ -510,7 +510,7 @@ const WHOLESALE_TEXT = {
   },
 } as const
 
-type AppCopy = (typeof WHOLESALE_TEXT)[Lang]
+type AppCopy = typeof WHOLESALE_TEXT.en
 
 const ARABIC_TEXT_OVERRIDES = {
   brandTag: 'منصة إدارة البيع بالجملة',
@@ -699,7 +699,7 @@ const ARABIC_TEXT_OVERRIDES = {
 
 function getAppCopy(lang: Lang): AppCopy {
   if (lang !== 'ar') return WHOLESALE_TEXT.en
-  return { ...WHOLESALE_TEXT.ar, ...ARABIC_TEXT_OVERRIDES }
+  return { ...WHOLESALE_TEXT.ar, ...ARABIC_TEXT_OVERRIDES } as unknown as AppCopy
 }
 
 const SEGMENT_LABELS: Record<string, Record<Lang, string>> = {
@@ -927,7 +927,7 @@ function Dashboard({
     switch (activeTab) {
       case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
       case 'inventory': return <InventoryTab products={products} loading={loadingProducts} copy={copy} lang={lang} />
-      case 'create-order': return <CreateOrderTab vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} copy={copy} lang={lang} />
+      case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} copy={copy} lang={lang} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
@@ -2200,6 +2200,404 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
 //  SETTINGS TAB
 // ═══════════════════════════════════════════════════
 // ─── Orders Tab ──────────────────────────────────────────
+function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: { vendor: any; products: any[]; onDone: () => void; copy: AppCopy; lang: Lang }) {
+  const [search, setSearch] = useState('')
+  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string }[]>([])
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [address, setAddress] = useState({ address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' })
+  const [saving, setSaving] = useState(false)
+  const [success, setSuccess] = useState<any>(null)
+  const [showProducts, setShowProducts] = useState(false)
+  const searchRef = useRef<HTMLDivElement>(null)
+  const invoiceRef = useRef<HTMLDivElement>(null)
+  const isArabic = lang === 'ar'
+  const locale = getLocale(lang)
+
+  const allVariants = useMemo(() => {
+    const arr: any[] = []
+    products.forEach(p => {
+      ;(p.variants || []).forEach((v: any) => {
+        arr.push({
+          variant_id: v.id,
+          title: p.title,
+          variant_title: v.title,
+          sku: v.sku || '',
+          price: v.price || '0.00',
+          inventory: v.inventory_quantity || 0,
+          image: p.images?.[0]?.src || null,
+        })
+      })
+    })
+    return arr
+  }, [products])
+
+  const filtered = useMemo(() => {
+    if (!search) return allVariants.slice(0, 20)
+    const q = search.toLowerCase()
+    return allVariants.filter(v =>
+      v.title.toLowerCase().includes(q) || v.sku.toLowerCase().includes(q) || v.variant_title.toLowerCase().includes(q)
+    ).slice(0, 20)
+  }, [allVariants, search])
+
+  function addItem(v: any) {
+    const existing = lineItems.find(li => li.variant_id === v.variant_id)
+    if (existing) {
+      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: li.quantity + 1 } : li))
+    } else {
+      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title }])
+    }
+    setSearch('')
+    setShowProducts(false)
+  }
+
+  function updateQty(variantId: number, delta: number) {
+    setLineItems(lineItems.map(li => li.variant_id === variantId ? { ...li, quantity: Math.max(1, li.quantity + delta) } : li))
+  }
+
+  function removeItem(variantId: number) {
+    setLineItems(lineItems.filter(li => li.variant_id !== variantId))
+  }
+
+  const orderTotal = useMemo(() => lineItems.reduce((sum, li) => sum + toNumber(li.price) * li.quantity, 0).toFixed(2), [lineItems])
+
+  async function handleSubmit() {
+    if (!customerName.trim() || !customerPhone.trim()) { alert(copy.customerNamePhoneRequired); return }
+    if (lineItems.length === 0) { alert(copy.addAtLeastOneProduct); return }
+    setSaving(true)
+    try {
+      const body = {
+        customer_name: customerName.trim(),
+        customer_phone: customerPhone.trim(),
+        customer_address1: address.address1,
+        customer_city: address.city,
+        customer_province: address.province,
+        customer_zip: address.zip,
+        customer_country: address.country,
+        line_items: lineItems.map(li => ({ variant_id: li.variant_id, quantity: li.quantity })),
+      }
+      const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/orders`, body)
+      if (res?.error) { alert(`${copy.errorPrefix}: ${res.error}`); setSaving(false); return }
+      setSuccess(res?.data)
+    } catch (e: any) {
+      alert(`${copy.failedPrefix}: ${e.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function downloadInvoice() {
+    if (!invoiceRef.current) return
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const canvas = await html2canvas(invoiceRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false })
+      const link = document.createElement('a')
+      link.download = `invoice-${success?.name || success?.order_number || 'order'}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (err) {
+      console.error('Failed to generate invoice image:', err)
+      alert(copy.invoiceImageFailed)
+    }
+  }
+
+  async function shareInvoice() {
+    if (!invoiceRef.current) return
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const canvas = await html2canvas(invoiceRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false })
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) { downloadInvoice(); return }
+      if (navigator.share && navigator.canShare) {
+        const file = new File([blob], `invoice-${success?.name || 'order'}.png`, { type: 'image/png' })
+        const shareData = { files: [file], title: `${copy.invoice} ${success?.name || ''}`, text: `${copy.invoice} ${vendor.name}` }
+        if (navigator.canShare(shareData)) {
+          await navigator.share(shareData)
+          return
+        }
+      }
+      downloadInvoice()
+    } catch (err) {
+      console.error('Share failed:', err)
+      downloadInvoice()
+    }
+  }
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowProducts(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const invoiceDate = new Date().toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' })
+  const invoiceTime = new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+  const totalItems = lineItems.reduce((sum, li) => sum + li.quantity, 0)
+  const invoiceNumber = success?.name || `#${success?.order_number || ''}`
+  const invoiceTotal = toNumber(success?.total_price || orderTotal)
+  const customerAddressLine = address.address1 && address.address1 !== 'NA' ? address.address1 : null
+
+  if (success) {
+    return (
+      <div className="max-w-3xl mx-auto space-y-6 pb-28 animate-in">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button onClick={downloadInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            {copy.downloadInvoice}
+          </button>
+          <button onClick={shareInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            {copy.shareInvoice}
+          </button>
+        </div>
+
+        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-[0_28px_80px_rgba(15,23,42,0.10)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', 'Segoe UI', system-ui, sans-serif" }}>
+          <div className="border-b border-slate-200 px-5 py-4 md:px-8">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><FileText size={18} /></div>
+                <div>
+                  <p className="text-lg font-black tracking-tight text-slate-900">{copy.brand}</p>
+                  <p className="text-xs font-medium text-slate-500">{vendor.name}</p>
+                </div>
+              </div>
+              <div className={`${isArabic ? 'text-left' : 'text-right'}`}>
+                <p className="text-sm font-medium text-slate-500">Casablanca, Morocco</p>
+                <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-100">{copy.confirmed}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6 p-5 md:p-8">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[1.1fr_0.9fr]">
+              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><Package size={24} /></div>
+                  <div>
+                    <p className="text-xl font-black tracking-tight text-slate-900">{copy.invoice}</p>
+                    <p className="mt-1 text-sm text-slate-500">{copy.invoiceNumber}: {invoiceNumber}</p>
+                    <p className="mt-3 text-sm font-semibold text-slate-800">{copy.wholesaleVendor}</p>
+                    <p className="text-sm text-slate-500">{vendor.name}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-5">
+                <div className="space-y-2 text-sm text-slate-700">
+                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.issueDate}</span><span className="font-bold">{invoiceDate}</span></div>
+                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.time}</span><span className="font-bold">{invoiceTime}</span></div>
+                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.invoiceNumber}</span><span className="font-bold">{invoiceNumber}</span></div>
+                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.status}</span><span className="font-bold text-emerald-600">{copy.confirmed}</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.billFrom}</p>
+                <p className="mt-3 text-lg font-bold text-slate-900">{vendor.name}</p>
+                <p className="mt-1 text-sm text-slate-500">MMD Wholesale</p>
+                <p className="mt-2 text-sm text-slate-500">Casablanca, Morocco</p>
+              </div>
+              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.billTo}</p>
+                <p className="mt-3 text-lg font-bold text-slate-900">{customerName}</p>
+                <p className="mt-1 text-sm text-slate-500">{customerPhone}</p>
+                {customerAddressLine && <p className="mt-2 text-sm text-slate-500">{customerAddressLine}</p>}
+                <p className="text-sm text-slate-500">{address.city} · {address.province}</p>
+              </div>
+            </div>
+
+            <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white">
+              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_90px_130px_130px] gap-4 bg-slate-50 px-5 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 md:grid">
+                <p>{copy.itemColumn}</p>
+                <p>{copy.sku}</p>
+                <p className="text-center">{copy.qty}</p>
+                <p className={`${isArabic ? 'text-left' : 'text-right'}`}>{copy.unitPrice}</p>
+                <p className={`${isArabic ? 'text-left' : 'text-right'}`}>{copy.lineTotal}</p>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {lineItems.map(li => (
+                  <div key={li.variant_id} className="p-4 md:px-5">
+                    <div className="grid gap-3 md:hidden">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="h-14 w-14 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 flex-shrink-0 flex items-center justify-center">
+                          {li.image ? <img src={li.image} alt="" className="h-full w-full object-cover" crossOrigin="anonymous" /> : <Package size={18} className="text-slate-300" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-slate-900">{li.title}</p>
+                          {li.variantTitle !== 'Default Title' && <p className="mt-1 text-xs text-slate-500">{li.variantTitle}</p>}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-3 text-sm">
+                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.sku}</p><p className="mt-1 font-semibold text-slate-700">{li.sku || '-'}</p></div>
+                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.qty}</p><p className="mt-1 font-semibold text-slate-700">{li.quantity}</p></div>
+                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.unitPrice}</p><p className="mt-1 font-semibold text-slate-700">{formatDh(li.price, locale)}</p></div>
+                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.lineTotal}</p><p className="mt-1 font-black text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</p></div>
+                      </div>
+                    </div>
+                    <div className="hidden items-center gap-4 md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_90px_130px_130px]">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-slate-900">{li.title}</p>
+                        {li.variantTitle !== 'Default Title' && <p className="mt-1 text-xs text-slate-500">{li.variantTitle}</p>}
+                      </div>
+                      <p className="truncate text-sm text-slate-600">{li.sku || '-'}</p>
+                      <p className="text-center text-sm font-semibold text-slate-700">{li.quantity}</p>
+                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-sm font-semibold text-slate-700`}>{formatDh(li.price, locale)}</p>
+                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-sm font-black text-slate-900`}>{formatDh(toNumber(li.price) * li.quantity, locale)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_320px]">
+              <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-5">
+                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.paymentNote}</p>
+                <p className="mt-3 text-sm text-slate-600">{copy.thankYou}</p>
+                <p className="mt-2 text-xs text-slate-400">{vendor.name} · MMD Wholesale · {invoiceDate}</p>
+              </div>
+              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-3 text-slate-500"><span>{copy.subtotal}</span><span className="font-semibold text-slate-800">{formatDh(orderTotal, locale)}</span></div>
+                  <div className="flex items-center justify-between gap-3 text-slate-500"><span>{copy.shipping}</span><span className="font-semibold text-slate-800">{copy.free}</span></div>
+                </div>
+                <div className="mt-4 border-t border-slate-200 pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.total}</p>
+                      <p className="mt-1 text-xs text-slate-500">{totalItems} {copy.itemsLabel}</p>
+                    </div>
+                    <p className="text-2xl font-black text-slate-900">{formatDh(invoiceTotal, locale)}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone('') }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">
+            {copy.newOrder}
+          </button>
+          <button onClick={onDone} className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700">
+            {copy.backToOverview}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6 pb-28 animate-in">
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
+          <div className="p-2 bg-emerald-100 rounded-xl"><ShoppingCart size={22} className="text-emerald-600" /></div>
+          {copy.createOrderTitle}
+        </h2>
+        <p className="text-slate-500 text-sm mt-1">{copy.createOrderSub}</p>
+      </div>
+
+      <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 tracking-widest">{copy.addProducts}</h3>
+        <div ref={searchRef} className="relative">
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+            <Search size={16} className="text-slate-400" />
+            <input type="text" value={search} onChange={e => { setSearch(e.target.value); setShowProducts(true) }} onFocus={() => setShowProducts(true)} placeholder={copy.searchByProductOrSku} className="bg-transparent flex-1 text-sm font-medium outline-none" />
+          </div>
+          {showProducts && (
+            <div className="absolute z-40 left-0 right-0 mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-64 overflow-y-auto">
+              {filtered.length === 0 && <p className="p-4 text-sm text-slate-400 text-center">{copy.noProductsFound}</p>}
+              {filtered.map(v => (
+                <button key={v.variant_id} onClick={() => addItem(v)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left border-b border-slate-50 last:border-0">
+                  <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center flex-shrink-0">
+                    {v.image ? <img src={v.image} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-slate-300" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold truncate">{v.title}</p>
+                    <p className="text-[10px] text-slate-400">{v.variant_title} {v.sku && `· ${copy.sku}: ${v.sku}`}</p>
+                  </div>
+                  <div className={`${isArabic ? 'text-left' : 'text-right'} flex-shrink-0`}>
+                    <p className="text-sm font-bold text-emerald-600">{formatDh(v.price, locale)}</p>
+                    <p className="text-[10px] text-slate-400">{v.inventory} {copy.inStock}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {lineItems.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {lineItems.map(li => (
+              <div key={li.variant_id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold truncate">{li.title} - {li.variantTitle}</p>
+                  <p className="text-[10px] text-slate-400">{li.sku && `${copy.sku}: ${li.sku} · `}{formatDh(li.price, locale)} {copy.each}</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => updateQty(li.variant_id, -1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Minus size={14}/></button>
+                  <span className="w-8 text-center text-sm font-bold">{li.quantity}</span>
+                  <button onClick={() => updateQty(li.variant_id, 1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Plus size={14}/></button>
+                </div>
+                <button onClick={() => removeItem(li.variant_id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button>
+              </div>
+            ))}
+            <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+              <span className="text-sm font-bold text-slate-500">{copy.orderTotal}</span>
+              <span className="text-lg font-black text-emerald-600">{formatDh(orderTotal, locale)}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+        <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 tracking-widest flex items-center gap-2"><User size={14}/> {copy.customerDetails}</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.fullName}</label>
+            <input type="text" value={customerName} onChange={e => setCustomerName(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/30" placeholder="Ahmed Bennani" />
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.phone}</label>
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
+              <Phone size={14} className="text-slate-400" />
+              <input type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="bg-transparent flex-1 text-sm font-bold outline-none" placeholder="+212 600 000000" />
+            </div>
+          </div>
+        </div>
+        <details className="mt-4">
+          <summary className="text-[10px] font-bold text-slate-400 uppercase cursor-pointer hover:text-slate-600 flex items-center gap-1"><MapPin size={12}/> {copy.addressSummary}</summary>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">{copy.address}</label>
+              <input type="text" value={address.address1} onChange={e => setAddress({...address, address1: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">{copy.city}</label>
+              <input type="text" value={address.city} onChange={e => setAddress({...address, city: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">{copy.province}</label>
+              <input type="text" value={address.province} onChange={e => setAddress({...address, province: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">{copy.zip}</label>
+              <input type="text" value={address.zip} onChange={e => setAddress({...address, zip: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm outline-none" />
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <button onClick={handleSubmit} disabled={saving || lineItems.length === 0} className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-emerald-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider">
+        {saving && <Loader2 className="animate-spin" size={20} />}
+        <ShoppingCart size={20} />
+        {copy.placeOrder} ({lineItems.length} {copy.itemsLabel} · {formatDh(orderTotal, locale)})
+      </button>
+    </div>
+  )
+}
+
 function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: Lang }) {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -2213,7 +2611,7 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
   const [payNote, setPayNote] = useState('')
   const [saving, setSaving] = useState(false)
   const isArabic = lang === 'ar'
-  const locale = isArabic ? 'ar-MA' : 'en-GB'
+  const locale = getLocale(lang)
 
   async function fetchOrders() {
     setLoading(true)
@@ -2387,9 +2785,9 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
                     </p>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="font-bold text-sm">{total.toFixed(2)} MAD</p>
+                    <p className="font-bold text-sm">{formatDh(total, locale)}</p>
                     {order.payment_status === 'partially_paid' && (
-                      <p className="text-[10px] text-amber-600 font-medium">{copy.remaining}: {remaining.toFixed(2)}</p>
+                      <p className="text-[10px] text-amber-600 font-medium">{copy.remaining}: {formatDh(remaining, locale)}</p>
                     )}
                   </div>
                   <ChevronRight size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
@@ -2415,7 +2813,7 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
                               Qty: {li.quantity}
                             </p>
                           </div>
-                          <p className="text-sm font-bold text-slate-700 ml-3">{(parseFloat(li.price) * li.quantity).toFixed(2)}</p>
+                          <p className="text-sm font-bold text-slate-700 ml-3">{formatDh(parseFloat(li.price) * li.quantity, locale)}</p>
                         </div>
                       ))}
                     </div>
@@ -2456,7 +2854,7 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
                 </button>
               </div>
               <p className="text-sm text-slate-500 mt-1">{paymentModal.name} · {paymentModal.customer_name}</p>
-              <p className="text-lg font-bold mt-2">{copy.total}: {parseFloat(paymentModal.total_price || '0').toFixed(2)} MAD</p>
+              <p className="text-lg font-bold mt-2">{copy.total}: {formatDh(paymentModal.total_price || '0', locale)}</p>
             </div>
             <div className="p-6 space-y-4">
               <div>
@@ -2581,8 +2979,8 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
       <div className="flex items-center justify-between">
         <div className="[&>p:last-of-type]:hidden">
           <h2 className="text-2xl font-bold">{copy.customersTitle}</h2>
-          <p className="text-sm text-slate-500">{customers.length} {copy.taggedCustomersLabel} · {totalUnpaid.toFixed(2)} MAD {copy.unpaidLabel}</p>
-          <p className="text-sm text-slate-500">{customers.length} tagged customers · {totalUnpaid.toFixed(2)} MAD unpaid</p>
+          <p className="text-sm text-slate-500">{customers.length} {copy.taggedCustomersLabel} · {formatDh(totalUnpaid, locale)} {copy.unpaidLabel}</p>
+          <p className="text-sm text-slate-500">{customers.length} tagged customers · {formatDh(totalUnpaid, locale)} unpaid</p>
         </div>
         <button onClick={fetchCustomers} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
           <RefreshCw size={18} className="text-slate-500" />
@@ -2633,7 +3031,7 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
                   <div className="mt-3 flex items-center justify-between text-xs">
                     <span className="text-slate-500">{copy.pending}</span>
                     <span className={`font-bold ${Number(c.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {Number(c.total_unpaid || 0).toFixed(2)} MAD
+                      {formatDh(Number(c.total_unpaid || 0), locale)}
                     </span>
                   </div>
                 </button>
@@ -2656,7 +3054,7 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
                   <div className="text-right">
                     <p className="text-[11px] text-slate-500">{copy.unpaidTotal}</p>
                     <p className={`text-lg font-bold ${Number(selectedCustomer.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {Number(selectedCustomer.total_unpaid || 0).toFixed(2)} MAD
+                      {formatDh(Number(selectedCustomer.total_unpaid || 0), locale)}
                     </p>
                   </div>
                 </div>
