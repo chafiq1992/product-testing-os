@@ -494,10 +494,6 @@ def _build_single_section(
         }
         block_order.append("product_buy_buttons")
 
-        # Description block (shows product description below buy buttons)
-        blocks["product_description"] = {"type": "description", "settings": {}}
-        block_order.append("product_description")
-
         return {
             "type": "featured-product",
             "settings": {
