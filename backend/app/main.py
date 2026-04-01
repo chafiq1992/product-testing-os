@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, Form, File, Request
+from fastapi import FastAPI, UploadFile, Form, File, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -4723,7 +4723,7 @@ async def api_wholesale_vendor_products(vendor_id: str):
 
 
 @app.post("/api/wholesale/vendors/{vendor_id}/products")
-async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCreate):
+async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCreate, background_tasks: BackgroundTasks):
     """Create a product on the MMD Shopify store tagged with the vendor name."""
     try:
         vid = (vendor_id or "").strip().lower()
@@ -4816,20 +4816,17 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         image_url = (req.image_url or "").strip() if req.image_url else None
         product_gid = ((result or {}).get("product") or {}).get("id") if isinstance(result, dict) else None
         if product_gid:
-            threading.Thread(
-                target=_wholesale_finalize_product_background,
-                args=(
-                    product_gid,
-                    title,
-                    image_url,
-                    req.title,
-                    req.description,
-                    req.segment,
-                    req.season,
-                    req.cog_price,
-                ),
-                daemon=True,
-            ).start()
+            background_tasks.add_task(
+                _wholesale_finalize_product_background,
+                product_gid,
+                title,
+                image_url,
+                req.title,
+                req.description,
+                req.segment,
+                req.season,
+                req.cog_price,
+            )
 
         return {"data": result, "background_processing": bool(product_gid)}
     except Exception as e:
