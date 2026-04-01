@@ -43,6 +43,7 @@ from app.page_builder_templates import (
     render_promo_banner,
     render_image_text,
     render_description,
+    render_product,
 )
 
 
@@ -448,65 +449,16 @@ def _build_single_section(
     # These need Shopify platform features (add-to-cart, video player, etc.)
 
     elif st == "product":
-        # Extract product-specific display options from items if provided
-        product_opts = {}
-        if items and isinstance(items, list) and len(items) > 0 and isinstance(items[0], dict):
-            product_opts = items[0]
-
-        # Variant picker type: "dropdown" or "button" (button = color/size swatches)
-        picker_type = product_opts.get("picker_type", "button")
-        # Media settings
-        p_media_size = product_opts.get("media_size", "large")
-        p_media_fit = product_opts.get("media_fit", "contain")
-        p_media_position = product_opts.get("media_position", "left")
-        # Heading size for title block
-        p_heading_size = product_opts.get("heading_size", "h2")
-
-        blocks = {}
-        block_order = []
-
-        # Title block with heading size
-        blocks["product_title"] = {
-            "type": "title",
-            "settings": {"heading_size": p_heading_size},
-        }
-        block_order.append("product_title")
-
-        # Price block
-        blocks["product_price"] = {"type": "price", "settings": {}}
-        block_order.append("product_price")
-
-        # Variant picker (button = swatches for colors/sizes, dropdown = select menus)
-        blocks["product_variant_picker"] = {
-            "type": "variant_picker",
-            "settings": {"picker_type": picker_type},
-        }
-        block_order.append("product_variant_picker")
-
-        # Quantity selector
-        blocks["product_quantity_selector"] = {"type": "quantity_selector", "settings": {}}
-        block_order.append("product_quantity_selector")
-
-        # Buy buttons with dynamic checkout
-        blocks["product_buy_buttons"] = {
-            "type": "buy_buttons",
-            "settings": {"show_dynamic_checkout": True},
-        }
-        block_order.append("product_buy_buttons")
-
-        return {
-            "type": "featured-product",
-            "settings": {
-                "product": product_handle,
-                "color_scheme": color_scheme,
-                "media_size": p_media_size,
-                "media_fit": p_media_fit,
-                "media_position": p_media_position,
-                "secondary_background": False,
-            },
-            "blocks": blocks,
-            "block_order": block_order,
-        }
+        # Custom product section using Liquid — full control over layout, swatches, cart
+        html = render_product(
+            product_handle=product_handle,
+            heading=heading or "",
+            subheading=subheading or "",
+            accent=accent,
+            accent_light=accent_light,
+            product_title=display_title,
+        )
+        return _custom_liquid_section(html)
 
     elif st == "newsletter":
         blocks = {

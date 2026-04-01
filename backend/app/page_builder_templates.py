@@ -1258,3 +1258,317 @@ def render_description(
 </div>
 {_SCROLL_REVEAL_JS}
 """
+
+
+# ─────────────────────────── Product (Custom Liquid) ───────────────────────────
+
+def render_product(
+    *,
+    product_handle: str = "",
+    heading: str = "",
+    subheading: str = "",
+    accent: str = "#6C27B0",
+    accent_light: str = "#9C4DCC",
+    product_title: str = "",
+) -> str:
+    """Generate a full custom product section using Shopify Liquid.
+
+    Uses Liquid ``all_products[handle]`` to pull real product data at render time.
+    Supports color swatches, size pills, image gallery, AJAX add-to-cart, and buy-it-now.
+    """
+    handle = _esc(product_handle)
+    accent_rgb = _hex_to_rgb(accent)
+
+    # Use plain string with placeholder tokens — avoids f-string / Liquid brace conflicts
+    template = (
+        '<style>'
+        ':root{--aip-accent:__ACCENT__;--aip-accent-light:__ACCENT_LIGHT__;--aip-accent-rgb:__ACCENT_RGB__;}'
+        '.aip-product{font-family:var(--ai-font,"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif);padding:2rem 1rem;background:#fff}'
+        '.aip-product-inner{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:2.5rem;align-items:start}'
+        '@media(max-width:768px){.aip-product-inner{grid-template-columns:1fr;gap:1.5rem}}'
+        '.aip-gallery{position:relative}'
+        '.aip-main-img{width:100%;border-radius:1rem;overflow:hidden;background:#f8f9fc;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center}'
+        '.aip-main-img img{width:100%;height:100%;object-fit:contain;transition:opacity .3s}'
+        '.aip-thumbs{display:flex;gap:.5rem;margin-top:.75rem;overflow-x:auto;padding-bottom:.5rem}'
+        '.aip-thumbs::-webkit-scrollbar{height:4px}.aip-thumbs::-webkit-scrollbar-thumb{background:rgba(var(--aip-accent-rgb),.3);border-radius:4px}'
+        '.aip-thumb{width:70px;height:70px;border-radius:.6rem;overflow:hidden;border:2px solid transparent;cursor:pointer;flex-shrink:0;transition:border-color .2s,transform .2s;background:#f8f9fc;padding:0}'
+        '.aip-thumb:hover{transform:scale(1.05)}'
+        '.aip-thumb.active{border-color:var(--aip-accent);box-shadow:0 0 0 2px rgba(var(--aip-accent-rgb),.2)}'
+        '.aip-thumb img{width:100%;height:100%;object-fit:cover}'
+        '.aip-sale-flag{position:absolute;top:12px;left:12px;background:#ef4444;color:#fff;font-size:.75rem;font-weight:700;padding:.3rem .8rem;border-radius:999px;z-index:2}'
+        '.aip-info{display:flex;flex-direction:column;gap:1.2rem}'
+        '.aip-title{font-size:clamp(1.4rem,3.5vw,2rem);font-weight:800;color:#1a1a2e;margin:0;line-height:1.25}'
+        '.aip-price-row{display:flex;align-items:baseline;gap:.75rem;flex-wrap:wrap}'
+        '.aip-price{font-size:1.6rem;font-weight:800;color:var(--aip-accent)}'
+        '.aip-compare{font-size:1.1rem;color:#999;text-decoration:line-through}'
+        '.aip-save-badge{font-size:.75rem;font-weight:700;background:#fef2f2;color:#dc2626;padding:.25rem .7rem;border-radius:999px}'
+        '.aip-option-group{display:flex;flex-direction:column;gap:.5rem}'
+        '.aip-option-label{font-size:.85rem;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.05em}'
+        '.aip-option-label span{color:#1a1a2e;font-weight:700;text-transform:none}'
+        '.aip-option-values{display:flex;flex-wrap:wrap;gap:.5rem}'
+        '.aip-size-btn{padding:.55rem 1.2rem;border-radius:999px;border:2px solid #e2e8f0;background:#fff;cursor:pointer;font-size:.9rem;font-weight:600;color:#333;transition:all .2s;font-family:inherit}'
+        '.aip-size-btn:hover{border-color:var(--aip-accent);color:var(--aip-accent)}'
+        '.aip-size-btn.active{background:var(--aip-accent);color:#fff;border-color:var(--aip-accent)}'
+        '.aip-size-btn.unavailable{opacity:.35;text-decoration:line-through;cursor:not-allowed}'
+        '.aip-color-btn{width:38px;height:38px;border-radius:50%;border:3px solid #e2e8f0;cursor:pointer;position:relative;transition:all .2s;padding:0;background:#ccc;font-size:0}'
+        '.aip-color-btn:hover{transform:scale(1.12);box-shadow:0 2px 8px rgba(0,0,0,.15)}'
+        '.aip-color-btn.active{border-color:var(--aip-accent);box-shadow:0 0 0 3px rgba(var(--aip-accent-rgb),.25)}'
+        '.aip-color-btn.unavailable{opacity:.3;cursor:not-allowed}'
+        '.aip-color-btn.unavailable::after{content:"";position:absolute;top:50%;left:-2px;right:-2px;height:2px;background:#666;transform:rotate(-45deg)}'
+        '.aip-color-tooltip{position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1a1a2e;color:#fff;font-size:.7rem;padding:.2rem .5rem;border-radius:4px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .2s}'
+        '.aip-color-btn:hover .aip-color-tooltip{opacity:1}'
+        '.aip-qty-row{display:flex;align-items:center;gap:.75rem}'
+        '.aip-qty-label{font-size:.85rem;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:.05em}'
+        '.aip-qty-ctrl{display:inline-flex;align-items:center;border:2px solid #e2e8f0;border-radius:999px;overflow:hidden}'
+        '.aip-qty-btn{width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#f8f9fc;border:none;cursor:pointer;font-size:1.1rem;font-weight:700;color:#333;transition:background .2s;font-family:inherit}'
+        '.aip-qty-btn:hover{background:#e2e8f0}'
+        '.aip-qty-input{width:50px;text-align:center;border:none;font-size:1rem;font-weight:600;background:transparent;outline:none;font-family:inherit;-moz-appearance:textfield}'
+        '.aip-qty-input::-webkit-outer-spin-button,.aip-qty-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}'
+        '.aip-atc-btn{width:100%;padding:1rem 2rem;font-size:1.1rem;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--aip-accent),var(--aip-accent-light));border:none;border-radius:999px;cursor:pointer;transition:all .3s;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:.5rem;box-shadow:0 4px 15px rgba(var(--aip-accent-rgb),.3);position:relative;overflow:hidden}'
+        '.aip-atc-btn:hover{transform:translateY(-2px);box-shadow:0 6px 25px rgba(var(--aip-accent-rgb),.4)}'
+        '.aip-atc-btn:active{transform:translateY(0)}'
+        '.aip-atc-btn.loading{pointer-events:none;opacity:.7}'
+        '.aip-atc-btn.success{background:linear-gradient(135deg,#16a34a,#22c55e)}'
+        '@keyframes aip-pulse{0%,100%{box-shadow:0 4px 15px rgba(var(--aip-accent-rgb),.3)}50%{box-shadow:0 4px 25px rgba(var(--aip-accent-rgb),.5)}}'
+        '.aip-atc-btn{animation:aip-pulse 2s infinite}'
+        '.aip-atc-btn:disabled{opacity:.5;cursor:not-allowed;animation:none}'
+        '.aip-buy-btn{width:100%;padding:.85rem 2rem;font-size:.95rem;font-weight:600;color:var(--aip-accent);background:#fff;border:2px solid var(--aip-accent);border-radius:999px;cursor:pointer;transition:all .3s;font-family:inherit}'
+        '.aip-buy-btn:hover{background:rgba(var(--aip-accent-rgb),.05)}'
+        '.aip-buy-btn:disabled{opacity:.5;cursor:not-allowed}'
+        '.aip-trust{display:flex;flex-wrap:wrap;gap:1rem;justify-content:center;padding-top:.5rem}'
+        '.aip-trust-item{display:flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:600;color:#666}'
+        '.aip-trust-icon{font-size:1rem}'
+        '.aip-desc-toggle{font-size:.85rem;font-weight:600;color:var(--aip-accent);cursor:pointer;background:none;border:none;padding:0;font-family:inherit}'
+        '.aip-desc-content{font-size:.95rem;color:#555;line-height:1.7;max-height:0;overflow:hidden;transition:max-height .4s ease}'
+        '.aip-desc-content.open{max-height:2000px}'
+        '.aip-status{font-size:.85rem;font-weight:600;padding:.4rem 1rem;border-radius:999px;display:inline-flex;align-items:center;gap:.4rem}'
+        '.aip-status.in-stock{background:#f0fdf4;color:#16a34a}'
+        '.aip-status.out-of-stock{background:#fef2f2;color:#dc2626}'
+        '</style>'
+        # ── Liquid template ──
+        "{% assign product = all_products['__HANDLE__'] %}"
+        '{% if product %}'
+        '{% assign cv = product.selected_or_first_available_variant %}'
+        '<div class="aip-product" id="aip-product-section">'
+        '<div class="aip-product-inner">'
+        # Gallery
+        '<div class="aip-gallery">'
+        '{% if cv.compare_at_price > cv.price %}'
+        '{% assign save_pct = cv.compare_at_price | minus: cv.price | times: 100 | divided_by: cv.compare_at_price %}'
+        '<div class="aip-sale-flag">-{{ save_pct }}%</div>'
+        '{% endif %}'
+        '<div class="aip-main-img">'
+        '<img id="aip-main-img" src="{{ product.featured_image | image_url: width: 900 }}" alt="{{ product.featured_image.alt | default: product.title }}" loading="eager">'
+        '</div>'
+        '{% if product.images.size > 1 %}'
+        '<div class="aip-thumbs">'
+        '{% for img in product.images %}'
+        '<button type="button" class="aip-thumb {% if forloop.first %}active{% endif %}" data-idx="{{ forloop.index0 }}" data-src="{{ img | image_url: width: 900 }}" data-alt="{{ img.alt | default: product.title }}">'
+        '<img src="{{ img | image_url: width: 150 }}" alt="{{ img.alt | default: product.title }}" loading="lazy">'
+        '</button>'
+        '{% endfor %}'
+        '</div>'
+        '{% endif %}'
+        '</div>'
+        # Info
+        '<div class="aip-info">'
+        '<h2 class="aip-title">{{ product.title }}</h2>'
+        '<div class="aip-price-row">'
+        '<span class="aip-price" id="aip-price">{{ cv.price | money }}</span>'
+        '{% if cv.compare_at_price > cv.price %}'
+        '<span class="aip-compare" id="aip-compare">{{ cv.compare_at_price | money }}</span>'
+        '<span class="aip-save-badge" id="aip-save">Save {{ cv.compare_at_price | minus: cv.price | money }}</span>'
+        '{% endif %}'
+        '</div>'
+        '<div id="aip-avail">'
+        '{% if cv.available %}<span class="aip-status in-stock">\u25cf In Stock</span>'
+        '{% else %}<span class="aip-status out-of-stock">\u25cf Sold Out</span>{% endif %}'
+        '</div>'
+        # Options
+        '{% for option in product.options_with_values %}'
+        '<div class="aip-option-group">'
+        '<div class="aip-option-label">{{ option.name }}: <span id="aip-opt-val-{{ forloop.index0 }}">{{ option.selected_value | default: option.values[0] }}</span></div>'
+        '<div class="aip-option-values" data-option-index="{{ forloop.index0 }}" data-option-name="{{ option.name | downcase }}">'
+        '{% for val in option.values %}'
+        '<button type="button" class="aip-opt-btn {% if forloop.first %}active{% endif %}" data-value="{{ val }}" data-option-index="{{ forloop.index0 }}">{{ val }}</button>'
+        '{% endfor %}'
+        '</div>'
+        '</div>'
+        '{% endfor %}'
+        # Quantity
+        '<div class="aip-qty-row">'
+        '<span class="aip-qty-label">Quantity</span>'
+        '<div class="aip-qty-ctrl">'
+        '<button type="button" class="aip-qty-btn" id="aip-qty-minus">\u2212</button>'
+        '<input type="number" class="aip-qty-input" id="aip-qty" value="1" min="1" max="99">'
+        '<button type="button" class="aip-qty-btn" id="aip-qty-plus">+</button>'
+        '</div>'
+        '</div>'
+        # Buttons
+        '<button type="button" class="aip-atc-btn" id="aip-atc" {% unless cv.available %}disabled{% endunless %}>'
+        '<span id="aip-atc-text">\U0001f6d2 Add to Cart</span>'
+        '</button>'
+        '<button type="button" class="aip-buy-btn" id="aip-buy" {% unless cv.available %}disabled{% endunless %}>'
+        '\u26a1 Buy It Now'
+        '</button>'
+        # Trust
+        '<div class="aip-trust">'
+        '<span class="aip-trust-item"><span class="aip-trust-icon">\U0001f512</span> Secure Checkout</span>'
+        '<span class="aip-trust-item"><span class="aip-trust-icon">\U0001f69a</span> Fast Shipping</span>'
+        '<span class="aip-trust-item"><span class="aip-trust-icon">\u21a9\ufe0f</span> Easy Returns</span>'
+        '<span class="aip-trust-item"><span class="aip-trust-icon">\U0001f4b3</span> Cash on Delivery</span>'
+        '</div>'
+        # Description
+        '{% if product.description != blank %}'
+        '<div>'
+        '<button type="button" class="aip-desc-toggle" id="aip-desc-btn">\u25b8 Product Details</button>'
+        '<div class="aip-desc-content" id="aip-desc-content">{{ product.description }}</div>'
+        '</div>'
+        '{% endif %}'
+        '</div>'  # /aip-info
+        '</div>'  # /aip-product-inner
+        '</div>'  # /aip-product
+        # ── JavaScript ──
+        '{% raw %}'
+        '<script>'
+        '(function(){'
+        # Color map
+        'var C={'
+        "'red':'#ef4444','blue':'#3b82f6','green':'#22c55e','yellow':'#eab308','orange':'#f97316',"
+        "'purple':'#a855f7','pink':'#ec4899','black':'#111','white':'#fff','gray':'#6b7280',"
+        "'grey':'#6b7280','brown':'#92400e','beige':'#d2b48c','navy':'#1e3a5f','burgundy':'#800020',"
+        "'maroon':'#800000','teal':'#0d9488','coral':'#f87171','gold':'#d4a017','silver':'#c0c0c0',"
+        "'ivory':'#fffff0','cream':'#fffdd0','khaki':'#c3b091','olive':'#808000','mint':'#98fb98',"
+        "'lavender':'#e6e6fa','turquoise':'#40e0d0','cyan':'#06b6d4','magenta':'#d946ef',"
+        "'peach':'#ffdab9','rose':'#f43f5e','charcoal':'#36454f','tan':'#d2b48c',"
+        "'wine':'#722f37','rust':'#b7410e','plum':'#9b59b6','sage':'#bcb88a','mauve':'#e0b0ff',"
+        "'indigo':'#4f46e5','lilac':'#c8a2c8','fuchsia':'#d946ef',"
+        "'light blue':'#93c5fd','light green':'#86efac','light pink':'#f9a8d4','dark blue':'#1e3a5f',"
+        "'dark green':'#166534','dark red':'#991b1b','baby blue':'#89cff0','baby pink':'#f4c2c2',"
+        "'hot pink':'#ff69b4','royal blue':'#4169e1','forest green':'#228b22',"
+        "'nude':'#e3bc9a','camel':'#c19a6b','mustard':'#e2a817','lemon':'#fff44f',"
+        "'blush':'#de5d83','cappuccino':'#4b3621','chocolate':'#7b3f00','coffee':'#6f4e37',"
+        "'denim':'#1560bd','emerald':'#50c878','sapphire':'#0f52ba','ruby':'#e0115f',"
+        "'noir':'#111','blanc':'#fff','rouge':'#ef4444','bleu':'#3b82f6','vert':'#22c55e',"
+        "'jaune':'#eab308','gris':'#6b7280','violet':'#a855f7','bordeaux':'#800020',"
+        "'creme':'#fffdd0','ivoire':'#fffff0','corail':'#f87171',"
+        "'\u0623\u0633\u0648\u062f':'#111','\u0623\u0628\u064a\u0636':'#fff','\u0623\u062d\u0645\u0631':'#ef4444','\u0623\u0632\u0631\u0642':'#3b82f6','\u0623\u062e\u0636\u0631':'#22c55e',"
+        "'\u0623\u0635\u0641\u0631':'#eab308','\u0628\u0631\u062a\u0642\u0627\u0644\u064a':'#f97316','\u0648\u0631\u062f\u064a':'#ec4899','\u0628\u0646\u0641\u0633\u062c\u064a':'#a855f7','\u0631\u0645\u0627\u062f\u064a':'#6b7280',"
+        "'\u0628\u0646\u064a':'#92400e','\u0628\u064a\u062c':'#d2b48c','\u0643\u062d\u0644\u064a':'#1e3a5f','\u0630\u0647\u0628\u064a':'#d4a017','\u0641\u0636\u064a':'#c0c0c0',"
+        "'\u0632\u0647\u0631\u064a':'#f9a8d4','\u062a\u0631\u0643\u0648\u0627\u0632':'#40e0d0','\u0639\u0646\u0627\u0628\u064a':'#800020','\u0643\u0631\u064a\u0645\u064a':'#fffdd0','\u0633\u0645\u0627\u0648\u064a':'#87ceeb',"
+        "'\u0632\u064a\u062a\u0648\u0646\u064a':'#808000','\u0646\u0628\u064a\u062a\u064a':'#800020','\u0641\u0648\u0634\u064a\u0627':'#d946ef','\u0645\u0648\u0641':'#e0b0ff'"
+        '};'
+        'function isColorOpt(n){return /colou?r|\u0644\u0648\u0646|couleur|farbe|renk/.test((n||"").toLowerCase())}'
+        # Style buttons
+        'document.querySelectorAll(".aip-option-values").forEach(function(g){'
+        'var on=g.getAttribute("data-option-name")||"";'
+        'if(isColorOpt(on)){'
+        'g.querySelectorAll(".aip-opt-btn").forEach(function(b){'
+        'var v=(b.getAttribute("data-value")||"").trim(),vl=v.toLowerCase(),h=C[vl];'
+        'if(!h){for(var k in C){if(vl.indexOf(k)!==-1||k.indexOf(vl)!==-1){h=C[k];break;}}}'
+        'b.classList.add("aip-color-btn");b.classList.remove("aip-size-btn");'
+        'b.innerHTML=\'<span class="aip-color-tooltip">\'+v+"</span>";'
+        'if(h){if(h.indexOf("gradient")!==-1){b.style.background=h;}else{b.style.backgroundColor=h;}}'
+        'if(vl==="white"||vl==="blanc"||vl==="\u0623\u0628\u064a\u0636"||vl==="ivory"||vl==="cream"||vl==="\u0643\u0631\u064a\u0645\u064a"){b.style.borderColor="#ddd";}'
+        '});'
+        '}else{'
+        'g.querySelectorAll(".aip-opt-btn").forEach(function(b){b.classList.add("aip-size-btn");});'
+        '}'
+        '});'
+        # Variant map
+        '{% endraw %}'
+        'var variants=['
+        '{% for v in product.variants %}'
+        '{id:{{ v.id }},price:{{ v.price }},cp:{{ v.compare_at_price | default: 0 }},avail:{{ v.available }},img:"{{ v.image | default: product.featured_image | image_url: width: 900 }}",opts:[{% for o in v.options %}"{{ o }}"{% unless forloop.last %},{% endunless %}{% endfor %}]},'
+        '{% endfor %}'
+        '];'
+        '{% raw %}'
+        'var selOpts=[];'
+        'document.querySelectorAll(".aip-option-values").forEach(function(g){'
+        'var f=g.querySelector(".aip-opt-btn.active");'
+        'selOpts.push(f?f.getAttribute("data-value"):"");'
+        '});'
+        'function findV(){for(var i=0;i<variants.length;i++){var v=variants[i],m=true;for(var j=0;j<selOpts.length;j++){if(v.opts[j]!==selOpts[j]){m=false;break;}}if(m)return v;}return null;}'
+        'function fmtM(c){return(window.Shopify&&Shopify.formatMoney)?Shopify.formatMoney(c):(c/100).toFixed(2);}'
+        # Update UI
+        'function updateUI(){'
+        'var v=findV(),pe=document.getElementById("aip-price"),ce=document.getElementById("aip-compare"),se=document.getElementById("aip-save"),'
+        'ab=document.getElementById("aip-atc"),bb=document.getElementById("aip-buy"),at=document.getElementById("aip-atc-text"),'
+        'av=document.getElementById("aip-avail"),mi=document.getElementById("aip-main-img");'
+        'if(!v){if(ab)ab.disabled=true;if(bb)bb.disabled=true;if(at)at.textContent="Unavailable";return;}'
+        'if(pe)pe.textContent=fmtM(v.price);'
+        'if(ce){if(v.cp>v.price){ce.textContent=fmtM(v.cp);ce.style.display="";}else{ce.style.display="none";}}'
+        'if(se){if(v.cp>v.price){se.textContent="Save "+fmtM(v.cp-v.price);se.style.display="";}else{se.style.display="none";}}'
+        'if(v.avail){if(ab)ab.disabled=false;if(bb)bb.disabled=false;if(at)at.textContent="\U0001f6d2 Add to Cart";'
+        'if(av)av.innerHTML=\'<span class="aip-status in-stock">\u25cf In Stock</span>\';}'
+        'else{if(ab)ab.disabled=true;if(bb)bb.disabled=true;if(at)at.textContent="Sold Out";'
+        'if(av)av.innerHTML=\'<span class="aip-status out-of-stock">\u25cf Sold Out</span>\';}'
+        'if(mi&&v.img){mi.src=v.img;document.querySelectorAll(".aip-thumb").forEach(function(t){t.classList.toggle("active",t.getAttribute("data-src")===v.img);});}'
+        '}'
+        # Option click
+        'document.querySelectorAll(".aip-opt-btn").forEach(function(btn){'
+        'btn.addEventListener("click",function(){'
+        'var idx=parseInt(this.getAttribute("data-option-index")),val=this.getAttribute("data-value");'
+        'selOpts[idx]=val;'
+        'this.closest(".aip-option-values").querySelectorAll(".aip-opt-btn").forEach(function(b){b.classList.remove("active");});'
+        'this.classList.add("active");'
+        'var lb=document.getElementById("aip-opt-val-"+idx);if(lb)lb.textContent=val;'
+        'updateUI();'
+        '});'
+        '});'
+        # Thumb click
+        'document.querySelectorAll(".aip-thumb").forEach(function(t){'
+        't.addEventListener("click",function(){'
+        'var s=this.getAttribute("data-src"),a=this.getAttribute("data-alt")||"",mi=document.getElementById("aip-main-img");'
+        'if(mi){mi.src=s;mi.alt=a;}'
+        'document.querySelectorAll(".aip-thumb").forEach(function(x){x.classList.remove("active");});'
+        'this.classList.add("active");'
+        '});'
+        '});'
+        # Quantity
+        'var qi=document.getElementById("aip-qty"),qm=document.getElementById("aip-qty-minus"),qp=document.getElementById("aip-qty-plus");'
+        'if(qm)qm.addEventListener("click",function(){var v=parseInt(qi.value)||1;if(v>1)qi.value=v-1;});'
+        'if(qp)qp.addEventListener("click",function(){var v=parseInt(qi.value)||1;if(v<99)qi.value=v+1;});'
+        # Add to Cart
+        'var atcBtn=document.getElementById("aip-atc");'
+        'if(atcBtn)atcBtn.addEventListener("click",function(){'
+        'var v=findV();if(!v||!v.avail)return;'
+        'var qty=parseInt(qi.value)||1,btn=this,txt=document.getElementById("aip-atc-text");'
+        'btn.classList.add("loading");if(txt)txt.textContent="Adding...";'
+        'fetch("/cart/add.js",{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({items:[{id:v.id,quantity:qty}]})})'
+        '.then(function(r){return r.json()}).then(function(){'
+        'btn.classList.remove("loading");btn.classList.add("success");'
+        'if(txt)txt.textContent="\u2713 Added to Cart!";'
+        'try{var cc=document.querySelectorAll(".cart-count-bubble span,.header__cart-count,[data-cart-count]");'
+        'if(cc.length){fetch("/cart.js").then(function(r){return r.json()}).then(function(c){cc.forEach(function(el){el.textContent=c.item_count;});});}}'
+        'catch(e){}'
+        'setTimeout(function(){btn.classList.remove("success");if(txt)txt.textContent="\U0001f6d2 Add to Cart";},2000);'
+        '}).catch(function(){'
+        'btn.classList.remove("loading");if(txt)txt.textContent="Error \u2014 Try Again";'
+        'setTimeout(function(){if(txt)txt.textContent="\U0001f6d2 Add to Cart";},2000);'
+        '});'
+        '});'
+        # Buy Now
+        'var buyBtn=document.getElementById("aip-buy");'
+        'if(buyBtn)buyBtn.addEventListener("click",function(){'
+        'var v=findV();if(!v||!v.avail)return;'
+        'var qty=parseInt(qi.value)||1;'
+        'window.location.href="/cart/"+v.id+":"+qty+"?channel=buy_now";'
+        '});'
+        # Description toggle
+        'var db=document.getElementById("aip-desc-btn"),dc=document.getElementById("aip-desc-content");'
+        'if(db&&dc){db.addEventListener("click",function(){var o=dc.classList.toggle("open");db.textContent=o?"\u25be Hide Details":"\u25b8 Product Details";});}'
+        '})();'
+        '</script>'
+        '{% endraw %}'
+        '{% endif %}'
+    )
+
+    return (
+        template
+        .replace("__HANDLE__", handle)
+        .replace("__ACCENT__", accent)
+        .replace("__ACCENT_LIGHT__", accent_light)
+        .replace("__ACCENT_RGB__", accent_rgb)
+    )
+
