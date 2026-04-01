@@ -13,6 +13,99 @@ import {
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
 const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall']
+type Lang = 'en' | 'ar'
+
+const WHOLESALE_COPY = {
+  en: {
+    brand: 'BulkIndex',
+    brandTag: 'Wholesale control center',
+    portal: 'Vendor Portal',
+    overview: 'Overview',
+    inventory: 'Inventory',
+    orders: 'Orders',
+    customers: 'Customers',
+    createOrder: 'Create Order',
+    addProduct: 'Add Product',
+    home: 'Home',
+    stock: 'Stock',
+    add: 'Add',
+    languageLabel: 'Arabic mode',
+    english: 'EN',
+    arabic: 'AR',
+    welcome: 'Manage your wholesale business with a faster, cleaner workflow.',
+    settingsTitle: 'Vendor Settings',
+    vendorName: 'Vendor name',
+    username: 'Username',
+    password: 'Password',
+    passwordValue: 'Protected for security',
+    passwordNote: 'We do not show the real password here for safety.',
+    logout: 'Logout',
+    role: 'Vendor',
+    overviewTitle: 'Dashboard Overview',
+    overviewSub: 'Performance metrics for your products on MMD store.',
+    totalProducts: 'Total Products',
+    inventoryLevel: 'Inventory Level',
+    inventoryLevelSub: 'Total units in stock',
+    inventoryValue: 'Inventory Value',
+    inventoryValueSub: 'Current market value',
+    ordersStat: 'Orders',
+    ordersStatSub: 'Loading...',
+    unitsSold: 'Units Sold',
+    unitsSoldSub: 'Total items ordered',
+    inventoryTitle: 'Live Inventory',
+    inventorySub: 'Products on the MMD Shopify store assigned to you.',
+    searchProducts: 'Search products...',
+    allSegments: 'All Segments',
+    noProducts: 'No products found.',
+    recentProducts: 'Recent Products',
+    productsBySegment: 'Products by Segment',
+  },
+  ar: {
+    brand: 'BulkIndex',
+    brandTag: 'منصة البيع بالجملة',
+    portal: 'فضاء التاجر',
+    overview: 'نظرة عامة',
+    inventory: 'الستوك',
+    orders: 'الطلبات',
+    customers: 'الزبناء',
+    createOrder: 'دير طلب',
+    addProduct: 'زيد منتوج',
+    home: 'الرئيسية',
+    stock: 'الستوك',
+    add: 'زيد',
+    languageLabel: 'العربية المغربية',
+    english: 'EN',
+    arabic: 'AR',
+    welcome: 'دبّر خدمتك فالجملة بواجهة سريعة وواضحة ومناسبة للتجار المغاربة.',
+    settingsTitle: 'إعدادات التاجر',
+    vendorName: 'سمية التاجر',
+    username: 'اسم الدخول',
+    password: 'كلمة السر',
+    passwordValue: 'محمية',
+    passwordNote: 'ما كنوريوش كلمة السر الحقيقية هنا حفاظا على الأمان.',
+    logout: 'تسجيل الخروج',
+    role: 'تاجر',
+    overviewTitle: 'نظرة عامة',
+    overviewSub: 'أهم الأرقام ديال المنتوجات ديالك فمتجر MMD.',
+    totalProducts: 'مجموع المنتوجات',
+    inventoryLevel: 'مستوى الستوك',
+    inventoryLevelSub: 'مجموع الوحدات فالستوك',
+    inventoryValue: 'قيمة الستوك',
+    inventoryValueSub: 'القيمة الحالية',
+    ordersStat: 'الطلبات',
+    ordersStatSub: 'كيتحمّل...',
+    unitsSold: 'الوحدات المباعة',
+    unitsSoldSub: 'مجموع القطع المطلوبة',
+    inventoryTitle: 'الستوك المباشر',
+    inventorySub: 'المنتوجات الموجودة فـ Shopify والمرتبطة بيك.',
+    searchProducts: 'قلّب على منتوج...',
+    allSegments: 'جميع الفئات',
+    noProducts: 'ما كاين حتى منتوج.',
+    recentProducts: 'آخر المنتوجات',
+    productsBySegment: 'المنتوجات حسب الفئة',
+  },
+} as const
+type WholesaleCopy = (typeof WHOLESALE_COPY)[Lang]
 
 // ─── API helpers ─────────────────────────────────────────
 async function apiPost(path: string, body: object) {
@@ -44,6 +137,15 @@ function setSession(data: any) {
 }
 function clearSession() {
   localStorage.removeItem('wholesale_session')
+}
+function getLang(): Lang {
+  try {
+    const raw = localStorage.getItem('wholesale_lang')
+    return raw === 'ar' ? 'ar' : 'en'
+  } catch { return 'en' }
+}
+function setLang(lang: Lang) {
+  localStorage.setItem('wholesale_lang', lang)
 }
 
 // ════════════════════════════════════════════════════
@@ -151,6 +253,12 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
   const [products, setProducts] = useState<any[]>([])
   const [loadingProducts, setLoadingProducts] = useState(true)
   const [orderStats, setOrderStats] = useState<any>(null)
+  const [lang, setLangState] = useState<Lang>('en')
+  const [showSettings, setShowSettings] = useState(false)
+
+  useEffect(() => {
+    setLangState(getLang())
+  }, [])
 
   async function refreshProducts() {
     setLoadingProducts(true)
@@ -169,40 +277,48 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
   }
 
   useEffect(() => { refreshProducts(); refreshOrders() }, [vendor.id])
+  const copy = WHOLESALE_COPY[lang]
+  const isArabic = lang === 'ar'
+
+  function toggleLang() {
+    const next = lang === 'ar' ? 'en' : 'ar'
+    setLangState(next)
+    setLang(next)
+  }
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
-      case 'inventory': return <InventoryTab products={products} loading={loadingProducts} />
+      case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} />
+      case 'inventory': return <InventoryTab products={products} loading={loadingProducts} copy={copy} />
       case 'create-order': return <CreateOrderTab vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} />
       case 'orders': return <OrdersTab vendor={vendor} />
       case 'customers': return <CustomersTab vendor={vendor} />
-      default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} />
+      default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} />
     }
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-screen bg-slate-50 text-slate-900 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+    <div dir={isArabic ? 'rtl' : 'ltr'} className="flex flex-col md:flex-row h-screen bg-slate-50 text-slate-900 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
       {/* Desktop Sidebar */}
       <nav className="hidden md:flex w-64 bg-white border-r border-slate-200 flex-col">
         <div className="p-6 border-b border-slate-100">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">
-            <Package className="text-blue-600" size={22} />
-            WholesaleHub
+          <h1 className="text-xl font-bold bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">
+            <Package className="text-cyan-600" size={22} />
+            {copy.brand}
           </h1>
-          <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-wider font-semibold">MMD Vendor Portal</p>
+          <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-wider font-semibold">{copy.portal}</p>
         </div>
         <div className="flex-1 p-4 space-y-2">
-          <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Overview" />
-          <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Inventory" />
-          <NavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
-          <NavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label="Customers" />
+          <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label={copy.overview} />
+          <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.inventory} />
+          <NavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
+          <NavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label={copy.customers} />
           <button onClick={()=>setActiveTab('create-order')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab==='create-order' ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'}`}>
             <ShoppingCart size={20}/>
-            <span className="font-bold text-sm">Create Order</span>
+            <span className="font-bold text-sm">{copy.createOrder}</span>
           </button>
-          <NavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add Product" />
+          <NavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label={copy.addProduct} />
         </div>
         <div className="p-4 border-t border-slate-100">
           <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
@@ -211,9 +327,9 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold text-blue-900 truncate">{vendor.name}</p>
-              <p className="text-[10px] text-blue-500">Vendor</p>
+              <p className="text-[10px] text-blue-500">{copy.role}</p>
             </div>
-            <button onClick={onLogout} className="text-red-400 hover:text-red-600 transition-colors" title="Logout">
+            <button onClick={onLogout} className="text-red-400 hover:text-red-600 transition-colors" title={copy.logout}>
               <LogOut size={16} />
             </button>
           </div>
@@ -221,20 +337,89 @@ function Dashboard({ vendor, onLogout }: { vendor: any; onLogout: () => void }) 
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto pb-24 md:pb-8 p-4 md:p-8">{renderContent()}</main>
+      <main className="flex-1 overflow-y-auto pb-24 md:pb-8">
+        <div className="sticky top-0 z-30 px-4 pt-4 md:px-8 md:pt-6 bg-slate-50/95 backdrop-blur">
+          <div className="relative rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+            <div className="bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,41,59,0.92)_45%,_rgba(8,47,73,0.98))] px-5 py-5 md:px-7 md:py-6 text-white">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-white/10 px-4 py-2 shadow-inner">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-slate-950 shadow-lg shadow-cyan-900/30">
+                      <Package size={20} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-lg font-black tracking-[0.2em] uppercase">{copy.brand}</p>
+                      <p className="text-[10px] uppercase tracking-[0.35em] text-cyan-100/80">{copy.brandTag}</p>
+                    </div>
+                  </div>
+                  <p className="mt-4 max-w-2xl text-sm text-slate-200/90">{copy.welcome}</p>
+                </div>
+                <div className="flex items-center gap-3 self-start md:self-auto">
+                  <button
+                    type="button"
+                    onClick={toggleLang}
+                    className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                  >
+                    <span className="text-cyan-200">{copy.languageLabel}</span>
+                    <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px]">{lang === 'ar' ? copy.arabic : copy.english}</span>
+                  </button>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowSettings(v => !v)}
+                      className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                      title={copy.settingsTitle}
+                    >
+                      <Settings size={18} />
+                    </button>
+                    {showSettings && (
+                      <div className={`absolute top-14 z-40 w-80 rounded-3xl border border-slate-200 bg-white p-5 text-slate-900 shadow-[0_25px_80px_rgba(15,23,42,0.2)] ${isArabic ? 'left-0' : 'right-0'}`}>
+                        <div className="mb-4 flex items-center gap-3">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white">
+                            <User size={20} />
+                          </div>
+                          <div>
+                            <p className="text-sm font-black text-slate-900">{copy.settingsTitle}</p>
+                            <p className="text-xs text-slate-500">{copy.portal}</p>
+                          </div>
+                        </div>
+                        <div className="space-y-3">
+                          <SettingsRow label={copy.vendorName} value={vendor.name || '-'} />
+                          <SettingsRow label={copy.username} value={vendor.username || vendor.id || '-'} />
+                          <SettingsRow label={copy.password} value={copy.passwordValue} />
+                        </div>
+                        <p className="mt-3 text-xs text-slate-500">{copy.passwordNote}</p>
+                        <button
+                          type="button"
+                          onClick={onLogout}
+                          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
+                        >
+                          <LogOut size={16} />
+                          {copy.logout}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4 md:p-8 pt-5">{renderContent()}</div>
+      </main>
 
       {/* Mobile Bottom Nav */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-2 py-2 flex justify-around items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
-        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Home" />
-        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label="Stock" />
+        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label={copy.home} />
+        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.stock} />
         <div className="relative -top-5">
           <button onClick={()=>setActiveTab('create-order')} className={`w-13 h-13 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 p-3 ${activeTab==='create-order'?'bg-emerald-600 text-white shadow-emerald-300':'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-300'}`}>
             <ShoppingCart size={24} />
           </button>
         </div>
-        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label="Orders" />
-        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label="Customers" />
-        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add" />
+        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
+        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label={copy.customers} />
+        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label={copy.add} />
       </nav>
     </div>
   )
@@ -260,6 +445,15 @@ function MobileNavItem({ active, onClick, icon, label }: any) {
   )
 }
 
+function SettingsRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+      <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-400">{label}</p>
+      <p className="mt-1 text-sm font-bold text-slate-900">{value}</p>
+    </div>
+  )
+}
+
 // ─── Stats Card ──────────────────────────────────────────
 function StatsCard({ label, value, sub, icon }: any) {
   return (
@@ -277,7 +471,7 @@ function StatsCard({ label, value, sub, icon }: any) {
 // ═══════════════════════════════════════════════════
 //  OVERVIEW TAB
 // ═══════════════════════════════════════════════════
-function OverviewTab({ products, loading, orderStats }: { products: any[]; loading: boolean; orderStats: any }) {
+function OverviewTab({ products, loading, orderStats, copy }: { products: any[]; loading: boolean; orderStats: any; copy: WholesaleCopy }) {
   const totalStock = useMemo(() => products.reduce((a, p) => {
     const vars = p.variants || []
     return a + vars.reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
@@ -303,29 +497,29 @@ function OverviewTab({ products, loading, orderStats }: { products: any[]; loadi
     <div className="space-y-6 max-w-6xl mx-auto animate-in">
       <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
         <div>
-          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Dashboard Overview</h2>
-          <p className="text-slate-500 text-sm">Performance metrics for your products on MMD store.</p>
+          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">{copy.overviewTitle}</h2>
+          <p className="text-slate-500 text-sm">{copy.overviewSub}</p>
         </div>
         <div className="bg-white border p-3 rounded-2xl shadow-sm flex items-center gap-3">
           <div className="p-2 bg-blue-50 rounded-lg text-blue-600"><Package size={18}/></div>
           <div>
-            <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">Total Products</span>
+            <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">{copy.totalProducts}</span>
             <p className="text-lg font-bold">{loading ? '...' : products.length}</p>
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-        <StatsCard label="Inventory Level" value={loading ? '...' : totalStock.toLocaleString()} sub="Total units in stock" icon={<Box size={20} className="text-blue-600" />} />
-        <StatsCard label="Inventory Value" value={loading ? '...' : `$${totalValue.toLocaleString()}`} sub="Current market value" icon={<DollarSign size={20} className="text-green-600" />} />
-        <StatsCard label="Orders" value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `$${orderStats.total_revenue} revenue` : 'Loading...'} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
-        <StatsCard label="Units Sold" value={orderStats ? orderStats.total_units_sold : '...'} sub="Total items ordered" icon={<TrendingUp size={20} className="text-orange-600" />} />
+        <StatsCard label={copy.inventoryLevel} value={loading ? '...' : totalStock.toLocaleString()} sub={copy.inventoryLevelSub} icon={<Box size={20} className="text-blue-600" />} />
+        <StatsCard label={copy.inventoryValue} value={loading ? '...' : `$${totalValue.toLocaleString()}`} sub={copy.inventoryValueSub} icon={<DollarSign size={20} className="text-green-600" />} />
+        <StatsCard label={copy.ordersStat} value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `$${orderStats.total_revenue} revenue` : copy.ordersStatSub} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
+        <StatsCard label={copy.unitsSold} value={orderStats ? orderStats.total_units_sold : '...'} sub={copy.unitsSoldSub} icon={<TrendingUp size={20} className="text-orange-600" />} />
       </div>
 
       {/* Segment breakdown */}
       {segmentData.length > 0 && (
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-lg font-bold mb-4">Products by Segment</h3>
+          <h3 className="text-lg font-bold mb-4">{copy.productsBySegment}</h3>
           <div className="space-y-3">
             {segmentData.map(s => (
               <div key={s.name} className="flex items-center gap-4">
@@ -347,7 +541,7 @@ function OverviewTab({ products, loading, orderStats }: { products: any[]; loadi
       {/* Recent products */}
       {products.length > 0 && (
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-lg font-bold mb-4">Recent Products</h3>
+          <h3 className="text-lg font-bold mb-4">{copy.recentProducts}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {products.slice(0, 6).map((p: any) => (
               <div key={p.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
@@ -375,7 +569,7 @@ function OverviewTab({ products, loading, orderStats }: { products: any[]; loadi
 // ═══════════════════════════════════════════════════
 //  INVENTORY TAB
 // ═══════════════════════════════════════════════════
-function InventoryTab({ products, loading }: { products: any[]; loading: boolean }) {
+function InventoryTab({ products, loading, copy }: { products: any[]; loading: boolean; copy: WholesaleCopy }) {
   const [search, setSearch] = useState('')
   const [segFilter, setSegFilter] = useState('All')
 
@@ -392,8 +586,8 @@ function InventoryTab({ products, loading }: { products: any[]; loading: boolean
     <div className="space-y-6 max-w-6xl mx-auto pb-10 animate-in">
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold">Live Inventory</h2>
-          <p className="text-slate-500 text-sm">Products on the MMD Shopify store assigned to you.</p>
+          <h2 className="text-2xl font-bold">{copy.inventoryTitle}</h2>
+          <p className="text-slate-500 text-sm">{copy.inventorySub}</p>
         </div>
       </div>
 
@@ -401,13 +595,13 @@ function InventoryTab({ products, loading }: { products: any[]; loading: boolean
       <div className="flex flex-wrap gap-3">
         <input
           value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search products..."
+          placeholder={copy.searchProducts}
           className="bg-white border border-slate-200 rounded-xl px-4 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500/30 w-64"
         />
         <select value={segFilter} onChange={e => setSegFilter(e.target.value)}
           className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-medium outline-none"
         >
-          <option value="All">All Segments</option>
+          <option value="All">{copy.allSegments}</option>
           {SEGMENTS.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
       </div>
@@ -465,7 +659,7 @@ function InventoryTab({ products, loading }: { products: any[]; loading: boolean
               <tr><td colSpan={4} className="px-6 py-16 text-center">
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-16 h-16 bg-slate-50 text-slate-200 rounded-full flex items-center justify-center"><Package size={32}/></div>
-                  <p className="text-slate-400 font-medium">No products found.</p>
+                  <p className="text-slate-400 font-medium">{copy.noProducts}</p>
                 </div>
               </td></tr>
             )}
