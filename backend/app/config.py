@@ -10,10 +10,12 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-07")
 # Shopify OAuth (public apps / Dev Dashboard)
 SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "")  # Dev Dashboard "Client ID"
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")  # Dev Dashboard "Secret" (shpss_...)
-# Comma-separated scopes. Keep minimal but sufficient for current app features (orders + product/page creation + theme editing).
+# Comma-separated scopes for the Shopify OAuth flow.
+# These defaults cover the app's current capabilities plus the extra order/customer/file
+# permissions requested for the Irrakids integration.
 SHOPIFY_OAUTH_SCOPES = os.getenv(
     "SHOPIFY_OAUTH_SCOPES",
-    "read_orders,write_orders,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_locations,read_themes,write_themes",
+    "read_orders,write_orders,read_all_orders,read_order_edits,write_order_edits,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_locations,read_customers,write_customers,read_files,write_files,read_publications,write_publications,read_themes,write_themes",
 )
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")

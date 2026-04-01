@@ -17,6 +17,7 @@ __pycache__/
 # Env & build
 .env
 .env.*
+!.env.example
 dist
 build
 uploads

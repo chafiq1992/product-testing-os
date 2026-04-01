@@ -61,12 +61,20 @@ import secrets
 import requests
 import asyncio
 
-# Ensure MMD store is enabled for DB-backed OAuth tokens
+# Ensure the OAuth-enabled stores are available by default for the known Shopify installs.
 # (This env var is checked by shopify_client._oauth_enabled_for_store)
 _oauth_stores = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
-if "mmd" not in _oauth_stores.lower():
-    _oauth_stores = f"{_oauth_stores},irranova,mmd" if _oauth_stores else "irranova,mmd"
-    os.environ["SHOPIFY_OAUTH_STORES"] = _oauth_stores
+_default_oauth_stores = ["irrakids", "irranova", "mmd"]
+if _oauth_stores:
+    existing = [p.strip() for p in _oauth_stores.split(",") if p.strip()]
+    existing_lc = {p.lower() for p in existing}
+    merged = existing[:]
+    for store_name in _default_oauth_stores:
+        if store_name not in existing_lc:
+            merged.append(store_name)
+    os.environ["SHOPIFY_OAUTH_STORES"] = ",".join(merged)
+else:
+    os.environ["SHOPIFY_OAUTH_STORES"] = ",".join(_default_oauth_stores)
 
 # Optional ChatKit server-mode support
 try:
@@ -434,11 +442,29 @@ async def api_shopify_oauth_status(store: str | None = None):
     except Exception as e:
         return {"error": str(e), "data": {"connected": False}}
 
+def _oauth_enabled_store_labels() -> set[str]:
+    raw = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
+    if not raw:
+        return set()
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
 def _get_shopify_oauth_credentials(store: str) -> tuple[str, str]:
-    """Return the store-specific OAuth credentials, falling back to the default ones."""
-    store_upper = (store or "").strip().upper()
-    client_id = os.getenv(f"SHOPIFY_CLIENT_ID_{store_upper}") or SHOPIFY_CLIENT_ID
-    client_secret = os.getenv(f"SHOPIFY_CLIENT_SECRET_{store_upper}") or SHOPIFY_CLIENT_SECRET
+    """Return OAuth credentials for a store.
+
+    For stores explicitly enabled for OAuth, require store-specific credentials so we never
+    accidentally redirect a merchant into the wrong Shopify app.
+    """
+    store_label = (store or "").strip()
+    store_upper = store_label.upper()
+    store_client_id = os.getenv(f"SHOPIFY_CLIENT_ID_{store_upper}") or ""
+    store_client_secret = os.getenv(f"SHOPIFY_CLIENT_SECRET_{store_upper}") or ""
+
+    if store_label.lower() in _oauth_enabled_store_labels():
+        return store_client_id, store_client_secret
+
+    client_id = store_client_id or SHOPIFY_CLIENT_ID
+    client_secret = store_client_secret or SHOPIFY_CLIENT_SECRET
     return client_id, client_secret
 
 
@@ -456,7 +482,15 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
             
         client_id, client_secret = _get_shopify_oauth_credentials(store_label)
         if not (client_id and client_secret):
-            return {"error": "missing_shopify_client_credentials"}
+            store_upper = store_label.upper()
+            return {
+                "error": "missing_shopify_client_credentials",
+                "store": store_label,
+                "required_env": [
+                    f"SHOPIFY_CLIENT_ID_{store_upper}",
+                    f"SHOPIFY_CLIENT_SECRET_{store_upper}",
+                ],
+            }
             
         shop = _extract_shop_domain(shop)
         if not _is_valid_shop_domain(shop or ""):
@@ -504,7 +538,15 @@ async def api_shopify_oauth_callback(request: Request):
             
         client_id, client_secret = _get_shopify_oauth_credentials(store_label)
         if not (client_id and client_secret):
-            return {"error": "missing_shopify_client_credentials"}
+            store_upper = store_label.upper()
+            return {
+                "error": "missing_shopify_client_credentials",
+                "store": store_label,
+                "required_env": [
+                    f"SHOPIFY_CLIENT_ID_{store_upper}",
+                    f"SHOPIFY_CLIENT_SECRET_{store_upper}",
+                ],
+            }
             
         if not _is_valid_shop_domain(shop):
             return {"error": "invalid_shop_domain"}

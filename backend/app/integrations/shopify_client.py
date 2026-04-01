@@ -20,10 +20,10 @@ def _oauth_enabled_for_store(store: str | None) -> bool:
     """Whether DB-backed OAuth tokens are allowed for this store label.
 
     Default behavior (to support mixed-mode setups):
-      - Only enable for 'irranova'
+      - Enable for 'irrakids', 'irranova', and 'mmd'
 
     Override via env SHOPIFY_OAUTH_STORES (comma-separated store labels), e.g.:
-      SHOPIFY_OAUTH_STORES=irranova,anotherstore
+      SHOPIFY_OAUTH_STORES=irrakids,irranova,anotherstore
     """
     try:
         s = (store or "").strip().lower()
@@ -33,7 +33,7 @@ def _oauth_enabled_for_store(store: str | None) -> bool:
         if allowed:
             parts = [p.strip().lower() for p in allowed.split(",") if p.strip()]
             return s in set(parts)
-        return s in {"irranova", "mmd"}
+        return s in {"irrakids", "irranova", "mmd"}
     except Exception:
         return False
 
