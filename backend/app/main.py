@@ -350,15 +350,23 @@ def _verify_shopify_hmac_request(request: Request, client_secret: str) -> bool:
 def _abs_base_url(request: Request) -> str:
     """Compute absolute base URL for redirects.
 
-    Prefer BASE_URL if configured for non-local deployments; else infer from headers.
+    In production, prefer the current forwarded request host so OAuth callback URLs
+    stay aligned with the live domain the user is actually visiting. Fall back to
+    BASE_URL when the incoming request looks local or incomplete.
     """
     try:
+        configured_base = (BASE_URL or "").strip().rstrip("/")
         host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip()
         scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").strip()
         req_base = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
-        if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
-            return BASE_URL.rstrip("/")
-        return req_base.rstrip("/")
+        req_base = req_base.rstrip("/")
+        req_host_lc = host.lower()
+        req_is_public = bool(req_base and req_host_lc and "localhost" not in req_host_lc and "127.0.0.1" not in req_host_lc)
+        if req_is_public:
+            return req_base
+        if configured_base:
+            return configured_base
+        return req_base
     except Exception:
         return (BASE_URL or "").rstrip("/")
 
@@ -432,7 +440,7 @@ async def favicon():
 
 
 @app.get("/api/shopify/oauth/status")
-async def api_shopify_oauth_status(store: str | None = None):
+async def api_shopify_oauth_status(request: Request, store: str | None = None):
     """Return whether we have a stored OAuth token for this store label."""
     try:
         rec = db.get_app_setting(store, "shopify_oauth") or {}
@@ -440,7 +448,16 @@ async def api_shopify_oauth_status(store: str | None = None):
             rec = {}
         tok = str(rec.get("access_token") or "").strip()
         shop = str(rec.get("shop") or "").strip()
-        return {"data": {"connected": bool(tok and shop), "shop": (shop or None), "scopes": rec.get("scopes")}}
+        base_url = _abs_base_url(request)
+        return {
+            "data": {
+                "connected": bool(tok and shop),
+                "shop": (shop or None),
+                "scopes": rec.get("scopes"),
+                "base_url": (base_url or None),
+                "callback_url": (f"{base_url}/api/shopify/oauth/callback" if base_url else None),
+            }
+        }
     except Exception as e:
         return {"error": str(e), "data": {"connected": False}}
 
@@ -508,7 +525,12 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
             "exp": exp,
         })
 
-        redirect_uri = f"{_abs_base_url(request)}/api/shopify/oauth/callback"
+        base_url = _abs_base_url(request)
+        redirect_uri = f"{base_url}/api/shopify/oauth/callback"
+        try:
+            logger.info(f"[shopify] OAuth start store={store_label} shop={shop} base_url={base_url} redirect_uri={redirect_uri}")
+        except Exception:
+            pass
         scopes = _shopify_oauth_scopes()
         params = {
             "client_id": client_id,

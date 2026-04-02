@@ -12,6 +12,7 @@ export default function ShopifyConnectPage(){
   const [shop, setShop] = useState("")
   const [connected, setConnected] = useState(false)
   const [connectedShop, setConnectedShop] = useState<string | null>(null)
+  const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
   const base = useMemo(()=> process.env.NEXT_PUBLIC_API_BASE_URL || "", [])
 
   useEffect(()=>{
@@ -29,9 +30,11 @@ export default function ShopifyConnectPage(){
       const d = j?.data || {}
       setConnected(!!d?.connected)
       setConnectedShop(d?.shop || null)
+      setCallbackUrl(d?.callback_url || null)
     }catch{
       setConnected(false)
       setConnectedShop(null)
+      setCallbackUrl(null)
     }
   }
 
@@ -107,6 +110,7 @@ export default function ShopifyConnectPage(){
             <div className="rounded-lg border bg-slate-50 p-3 text-sm">
               <div><span className="font-semibold">Status:</span> {connected ? "Connected" : "Not connected"}</div>
               <div className="text-slate-600 text-[13px] mt-1">Shop: {connectedShop || "—"}</div>
+              <div className="text-slate-600 text-[13px] mt-1 break-all">Whitelisted callback URL: {callbackUrl || "—"}</div>
             </div>
           </div>
         </div>
@@ -114,5 +118,3 @@ export default function ShopifyConnectPage(){
     </div>
   )
 }
-
-
