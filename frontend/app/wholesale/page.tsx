@@ -2462,6 +2462,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
     ? 'px-3 py-4 text-base font-bold text-slate-800'
     : 'px-3 py-4 text-sm font-semibold text-slate-700'
   const totalToPayLabel = isArabic ? 'المبلغ الواجب دفعه' : 'Total to pay'
+  const desktopInvoiceWidth = 960
 
   if (success) {
     return (
@@ -2477,9 +2478,16 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
           </button>
         </div>
 
-        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} lang={isArabic ? 'ar' : 'en'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: invoiceFontFamily }}>
-          <div className="grid min-h-[920px] grid-rows-[minmax(210px,1fr)_minmax(420px,2fr)_minmax(210px,1fr)]">
-            <section className="grid gap-5 border-b border-slate-200 px-5 py-6 md:grid-cols-[1.2fr_0.8fr] md:px-8">
+        <div className="overflow-x-auto rounded-[24px] border border-slate-200 bg-slate-100/60 p-2">
+          <div
+            ref={invoiceRef}
+            dir={isArabic ? 'rtl' : 'ltr'}
+            lang={isArabic ? 'ar' : 'en'}
+            className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+            style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
+          >
+          <div className="grid min-h-[920px] grid-rows-[210px_minmax(420px,1fr)_210px]">
+            <section className="grid grid-cols-[1.2fr_0.8fr] gap-5 border-b border-slate-200 px-8 py-6">
               <div className="space-y-4">
                 <div className="flex items-start gap-3">
                   <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
@@ -2493,7 +2501,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
                     <p className={invoiceLabelClass}>{copy.billFrom}</p>
                     <p className={invoiceBodyTextClass}>{vendor.name}</p>
@@ -2527,7 +2535,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               </div>
             </section>
 
-            <section className="px-5 py-5 md:px-8">
+            <section className="px-8 py-5">
               <div className="h-full overflow-hidden rounded-[22px] border border-slate-200">
                 <table className="w-full border-collapse table-fixed">
                   <colgroup>
@@ -2567,7 +2575,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               </div>
             </section>
 
-            <section className="grid gap-5 border-t border-slate-200 px-5 py-6 md:grid-cols-[1fr_320px] md:px-8">
+            <section className="grid grid-cols-[1fr_320px] gap-5 border-t border-slate-200 px-8 py-6">
               <div className="rounded-[22px] border border-slate-200 px-5 py-4">
                 <p className={invoiceLabelClass}>{copy.paymentNote}</p>
                 <p className={`mt-4 ${invoiceMutedTextClass}`}>{copy.thankYou}</p>
@@ -2599,6 +2607,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               </div>
             </section>
           </div>
+        </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3061,7 +3070,7 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
   const [customers, setCustomers] = useState<any[]>([])
   const [totalUnpaid, setTotalUnpaid] = useState(0)
   const [search, setSearch] = useState('')
-  const [selectedCustomerKey, setSelectedCustomerKey] = useState('')
+  const [expandedCustomerKey, setExpandedCustomerKey] = useState('')
   const isArabic = lang === 'ar'
   const locale = isArabic ? 'ar-MA' : 'en-GB'
 
@@ -3072,14 +3081,14 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
       const list = res?.data?.customers || []
       setCustomers(list)
       setTotalUnpaid(Number(res?.data?.total_unpaid || 0))
-      setSelectedCustomerKey((prev: string) => {
+      setExpandedCustomerKey((prev: string) => {
         if (prev && list.some((c: any) => c.key === prev)) return prev
-        return list[0]?.key || ''
+        return ''
       })
     } catch {
       setCustomers([])
       setTotalUnpaid(0)
-      setSelectedCustomerKey('')
+      setExpandedCustomerKey('')
     } finally {
       setLoading(false)
     }
@@ -3095,11 +3104,6 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
       (c.customer_phone || '').toLowerCase().includes(q)
     )
   }, [customers, search])
-
-  const selectedCustomer = useMemo(
-    () => filteredCustomers.find((c: any) => c.key === selectedCustomerKey) || null,
-    [filteredCustomers, selectedCustomerKey]
-  )
 
   const localizedStatusBadge = (status: string) => {
     if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ {copy.paid}</span>
@@ -3152,97 +3156,90 @@ function CustomersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang
           <p className="text-sm mt-1">{copy.adjustSearch}</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-4">
-          <div className="space-y-2">
-            {filteredCustomers.map((c: any) => {
-              const selected = c.key === selectedCustomerKey
-              return (
+        <div className="space-y-3">
+          {filteredCustomers.map((c: any) => {
+            const isExpanded = c.key === expandedCustomerKey
+            return (
+              <div key={c.key} className={`overflow-hidden rounded-2xl border transition-all ${isExpanded ? 'border-blue-200 bg-blue-50/40 shadow-sm' : 'border-slate-200 bg-white hover:shadow-md'}`}>
                 <button
-                  key={c.key}
-                  onClick={() => setSelectedCustomerKey(c.key)}
-                  className={`w-full text-left rounded-2xl border p-4 transition-all ${
-                    selected ? 'bg-blue-50 border-blue-200 shadow-sm' : 'bg-white border-slate-200 hover:bg-slate-50'
-                  }`}
+                  onClick={() => setExpandedCustomerKey(isExpanded ? '' : c.key)}
+                  className="w-full p-4 text-left"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <p className="font-bold text-sm truncate">{c.customer_name || copy.notAvailable}</p>
                       <p className="text-[11px] text-slate-500 truncate">{c.customer_phone || copy.noPhone}</p>
                     </div>
-                    <span className="text-[11px] font-semibold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
-                      {c.orders_count} {copy.ordersCountLabel}
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between text-xs">
-                    <span className="text-slate-500">{copy.pending}</span>
-                    <span className={`font-bold ${Number(c.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {formatDh(Number(c.total_unpaid || 0), locale)}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <p className="text-[11px] font-semibold px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+                          {c.orders_count} {copy.ordersCountLabel}
+                        </p>
+                        <p className={`mt-2 text-sm font-bold ${Number(c.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {formatDh(Number(c.total_unpaid || 0), locale)}
+                        </p>
+                      </div>
+                      <ChevronRight size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    </div>
                   </div>
                 </button>
-              )
-            })}
-          </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200 p-4">
-            {!selectedCustomer ? (
-              <div className="text-center py-16 text-slate-400">
-                <p className="font-semibold">{copy.selectCustomer}</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
-                  <div>
-                    <h3 className="text-lg font-bold">{selectedCustomer.customer_name || copy.notAvailable}</h3>
-                    <p className="text-sm text-slate-500">{selectedCustomer.customer_phone || copy.noPhone}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[11px] text-slate-500">{copy.unpaidTotal}</p>
-                    <p className={`text-lg font-bold ${Number(selectedCustomer.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                      {formatDh(Number(selectedCustomer.total_unpaid || 0), locale)}
-                    </p>
-                  </div>
-                </div>
+                {isExpanded && (
+                  <div className="border-t border-slate-100 bg-slate-50/70 p-4 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-bold">{c.customer_name || copy.notAvailable}</h3>
+                        <p className="text-sm text-slate-500">{c.customer_phone || copy.noPhone}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] text-slate-500">{copy.unpaidTotal}</p>
+                        <p className={`text-lg font-bold ${Number(c.total_unpaid || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {formatDh(Number(c.total_unpaid || 0), locale)}
+                        </p>
+                      </div>
+                    </div>
 
-                {(selectedCustomer.orders || []).length === 0 ? (
-                  <p className="text-sm text-slate-500">{copy.noOrdersForCustomer}</p>
-                ) : (
-                  <div className="space-y-2">
-                    {(selectedCustomer.orders || []).map((o: any) => {
-                      const total = Number(o.total_price || 0)
-                      const paid = Number(o.amount_paid || 0)
-                      const pending = Number(o.pending_amount || 0)
-                      return (
-                        <div key={o.id} className="rounded-xl border border-slate-200 p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="font-bold text-sm text-blue-600">{o.name || `#${o.id}`}</p>
-                              <p className="text-[11px] text-slate-500">{o.created_at ? new Date(o.created_at).toLocaleString(locale) : ''}</p>
+                    {(c.orders || []).length === 0 ? (
+                      <p className="text-sm text-slate-500">{copy.noOrdersForCustomer}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(c.orders || []).map((o: any) => {
+                          const total = Number(o.total_price || 0)
+                          const paid = Number(o.amount_paid || 0)
+                          const pending = Number(o.pending_amount || 0)
+                          return (
+                            <div key={o.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="font-bold text-sm text-blue-600">{o.name || `#${o.id}`}</p>
+                                  <p className="text-[11px] text-slate-500">{o.created_at ? new Date(o.created_at).toLocaleString(locale) : ''}</p>
+                                </div>
+                                {localizedStatusBadge(o.payment_status)}
+                              </div>
+                              <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                                <div className="rounded-lg bg-slate-50 p-2 border border-slate-100">
+                                  <p className="text-slate-500">{copy.total}</p>
+                                  <p className="font-bold text-slate-700">{formatDh(total, locale)}</p>
+                                </div>
+                                <div className="rounded-lg bg-emerald-50 p-2 border border-emerald-100">
+                                  <p className="text-emerald-700">{copy.paid}</p>
+                                  <p className="font-bold text-emerald-700">{formatDh(paid, locale)}</p>
+                                </div>
+                                <div className="rounded-lg bg-red-50 p-2 border border-red-100">
+                                  <p className="text-red-600">{copy.pending}</p>
+                                  <p className="font-bold text-red-600">{formatDh(pending, locale)}</p>
+                                </div>
+                              </div>
                             </div>
-                            {localizedStatusBadge(o.payment_status)}
-                          </div>
-                          <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                            <div className="rounded-lg bg-slate-50 p-2 border border-slate-100">
-                              <p className="text-slate-500">{copy.total}</p>
-                              <p className="font-bold text-slate-700">{total.toFixed(2)}</p>
-                            </div>
-                            <div className="rounded-lg bg-emerald-50 p-2 border border-emerald-100">
-                              <p className="text-emerald-700">{copy.paid}</p>
-                              <p className="font-bold text-emerald-700">{paid.toFixed(2)}</p>
-                            </div>
-                            <div className="rounded-lg bg-red-50 p-2 border border-red-100">
-                              <p className="text-red-600">{copy.pending}</p>
-                              <p className="font-bold text-red-600">{pending.toFixed(2)}</p>
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
+            )
+          })}
         </div>
       )}
     </div>
