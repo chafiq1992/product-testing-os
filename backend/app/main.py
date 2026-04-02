@@ -4574,6 +4574,62 @@ def _wholesale_fetch_shopify_vendor_orders(vendor_name: str, vendor_id: str) -> 
     return orders
 
 
+def _wholesale_phone_search_candidates(phone_raw: Any) -> list[str]:
+    raw = str(phone_raw or "").strip()
+    normalized = _wholesale_normalize_phone(raw)
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        v = value.strip()
+        if v and v not in candidates:
+            candidates.append(v)
+
+    add(raw)
+    add(normalized)
+    if normalized.startswith("0") and len(normalized) >= 10:
+        add(f"+212{normalized[1:]}")
+        add(f"212{normalized[1:]}")
+    return candidates
+
+
+def _wholesale_find_existing_customer_by_phone(phone_raw: Any) -> dict[str, Any] | None:
+    from app.integrations.shopify_client import _rest_get_store
+
+    for candidate in _wholesale_phone_search_candidates(phone_raw):
+        path = (
+            "/customers/search.json?"
+            + urlencode({
+                "query": f"phone:{candidate}",
+                "fields": "id,first_name,last_name,phone,default_address",
+                "limit": 10,
+            })
+        )
+        result = _rest_get_store(WHOLESALE_STORE, path)
+        for customer in (result or {}).get("customers", []) or []:
+            customer_phone = str(customer.get("phone") or "")
+            if _wholesale_normalize_phone(customer_phone) != _wholesale_normalize_phone(phone_raw):
+                continue
+
+            default_address = customer.get("default_address") or {}
+            customer_name = (
+                f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+                or default_address.get("name")
+                or "N/A"
+            )
+            return {
+                "customer_id": customer.get("id"),
+                "customer_name": customer_name.strip() or "N/A",
+                "customer_phone": customer_phone.strip(),
+                "customer_phone_normalized": _wholesale_normalize_phone(customer_phone),
+                "address1": str(default_address.get("address1") or "").strip(),
+                "city": str(default_address.get("city") or "").strip(),
+                "province": str(default_address.get("province") or "").strip(),
+                "zip": str(default_address.get("zip") or "").strip(),
+                "country": str(default_address.get("country_code") or "").strip(),
+            }
+    return None
+
+
 def _hash_password(pw: str) -> str:
     return hashlib.sha256((pw or "").encode("utf-8")).hexdigest()
 
@@ -5020,12 +5076,14 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         existing_customer: dict[str, Any] | None = None
 
         if normalized_phone:
-            prior_orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
-            for prior_order in prior_orders:
-                snapshot = _wholesale_extract_customer_snapshot(prior_order)
-                if snapshot.get("customer_id") and snapshot.get("customer_phone_normalized") == normalized_phone:
-                    existing_customer = snapshot
-                    break
+            existing_customer = await run_in_threadpool(_wholesale_find_existing_customer_by_phone, req.customer_phone)
+            if not existing_customer:
+                prior_orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
+                for prior_order in prior_orders:
+                    snapshot = _wholesale_extract_customer_snapshot(prior_order)
+                    if snapshot.get("customer_id") and snapshot.get("customer_phone_normalized") == normalized_phone:
+                        existing_customer = snapshot
+                        break
 
         customer_payload: dict[str, Any]
         if existing_customer and existing_customer.get("customer_id"):
