@@ -718,9 +718,26 @@ const ARABIC_TEXT_OVERRIDES = {
   noOrdersForCustomer: 'لا توجد طلبات لهذا العميل.',
 } as const
 
+const ARABIC_INVOICE_OVERRIDES = {
+  invoiceNumber: 'رقم الفاتورة',
+  issueDate: 'تاريخ الإصدار',
+  billFrom: 'صادر من',
+  billTo: 'صادر إلى',
+  itemColumn: 'المنتج',
+  qty: 'الكمية',
+  unitPrice: 'سعر الوحدة',
+  lineTotal: 'الإجمالي',
+  subtotal: 'المجموع الفرعي',
+  shipping: 'الشحن',
+  free: 'مجاني',
+  total: 'الإجمالي',
+  paymentNote: 'ملاحظات',
+  thankYou: 'شكراً لتعاملكم معنا',
+} as const
+
 function getAppCopy(lang: Lang): AppCopy {
   if (lang !== 'ar') return WHOLESALE_TEXT.en
-  return { ...WHOLESALE_TEXT.ar, ...ARABIC_TEXT_OVERRIDES } as unknown as AppCopy
+  return { ...WHOLESALE_TEXT.ar, ...ARABIC_TEXT_OVERRIDES, ...ARABIC_INVOICE_OVERRIDES } as unknown as AppCopy
 }
 
 const SEGMENT_LABELS: Record<string, Record<Lang, string>> = {
@@ -2420,6 +2437,31 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const invoiceNumber = success?.name || `#${success?.order_number || ''}`
   const invoiceTotal = toNumber(success?.total_price || orderTotal)
   const customerAddressLine = address.address1 && address.address1 !== 'NA' ? address.address1 : null
+  const invoiceFontFamily = isArabic
+    ? "'Geeza Pro', 'Tahoma', 'Arial', 'Noto Sans Arabic', sans-serif"
+    : "'Georgia', 'Times New Roman', serif"
+  const invoiceLabelClass = isArabic
+    ? 'text-sm font-extrabold text-slate-600 leading-6'
+    : 'text-xs font-semibold uppercase tracking-[0.18em] text-slate-400'
+  const invoiceMetaLabelClass = isArabic
+    ? 'text-sm font-extrabold text-slate-600 leading-6'
+    : 'text-xs font-semibold uppercase tracking-[0.16em] text-slate-500'
+  const invoiceBodyTextClass = isArabic
+    ? 'text-lg font-bold text-slate-900 leading-8'
+    : 'text-sm font-semibold text-slate-900'
+  const invoiceMutedTextClass = isArabic
+    ? 'text-base font-semibold text-slate-600 leading-7'
+    : 'text-sm text-slate-500'
+  const invoiceSmallMutedTextClass = isArabic
+    ? 'text-sm font-semibold text-slate-500 leading-6'
+    : 'text-xs text-slate-500'
+  const invoiceTableHeadClass = isArabic
+    ? 'px-3 py-4 text-sm font-extrabold text-white'
+    : 'px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]'
+  const invoiceTableCellClass = isArabic
+    ? 'px-3 py-4 text-base font-bold text-slate-800'
+    : 'px-3 py-4 text-sm font-semibold text-slate-700'
+  const totalToPayLabel = isArabic ? 'المبلغ الواجب دفعه' : 'Total to pay'
 
   if (success) {
     return (
@@ -2435,7 +2477,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
           </button>
         </div>
 
-        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Georgia', 'Times New Roman', serif" }}>
+        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} lang={isArabic ? 'ar' : 'en'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: invoiceFontFamily }}>
           <div className="grid min-h-[920px] grid-rows-[minmax(210px,1fr)_minmax(420px,2fr)_minmax(210px,1fr)]">
             <section className="grid gap-5 border-b border-slate-200 px-5 py-6 md:grid-cols-[1.2fr_0.8fr] md:px-8">
               <div className="space-y-4">
@@ -2445,24 +2487,24 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </div>
                   <div>
                     <p className="text-xl font-bold tracking-tight text-slate-950">{copy.brand}</p>
-                    <p className="mt-1 text-sm text-slate-500">{vendor.name}</p>
-                    <p className="mt-3 text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">{copy.invoice}</p>
-                    <p className="mt-1 text-2xl font-bold text-slate-950">{invoiceNumber}</p>
+                    <p className={`mt-1 ${invoiceMutedTextClass}`}>{vendor.name}</p>
+                    <p className={`mt-3 ${invoiceLabelClass}`}>{copy.invoice}</p>
+                    <p className={`mt-1 ${isArabic ? 'text-3xl font-extrabold text-slate-950' : 'text-2xl font-bold text-slate-950'}`}>{invoiceNumber}</p>
                   </div>
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.billFrom}</p>
-                    <p className="text-sm font-semibold text-slate-900">{vendor.name}</p>
-                    <p className="text-sm text-slate-500">MMD Wholesale</p>
-                    <p className="text-sm text-slate-500">Casablanca, Morocco</p>
+                    <p className={invoiceLabelClass}>{copy.billFrom}</p>
+                    <p className={invoiceBodyTextClass}>{vendor.name}</p>
+                    <p className={invoiceMutedTextClass}>MMD Wholesale</p>
+                    <p className={invoiceMutedTextClass}>Casablanca, Morocco</p>
                   </div>
                   <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.billTo}</p>
-                    <p className="text-sm font-semibold text-slate-900 break-words">{customerName}</p>
-                    <p className="text-sm text-slate-500 break-words">{customerPhone}</p>
-                    {customerAddressLine && <p className="text-sm text-slate-500 break-words">{customerAddressLine}</p>}
+                    <p className={invoiceLabelClass}>{copy.billTo}</p>
+                    <p className={`${invoiceBodyTextClass} break-words`}>{customerName}</p>
+                    <p className={`${invoiceMutedTextClass} break-words`}>{customerPhone}</p>
+                    {customerAddressLine && <p className={`${invoiceMutedTextClass} break-words`}>{customerAddressLine}</p>}
                   </div>
                 </div>
               </div>
@@ -2470,16 +2512,16 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.issueDate}</span>
-                    <span className="text-sm font-bold text-slate-900">{invoiceDate}</span>
+                    <span className={invoiceMetaLabelClass}>{copy.issueDate}</span>
+                    <span className={invoiceBodyTextClass}>{invoiceDate}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
-                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.time}</span>
-                    <span className="text-sm font-bold text-slate-900">{invoiceTime}</span>
+                    <span className={invoiceMetaLabelClass}>{copy.time}</span>
+                    <span className={invoiceBodyTextClass}>{invoiceTime}</span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.status}</span>
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-700">{copy.confirmed}</span>
+                    <span className={invoiceMetaLabelClass}>{copy.status}</span>
+                    <span className={`rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 ${isArabic ? 'text-base font-extrabold' : 'text-sm font-bold'} text-emerald-700`}>{copy.confirmed}</span>
                   </div>
                 </div>
               </div>
@@ -2497,27 +2539,27 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </colgroup>
                   <thead className="bg-slate-800 text-white">
                     <tr>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">#</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.itemColumn}</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.qty}</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.unitPrice}</th>
-                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.lineTotal}</th>
+                      <th className={invoiceTableHeadClass}>#</th>
+                      <th className={invoiceTableHeadClass}>{copy.itemColumn}</th>
+                      <th className={invoiceTableHeadClass}>{copy.qty}</th>
+                      <th className={invoiceTableHeadClass}>{copy.unitPrice}</th>
+                      <th className={invoiceTableHeadClass}>{copy.lineTotal}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {lineItems.map((li, index) => (
                       <tr key={li.variant_id} className="align-top border-b border-slate-200 last:border-b-0">
-                        <td className="px-3 py-4 text-center text-sm font-semibold text-slate-500">{index + 1}</td>
+                        <td className={`${invoiceTableCellClass} text-center ${isArabic ? 'text-base' : 'text-sm'} text-slate-500`}>{index + 1}</td>
                         <td className="px-3 py-4">
-                          <p className="text-sm font-semibold text-slate-900 break-words">{li.title}</p>
-                          <p className="mt-1 text-xs text-slate-500 break-words">
+                          <p className={`${isArabic ? 'text-base font-extrabold leading-8' : 'text-sm font-semibold'} text-slate-900 break-words`}>{li.title}</p>
+                          <p className={`mt-1 ${invoiceSmallMutedTextClass} break-words`}>
                             {li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}
-                            {li.sku ? ` • ${copy.sku}: ${li.sku}` : ''}
+                            {li.sku ? ` · ${copy.sku}: ${li.sku}` : ''}
                           </p>
                         </td>
-                        <td className="px-3 py-4 text-center text-sm font-semibold text-slate-700">{li.quantity}</td>
-                        <td className="px-3 py-4 text-right text-sm font-semibold text-slate-700">{formatDh(li.price, locale)}</td>
-                        <td className="px-3 py-4 text-right text-sm font-bold text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</td>
+                        <td className={`${invoiceTableCellClass} text-center`}>{li.quantity}</td>
+                        <td className={`${invoiceTableCellClass} text-right`}>{formatDh(li.price, locale)}</td>
+                        <td className={`${invoiceTableCellClass} text-right text-slate-900`}>{formatDh(toNumber(li.price) * li.quantity, locale)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -2527,31 +2569,31 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
 
             <section className="grid gap-5 border-t border-slate-200 px-5 py-6 md:grid-cols-[1fr_320px] md:px-8">
               <div className="rounded-[22px] border border-slate-200 px-5 py-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{copy.paymentNote}</p>
-                <p className="mt-4 text-sm leading-6 text-slate-600">{copy.thankYou}</p>
-                <p className="mt-3 text-sm text-slate-500">{totalItems} {copy.itemsLabel}</p>
+                <p className={invoiceLabelClass}>{copy.paymentNote}</p>
+                <p className={`mt-4 ${invoiceMutedTextClass}`}>{copy.thankYou}</p>
+                <p className={`mt-3 ${invoiceSmallMutedTextClass}`}>{totalItems} {copy.itemsLabel}</p>
               </div>
 
               <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-4">
-                <div className="space-y-3 text-sm">
-                  <div className="flex items-center justify-between gap-3 text-slate-600">
+                <div className={`space-y-3 ${isArabic ? 'text-base' : 'text-sm'}`}>
+                  <div className={`flex items-center justify-between gap-3 ${isArabic ? 'font-bold text-slate-700' : 'text-slate-600'}`}>
                     <span>{copy.subtotal}</span>
-                    <span className="font-semibold text-slate-900">{formatDh(orderTotal, locale)}</span>
+                    <span className={`${isArabic ? 'text-lg font-extrabold' : 'font-semibold'} text-slate-900`}>{formatDh(orderTotal, locale)}</span>
                   </div>
-                  <div className="flex items-center justify-between gap-3 text-slate-600">
+                  <div className={`flex items-center justify-between gap-3 ${isArabic ? 'font-bold text-slate-700' : 'text-slate-600'}`}>
                     <span>{copy.shipping}</span>
-                    <span className="font-semibold text-slate-900">{copy.free}</span>
+                    <span className={`${isArabic ? 'text-lg font-extrabold' : 'font-semibold'} text-slate-900`}>{copy.free}</span>
                   </div>
                 </div>
 
                 <div className="mt-5 rounded-[20px] border-2 border-slate-900 bg-white px-5 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{copy.total}</p>
+                  <p className={invoiceLabelClass}>{copy.total}</p>
                   <div className="mt-2 flex items-end justify-between gap-4">
                     <div>
-                      <p className="text-sm font-semibold text-slate-900">{lang === 'ar' ? 'المبلغ الواجب دفعه' : 'Total to pay'}</p>
-                      <p className="mt-1 text-xs text-slate-500">{invoiceDate}</p>
+                      <p className={`${isArabic ? 'text-lg font-extrabold leading-8' : 'text-sm font-semibold'} text-slate-900`}>{totalToPayLabel}</p>
+                      <p className={`mt-1 ${invoiceSmallMutedTextClass}`}>{invoiceDate}</p>
                     </div>
-                    <p className="text-3xl font-bold tracking-tight text-slate-950">{formatDh(invoiceTotal, locale)}</p>
+                    <p className={`${isArabic ? 'text-[2.4rem] font-extrabold leading-none' : 'text-3xl font-bold tracking-tight'} text-slate-950`}>{formatDh(invoiceTotal, locale)}</p>
                   </div>
                 </div>
               </div>
