@@ -4508,6 +4508,128 @@ def _wholesale_safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _wholesale_normalize_phone(phone_raw: Any) -> str:
+    digits = re.sub(r"\D+", "", str(phone_raw or ""))
+    if not digits:
+        return ""
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("212") and len(digits) >= 11:
+        digits = f"0{digits[3:]}"
+    elif len(digits) == 9 and digits[:1] in {"5", "6", "7"}:
+        digits = f"0{digits}"
+    return digits
+
+
+def _wholesale_extract_customer_snapshot(order_obj: dict) -> dict[str, Any]:
+    order = order_obj or {}
+    customer = order.get("customer") or {}
+    shipping = order.get("shipping_address") or {}
+    billing = order.get("billing_address") or {}
+
+    customer_name = (
+        shipping.get("name")
+        or billing.get("name")
+        or f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        or "N/A"
+    )
+    customer_phone = (
+        shipping.get("phone")
+        or billing.get("phone")
+        or customer.get("phone")
+        or ""
+    ).strip()
+    return {
+        "customer_id": customer.get("id"),
+        "customer_name": customer_name.strip() or "N/A",
+        "customer_phone": customer_phone,
+        "customer_phone_normalized": _wholesale_normalize_phone(customer_phone),
+        "address1": (shipping.get("address1") or billing.get("address1") or "").strip(),
+        "city": (shipping.get("city") or billing.get("city") or "").strip(),
+        "province": (shipping.get("province") or billing.get("province") or "").strip(),
+        "zip": (shipping.get("zip") or billing.get("zip") or "").strip(),
+        "country": (shipping.get("country_code") or billing.get("country_code") or "").strip(),
+    }
+
+
+def _wholesale_fetch_shopify_vendor_orders(vendor_name: str, vendor_id: str) -> list[dict]:
+    from app.integrations.shopify_client import _rest_get_store
+
+    orders_by_id: dict[str, dict] = {}
+
+    path_dashboard = f"/orders.json?tag={quote(WHOLESALE_DASHBOARD_TAG, safe='')}&status=any&limit=250"
+    result_dashboard = _rest_get_store(WHOLESALE_STORE, path_dashboard)
+    for order in (result_dashboard or {}).get("orders", []) or []:
+        if _wholesale_order_matches_vendor(order, vendor_name, vendor_id):
+            orders_by_id[str(order.get("id"))] = order
+
+    path_legacy = f"/orders.json?tag={quote(_wholesale_vendor_name_tag(vendor_name), safe='')}&status=any&limit=250"
+    result_legacy = _rest_get_store(WHOLESALE_STORE, path_legacy)
+    for order in (result_legacy or {}).get("orders", []) or []:
+        if _wholesale_order_matches_vendor(order, vendor_name, vendor_id):
+            orders_by_id[str(order.get("id"))] = order
+
+    orders = list(orders_by_id.values())
+    orders.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return orders
+
+
+def _wholesale_phone_search_candidates(phone_raw: Any) -> list[str]:
+    raw = str(phone_raw or "").strip()
+    normalized = _wholesale_normalize_phone(raw)
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        v = value.strip()
+        if v and v not in candidates:
+            candidates.append(v)
+
+    add(raw)
+    add(normalized)
+    if normalized.startswith("0") and len(normalized) >= 10:
+        add(f"+212{normalized[1:]}")
+        add(f"212{normalized[1:]}")
+    return candidates
+
+
+def _wholesale_find_existing_customer_by_phone(phone_raw: Any) -> dict[str, Any] | None:
+    from app.integrations.shopify_client import _rest_get_store
+
+    for candidate in _wholesale_phone_search_candidates(phone_raw):
+        path = (
+            "/customers/search.json?"
+            + urlencode({
+                "query": f"phone:{candidate}",
+                "fields": "id,first_name,last_name,phone,default_address",
+                "limit": 10,
+            })
+        )
+        result = _rest_get_store(WHOLESALE_STORE, path)
+        for customer in (result or {}).get("customers", []) or []:
+            customer_phone = str(customer.get("phone") or "")
+            if _wholesale_normalize_phone(customer_phone) != _wholesale_normalize_phone(phone_raw):
+                continue
+
+            default_address = customer.get("default_address") or {}
+            customer_name = (
+                f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+                or default_address.get("name")
+                or "N/A"
+            )
+            return {
+                "customer_id": customer.get("id"),
+                "customer_name": customer_name.strip() or "N/A",
+                "customer_phone": customer_phone.strip(),
+                "customer_phone_normalized": _wholesale_normalize_phone(customer_phone),
+                "address1": str(default_address.get("address1") or "").strip(),
+                "city": str(default_address.get("city") or "").strip(),
+                "province": str(default_address.get("province") or "").strip(),
+                "zip": str(default_address.get("zip") or "").strip(),
+                "country": str(default_address.get("country_code") or "").strip(),
+            }
+    return None
+
+
 def _hash_password(pw: str) -> str:
     return hashlib.sha256((pw or "").encode("utf-8")).hexdigest()
 
@@ -4950,6 +5072,30 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         synthetic_email = f"wholesale-{vendor_id_norm}-{int(time.time() * 1000)}@mmd.local"
         customer_tags = _wholesale_tags_csv(vendor_name, vendor_id_norm, include_customer=True)
         order_tags = _wholesale_tags_csv(vendor_name, vendor_id_norm, include_customer=False)
+        normalized_phone = _wholesale_normalize_phone(req.customer_phone)
+        existing_customer: dict[str, Any] | None = None
+
+        if normalized_phone:
+            existing_customer = await run_in_threadpool(_wholesale_find_existing_customer_by_phone, req.customer_phone)
+            if not existing_customer:
+                prior_orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
+                for prior_order in prior_orders:
+                    snapshot = _wholesale_extract_customer_snapshot(prior_order)
+                    if snapshot.get("customer_id") and snapshot.get("customer_phone_normalized") == normalized_phone:
+                        existing_customer = snapshot
+                        break
+
+        customer_payload: dict[str, Any]
+        if existing_customer and existing_customer.get("customer_id"):
+            customer_payload = {"id": existing_customer["customer_id"]}
+        else:
+            customer_payload = {
+                "first_name": first_name,
+                "last_name": last_name,
+                "phone": req.customer_phone.strip(),
+                "email": synthetic_email,
+                "tags": customer_tags,
+            }
 
         # Build Shopify order payload
         order_payload = {
@@ -4958,13 +5104,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
                     {"variant_id": li.variant_id, "quantity": li.quantity}
                     for li in req.line_items
                 ],
-                "customer": {
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "phone": req.customer_phone.strip(),
-                    "email": synthetic_email,
-                    "tags": customer_tags,
-                },
+                "customer": customer_payload,
                 "shipping_address": {
                     "first_name": first_name,
                     "last_name": last_name,
@@ -5043,23 +5183,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
             return {"error": "Vendor not found"}
         vendor_name = vendor.get("name", vendor_id_norm)
 
-        from app.integrations.shopify_client import _rest_get_store
-        # Fetch by strict dashboard tag first, then merge a legacy vendor-tag pull (old dashboard data).
-        orders_by_id: dict[str, dict] = {}
-        path_dashboard = f"/orders.json?tag={quote(WHOLESALE_DASHBOARD_TAG, safe='')}&status=any&limit=250"
-        result_dashboard = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path_dashboard)
-        for o in (result_dashboard or {}).get("orders", []) or []:
-            if _wholesale_order_matches_vendor(o, vendor_name, vendor_id_norm):
-                orders_by_id[str(o.get("id"))] = o
-
-        path_legacy = f"/orders.json?tag={quote(_wholesale_vendor_name_tag(vendor_name), safe='')}&status=any&limit=250"
-        result_legacy = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, path_legacy)
-        for o in (result_legacy or {}).get("orders", []) or []:
-            if _wholesale_order_matches_vendor(o, vendor_name, vendor_id_norm):
-                orders_by_id[str(o.get("id"))] = o
-
-        orders = list(orders_by_id.values())
-        orders.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+        orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
 
         total_orders = len(orders)
         total_units = 0
@@ -5074,9 +5198,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
             except (ValueError, TypeError):
                 pass
 
-            # Get customer name
-            customer = o.get("customer") or {}
-            customer_name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip() or "N/A"
+            snapshot = _wholesale_extract_customer_snapshot(o)
 
             # Build line items detail
             items_detail = []
@@ -5105,8 +5227,15 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "items_count": len(line_items),
                 "units": order_units,
                 "financial_status": o.get("financial_status"),
-                "customer_name": customer_name,
-                "customer_phone": (o.get("shipping_address") or {}).get("phone", ""),
+                "customer_id": snapshot.get("customer_id"),
+                "customer_name": snapshot.get("customer_name"),
+                "customer_phone": snapshot.get("customer_phone", ""),
+                "customer_phone_normalized": snapshot.get("customer_phone_normalized", ""),
+                "customer_address1": snapshot.get("address1", ""),
+                "customer_city": snapshot.get("city", ""),
+                "customer_province": snapshot.get("province", ""),
+                "customer_zip": snapshot.get("zip", ""),
+                "customer_country": snapshot.get("country", ""),
                 "tags": o.get("tags", ""),
                 "line_items": items_detail,
                 # DB-stored payment tracking
@@ -5140,7 +5269,8 @@ async def api_wholesale_vendor_customers(vendor_id: str):
         for o in all_orders:
             customer_name = (o.get("customer_name") or "N/A").strip() or "N/A"
             customer_phone = (o.get("customer_phone") or "").strip()
-            customer_key = f"{customer_name.lower()}|{customer_phone.lower()}"
+            customer_phone_normalized = (o.get("customer_phone_normalized") or "").strip()
+            customer_key = customer_phone_normalized or f"{customer_name.lower()}|{customer_phone.lower()}"
             total_price = _wholesale_safe_float(o.get("total_price"), 0.0)
             amount_paid = max(0.0, _wholesale_safe_float(o.get("amount_paid"), 0.0))
             pending = max(0.0, total_price - amount_paid)
@@ -5151,6 +5281,12 @@ async def api_wholesale_vendor_customers(vendor_id: str):
                     "key": customer_key,
                     "customer_name": customer_name,
                     "customer_phone": customer_phone,
+                    "customer_phone_normalized": customer_phone_normalized,
+                    "customer_address1": (o.get("customer_address1") or "").strip(),
+                    "customer_city": (o.get("customer_city") or "").strip(),
+                    "customer_province": (o.get("customer_province") or "").strip(),
+                    "customer_zip": (o.get("customer_zip") or "").strip(),
+                    "customer_country": (o.get("customer_country") or "").strip(),
                     "orders_count": 0,
                     "total_unpaid": 0.0,
                     "total_paid": 0.0,

@@ -22,6 +22,14 @@ type StockVariantFormRow = {
   sku: string
 }
 
+type WholesaleAddressForm = {
+  address1: string
+  city: string
+  province: string
+  zip: string
+  country: string
+}
+
 function createStockVariantRow(): StockVariantFormRow {
   return { from: 20, to: 25, pcsPerCrate: 24, crateQty: 10, sku: '' }
 }
@@ -47,6 +55,19 @@ function buildVariantTitle(group: Pick<StockVariantFormRow, 'from' | 'to' | 'pcs
 
 function getVariantCratePrice(unitSalePrice: number, group: Pick<StockVariantFormRow, 'pcsPerCrate'>) {
   return unitSalePrice * Math.max(0, group.pcsPerCrate || 0)
+}
+
+function createDefaultWholesaleAddress(): WholesaleAddressForm {
+  return { address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' }
+}
+
+function normalizeWholesalePhone(phone: string | null | undefined) {
+  let digits = String(phone || '').replace(/\D+/g, '')
+  if (!digits) return ''
+  if (digits.startsWith('00')) digits = digits.slice(2)
+  if (digits.startsWith('212') && digits.length >= 11) return `0${digits.slice(3)}`
+  if (digits.length === 9 && ['5', '6', '7'].includes(digits[0])) return `0${digits}`
+  return digits
 }
 
 const WHOLESALE_COPY = {
@@ -2207,7 +2228,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string }[]>([])
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
-  const [address, setAddress] = useState({ address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' })
+  const [address, setAddress] = useState<WholesaleAddressForm>(createDefaultWholesaleAddress)
+  const [knownCustomers, setKnownCustomers] = useState<any[]>([])
+  const [loadingCustomers, setLoadingCustomers] = useState(false)
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
@@ -2241,6 +2264,15 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
       v.title.toLowerCase().includes(q) || v.sku.toLowerCase().includes(q) || v.variant_title.toLowerCase().includes(q)
     ).slice(0, 20)
   }, [allVariants, search])
+
+  const matchedCustomer = useMemo(() => {
+    const normalizedPhone = normalizeWholesalePhone(customerPhone)
+    if (!normalizedPhone) return null
+    return knownCustomers.find((customer: any) => {
+      const candidate = customer.customer_phone_normalized || normalizeWholesalePhone(customer.customer_phone)
+      return candidate === normalizedPhone
+    }) || null
+  }, [knownCustomers, customerPhone])
 
   function addItem(v: any) {
     const existing = lineItems.find(li => li.variant_id === v.variant_id)
@@ -2326,6 +2358,55 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   }
 
   useEffect(() => {
+    let active = true
+
+    async function fetchCustomers() {
+      setLoadingCustomers(true)
+      try {
+        const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/customers`)
+        if (active) setKnownCustomers(res?.data?.customers || [])
+      } catch {
+        if (active) setKnownCustomers([])
+      } finally {
+        if (active) setLoadingCustomers(false)
+      }
+    }
+
+    fetchCustomers()
+    return () => { active = false }
+  }, [vendor.id])
+
+  useEffect(() => {
+    if (!matchedCustomer) return
+
+    if (!customerName.trim() && matchedCustomer.customer_name) {
+      setCustomerName(matchedCustomer.customer_name)
+    }
+
+    setAddress(prev => {
+      const defaults = createDefaultWholesaleAddress()
+      const next = { ...prev }
+      let changed = false
+      ;([
+        ['address1', matchedCustomer.customer_address1],
+        ['city', matchedCustomer.customer_city],
+        ['province', matchedCustomer.customer_province],
+        ['zip', matchedCustomer.customer_zip],
+        ['country', matchedCustomer.customer_country],
+      ] as const).forEach(([field, value]) => {
+        const current = String(prev[field] || '').trim()
+        const incoming = String(value || '').trim()
+        const currentIsDefault = current === String(defaults[field] || '').trim()
+        if (incoming && (!current || currentIsDefault)) {
+          next[field] = incoming
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [matchedCustomer, customerName])
+
+  useEffect(() => {
     function handler(e: MouseEvent) {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowProducts(false)
     }
@@ -2354,123 +2435,132 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
           </button>
         </div>
 
-        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', 'Segoe UI', system-ui, sans-serif" }}>
-          <div className="border-b border-slate-200 px-4 py-3 md:px-6">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm"><FileText size={16} /></div>
-                <div>
-                  <p className="text-sm sm:text-base font-black tracking-tight text-slate-900">{copy.brand}</p>
-                  <p className="text-[11px] text-slate-500">{vendor.name}</p>
-                </div>
-              </div>
-              <div className={`${isArabic ? 'text-left' : 'text-right'}`}>
-                <p className="text-[11px] font-medium text-slate-500">Casablanca, Morocco</p>
-                <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">{copy.confirmed}</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-3 p-4 md:p-5">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr]">
-              <div className="rounded-[20px] border border-slate-200 bg-white p-4">
+        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Georgia', 'Times New Roman', serif" }}>
+          <div className="grid min-h-[920px] grid-rows-[minmax(210px,1fr)_minmax(420px,2fr)_minmax(210px,1fr)]">
+            <section className="grid gap-5 border-b border-slate-200 px-5 py-6 md:grid-cols-[1.2fr_0.8fr] md:px-8">
+              <div className="space-y-4">
                 <div className="flex items-start gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><Package size={18} /></div>
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
+                    <FileText size={18} />
+                  </div>
                   <div>
-                    <p className="text-base font-black tracking-tight text-slate-900">{copy.invoice}</p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">{copy.invoiceNumber}: {invoiceNumber}</p>
-                    <p className="mt-2 text-xs font-semibold text-slate-800">{copy.wholesaleVendor}</p>
-                    <p className="text-xs text-slate-500">{vendor.name}</p>
+                    <p className="text-xl font-bold tracking-tight text-slate-950">{copy.brand}</p>
+                    <p className="mt-1 text-sm text-slate-500">{vendor.name}</p>
+                    <p className="mt-3 text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">{copy.invoice}</p>
+                    <p className="mt-1 text-2xl font-bold text-slate-950">{invoiceNumber}</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.billFrom}</p>
+                    <p className="text-sm font-semibold text-slate-900">{vendor.name}</p>
+                    <p className="text-sm text-slate-500">MMD Wholesale</p>
+                    <p className="text-sm text-slate-500">Casablanca, Morocco</p>
+                  </div>
+                  <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.billTo}</p>
+                    <p className="text-sm font-semibold text-slate-900 break-words">{customerName}</p>
+                    <p className="text-sm text-slate-500 break-words">{customerPhone}</p>
+                    {customerAddressLine && <p className="text-sm text-slate-500 break-words">{customerAddressLine}</p>}
                   </div>
                 </div>
               </div>
-              <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-4">
-                <div className="space-y-1.5 text-xs text-slate-700">
-                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.issueDate}</span><span className="font-bold">{invoiceDate}</span></div>
-                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.time}</span><span className="font-bold">{invoiceTime}</span></div>
-                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.status}</span><span className="font-bold text-emerald-600">{copy.confirmed}</span></div>
-                </div>
-              </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.billFrom}</p>
-                <p className="mt-2 text-xs font-bold text-slate-900">{vendor.name}</p>
-                <p className="mt-1 text-[11px] text-slate-500">MMD Wholesale</p>
-              </div>
-              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.billTo}</p>
-                <p className="mt-2 text-xs font-bold text-slate-900 truncate">{customerName}</p>
-                <p className="mt-1 text-[11px] text-slate-500 truncate">{customerPhone}</p>
-                {customerAddressLine && <p className="mt-1 text-[11px] text-slate-500 truncate">{customerAddressLine}</p>}
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white">
-              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_70px_110px_110px] gap-3 bg-slate-50 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 md:grid">
-                <p>{copy.itemColumn}</p>
-                <p>{copy.sku}</p>
-                <p className="text-center">{copy.qty}</p>
-                <p className={`${isArabic ? 'text-left' : 'text-right'}`}>{copy.unitPrice}</p>
-                <p className={`${isArabic ? 'text-left' : 'text-right'}`}>{copy.lineTotal}</p>
-              </div>
-              <div className="divide-y divide-slate-100">
-                {lineItems.map(li => (
-                  <div key={li.variant_id} className="p-3 md:px-4">
-                    <div className="grid gap-2 md:hidden">
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-slate-900 truncate">{li.title}</p>
-                        <p className="mt-0.5 text-[10px] text-slate-500 truncate">{li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}</p>
-                      </div>
-                      <div className="grid grid-cols-4 gap-2 rounded-xl bg-slate-50 p-2">
-                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.sku}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700 truncate">{li.sku || '-'}</p></div>
-                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.qty}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700">{li.quantity}</p></div>
-                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.unitPrice}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700">{formatDh(li.price, locale)}</p></div>
-                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.lineTotal}</p><p className="mt-0.5 text-[10px] font-black text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</p></div>
-                      </div>
-                    </div>
-                    <div className="hidden items-center gap-3 md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_70px_110px_110px]">
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-slate-900">{li.title}</p>
-                        {li.variantTitle !== 'Default Title' && <p className="mt-0.5 text-[10px] text-slate-500">{li.variantTitle}</p>}
-                      </div>
-                      <p className="truncate text-xs text-slate-600">{li.sku || '-'}</p>
-                      <p className="text-center text-xs font-semibold text-slate-700">{li.quantity}</p>
-                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-xs font-semibold text-slate-700`}>{formatDh(li.price, locale)}</p>
-                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-xs font-black text-slate-900`}>{formatDh(toNumber(li.price) * li.quantity, locale)}</p>
-                    </div>
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.issueDate}</span>
+                    <span className="text-sm font-bold text-slate-900">{invoiceDate}</span>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-[1fr_160px] gap-3 md:grid-cols-[1fr_240px]">
-              <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.paymentNote}</p>
-                <p className="mt-2 text-[11px] text-slate-600">{copy.thankYou}</p>
-              </div>
-              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center justify-between gap-2 text-slate-500"><span>{copy.subtotal}</span><span className="font-semibold text-slate-800">{formatDh(orderTotal, locale)}</span></div>
-                  <div className="flex items-center justify-between gap-2 text-slate-500"><span>{copy.shipping}</span><span className="font-semibold text-slate-800">{copy.free}</span></div>
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.time}</span>
+                    <span className="text-sm font-bold text-slate-900">{invoiceTime}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{copy.status}</span>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-700">{copy.confirmed}</span>
+                  </div>
                 </div>
-                <div className="mt-3 border-t border-slate-200 pt-3">
-                  <div className="flex items-center justify-between gap-2">
+              </div>
+            </section>
+
+            <section className="px-5 py-5 md:px-8">
+              <div className="h-full overflow-hidden rounded-[22px] border border-slate-200">
+                <table className="w-full border-collapse table-fixed">
+                  <colgroup>
+                    <col className="w-[10%]" />
+                    <col className="w-[46%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[16%]" />
+                    <col className="w-[16%]" />
+                  </colgroup>
+                  <thead className="bg-slate-800 text-white">
+                    <tr>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">#</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.itemColumn}</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.qty}</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.unitPrice}</th>
+                      <th className="px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]">{copy.lineTotal}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lineItems.map((li, index) => (
+                      <tr key={li.variant_id} className="align-top border-b border-slate-200 last:border-b-0">
+                        <td className="px-3 py-4 text-center text-sm font-semibold text-slate-500">{index + 1}</td>
+                        <td className="px-3 py-4">
+                          <p className="text-sm font-semibold text-slate-900 break-words">{li.title}</p>
+                          <p className="mt-1 text-xs text-slate-500 break-words">
+                            {li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}
+                            {li.sku ? ` • ${copy.sku}: ${li.sku}` : ''}
+                          </p>
+                        </td>
+                        <td className="px-3 py-4 text-center text-sm font-semibold text-slate-700">{li.quantity}</td>
+                        <td className="px-3 py-4 text-right text-sm font-semibold text-slate-700">{formatDh(li.price, locale)}</td>
+                        <td className="px-3 py-4 text-right text-sm font-bold text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="grid gap-5 border-t border-slate-200 px-5 py-6 md:grid-cols-[1fr_320px] md:px-8">
+              <div className="rounded-[22px] border border-slate-200 px-5 py-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{copy.paymentNote}</p>
+                <p className="mt-4 text-sm leading-6 text-slate-600">{copy.thankYou}</p>
+                <p className="mt-3 text-sm text-slate-500">{totalItems} {copy.itemsLabel}</p>
+              </div>
+
+              <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-4">
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-3 text-slate-600">
+                    <span>{copy.subtotal}</span>
+                    <span className="font-semibold text-slate-900">{formatDh(orderTotal, locale)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-slate-600">
+                    <span>{copy.shipping}</span>
+                    <span className="font-semibold text-slate-900">{copy.free}</span>
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-[20px] border-2 border-slate-900 bg-white px-5 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{copy.total}</p>
+                  <div className="mt-2 flex items-end justify-between gap-4">
                     <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{copy.total}</p>
-                      <p className="mt-0.5 text-[10px] text-slate-500">{totalItems} {copy.itemsLabel}</p>
+                      <p className="text-sm font-semibold text-slate-900">{lang === 'ar' ? 'المبلغ الواجب دفعه' : 'Total to pay'}</p>
+                      <p className="mt-1 text-xs text-slate-500">{invoiceDate}</p>
                     </div>
-                    <p className="text-lg font-black text-slate-900">{formatDh(invoiceTotal, locale)}</p>
+                    <p className="text-3xl font-bold tracking-tight text-slate-950">{formatDh(invoiceTotal, locale)}</p>
                   </div>
                 </div>
               </div>
-            </div>
+            </section>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone('') }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">
+          <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone(''); setAddress(createDefaultWholesaleAddress()) }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">
             {copy.newOrder}
           </button>
           <button onClick={onDone} className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700">
@@ -2559,6 +2649,26 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
             </div>
           </div>
         </div>
+        {loadingCustomers ? (
+          <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+            <Loader2 size={14} className="animate-spin" />
+            <span>{lang === 'ar' ? 'جارٍ التحقق من العملاء الحاليين...' : 'Checking existing customers...'}</span>
+          </div>
+        ) : matchedCustomer ? (
+          <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle size={16} className="mt-0.5 text-emerald-600" />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-emerald-800">
+                  {lang === 'ar' ? 'تم العثور على عميل موجود لهذا الرقم.' : 'Existing customer found for this phone number.'}
+                </p>
+                <p className="mt-1 text-xs text-emerald-700 break-words">
+                  {matchedCustomer.customer_name} · {matchedCustomer.orders_count} {copy.ordersCountLabel}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <details className="mt-4">
           <summary className="text-[10px] font-bold text-slate-400 uppercase cursor-pointer hover:text-slate-600 flex items-center gap-1"><MapPin size={12}/> {copy.addressSummary}</summary>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
