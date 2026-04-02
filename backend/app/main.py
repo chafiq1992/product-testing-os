@@ -61,6 +61,7 @@ import logging
 import secrets
 import requests
 import asyncio
+from tenacity import RetryError
 
 # Ensure the OAuth-enabled stores are available by default for the known Shopify installs.
 # (This env var is checked by shopify_client._oauth_enabled_for_store)
@@ -4604,7 +4605,28 @@ def _wholesale_find_existing_customer_by_phone(phone_raw: Any) -> dict[str, Any]
                 "limit": 10,
             })
         )
-        result = _rest_get_store(WHOLESALE_STORE, path)
+        try:
+            result = _rest_get_store(WHOLESALE_STORE, path)
+        except RetryError as exc:
+            last_exc = exc.last_attempt.exception()
+            if isinstance(last_exc, requests.exceptions.HTTPError):
+                status = last_exc.response.status_code if last_exc.response is not None else None
+                if status in (401, 403):
+                    logger.warning(
+                        "Wholesale customer search unavailable for phone lookup (status=%s); falling back to order history only",
+                        status,
+                    )
+                    return None
+            raise
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status in (401, 403):
+                logger.warning(
+                    "Wholesale customer search unavailable for phone lookup (status=%s); falling back to order history only",
+                    status,
+                )
+                return None
+            raise
         for customer in (result or {}).get("customers", []) or []:
             customer_phone = str(customer.get("phone") or "")
             if _wholesale_normalize_phone(customer_phone) != _wholesale_normalize_phone(phone_raw):
@@ -5092,7 +5114,6 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
             customer_payload = {
                 "first_name": first_name,
                 "last_name": last_name,
-                "phone": req.customer_phone.strip(),
                 "email": synthetic_email,
                 "tags": customer_tags,
             }
