@@ -898,6 +898,8 @@ function Dashboard({
   const [loadingProducts, setLoadingProducts] = useState(true)
   const [orderStats, setOrderStats] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const profileImage = vendor.profile_image || vendor.profileImage || vendor.avatar || ''
+  const vendorInitial = (vendor.name || vendor.username || 'V').charAt(0).toUpperCase()
 
   async function refreshProducts() {
     setLoadingProducts(true)
@@ -975,73 +977,73 @@ function Dashboard({
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pb-24 md:pb-8">
-        <div className="sticky top-0 z-30 px-4 pt-4 md:px-8 md:pt-6 bg-slate-50/95 backdrop-blur">
-          <div className="relative rounded-[28px] border border-slate-200/80 bg-white/95 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-            <div className="bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,41,59,0.92)_45%,_rgba(8,47,73,0.98))] px-5 py-5 md:px-7 md:py-6 text-white">
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="min-w-0">
-                  <div className="inline-flex items-center gap-3 rounded-full border border-white/15 bg-white/10 px-4 py-2 shadow-inner">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-slate-950 shadow-lg shadow-cyan-900/30">
-                      <Package size={20} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-lg font-black tracking-[0.2em] uppercase">{copy.brand}</p>
-                      <p className="text-[10px] uppercase tracking-[0.35em] text-cyan-100/80">{copy.brandTag}</p>
-                    </div>
-                  </div>
-                  <p className="mt-4 max-w-2xl text-sm text-slate-200/90">{copy.welcome}</p>
+        <div className="sticky top-0 z-30 px-3 pt-3 md:px-8 md:pt-6 bg-slate-50/95 backdrop-blur">
+          <div className="relative rounded-2xl md:rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,41,59,0.92)_45%,_rgba(8,47,73,0.98))] px-3 py-2.5 md:px-7 md:py-5 text-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0 flex items-center gap-2.5">
+                <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-xl md:rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-slate-950 shadow-lg shadow-cyan-900/30">
+                  <Package size={18} />
                 </div>
-                <div className="flex items-center gap-3 self-start md:self-auto">
+                <div className="min-w-0">
+                  <p className="truncate text-sm md:text-lg font-black tracking-[0.16em] uppercase">{copy.brand}</p>
+                  <p className="hidden md:block text-[10px] uppercase tracking-[0.35em] text-cyan-100/80">{copy.brandTag}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleLang}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] md:px-4 md:py-2 md:text-sm font-bold text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                >
+                  <span className="hidden sm:inline text-cyan-200">{copy.languageLabel}</span>
+                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px]">{lang === 'ar' ? copy.arabic : copy.english}</span>
+                </button>
+                <div className="relative">
                   <button
                     type="button"
-                    onClick={toggleLang}
-                    className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                    onClick={() => setShowSettings(v => !v)}
+                    className="inline-flex h-10 w-10 md:h-11 md:w-11 items-center justify-center rounded-xl md:rounded-2xl border border-white/15 bg-white/10 text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                    title={copy.settingsTitle}
                   >
-                    <span className="text-cyan-200">{copy.languageLabel}</span>
-                    <span className="rounded-full bg-white/15 px-2 py-0.5 text-[11px]">{lang === 'ar' ? copy.arabic : copy.english}</span>
+                    <Settings size={17} />
                   </button>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowSettings(v => !v)}
-                      className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/15 bg-white/10 text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
-                      title={copy.settingsTitle}
-                    >
-                      <Settings size={18} />
-                    </button>
-                    {showSettings && (
-                      <div className={`absolute top-14 z-40 w-80 rounded-3xl border border-slate-200 bg-white p-5 text-slate-900 shadow-[0_25px_80px_rgba(15,23,42,0.2)] ${isArabic ? 'left-0' : 'right-0'}`}>
-                        <div className="mb-4 flex items-center gap-3">
-                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white">
-                            <User size={20} />
-                          </div>
-                          <div>
-                            <p className="text-sm font-black text-slate-900">{copy.settingsTitle}</p>
-                            <p className="text-xs text-slate-500">{copy.portal}</p>
-                          </div>
+                  {showSettings && (
+                    <div className={`absolute top-12 md:top-14 z-40 w-72 md:w-80 rounded-3xl border border-slate-200 bg-white p-4 md:p-5 text-slate-900 shadow-[0_25px_80px_rgba(15,23,42,0.2)] ${isArabic ? 'left-0' : 'right-0'}`}>
+                      <div className="mb-4 flex items-center gap-3">
+                        <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white">
+                          {profileImage ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={profileImage} alt={vendor.name || copy.vendorName} className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="text-lg font-black">{vendorInitial}</span>
+                          )}
                         </div>
-                        <div className="space-y-3">
-                          <SettingsRow label={copy.vendorName} value={vendor.name || '-'} />
-                          <SettingsRow label={copy.username} value={vendor.username || vendor.id || '-'} />
-                          <SettingsRow label={copy.password} value={copy.passwordValue} />
+                        <div className="min-w-0">
+                          <p className="text-sm font-black text-slate-900 truncate">{vendor.name || '-'}</p>
+                          <p className="text-xs text-slate-500">{copy.portal}</p>
                         </div>
-                        <p className="mt-3 text-xs text-slate-500">{copy.passwordNote}</p>
-                        <button
-                          type="button"
-                          onClick={onLogout}
-                          className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
-                        >
-                          <LogOut size={16} />
-                          {copy.logout}
-                        </button>
                       </div>
-                    )}
-                  </div>
+                      <div className="space-y-3">
+                        <SettingsRow label={copy.vendorName} value={vendor.name || '-'} />
+                        <SettingsRow label={copy.username} value={vendor.username || vendor.id || '-'} />
+                        <SettingsRow label={copy.password} value={copy.passwordValue} />
+                      </div>
+                      <p className="mt-3 text-xs text-slate-500">{copy.passwordNote}</p>
+                      <button
+                        type="button"
+                        onClick={onLogout}
+                        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
+                      >
+                        <LogOut size={16} />
+                        {copy.logout}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
+            </div>
           </div>
-        </div>
         <div className="p-4 md:p-8 pt-5">{renderContent()}</div>
       </main>
 
@@ -2340,76 +2342,73 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
 
   if (success) {
     return (
-      <div className="max-w-3xl mx-auto space-y-6 pb-28 animate-in">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <button onClick={downloadInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-sm">
+      <div className="max-w-3xl mx-auto space-y-4 pb-24 animate-in">
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={downloadInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-2.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-xs sm:text-sm">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             {copy.downloadInvoice}
           </button>
-          <button onClick={shareInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-3.5 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-sm">
+          <button onClick={shareInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-2.5 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-xs sm:text-sm">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
             {copy.shareInvoice}
           </button>
         </div>
 
-        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-[0_28px_80px_rgba(15,23,42,0.10)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', 'Segoe UI', system-ui, sans-serif" }}>
-          <div className="border-b border-slate-200 px-5 py-4 md:px-8">
+        <div ref={invoiceRef} dir={isArabic ? 'rtl' : 'ltr'} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', 'Segoe UI', system-ui, sans-serif" }}>
+          <div className="border-b border-slate-200 px-4 py-3 md:px-6">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><FileText size={18} /></div>
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm"><FileText size={16} /></div>
                 <div>
-                  <p className="text-lg font-black tracking-tight text-slate-900">{copy.brand}</p>
-                  <p className="text-xs font-medium text-slate-500">{vendor.name}</p>
+                  <p className="text-sm sm:text-base font-black tracking-tight text-slate-900">{copy.brand}</p>
+                  <p className="text-[11px] text-slate-500">{vendor.name}</p>
                 </div>
               </div>
               <div className={`${isArabic ? 'text-left' : 'text-right'}`}>
-                <p className="text-sm font-medium text-slate-500">Casablanca, Morocco</p>
-                <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700 ring-1 ring-emerald-100">{copy.confirmed}</span>
+                <p className="text-[11px] font-medium text-slate-500">Casablanca, Morocco</p>
+                <span className="mt-1 inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">{copy.confirmed}</span>
               </div>
             </div>
           </div>
 
-          <div className="space-y-6 p-5 md:p-8">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-[1.1fr_0.9fr]">
-              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
-                <div className="flex items-start gap-4">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><Package size={24} /></div>
+          <div className="space-y-3 p-4 md:p-5">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr]">
+              <div className="rounded-[20px] border border-slate-200 bg-white p-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-sm"><Package size={18} /></div>
                   <div>
-                    <p className="text-xl font-black tracking-tight text-slate-900">{copy.invoice}</p>
-                    <p className="mt-1 text-sm text-slate-500">{copy.invoiceNumber}: {invoiceNumber}</p>
-                    <p className="mt-3 text-sm font-semibold text-slate-800">{copy.wholesaleVendor}</p>
-                    <p className="text-sm text-slate-500">{vendor.name}</p>
+                    <p className="text-base font-black tracking-tight text-slate-900">{copy.invoice}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">{copy.invoiceNumber}: {invoiceNumber}</p>
+                    <p className="mt-2 text-xs font-semibold text-slate-800">{copy.wholesaleVendor}</p>
+                    <p className="text-xs text-slate-500">{vendor.name}</p>
                   </div>
                 </div>
               </div>
-              <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-5">
-                <div className="space-y-2 text-sm text-slate-700">
+              <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-4">
+                <div className="space-y-1.5 text-xs text-slate-700">
                   <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.issueDate}</span><span className="font-bold">{invoiceDate}</span></div>
                   <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.time}</span><span className="font-bold">{invoiceTime}</span></div>
-                  <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.invoiceNumber}</span><span className="font-bold">{invoiceNumber}</span></div>
                   <div className="flex items-center justify-between gap-3"><span className="font-semibold text-slate-500">{copy.status}</span><span className="font-bold text-emerald-600">{copy.confirmed}</span></div>
                 </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.billFrom}</p>
-                <p className="mt-3 text-lg font-bold text-slate-900">{vendor.name}</p>
-                <p className="mt-1 text-sm text-slate-500">MMD Wholesale</p>
-                <p className="mt-2 text-sm text-slate-500">Casablanca, Morocco</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.billFrom}</p>
+                <p className="mt-2 text-xs font-bold text-slate-900">{vendor.name}</p>
+                <p className="mt-1 text-[11px] text-slate-500">MMD Wholesale</p>
               </div>
-              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.billTo}</p>
-                <p className="mt-3 text-lg font-bold text-slate-900">{customerName}</p>
-                <p className="mt-1 text-sm text-slate-500">{customerPhone}</p>
-                {customerAddressLine && <p className="mt-2 text-sm text-slate-500">{customerAddressLine}</p>}
-                <p className="text-sm text-slate-500">{address.city} · {address.province}</p>
+              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.billTo}</p>
+                <p className="mt-2 text-xs font-bold text-slate-900 truncate">{customerName}</p>
+                <p className="mt-1 text-[11px] text-slate-500 truncate">{customerPhone}</p>
+                {customerAddressLine && <p className="mt-1 text-[11px] text-slate-500 truncate">{customerAddressLine}</p>}
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white">
-              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_90px_130px_130px] gap-4 bg-slate-50 px-5 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 md:grid">
+            <div className="overflow-hidden rounded-[20px] border border-slate-200 bg-white">
+              <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_70px_110px_110px] gap-3 bg-slate-50 px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500 md:grid">
                 <p>{copy.itemColumn}</p>
                 <p>{copy.sku}</p>
                 <p className="text-center">{copy.qty}</p>
@@ -2418,57 +2417,51 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               </div>
               <div className="divide-y divide-slate-100">
                 {lineItems.map(li => (
-                  <div key={li.variant_id} className="p-4 md:px-5">
-                    <div className="grid gap-3 md:hidden">
-                      <div className="flex items-start gap-3 min-w-0">
-                        <div className="h-14 w-14 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 flex-shrink-0 flex items-center justify-center">
-                          {li.image ? <img src={li.image} alt="" className="h-full w-full object-cover" crossOrigin="anonymous" /> : <Package size={18} className="text-slate-300" />}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-slate-900">{li.title}</p>
-                          {li.variantTitle !== 'Default Title' && <p className="mt-1 text-xs text-slate-500">{li.variantTitle}</p>}
-                        </div>
+                  <div key={li.variant_id} className="p-3 md:px-4">
+                    <div className="grid gap-2 md:hidden">
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">{li.title}</p>
+                        <p className="mt-0.5 text-[10px] text-slate-500 truncate">{li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}</p>
                       </div>
-                      <div className="grid grid-cols-2 gap-3 rounded-2xl bg-slate-50 p-3 text-sm">
-                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.sku}</p><p className="mt-1 font-semibold text-slate-700">{li.sku || '-'}</p></div>
-                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.qty}</p><p className="mt-1 font-semibold text-slate-700">{li.quantity}</p></div>
-                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.unitPrice}</p><p className="mt-1 font-semibold text-slate-700">{formatDh(li.price, locale)}</p></div>
-                        <div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.lineTotal}</p><p className="mt-1 font-black text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</p></div>
+                      <div className="grid grid-cols-4 gap-2 rounded-xl bg-slate-50 p-2">
+                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.sku}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700 truncate">{li.sku || '-'}</p></div>
+                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.qty}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700">{li.quantity}</p></div>
+                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.unitPrice}</p><p className="mt-0.5 text-[10px] font-semibold text-slate-700">{formatDh(li.price, locale)}</p></div>
+                        <div><p className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">{copy.lineTotal}</p><p className="mt-0.5 text-[10px] font-black text-slate-900">{formatDh(toNumber(li.price) * li.quantity, locale)}</p></div>
                       </div>
                     </div>
-                    <div className="hidden items-center gap-4 md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_90px_130px_130px]">
+                    <div className="hidden items-center gap-3 md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,1.1fr)_70px_110px_110px]">
                       <div className="min-w-0">
-                        <p className="text-sm font-bold text-slate-900">{li.title}</p>
-                        {li.variantTitle !== 'Default Title' && <p className="mt-1 text-xs text-slate-500">{li.variantTitle}</p>}
+                        <p className="text-xs font-bold text-slate-900">{li.title}</p>
+                        {li.variantTitle !== 'Default Title' && <p className="mt-0.5 text-[10px] text-slate-500">{li.variantTitle}</p>}
                       </div>
-                      <p className="truncate text-sm text-slate-600">{li.sku || '-'}</p>
-                      <p className="text-center text-sm font-semibold text-slate-700">{li.quantity}</p>
-                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-sm font-semibold text-slate-700`}>{formatDh(li.price, locale)}</p>
-                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-sm font-black text-slate-900`}>{formatDh(toNumber(li.price) * li.quantity, locale)}</p>
+                      <p className="truncate text-xs text-slate-600">{li.sku || '-'}</p>
+                      <p className="text-center text-xs font-semibold text-slate-700">{li.quantity}</p>
+                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-xs font-semibold text-slate-700`}>{formatDh(li.price, locale)}</p>
+                      <p className={`${isArabic ? 'text-left' : 'text-right'} text-xs font-black text-slate-900`}>{formatDh(toNumber(li.price) * li.quantity, locale)}</p>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_320px]">
-              <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-5">
-                <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.paymentNote}</p>
-                <p className="mt-3 text-sm text-slate-600">{copy.thankYou}</p>
-                <p className="mt-2 text-xs text-slate-400">{vendor.name} · MMD Wholesale · {invoiceDate}</p>
+            <div className="grid grid-cols-[1fr_160px] gap-3 md:grid-cols-[1fr_240px]">
+              <div className="rounded-[20px] border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.paymentNote}</p>
+                <p className="mt-2 text-[11px] text-slate-600">{copy.thankYou}</p>
               </div>
-              <div className="rounded-[28px] border border-slate-200 bg-white p-5">
-                <div className="space-y-3 text-sm">
-                  <div className="flex items-center justify-between gap-3 text-slate-500"><span>{copy.subtotal}</span><span className="font-semibold text-slate-800">{formatDh(orderTotal, locale)}</span></div>
-                  <div className="flex items-center justify-between gap-3 text-slate-500"><span>{copy.shipping}</span><span className="font-semibold text-slate-800">{copy.free}</span></div>
+              <div className="rounded-[20px] border border-slate-200 bg-white p-3">
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-2 text-slate-500"><span>{copy.subtotal}</span><span className="font-semibold text-slate-800">{formatDh(orderTotal, locale)}</span></div>
+                  <div className="flex items-center justify-between gap-2 text-slate-500"><span>{copy.shipping}</span><span className="font-semibold text-slate-800">{copy.free}</span></div>
                 </div>
-                <div className="mt-4 border-t border-slate-200 pt-4">
-                  <div className="flex items-center justify-between gap-3">
+                <div className="mt-3 border-t border-slate-200 pt-3">
+                  <div className="flex items-center justify-between gap-2">
                     <div>
-                      <p className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-400">{copy.total}</p>
-                      <p className="mt-1 text-xs text-slate-500">{totalItems} {copy.itemsLabel}</p>
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{copy.total}</p>
+                      <p className="mt-0.5 text-[10px] text-slate-500">{totalItems} {copy.itemsLabel}</p>
                     </div>
-                    <p className="text-2xl font-black text-slate-900">{formatDh(invoiceTotal, locale)}</p>
+                    <p className="text-lg font-black text-slate-900">{formatDh(invoiceTotal, locale)}</p>
                   </div>
                 </div>
               </div>
