@@ -5406,16 +5406,21 @@ from app.integrations.shopify_client import (
 @app.get("/api/page-builder/products")
 async def api_page_builder_products(query: str = "", store: str | None = None, limit: int = 250):
     """Search products for the page builder product picker."""
+    import logging
+    _log = logging.getLogger("page_builder.products")
     try:
         s = (store or "").strip()
+        _log.info(f"Product search: query={query!r}, store={s!r}, limit={limit}")
         products = await run_in_threadpool(
             search_products_for_picker,
             query=query,
             limit=limit,
             store=s or None,
         )
+        _log.info(f"Product search returned {len(products)} results")
         return {"data": products}
     except Exception as e:
+        _log.error(f"Product search error: {e}", exc_info=True)
         return {"error": str(e), "data": []}
 
 

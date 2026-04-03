@@ -3153,21 +3153,24 @@ def search_products_for_picker(
     lim = max(1, min(limit or 25, 250))
     q = (query or "").strip()
 
-    # Build a Shopify search query string
+    # Build a Shopify search query string.
+    # Shopify GraphQL products(query:...) does full-text search —
+    # just pass the raw text. No wildcard syntax like title:*...*
     search_query: str | None = None
     if q:
         # If the query looks like a numeric product ID, search by id
         if q.isdigit():
-            search_query = f"id:{q} OR title:*{q}*"
+            search_query = q  # Shopify full-text also matches IDs
         else:
-            search_query = f"title:*{q}* OR product_type:*{q}*"
+            # Plain full-text search across title, handle, product_type, vendor, etc.
+            search_query = q
 
     all_products: list[dict] = []
     cursor: str | None = None
     # Paginate to collect products – when there's a query we usually
     # get few results; when browsing (no query) we fetch everything.
     max_pages = 40 if not q else 4  # safety cap
-    page_size = min(lim if q else 250, 250)
+    page_size = min(250 if not q else max(lim, 50), 250)
 
     for _ in range(max_pages):
         variables: dict = {
