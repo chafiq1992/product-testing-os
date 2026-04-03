@@ -2252,10 +2252,12 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
   const [invoiceZoom, setInvoiceZoom] = useState(1)
+  const [invoicePreviewUrl, setInvoicePreviewUrl] = useState<string | null>(null)
+  const [invoicePreviewSize, setInvoicePreviewSize] = useState({ width: 960, height: 960 })
   const [invoiceFitScale, setInvoiceFitScale] = useState(1)
-  const [invoicePreviewHeight, setInvoicePreviewHeight] = useState(960)
+  const [invoicePreviewLoading, setInvoicePreviewLoading] = useState(false)
   const searchRef = useRef<HTMLDivElement>(null)
-  const invoiceRef = useRef<HTMLDivElement>(null)
+  const invoiceExportRef = useRef<HTMLDivElement>(null)
   const invoicePreviewViewportRef = useRef<HTMLDivElement>(null)
   const isArabic = lang === 'ar'
   const locale = getLocale(lang)
@@ -2377,9 +2379,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   }
 
   async function captureInvoiceCanvas() {
-    if (!invoiceRef.current) return null
+    if (!invoiceExportRef.current) return null
     const html2canvas = (await import('html2canvas')).default
-    const sourceNode = invoiceRef.current
+    const sourceNode = invoiceExportRef.current
     const sandbox = document.createElement('div')
     sandbox.style.position = 'fixed'
     sandbox.style.left = '-20000px'
@@ -2505,29 +2507,44 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const zoomOutLabel = isArabic ? '\u062a\u0635\u063a\u064a\u0631' : 'Zoom out'
   const zoomInLabel = isArabic ? '\u062a\u0643\u0628\u064a\u0631' : 'Zoom in'
   const fitLabel = isArabic ? '\u0645\u0644\u0621 \u0627\u0644\u0625\u0637\u0627\u0631' : 'Fit to screen'
-  const previewScale = Math.min(Math.max(invoiceFitScale * invoiceZoom, 0.18), 2.4)
-  const previewCanvasWidth = desktopInvoiceWidth * previewScale
-  const previewCanvasHeight = invoicePreviewHeight * previewScale
+  const previewScale = Math.min(Math.max(invoiceFitScale * invoiceZoom, 0.25), 3)
+  const previewCanvasWidth = invoicePreviewSize.width * previewScale
+  const previewCanvasHeight = invoicePreviewSize.height * previewScale
 
   useEffect(() => {
     if (!success) return
     setInvoiceZoom(1)
+    setInvoicePreviewUrl(null)
   }, [success])
 
   useEffect(() => {
     if (!success) return
+    let active = true
+    setInvoicePreviewLoading(true)
+    captureInvoiceCanvas()
+      .then(canvas => {
+        if (!active || !canvas) return
+        setInvoicePreviewSize({ width: canvas.width, height: canvas.height })
+        setInvoicePreviewUrl(canvas.toDataURL('image/png'))
+      })
+      .finally(() => {
+        if (active) setInvoicePreviewLoading(false)
+      })
+    return () => { active = false }
+  }, [success, lang])
+
+  useEffect(() => {
+    if (!success) return
     const viewportEl = invoicePreviewViewportRef.current
-    const invoiceEl = invoiceRef.current
-    if (!viewportEl || !invoiceEl) return
+    if (!viewportEl) return
 
     const updateScale = () => {
-      const nextWidth = invoiceEl.scrollWidth || desktopInvoiceWidth
-      const nextHeight = invoiceEl.scrollHeight || 960
+      const nextWidth = invoicePreviewSize.width || desktopInvoiceWidth
+      const nextHeight = invoicePreviewSize.height || 960
       const availableWidth = Math.max(viewportEl.clientWidth - 40, 1)
       const availableHeight = Math.max(viewportEl.clientHeight - 40, 1)
       const nextFitScale = Math.min(availableWidth / nextWidth, availableHeight / nextHeight, 1)
-      setInvoicePreviewHeight(nextHeight)
-      setInvoiceFitScale(Math.max(nextFitScale, 0.18))
+      setInvoiceFitScale(Math.max(nextFitScale, 0.25))
     }
 
     updateScale()
@@ -2535,9 +2552,8 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
       window.requestAnimationFrame(updateScale)
     })
     observer.observe(viewportEl)
-    observer.observe(invoiceEl)
     return () => observer.disconnect()
-  }, [success, desktopInvoiceWidth, customerName, customerPhone, customerAddressLine, lineItems.length, lang])
+  }, [success, desktopInvoiceWidth, invoicePreviewSize.width, invoicePreviewSize.height])
 
   if (success) {
     return (
@@ -2578,29 +2594,36 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
             ref={invoicePreviewViewportRef}
             className={`${invoiceZoom === 1 ? 'overflow-hidden' : 'overflow-auto'} rounded-[24px] border border-slate-200 bg-slate-100/70 p-3 h-[52dvh] min-h-[320px] max-h-[720px] sm:h-[60dvh]`}
           >
-            <div className="flex min-h-full min-w-full items-center justify-center">
-              <div
-                style={{
-                  width: `${previewCanvasWidth}px`,
-                  minWidth: `${previewCanvasWidth}px`,
-                  height: `${previewCanvasHeight}px`,
-                  minHeight: `${previewCanvasHeight}px`,
-                }}
-              >
-                <div
+            {invoicePreviewLoading || !invoicePreviewUrl ? (
+              <div className="flex h-full min-h-[240px] w-full items-center justify-center rounded-[20px] border border-slate-200 bg-white text-slate-400">
+                <Loader2 className="animate-spin" size={22} />
+              </div>
+            ) : (
+              <div className="flex min-h-full min-w-full items-center justify-center">
+                <img
+                  src={invoicePreviewUrl}
+                  alt={invoicePreviewTitle}
+                  className="max-w-none rounded-[20px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
                   style={{
-                    width: `${desktopInvoiceWidth}px`,
-                    transform: `scale(${previewScale})`,
-                    transformOrigin: 'top center',
+                    width: `${previewCanvasWidth}px`,
+                    minWidth: `${previewCanvasWidth}px`,
+                    height: `${previewCanvasHeight}px`,
+                    minHeight: `${previewCanvasHeight}px`,
                   }}
-                >
-                  <div
-                    ref={invoiceRef}
-                    dir={isArabic ? 'rtl' : 'ltr'}
-                    lang={isArabic ? 'ar' : 'en'}
-                    className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
-                    style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
-                  >
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="fixed left-[-20000px] top-0 -z-10 opacity-0 pointer-events-none">
+          <div
+            ref={invoiceExportRef}
+            dir={isArabic ? 'rtl' : 'ltr'}
+            lang={isArabic ? 'ar' : 'en'}
+            className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+            style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
+          >
           <div className="grid min-h-[960px] grid-rows-[auto_minmax(420px,1fr)_auto]">
             <section className="grid grid-cols-[1.05fr_1fr_1fr] grid-rows-[auto_auto] gap-4 border-b border-slate-200 px-8 py-6">
               <div className="row-span-2 rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-5">
@@ -2718,10 +2741,6 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                 </div>
               </div>
             </section>
-                  </div>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
