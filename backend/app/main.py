@@ -5404,7 +5404,7 @@ from app.integrations.shopify_client import (
 
 
 @app.get("/api/page-builder/products")
-async def api_page_builder_products(query: str = "", store: str | None = None, limit: int = 10):
+async def api_page_builder_products(query: str = "", store: str | None = None, limit: int = 250):
     """Search products for the page builder product picker."""
     try:
         s = (store or "").strip()

@@ -3113,45 +3113,100 @@ def create_page_with_template(
 def search_products_for_picker(
     *,
     query: str = "",
-    limit: int = 10,
+    limit: int = 25,
     store: str | None = None,
 ) -> list[dict]:
-    """Search products by title for the page builder product picker.
-    
-    Uses Shopify REST API with broad listing + client-side filtering,
-    since the REST 'title' param does exact match only.
+    """Search products for the page builder product picker.
+
+    Uses Shopify GraphQL ``products(query:…)`` so that the search runs
+    server-side across **all** store products (not limited to the first
+    250 like the REST endpoint).
+
+    Supports searching by:
+      - title / handle (substring)
+      - numeric product ID  (e.g. "7654321")
+
+    When *query* is empty we paginate through all products so the full
+    catalogue is available for browsing.
     """
-    from urllib.parse import urlencode
-
-    lim = max(1, min(limit or 10, 250))
-    params: dict = {
-        "limit": lim if not query else 250,  # Fetch more when filtering
-        "fields": "id,title,handle,images,status,variants",
+    PRODUCTS_SEARCH_GQL = """
+    query ProductsSearch($query: String, $first: Int!, $after: String) {
+      products(query: $query, first: $first, after: $after, sortKey: TITLE) {
+        edges {
+          cursor
+          node {
+            id
+            title
+            handle
+            status
+            featuredImage { url }
+            variants(first: 1) {
+              edges { node { price } }
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
     }
-    path = "/products.json?" + urlencode(params)
-    data = _rest_get_store(store, path)
-    products = (data or {}).get("products") or []
+    """
 
-    # Client-side filtering by title substring
-    if query and query.strip():
-        q = query.strip().lower()
-        products = [p for p in products if q in (p.get("title") or "").lower() or q in (p.get("handle") or "").lower()]
+    lim = max(1, min(limit or 25, 250))
+    q = (query or "").strip()
 
-    out = []
-    for p in products[:lim]:
-        imgs = p.get("images") or []
-        first_img = imgs[0].get("src") if imgs else None
-        variants = p.get("variants") or []
-        price = variants[0].get("price") if variants else None
-        out.append({
-            "id": str(p.get("id")),
-            "title": p.get("title"),
-            "handle": p.get("handle"),
-            "image": first_img,
-            "price": price,
-            "status": p.get("status"),
-        })
-    return out
+    # Build a Shopify search query string
+    search_query: str | None = None
+    if q:
+        # If the query looks like a numeric product ID, search by id
+        if q.isdigit():
+            search_query = f"id:{q} OR title:*{q}*"
+        else:
+            search_query = f"title:*{q}* OR product_type:*{q}*"
+
+    all_products: list[dict] = []
+    cursor: str | None = None
+    # Paginate to collect products – when there's a query we usually
+    # get few results; when browsing (no query) we fetch everything.
+    max_pages = 40 if not q else 4  # safety cap
+    page_size = min(lim if q else 250, 250)
+
+    for _ in range(max_pages):
+        variables: dict = {
+            "first": page_size,
+            "query": search_query,
+            "after": cursor,
+        }
+        data = _gql_store(store, PRODUCTS_SEARCH_GQL, variables)
+        edges = ((data or {}).get("products") or {}).get("edges") or []
+        page_info = ((data or {}).get("products") or {}).get("pageInfo") or {}
+
+        for edge in edges:
+            node = edge.get("node") or {}
+            gid = node.get("id") or ""
+            numeric_id = gid.split("/")[-1] if "/" in gid else gid
+            feat_img = (node.get("featuredImage") or {}).get("url")
+            variant_edges = ((node.get("variants") or {}).get("edges") or [])
+            price = (variant_edges[0].get("node") or {}).get("price") if variant_edges else None
+            status_raw = (node.get("status") or "").lower()
+            all_products.append({
+                "id": numeric_id,
+                "title": node.get("title"),
+                "handle": node.get("handle"),
+                "image": feat_img,
+                "price": price,
+                "status": status_raw,
+            })
+
+        # If we have enough or there are no more pages, stop
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            break
+        # When we already have more than the caller asked for, stop
+        if q and len(all_products) >= lim:
+            break
+
+    return all_products[:lim] if q else all_products
 
 
 def list_ai_pages(*, store: str | None = None, limit: int = 50) -> list[dict]:
