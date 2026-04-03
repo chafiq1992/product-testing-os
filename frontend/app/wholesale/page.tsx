@@ -2342,10 +2342,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   }
 
   async function downloadInvoice() {
-    if (!invoiceRef.current) return
     try {
-      const html2canvas = (await import('html2canvas')).default
-      const canvas = await html2canvas(invoiceRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false })
+      const canvas = await captureInvoiceCanvas()
+      if (!canvas) return
       const link = document.createElement('a')
       link.download = `invoice-${success?.name || success?.order_number || 'order'}.png`
       link.href = canvas.toDataURL('image/png')
@@ -2357,10 +2356,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   }
 
   async function shareInvoice() {
-    if (!invoiceRef.current) return
     try {
-      const html2canvas = (await import('html2canvas')).default
-      const canvas = await html2canvas(invoiceRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false })
+      const canvas = await captureInvoiceCanvas()
+      if (!canvas) return
       const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
       if (!blob) { downloadInvoice(); return }
       if (navigator.share && navigator.canShare) {
@@ -2375,6 +2373,42 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
     } catch (err) {
       console.error('Share failed:', err)
       downloadInvoice()
+    }
+  }
+
+  async function captureInvoiceCanvas() {
+    if (!invoiceRef.current) return null
+    const html2canvas = (await import('html2canvas')).default
+    const sourceNode = invoiceRef.current
+    const sandbox = document.createElement('div')
+    sandbox.style.position = 'fixed'
+    sandbox.style.left = '-20000px'
+    sandbox.style.top = '0'
+    sandbox.style.zIndex = '-1'
+    sandbox.style.opacity = '0'
+    sandbox.style.pointerEvents = 'none'
+    sandbox.style.background = '#ffffff'
+
+    const clone = sourceNode.cloneNode(true) as HTMLDivElement
+    clone.style.transform = 'none'
+    clone.style.width = `${desktopInvoiceWidth}px`
+    clone.style.minWidth = `${desktopInvoiceWidth}px`
+
+    sandbox.appendChild(clone)
+    document.body.appendChild(sandbox)
+
+    try {
+      await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+      return await html2canvas(clone, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+        width: clone.scrollWidth,
+        windowWidth: clone.scrollWidth,
+      })
+    } finally {
+      sandbox.remove()
     }
   }
 
@@ -2489,8 +2523,8 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
     const updateScale = () => {
       const nextWidth = invoiceEl.scrollWidth || desktopInvoiceWidth
       const nextHeight = invoiceEl.scrollHeight || 960
-      const availableWidth = Math.max(viewportEl.clientWidth - 24, 1)
-      const availableHeight = Math.max(viewportEl.clientHeight - 24, 1)
+      const availableWidth = Math.max(viewportEl.clientWidth - 40, 1)
+      const availableHeight = Math.max(viewportEl.clientHeight - 40, 1)
       const nextFitScale = Math.min(availableWidth / nextWidth, availableHeight / nextHeight, 1)
       setInvoicePreviewHeight(nextHeight)
       setInvoiceFitScale(Math.max(nextFitScale, 0.18))
@@ -2542,9 +2576,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
 
           <div
             ref={invoicePreviewViewportRef}
-            className="overflow-auto rounded-[24px] border border-slate-200 bg-slate-100/70 p-3 h-[52dvh] min-h-[320px] max-h-[720px] sm:h-[60dvh]"
+            className={`${invoiceZoom === 1 ? 'overflow-hidden' : 'overflow-auto'} rounded-[24px] border border-slate-200 bg-slate-100/70 p-3 h-[52dvh] min-h-[320px] max-h-[720px] sm:h-[60dvh]`}
           >
-            <div className="flex min-h-full min-w-full items-start justify-center">
+            <div className="flex min-h-full min-w-full items-center justify-center">
               <div
                 style={{
                   width: `${previewCanvasWidth}px`,
