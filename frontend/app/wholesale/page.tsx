@@ -2251,8 +2251,12 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
+  const [invoiceZoom, setInvoiceZoom] = useState(1)
+  const [invoiceFitScale, setInvoiceFitScale] = useState(1)
+  const [invoicePreviewHeight, setInvoicePreviewHeight] = useState(960)
   const searchRef = useRef<HTMLDivElement>(null)
   const invoiceRef = useRef<HTMLDivElement>(null)
+  const invoicePreviewViewportRef = useRef<HTMLDivElement>(null)
   const isArabic = lang === 'ar'
   const locale = getLocale(lang)
 
@@ -2463,29 +2467,106 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
     : 'px-3 py-4 text-sm font-semibold text-slate-700'
   const totalToPayLabel = isArabic ? 'المبلغ الواجب دفعه' : 'Total to pay'
   const desktopInvoiceWidth = 960
+  const invoicePreviewTitle = isArabic ? '\u0645\u0639\u0627\u064a\u0646\u0629 \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629' : 'Invoice preview'
+  const zoomOutLabel = isArabic ? '\u062a\u0635\u063a\u064a\u0631' : 'Zoom out'
+  const zoomInLabel = isArabic ? '\u062a\u0643\u0628\u064a\u0631' : 'Zoom in'
+  const fitLabel = isArabic ? '\u0645\u0644\u0621 \u0627\u0644\u0625\u0637\u0627\u0631' : 'Fit to screen'
+  const previewScale = Math.min(Math.max(invoiceFitScale * invoiceZoom, 0.18), 2.4)
+  const previewCanvasWidth = desktopInvoiceWidth * previewScale
+  const previewCanvasHeight = invoicePreviewHeight * previewScale
+
+  useEffect(() => {
+    if (!success) return
+    setInvoiceZoom(1)
+  }, [success])
+
+  useEffect(() => {
+    if (!success) return
+    const viewportEl = invoicePreviewViewportRef.current
+    const invoiceEl = invoiceRef.current
+    if (!viewportEl || !invoiceEl) return
+
+    const updateScale = () => {
+      const nextWidth = invoiceEl.scrollWidth || desktopInvoiceWidth
+      const nextHeight = invoiceEl.scrollHeight || 960
+      const availableWidth = Math.max(viewportEl.clientWidth - 24, 1)
+      const availableHeight = Math.max(viewportEl.clientHeight - 24, 1)
+      const nextFitScale = Math.min(availableWidth / nextWidth, availableHeight / nextHeight, 1)
+      setInvoicePreviewHeight(nextHeight)
+      setInvoiceFitScale(Math.max(nextFitScale, 0.18))
+    }
+
+    updateScale()
+    const observer = new ResizeObserver(() => {
+      window.requestAnimationFrame(updateScale)
+    })
+    observer.observe(viewportEl)
+    observer.observe(invoiceEl)
+    return () => observer.disconnect()
+  }, [success, desktopInvoiceWidth, customerName, customerPhone, customerAddressLine, lineItems.length, lang])
 
   if (success) {
     return (
-      <div className="max-w-3xl mx-auto space-y-4 pb-24 animate-in">
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={downloadInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-2.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-xs sm:text-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            {copy.downloadInvoice}
-          </button>
-          <button onClick={shareInvoice} className="flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-2.5 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-xs sm:text-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-            {copy.shareInvoice}
-          </button>
-        </div>
+      <div className="max-w-5xl mx-auto space-y-4 pb-16 animate-in">
+        <div className="rounded-[28px] border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
+          <div className="mb-3 flex items-center justify-between gap-3 px-1">
+            <div>
+              <p className="text-sm font-bold text-slate-900">{invoicePreviewTitle}</p>
+              <p className="text-xs text-slate-500">{Math.round(previewScale * 100)}%</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setInvoiceZoom(prev => Math.max(0.6, Number((prev - 0.15).toFixed(2))))}
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                aria-label={zoomOutLabel}
+                title={zoomOutLabel}
+              >
+                <Minus size={16} />
+              </button>
+              <button
+                onClick={() => setInvoiceZoom(1)}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+              >
+                {fitLabel}
+              </button>
+              <button
+                onClick={() => setInvoiceZoom(prev => Math.min(2.6, Number((prev + 0.15).toFixed(2))))}
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                aria-label={zoomInLabel}
+                title={zoomInLabel}
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+          </div>
 
-        <div className="overflow-x-auto rounded-[24px] border border-slate-200 bg-slate-100/60 p-2">
           <div
-            ref={invoiceRef}
-            dir={isArabic ? 'rtl' : 'ltr'}
-            lang={isArabic ? 'ar' : 'en'}
-            className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
-            style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
+            ref={invoicePreviewViewportRef}
+            className="overflow-auto rounded-[24px] border border-slate-200 bg-slate-100/70 p-3 h-[52dvh] min-h-[320px] max-h-[720px] sm:h-[60dvh]"
           >
+            <div className="flex min-h-full min-w-full items-start justify-center">
+              <div
+                style={{
+                  width: `${previewCanvasWidth}px`,
+                  minWidth: `${previewCanvasWidth}px`,
+                  height: `${previewCanvasHeight}px`,
+                  minHeight: `${previewCanvasHeight}px`,
+                }}
+              >
+                <div
+                  style={{
+                    width: `${desktopInvoiceWidth}px`,
+                    transform: `scale(${previewScale})`,
+                    transformOrigin: 'top center',
+                  }}
+                >
+                  <div
+                    ref={invoiceRef}
+                    dir={isArabic ? 'rtl' : 'ltr'}
+                    lang={isArabic ? 'ar' : 'en'}
+                    className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+                    style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
+                  >
           <div className="grid min-h-[960px] grid-rows-[auto_minmax(420px,1fr)_auto]">
             <section className="grid grid-cols-[1.05fr_1fr_1fr] grid-rows-[auto_auto] gap-4 border-b border-slate-200 px-8 py-6">
               <div className="row-span-2 rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-5">
@@ -2603,11 +2684,23 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                 </div>
               </div>
             </section>
+                  </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <button onClick={downloadInvoice} className="col-span-1 sm:col-span-2 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            {copy.downloadInvoice}
+          </button>
+          <button onClick={shareInvoice} className="col-span-1 sm:col-span-2 flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white py-3 rounded-2xl font-bold shadow-lg shadow-emerald-200 transition-all active:scale-[0.98] text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            {copy.shareInvoice}
+          </button>
           <button onClick={() => { setSuccess(null); setLineItems([]); setCustomerName(''); setCustomerPhone(''); setAddress(createDefaultWholesaleAddress()) }} className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm hover:bg-slate-50">
             {copy.newOrder}
           </button>

@@ -3158,9 +3158,9 @@ def search_products_for_picker(
     # just pass the raw text. No wildcard syntax like title:*...*
     search_query: str | None = None
     if q:
-        # If the query looks like a numeric product ID, search by id
+        # If the query looks like a numeric product ID, use Shopify id: prefix
         if q.isdigit():
-            search_query = q  # Shopify full-text also matches IDs
+            search_query = f"id:{q}"
         else:
             # Plain full-text search across title, handle, product_type, vendor, etc.
             search_query = q
