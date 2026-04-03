@@ -2486,38 +2486,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
             className="mx-auto overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
             style={{ fontFamily: invoiceFontFamily, width: `${desktopInvoiceWidth}px`, minWidth: `${desktopInvoiceWidth}px` }}
           >
-          <div className="grid min-h-[920px] grid-rows-[210px_minmax(420px,1fr)_210px]">
-            <section className="grid grid-cols-[1.2fr_0.8fr] gap-5 border-b border-slate-200 px-8 py-6">
-              <div className="space-y-4">
-                <div className="flex items-start gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900 text-white">
-                    <FileText size={18} />
-                  </div>
-                  <div>
-                    <p className="text-xl font-bold tracking-tight text-slate-950">{copy.brand}</p>
-                    <p className={`mt-1 ${invoiceMutedTextClass}`}>{vendor.name}</p>
-                    <p className={`mt-3 ${invoiceLabelClass}`}>{copy.invoice}</p>
-                    <p className={`mt-1 ${isArabic ? 'text-3xl font-extrabold text-slate-950' : 'text-2xl font-bold text-slate-950'}`}>{invoiceNumber}</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
-                    <p className={invoiceLabelClass}>{copy.billFrom}</p>
-                    <p className={invoiceBodyTextClass}>{vendor.name}</p>
-                    <p className={invoiceMutedTextClass}>MMD Wholesale</p>
-                    <p className={invoiceMutedTextClass}>Casablanca, Morocco</p>
-                  </div>
-                  <div className="space-y-1 rounded-2xl border border-slate-200 px-4 py-3">
-                    <p className={invoiceLabelClass}>{copy.billTo}</p>
-                    <p className={`${invoiceBodyTextClass} break-words`}>{customerName}</p>
-                    <p className={`${invoiceMutedTextClass} break-words`}>{customerPhone}</p>
-                    {customerAddressLine && <p className={`${invoiceMutedTextClass} break-words`}>{customerAddressLine}</p>}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-4">
+          <div className="grid min-h-[960px] grid-rows-[auto_minmax(420px,1fr)_auto]">
+            <section className="grid grid-cols-[1.05fr_1fr_1fr] grid-rows-[auto_auto] gap-4 border-b border-slate-200 px-8 py-6">
+              <div className="row-span-2 rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-5">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
                     <span className={invoiceMetaLabelClass}>{copy.issueDate}</span>
@@ -2533,17 +2504,43 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </div>
                 </div>
               </div>
+
+              <div className="col-span-2 flex items-start justify-between gap-4 rounded-[24px] px-1 py-1">
+                <div className={`${isArabic ? 'text-right' : 'text-left'}`}>
+                  <p className="text-xl font-bold tracking-tight text-slate-950">{copy.brand}</p>
+                  <p className={`mt-1 ${invoiceMutedTextClass}`}>{vendor.name}</p>
+                  <p className={`mt-3 ${invoiceLabelClass}`}>{copy.invoice}</p>
+                  <p className={`mt-1 ${isArabic ? 'text-3xl font-extrabold text-slate-950' : 'text-2xl font-bold text-slate-950'}`}>{invoiceNumber}</p>
+                </div>
+                <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-white">
+                  <FileText size={18} />
+                </div>
+              </div>
+
+              <div className="min-h-[118px] space-y-1 rounded-[22px] border border-slate-200 px-4 py-4">
+                <p className={invoiceLabelClass}>{copy.billTo}</p>
+                <p className={`${invoiceBodyTextClass} break-words`}>{customerName}</p>
+                <p className={`${invoiceMutedTextClass} break-words`}>{customerPhone}</p>
+                {customerAddressLine && <p className={`${invoiceMutedTextClass} break-words`}>{customerAddressLine}</p>}
+              </div>
+
+              <div className="min-h-[118px] space-y-1 rounded-[22px] border border-slate-200 px-4 py-4">
+                <p className={invoiceLabelClass}>{copy.billFrom}</p>
+                <p className={invoiceBodyTextClass}>{vendor.name}</p>
+                <p className={invoiceMutedTextClass}>MMD Wholesale</p>
+                <p className={invoiceMutedTextClass}>Casablanca, Morocco</p>
+              </div>
             </section>
 
             <section className="px-8 py-5">
-              <div className="h-full overflow-hidden rounded-[22px] border border-slate-200">
+              <div className="h-full min-h-[430px] overflow-hidden rounded-[22px] border border-slate-200">
                 <table className="w-full border-collapse table-fixed">
                   <colgroup>
-                    <col className="w-[10%]" />
-                    <col className="w-[46%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[52%]" />
                     <col className="w-[12%]" />
-                    <col className="w-[16%]" />
-                    <col className="w-[16%]" />
+                    <col className="w-[14%]" />
+                    <col className="w-[14%]" />
                   </colgroup>
                   <thead className="bg-slate-800 text-white">
                     <tr>
@@ -2559,7 +2556,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                       <tr key={li.variant_id} className="align-top border-b border-slate-200 last:border-b-0">
                         <td className={`${invoiceTableCellClass} text-center ${isArabic ? 'text-base' : 'text-sm'} text-slate-500`}>{index + 1}</td>
                         <td className="px-3 py-4">
-                          <p className={`${isArabic ? 'text-base font-extrabold leading-8' : 'text-sm font-semibold'} text-slate-900 break-words`}>{li.title}</p>
+                          <p className={`${isArabic ? 'text-base font-extrabold leading-8' : 'text-sm font-semibold leading-6'} text-slate-900 break-words`}>{li.title}</p>
                           <p className={`mt-1 ${invoiceSmallMutedTextClass} break-words`}>
                             {li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}
                             {li.sku ? ` · ${copy.sku}: ${li.sku}` : ''}
@@ -2576,13 +2573,13 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
             </section>
 
             <section className="grid grid-cols-[1fr_320px] gap-5 border-t border-slate-200 px-8 py-6">
-              <div className="rounded-[22px] border border-slate-200 px-5 py-4">
+              <div className="min-h-[180px] rounded-[22px] border border-slate-200 px-5 py-4">
                 <p className={invoiceLabelClass}>{copy.paymentNote}</p>
                 <p className={`mt-4 ${invoiceMutedTextClass}`}>{copy.thankYou}</p>
                 <p className={`mt-3 ${invoiceSmallMutedTextClass}`}>{totalItems} {copy.itemsLabel}</p>
               </div>
 
-              <div className="rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-4">
+              <div className="min-h-[180px] rounded-[22px] border border-slate-200 bg-slate-50 px-5 py-4">
                 <div className={`space-y-3 ${isArabic ? 'text-base' : 'text-sm'}`}>
                   <div className={`flex items-center justify-between gap-3 ${isArabic ? 'font-bold text-slate-700' : 'text-slate-600'}`}>
                     <span>{copy.subtotal}</span>
