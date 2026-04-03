@@ -53,9 +53,11 @@ export default function PageBuilderPage() {
   // Product picker state
   const [productQuery, setProductQuery] = useState('')
   const [products, setProducts] = useState<Product[]>([])
+  const [allProducts, setAllProducts] = useState<Product[]>([])
   const [selectedProduct, setSelectedProduct] = useState<Product|null>(null)
   const [showDropdown, setShowDropdown] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
+  const [productsLoaded, setProductsLoaded] = useState(false)
 
   // Chat state
   const [prompt, setPrompt] = useState('')
@@ -109,26 +111,53 @@ export default function PageBuilderPage() {
 
   useEffect(() => { loadAiPages() }, [loadAiPages])
 
-  // Product search with debounce
+  // Load all products once on first focus
+  const loadAllProducts = useCallback(async () => {
+    if (productsLoaded) return
+    setSearchLoading(true)
+    try {
+      const res = await pageBuilderSearchProducts('')
+      const all = res.data || []
+      setAllProducts(all)
+      setProducts(all)
+      setProductsLoaded(true)
+    } catch { setAllProducts([]); setProducts([]) }
+    setSearchLoading(false)
+  }, [productsLoaded])
+
+  // Client-side filtering from allProducts (with debounce for server search)
   const searchProducts = useCallback(async (q: string) => {
-    if (!q.trim()) { setProducts([]); return }
+    const trimmed = q.trim().toLowerCase()
+    if (!trimmed) { setProducts(allProducts); return }
+    // First, do instant client-side filter
+    const local = allProducts.filter(p =>
+      (p.title || '').toLowerCase().includes(trimmed)
+      || (p.handle || '').toLowerCase().includes(trimmed)
+      || (p.id || '').includes(trimmed)
+    )
+    setProducts(local)
+    // Also fire a server-side search (handles partial matches and product IDs)
     setSearchLoading(true)
     try {
       const res = await pageBuilderSearchProducts(q)
-      setProducts(res.data || [])
-    } catch { setProducts([]) }
+      const serverResults = res.data || []
+      // Merge: server results that aren't already in local
+      const localIds = new Set(local.map(p => p.id))
+      const merged = [...local, ...serverResults.filter(p => !localIds.has(p.id))]
+      setProducts(merged)
+    } catch { /* keep local results */ }
     setSearchLoading(false)
-  }, [])
+  }, [allProducts])
 
   useEffect(() => {
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current)
-    if (productQuery.trim().length >= 2) {
-      searchTimeoutRef.current = setTimeout(() => searchProducts(productQuery), 400)
+    if (productQuery.trim().length >= 1) {
+      searchTimeoutRef.current = setTimeout(() => searchProducts(productQuery), 300)
     } else {
-      setProducts([])
+      setProducts(allProducts)
     }
     return () => { if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current) }
-  }, [productQuery, searchProducts])
+  }, [productQuery, searchProducts, allProducts])
 
   // Send prompt to AI agent
   // Send a quick-action prompt directly
@@ -333,7 +362,7 @@ export default function PageBuilderPage() {
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{selectedProduct.title}</div>
-                    <div className="text-xs text-white/40">{selectedProduct.handle}</div>
+                    <div className="text-xs text-white/40">{selectedProduct.handle} · ID: {selectedProduct.id}</div>
                   </div>
                   <button onClick={() => { setSelectedProduct(null); setProductQuery('') }}
                     className="text-white/30 hover:text-white/60 text-lg px-2">×</button>
@@ -343,14 +372,17 @@ export default function PageBuilderPage() {
                   <div className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30"><SearchIcon /></div>
                   <input
                     type="text"
-                    placeholder="Search products..."
+                    placeholder="Search by name, handle, or product ID..."
                     value={productQuery}
                     onChange={e => { setProductQuery(e.target.value); setShowDropdown(true) }}
-                    onFocus={() => setShowDropdown(true)}
+                    onFocus={() => { setShowDropdown(true); loadAllProducts() }}
                     className="w-full bg-[#141422] border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm placeholder:text-white/25 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/20 transition-all"
                   />
                   {showDropdown && products.length > 0 && (
-                    <div className="absolute top-full mt-1 left-0 right-0 bg-[#1a1a2e] border border-white/10 rounded-xl shadow-2xl max-h-60 overflow-auto z-50">
+                    <div className="absolute top-full mt-1 left-0 right-0 bg-[#1a1a2e] border border-white/10 rounded-xl shadow-2xl max-h-72 overflow-auto z-50">
+                      <div className="sticky top-0 bg-[#1a1a2e] border-b border-white/5 px-3 py-1.5 text-[10px] text-white/30">
+                        {products.length} product{products.length !== 1 ? 's' : ''}
+                      </div>
                       {products.map(p => (
                         <button key={p.id}
                           onClick={() => { setSelectedProduct(p); setShowDropdown(false); setProductQuery('') }}
@@ -362,7 +394,7 @@ export default function PageBuilderPage() {
                           )}
                           <div className="flex-1 min-w-0">
                             <div className="text-sm truncate">{p.title}</div>
-                            <div className="text-xs text-white/40">{p.handle}</div>
+                            <div className="text-xs text-white/40">{p.handle} · ID: {p.id}</div>
                           </div>
                           {p.price && <span className="text-xs text-white/40">${p.price}</span>}
                         </button>
