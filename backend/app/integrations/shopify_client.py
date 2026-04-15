@@ -1098,21 +1098,68 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                 if o.get("cancelled_at"):
                     continue
                 landing = (o.get("landing_site") or "").strip()
+                note_attrs = o.get("note_attributes") or []
+
                 # Fallbacks: some shops store full URL in a note_attribute named full_url
                 if not landing:
                     try:
-                        for na in (o.get("note_attributes") or []):
+                        for na in (note_attrs or []):
                             if (na or {}).get("name") == "full_url" and (na or {}).get("value"):
                                 landing = str((na or {}).get("value"))
                                 break
                     except Exception:
                         pass
+
                 # Also try referring_site as a UTM source
                 referring = (o.get("referring_site") or "").strip()
                 utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(landing)
                 # If landing_site didn't yield UTM params, try referring_site
                 if not utm and referring:
                     utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
+
+                # === KEY FIX: Extract UTM data from individual note_attributes ===
+                # COD/WhatsApp orders often store UTMs as separate note_attributes
+                # (e.g., utm_source, utm_medium, utm_content, campaign_id, ad_id, etc.)
+                # rather than as query params in the full_url
+                na_utm_keys = ("utm_source", "utm_medium", "utm_campaign", "utm_content",
+                               "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id")
+                na_map: dict[str, str] = {}
+                try:
+                    for na in (note_attrs or []):
+                        na_name = str((na or {}).get("name") or "").strip()
+                        na_val = str((na or {}).get("value") or "").strip()
+                        if na_name in na_utm_keys and na_val:
+                            na_map[na_name] = na_val
+                except Exception:
+                    pass
+
+                if na_map:
+                    # Merge note_attribute UTMs into utm map (note attrs take priority
+                    # since they're explicitly set during order creation)
+                    for k, v in na_map.items():
+                        if v and (k not in utm or not utm[k]):
+                            utm[k] = v
+
+                    # Extract IDs from note_attributes if not already found from URL
+                    if not ad_id:
+                        ad_id = na_map.get("ad_id") or None
+                    if not campaign_id:
+                        campaign_id = na_map.get("campaign_id") or na_map.get("utm_campaign") or None
+                    if not adset_id:
+                        adset_id = na_map.get("adset_id") or None
+                        # Meta auto-tagging: utm_medium and utm_term = adset_id
+                        if not adset_id:
+                            for candidate_key in ("utm_medium", "utm_term"):
+                                candidate = na_map.get(candidate_key)
+                                if candidate and candidate.isdigit() and len(candidate) >= 15:
+                                    adset_id = candidate
+                                    break
+                    # Also extract ad_id from utm_content if numeric
+                    if not ad_id:
+                        candidate = na_map.get("utm_content")
+                        if candidate and candidate.isdigit() and len(candidate) >= 15:
+                            ad_id = candidate
+
                 # Build output row
                 row = {
                     "order_id": o.get("id"),
