@@ -1240,7 +1240,7 @@ export default function AdsManagementPage(){
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
                                   const rowStore = (c as any)._store || store
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore)
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined)
                                   const mapping = ((ord as any)?.data)||{}
                                   setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
                                 }catch{
@@ -1373,9 +1373,13 @@ export default function AdsManagementPage(){
                                     if(!ok) return
                                     try{
                                       setTogglingCampaign(prev=> ({ ...prev, [cid]: true }))
-                                      await metaSetCampaignStatus(String(cid), next as any)
-                                      setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
-                                    }catch(e){ alert('Failed to update status') }
+                                      const res = await metaSetCampaignStatus(String(cid), next as any)
+                                      if((res as any)?.error){
+                                        alert(`Failed: ${(res as any).error}`)
+                                      } else {
+                                        setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
+                                      }
+                                    }catch(e:any){ alert(`Failed to update status: ${e?.message||e}`) }
                                     finally{ setTogglingCampaign(prev=> ({ ...prev, [cid]: false })) }
                                   }}
                                   className="sr-only peer"
@@ -1605,10 +1609,14 @@ export default function AdsManagementPage(){
                                                   if(!ok) return
                                                   try{
                                                     setTogglingAdset(prev=> ({ ...prev, [aid]: true }))
-                                                    await metaSetAdsetStatus(aid, next as any)
-                                                    setAdsetsByCampaign(prev=> ({ ...prev, [cid]: (prev[cid]||[]).map(x=> x.adset_id===aid? { ...x, status: next } : x) }))
-                                                  }catch{
-                                                    alert('Failed to update ad set status')
+                                                    const res = await metaSetAdsetStatus(aid, next as any)
+                                                    if((res as any)?.error){
+                                                      alert(`Failed: ${(res as any).error}`)
+                                                    } else {
+                                                      setAdsetsByCampaign(prev=> ({ ...prev, [cid]: (prev[cid]||[]).map(x=> x.adset_id===aid? { ...x, status: next } : x) }))
+                                                    }
+                                                  }catch(e:any){
+                                                    alert(`Failed to update ad set status: ${e?.message||e}`)
                                                   }finally{
                                                     setTogglingAdset(prev=> ({ ...prev, [aid]: false }))
                                                   }
@@ -1658,6 +1666,53 @@ export default function AdsManagementPage(){
                                       </Fragment>
                                     )
                                   })}
+                                  {/* Campaign-level orders (matched by utm_campaign but not attributable to a specific ad set) */}
+                                  {(()=>{
+                                    const campOrders = ((adsetOrdersByCampaign[cid]||{})['__campaign__'])
+                                    if(!campOrders || (campOrders.count||0)===0) return null
+                                    const campExpKey = `__camp_${cid}`
+                                    return (
+                                      <Fragment>
+                                        <div className="px-2 py-1 border-t bg-blue-50 flex items-center gap-2 text-[11px] text-blue-700">
+                                          <span>Campaign-level UTM orders (not matched to specific ad set):</span>
+                                          <button
+                                            onClick={()=> setAdsetOrdersExpanded(prev=> ({ ...prev, [campExpKey]: !prev[campExpKey] }))}
+                                            className="px-1 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200"
+                                          >{campOrders.count} orders {adsetOrdersExpanded[campExpKey]? '▾' : '▸'}</button>
+                                        </div>
+                                        {adsetOrdersExpanded[campExpKey] && (
+                                          <div className="px-2 py-1 border-t bg-blue-50/50 text-slate-700">
+                                            <div className="overflow-x-auto">
+                                              <table className="min-w-full text-xs">
+                                                <thead>
+                                                  <tr className="text-left text-slate-500">
+                                                    <th className="px-1 py-1">Order</th>
+                                                    <th className="px-1 py-1">Processed</th>
+                                                    <th className="px-1 py-1">Total</th>
+                                                    <th className="px-1 py-1">utm_content</th>
+                                                    <th className="px-1 py-1">utm_source</th>
+                                                    <th className="px-1 py-1">Store</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {(campOrders.orders||[]).map((o: any,idx: number)=> (
+                                                    <tr key={String(o.order_id||idx)} className="border-t">
+                                                      <td className="px-1 py-1 font-mono">{String(o.order_id||'')}</td>
+                                                      <td className="px-1 py-1">{(o.processed_at||'').replace('T',' ').replace('Z','')}</td>
+                                                      <td className="px-1 py-1">{typeof o.total_price==='number'? `$${(o.total_price||0).toFixed(2)}` : '-'}</td>
+                                                      <td className="px-1 py-1">{(o.utm||{}).utm_content||''}</td>
+                                                      <td className="px-1 py-1">{(o.utm||{}).utm_source||''}</td>
+                                                      <td className="px-1 py-1">{o.store||''}</td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </Fragment>
+                                    )
+                                  })()}
                                   {adsets.length===0 && (
                                     <div className="px-2 py-2 text-slate-500 border-t">No ad sets found.</div>
                                   )}

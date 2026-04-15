@@ -722,6 +722,7 @@ export async function fetchCampaignPerformance(campaign_id: string, days?: numbe
 
 export type AttributedOrder = {
   order_id?: string|number,
+  name?: string,
   processed_at?: string,
   total_price?: number,
   currency?: string,
@@ -729,14 +730,20 @@ export type AttributedOrder = {
   utm?: Record<string,string>,
   ad_id?: string,
   campaign_id?: string,
+  store?: string,
 }
 
-export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string){
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[]){
   const params: string[] = []
   if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
   if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
-  const s = store ?? selectedStore()
-  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  // Multi-store support: pass comma-separated stores param
+  if(stores && stores.length > 0){
+    params.push(`stores=${encodeURIComponent(stores.join(','))}`)
+  } else {
+    const s = store ?? selectedStore()
+    if(s) params.push(`store=${encodeURIComponent(s)}`)
+  }
   const qp = params.length? `?${params.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`
   return __dedupe(`GET ${url}`, async ()=>{

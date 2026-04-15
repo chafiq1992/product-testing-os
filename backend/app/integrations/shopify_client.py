@@ -969,34 +969,79 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
     return total
 
 
-def _parse_utm_from_url(url: str | None) -> tuple[dict, str | None, str | None]:
-    """Extract UTM parameters and explicit ad/campaign IDs from a URL.
+def _parse_utm_from_url(url: str | None) -> tuple[dict, str | None, str | None, str | None]:
+    """Extract UTM parameters and explicit ad/campaign/adset IDs from a URL.
 
-    Returns (utm_map, ad_id, campaign_id).
+    Returns (utm_map, ad_id, campaign_id, adset_id).
+
+    Meta's automatic URL parameters use this structure:
+      utm_source    = campaign_id
+      utm_medium    = adset_id
+      utm_content   = ad_id
+      utm_term      = adset_id
+      utm_campaign  = campaign_id
+      ad_id         = ad_id      (explicit)
+      campaign_id   = campaign_id (explicit)
+
+    For manually-set UTMs (e.g., from our ad creation flow):
+      utm_source    = "meta"
+      utm_medium    = "cpc"
+      utm_content   = angle_name or ad_id
+      utm_campaign  = campaign_id
+      adset_id      = adset_id   (explicit, new ads)
+      ad_id         = ad_id      (explicit, new ads)
     """
     try:
         if not url:
-            return ({}, None, None)
+            return ({}, None, None, None)
         from urllib.parse import urlparse, parse_qs
         pr = urlparse(url)
         q = parse_qs(pr.query or "")
         # Flatten single values
         utm: dict = {}
-        for k in ("utm_source","utm_medium","utm_campaign","utm_content","utm_term","utm_id","fbclid","gclid","ad_id","campaign_id"):
+        for k in ("utm_source","utm_medium","utm_campaign","utm_content","utm_term","utm_id","fbclid","gclid","ad_id","adset_id","campaign_id"):
             vals = q.get(k) or []
             if vals:
                 utm[k] = vals[0]
-        # Prefer explicit ad_id/campaign_id params
+
+        def _is_meta_id(val: str | None) -> bool:
+            """Check if value looks like a numeric Meta ID (15+ digit number)."""
+            if not val:
+                return False
+            v = str(val).strip()
+            return v.isdigit() and len(v) >= 15
+
+        # --- ad_id ---
         ad_id = (q.get("ad_id") or [None])[0]
-        campaign_id = (q.get("campaign_id") or [None])[0]
-        # Some setups place the ad id in utm_content/utm_term
         if not ad_id:
-            ad_id = utm.get("utm_content") or utm.get("utm_term")
+            # Meta auto-tagging puts ad_id in utm_content
+            candidate = utm.get("utm_content")
+            if _is_meta_id(candidate):
+                ad_id = str(candidate).strip()
+
+        # --- campaign_id ---
+        campaign_id = (q.get("campaign_id") or [None])[0]
         if not campaign_id:
             campaign_id = utm.get("utm_campaign")
-        return (utm, ad_id, campaign_id)
+        # Fallback: utm_source often = campaign_id in Meta auto-tagging
+        if not campaign_id:
+            candidate = utm.get("utm_source")
+            if _is_meta_id(candidate):
+                campaign_id = str(candidate).strip()
+
+        # --- adset_id --- (the key extraction for ad-set level attribution)
+        adset_id = (q.get("adset_id") or [None])[0]
+        if not adset_id:
+            # Meta auto-tagging puts adset_id in utm_medium AND utm_term
+            for candidate_key in ("utm_medium", "utm_term"):
+                candidate = utm.get(candidate_key)
+                if _is_meta_id(candidate):
+                    adset_id = str(candidate).strip()
+                    break
+
+        return (utm, ad_id, campaign_id, adset_id)
     except Exception:
-        return ({}, None, None)
+        return ({}, None, None, None)
 
 
 def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
@@ -1036,6 +1081,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         "processed_at_min": processed_min,
         "processed_at_max": processed_max,
         "order": "processed_at asc",
+        "fields": "id,name,processed_at,created_at,total_price,currency,source_name,landing_site,referring_site,note_attributes,cancelled_at",
     }
     out: list[dict] = []
     page_info = None
@@ -1061,7 +1107,12 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                                 break
                     except Exception:
                         pass
-                utm, ad_id, campaign_id = _parse_utm_from_url(landing)
+                # Also try referring_site as a UTM source
+                referring = (o.get("referring_site") or "").strip()
+                utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(landing)
+                # If landing_site didn't yield UTM params, try referring_site
+                if not utm and referring:
+                    utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
                 # Build output row
                 row = {
                     "order_id": o.get("id"),
@@ -1074,6 +1125,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                     "utm": utm,
                     "ad_id": ad_id,
                     "campaign_id": campaign_id,
+                    "adset_id": adset_id,
                 }
                 out.append(row)
             except Exception:
@@ -1082,6 +1134,25 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         page_info = _parse_link_next(link)
         if not page_info:
             break
+    return out
+
+
+def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max_date: str, *, stores: list[str] | None = None, include_closed: bool = True) -> list[dict]:
+    """Aggregate UTM-tagged orders across multiple stores.
+
+    Each returned row includes a `store` field indicating the source store.
+    Orders are deduplicated within each store but not across stores (different stores have different order IDs).
+    """
+    store_list = stores or [None]  # type: ignore
+    out: list[dict] = []
+    for st in store_list:
+        try:
+            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
+            for o in (orders or []):
+                o["store"] = st or "default"
+            out.extend(orders)
+        except Exception:
+            continue
     return out
 
 

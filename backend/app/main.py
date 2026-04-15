@@ -36,7 +36,7 @@ from app.integrations.shopify_client import update_product_description
 from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
-from app.integrations.shopify_client import list_orders_with_utms_processed
+from app.integrations.shopify_client import list_orders_with_utms_processed, list_orders_with_utms_processed_multi
 from app.integrations.shopify_client import list_orders_open_unfulfilled, cycle_tag, set_cod_tag, has_cod_tag
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
@@ -190,6 +190,29 @@ async def _cached(key: str, ttl_s: int, compute):
     finally:
         async with _API_INFLIGHT_LOCK:
             _API_INFLIGHT.pop(key, None)
+
+
+def _invalidate_caches_for_status_change():
+    """Invalidate all cached data that contains campaign/adset status info.
+
+    Called after a status toggle to ensure the UI shows the updated state
+    immediately instead of serving stale cached data.
+    """
+    try:
+        with _API_CACHE_LOCK:
+            keys_to_remove = [
+                k for k in _API_CACHE
+                if any(prefix in k for prefix in (
+                    "meta_campaigns",
+                    "meta_campaign_adsets",
+                    "ads_mgmt_bundle",
+                    "meta_campaign_adset_orders",
+                ))
+            ]
+            for k in keys_to_remove:
+                _API_CACHE.pop(k, None)
+    except Exception:
+        pass
 
 # ---------------- Shopify OAuth (public apps) ----------------
 _SHOP_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\.myshopify\.com$")
@@ -3619,8 +3642,13 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = set_campaign_status(campaign_id, status)
-        return {"data": res}
+        res = await run_in_threadpool(set_campaign_status, campaign_id, status)
+        # Verify the update succeeded
+        if isinstance(res, dict) and res.get("error"):
+            return {"error": str(res.get("error"))}
+        # Invalidate all caches that contain campaign status data
+        _invalidate_caches_for_status_change()
+        return {"data": res, "status": status}
     except Exception as e:
         return {"error": str(e)}
 
@@ -3640,53 +3668,193 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
-async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None):
-    """Attribute Shopify orders to ad sets by matching UTM ad_id to Meta ad IDs under each ad set.
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None):
+    """Attribute Shopify orders to ad sets by matching UTM parameters.
 
+    Dual-strategy attribution:
+      1) Match orders whose utm_campaign == campaign_id (campaign-level match)
+         Then attribute to ad-set via:
+         a) explicit ad_id or adset_id UTM param
+         b) utm_content matching ad-set name
+         c) If no ad-set match, bucket under "__campaign__" (unattributed to specific ad set)
+      2) Fallback: match via ad_id -> adset reverse map (legacy behavior)
+
+    Supports multi-store: pass ?stores=store1,store2 or ?store=single_store
     Returns mapping: { adset_id: { count: number, orders: [...] } }
     """
     try:
-        key = _cache_key("meta_campaign_adset_orders", {"campaign_id": campaign_id, "start": start, "end": end, "store": store or None})
+        # Parse store list: prefer comma-separated ?stores= param, fall back to single ?store=
+        store_list: list[str] | None = None
+        if stores:
+            store_list = [s.strip() for s in stores.split(",") if s.strip()]
+        elif store:
+            store_list = [store]
+
+        key = _cache_key("meta_campaign_adset_orders_v2", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
 
         async def _compute():
-            # 1) List ad sets for campaign and their ads
-            adsets = await run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d")
-            adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
-            ads_by_adset = await run_in_threadpool(list_ads_for_adsets, adset_ids)
+            import asyncio
 
-            # Build reverse map ad_id -> adset_id
+            # 1) List ad sets for campaign and their ads — run in parallel
+            async def _fetch_adsets():
+                return await run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d")
+
+            async def _fetch_orders():
+                if store_list and len(store_list) > 1:
+                    return await run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True)
+                else:
+                    single = store_list[0] if store_list else store
+                    return await run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True)
+
+            adsets, orders = await asyncio.gather(_fetch_adsets(), _fetch_orders())
+
+            adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
+
+            # Build ad-set name lookup for utm_content matching
+            adset_name_to_id: dict[str, str] = {}
+            for a in (adsets or []):
+                aid = str((a or {}).get("adset_id") or "")
+                name = str((a or {}).get("name") or "").strip()
+                if aid and name:
+                    adset_name_to_id[name.lower()] = aid
+
+            # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
+            ads_by_adset = await run_in_threadpool(list_ads_for_adsets, adset_ids)
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
                     if ad:
                         ad_to_adset[str(ad)] = str(aid)
 
-            # 2) Fetch Shopify orders with UTMs for date range (processed dates)
-            orders = await run_in_threadpool(list_orders_with_utms_processed, start, end, store=store, include_closed=True)
-
-            # 3) Attribute orders by ad_id
+            # 3) Attribution: dual strategy
             result: dict[str, dict] = {}
+
+            def _add_order(adset_id: str, o: dict, ad_id_used: str | None):
+                bucket = result.setdefault(adset_id, {"count": 0, "orders": []})
+                bucket["count"] = int(bucket.get("count", 0)) + 1
+                bucket["orders"].append({
+                    "order_id": o.get("order_id"),
+                    "name": o.get("name"),
+                    "processed_at": o.get("processed_at"),
+                    "total_price": o.get("total_price"),
+                    "currency": o.get("currency"),
+                    "landing_site": o.get("landing_site"),
+                    "utm": o.get("utm") or {},
+                    "ad_id": ad_id_used or o.get("ad_id"),
+                    "campaign_id": o.get("campaign_id"),
+                    "store": o.get("store"),
+                })
+
+            campaign_id_str = str(campaign_id).strip()
+
+            # Pre-compute ad-set name variants for fuzzy matching
+            # Strip common suffixes like "AdSet", "Ad Set", etc.
+            import re as _re
+            adset_name_clean: dict[str, str] = {}  # cleaned_name -> adset_id
+            adset_name_words: dict[str, str] = {}  # individual significant word -> adset_id (only if unique)
+            word_to_adsets: dict[str, list[str]] = {}  # word -> [adset_ids] for uniqueness check
+            for name_lower, aid in adset_name_to_id.items():
+                # Strip common suffixes
+                cleaned = _re.sub(r'\s*(adset|ad\s*set)\s*$', '', name_lower, flags=_re.IGNORECASE).strip()
+                if cleaned:
+                    adset_name_clean[cleaned] = aid
+                # Collect individual words (>= 3 chars, not generic)
+                skip_words = {'adset', 'ad', 'set', 'the', 'and', 'for', 'with', 'test', 'campaign'}
+                for word in _re.split(r'[\s_\-]+', cleaned):
+                    word = word.strip().lower()
+                    if word and len(word) >= 3 and word not in skip_words:
+                        word_to_adsets.setdefault(word, []).append(aid)
+            # Only use word matching when word uniquely identifies one adset
+            for word, aids in word_to_adsets.items():
+                if len(set(aids)) == 1:
+                    adset_name_words[word] = aids[0]
+
+            # Build ad name -> adset mapping (for matching utm_content to ad names)
+            ad_name_to_adset: dict[str, str] = {}
+            for aid_str in adset_ids:
+                try:
+                    ad_list = (ads_by_adset or {}).get(aid_str) or []
+                    # We need ad names too — fetch them if available
+                except Exception:
+                    pass
+
+            # Determine if single adset (all campaign orders should go to it)
+            single_adset = adset_ids[0] if len(adset_ids) == 1 else None
+
             for o in (orders or []):
                 try:
-                    ad_id = str((o or {}).get("ad_id") or "")
-                    if not ad_id:
-                        continue
-                    adset_id = ad_to_adset.get(ad_id)
-                    if not adset_id:
-                        continue
-                    bucket = result.setdefault(adset_id, {"count": 0, "orders": []})
-                    bucket["count"] = int(bucket.get("count", 0)) + 1
-                    # Append a slimmed order row for UI
-                    bucket["orders"].append({
-                        "order_id": o.get("order_id"),
-                        "processed_at": o.get("processed_at"),
-                        "total_price": o.get("total_price"),
-                        "currency": o.get("currency"),
-                        "landing_site": o.get("landing_site"),
-                        "utm": o.get("utm") or {},
-                        "ad_id": ad_id,
-                        "campaign_id": o.get("campaign_id"),
-                    })
+                    o_campaign_id = str((o or {}).get("campaign_id") or "").strip()
+                    o_ad_id = str((o or {}).get("ad_id") or "").strip()
+                    o_adset_id_direct = str((o or {}).get("adset_id") or "").strip()
+                    utm = (o or {}).get("utm") or {}
+                    o_adset_id_utm = str(utm.get("adset_id") or "").strip()
+                    o_utm_content = str(utm.get("utm_content") or "").strip()
+
+                    attributed = False
+                    adset_ids_set = set(str(x) for x in adset_ids)
+
+                    # ===== STRATEGY 0: Direct adset_id from URL =====
+                    # Meta auto-tagging puts adset_id in utm_medium/utm_term
+                    # Our parser extracts it as order.adset_id — most reliable match
+                    if o_adset_id_direct and o_adset_id_direct in adset_ids_set:
+                        _add_order(o_adset_id_direct, o, o_ad_id or None)
+                        attributed = True
+
+                    # ===== STRATEGY A: Campaign-level match with sub-attribution =====
+                    if not attributed and o_campaign_id and o_campaign_id == campaign_id_str:
+                        target_adset = None
+
+                        # A1: Explicit adset_id in UTM query param (our new ad creation includes this)
+                        if o_adset_id_utm and o_adset_id_utm in adset_ids_set:
+                            target_adset = o_adset_id_utm
+                        # A2: ad_id maps to a known ad -> adset
+                        elif o_ad_id and o_ad_id in ad_to_adset:
+                            target_adset = ad_to_adset[o_ad_id]
+                        # A3: utm_content exact match with ad-set name
+                        elif o_utm_content and o_utm_content.lower() in adset_name_to_id:
+                            target_adset = adset_name_to_id[o_utm_content.lower()]
+                        # A4: utm_content matches cleaned ad-set name (without "AdSet" suffix)
+                        elif o_utm_content and o_utm_content.lower() in adset_name_clean:
+                            target_adset = adset_name_clean[o_utm_content.lower()]
+                        else:
+                            if o_utm_content:
+                                content_lower = o_utm_content.lower().strip()
+                                content_cleaned = _re.sub(r'\s*(adset|ad\s*set)\s*$', '', content_lower, flags=_re.IGNORECASE).strip()
+                                # A5: Partial match — utm_content within ad-set name or vice-versa
+                                for name_lower, aid in adset_name_to_id.items():
+                                    if content_cleaned in name_lower or name_lower in content_cleaned:
+                                        target_adset = aid
+                                        break
+                                # A6: Cleaned partial match
+                                if not target_adset:
+                                    for cleaned, aid in adset_name_clean.items():
+                                        if content_cleaned in cleaned or cleaned in content_cleaned:
+                                            target_adset = aid
+                                            break
+                                # A7: Word-level match — any significant word uniquely identifies an adset
+                                if not target_adset:
+                                    for word in _re.split(r'[\s_\-]+', content_cleaned):
+                                        word = word.strip().lower()
+                                        if word and word in adset_name_words:
+                                            target_adset = adset_name_words[word]
+                                            break
+
+                        # A8: If only one adset exists, attribute ALL campaign orders to it
+                        if not target_adset and single_adset:
+                            target_adset = single_adset
+
+                        if target_adset:
+                            _add_order(target_adset, o, o_ad_id or None)
+                        else:
+                            # Last resort: unattributed campaign-level order
+                            _add_order("__campaign__", o, o_ad_id or None)
+                        attributed = True
+
+                    # ===== STRATEGY B: Legacy ad_id -> adset reverse lookup =====
+                    if not attributed and o_ad_id and o_ad_id in ad_to_adset:
+                        _add_order(ad_to_adset[o_ad_id], o, o_ad_id)
+                        attributed = True
+
                 except Exception:
                     continue
             return result
@@ -3707,8 +3875,13 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = set_adset_status(adset_id, status)
-        return {"data": res}
+        res = await run_in_threadpool(set_adset_status, adset_id, status)
+        # Verify the update succeeded
+        if isinstance(res, dict) and res.get("error"):
+            return {"error": str(res.get("error"))}
+        # Invalidate all caches that contain adset status data
+        _invalidate_caches_for_status_change()
+        return {"data": res, "status": status}
     except Exception as e:
         return {"error": str(e)}
 

@@ -559,11 +559,23 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         # We can't log upload payload fully (URL inside), but capture path
         requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/adimages", "payload": {"url": cr["image_url"]}, "response": {"image_hash": image_hash}})
 
+        # Build UTM link with adset_id for precise ad-set attribution
+        # ad_id will be added after ad creation via update
+        from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+        utm_params = urlencode({
+            "utm_source": "meta",
+            "utm_medium": "cpc",
+            "utm_campaign": camp["id"],
+            "utm_content": a["name"],
+            "adset_id": adset["id"],
+        })
+        utm_link = f"{landing_url}?{utm_params}"
+
         story_spec = {
             "page_id": PAGE_ID,
             "link_data": {
                 "image_hash": image_hash,
-                "link": f"{landing_url}?utm_source=meta&utm_medium=cpc&utm_campaign={camp['id']}&utm_content={a['name']}",
+                "link": utm_link,
                 "message": a["primaries"][0],
                 "name": a["headlines"][0]
             }
@@ -586,6 +598,30 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
         requests_log.append({"path": f"act_{AD_ACCOUNT_ID}/ads", "payload": ad_payload})
         ad = _post(f"act_{AD_ACCOUNT_ID}/ads", ad_payload)
         requests_log[-1]["response"] = ad
+
+        # Update the creative link to include the ad_id now that we have it
+        try:
+            updated_utm_params = urlencode({
+                "utm_source": "meta",
+                "utm_medium": "cpc",
+                "utm_campaign": camp["id"],
+                "utm_content": a["name"],
+                "adset_id": adset["id"],
+                "ad_id": ad["id"],
+            })
+            updated_link = f"{landing_url}?{updated_utm_params}"
+            updated_story_spec = {
+                "page_id": PAGE_ID,
+                "link_data": {
+                    "image_hash": image_hash,
+                    "link": updated_link,
+                    "message": a["primaries"][0],
+                    "name": a["headlines"][0]
+                }
+            }
+            _post(creative["id"], {"object_story_spec": json.dumps(updated_story_spec)})
+        except Exception:
+            pass  # Non-critical: the adset_id is already in the URL from creation
 
         results["adsets"].append({
             "adset_id": adset["id"],
