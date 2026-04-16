@@ -1251,9 +1251,9 @@ export default function AdsManagementPage(){
                         <td className="px-1.5 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className="w-10 h-10 rounded object-cover border" />
+                            <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                           ) : (
-                            <span className="inline-block w-10 h-10 rounded bg-slate-50 border" />
+                            <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
                           )}
                         </td>
                         <td className="px-1.5 py-0.5 whitespace-nowrap">
@@ -1475,12 +1475,12 @@ export default function AdsManagementPage(){
                     <td className="px-1.5 py-0.5">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="product" className="w-10 h-10 rounded object-cover border" />
+                        <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                       ) : (
                         hasAnyPid ? (
-                          <span className="inline-block w-10 h-10 rounded bg-slate-100 border animate-pulse" />
+                          <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-100 border animate-pulse" />
                         ) : (
-                          <span className="inline-block w-10 h-10 rounded bg-slate-50 border" />
+                          <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
                         )
                       )}
                     </td>
