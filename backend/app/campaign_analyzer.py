@@ -6,10 +6,14 @@ Phase 2: Campaign Analyst — produces prioritized recommendations + scaling pla
 
 import json
 import logging
+import os
 from tenacity import retry, stop_after_attempt, wait_exponential
 from app.integrations.openai_client import client, DEFAULT_LLM_MODEL
 
 logger = logging.getLogger(__name__)
+
+# Use a fast model for Phase 1 (simple profiling), full model for Phase 2 (complex analysis)
+FAST_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
 
 
 # ─────────────── Phase 1: Customer Profiler ───────────────
@@ -107,7 +111,7 @@ CAMPAIGN_ANALYST_PROMPT = (
 # ─────────────── Orchestration ───────────────
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=8))
-def _call_llm(system_prompt: str, user_content: str, model: str | None = None) -> dict:
+def _call_llm(system_prompt: str, user_content: str, model: str | None = None, max_tokens: int = 2000) -> dict:
     """Single LLM call returning parsed JSON."""
     resp = client.chat.completions.create(
         model=model or DEFAULT_LLM_MODEL,
@@ -116,6 +120,8 @@ def _call_llm(system_prompt: str, user_content: str, model: str | None = None) -
             {"role": "user", "content": system_prompt + "\n\n" + user_content},
         ],
         response_format={"type": "json_object"},
+        max_tokens=max_tokens,
+        timeout=55,  # prevent hanging longer than Cloud Run frontend timeout
     )
     text = resp.choices[0].message.content
     try:
@@ -144,7 +150,7 @@ def analyze_campaign(
     Returns:
         { customer_profile, recommendations, scaling_plan, creative_analysis, ... }
     """
-    # ── Phase 1: Customer Profiler ──
+    # ── Phase 1: Customer Profiler (use fast model — simpler task) ──
     if customer_profile_override:
         customer_profile = customer_profile_override
     else:
@@ -152,24 +158,24 @@ def analyze_campaign(
             f"PRODUCT DATA:\n"
             f"Title: {product_info.get('title', 'Unknown')}\n"
             f"Price: {product_info.get('price', 'Unknown')}\n"
-            f"Description: {(product_info.get('description') or '')[:3000]}\n"
+            f"Description: {(product_info.get('description') or '')[:2000]}\n"
             f"Product URL: {product_info.get('product_url', '')}\n"
             f"Image URL: {product_info.get('image_url', '')}\n"
         )
-        logger.info("Campaign Analyzer: Running Phase 1 (Customer Profiler)")
-        customer_profile = _call_llm(CUSTOMER_PROFILER_PROMPT, product_context, model=model)
+        logger.info("Campaign Analyzer: Running Phase 1 (Customer Profiler) with %s", FAST_MODEL)
+        customer_profile = _call_llm(CUSTOMER_PROFILER_PROMPT, product_context, model=FAST_MODEL, max_tokens=800)
         if not customer_profile:
             customer_profile = {"error": "Could not generate customer profile"}
 
-    # ── Phase 2: Campaign Analyst ──
+    # ── Phase 2: Campaign Analyst (use full model for quality) ──
     analyst_input = (
         f"CUSTOMER PROFILE:\n{json.dumps(customer_profile, ensure_ascii=False)}\n\n"
         f"CAMPAIGN METRICS:\n{json.dumps(campaign_metrics, ensure_ascii=False)}\n\n"
-        f"AD CREATIVES:\n{json.dumps(ad_creatives, ensure_ascii=False)}\n\n"
-        f"PRODUCT INFO:\n{json.dumps(product_info, ensure_ascii=False)}\n"
+        f"AD CREATIVES:\n{json.dumps(ad_creatives[:5], ensure_ascii=False)}\n\n"
+        f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n"
     )
-    logger.info("Campaign Analyzer: Running Phase 2 (Campaign Analyst)")
-    analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=model)
+    logger.info("Campaign Analyzer: Running Phase 2 (Campaign Analyst) with %s", model or DEFAULT_LLM_MODEL)
+    analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=model, max_tokens=3000)
 
     # Normalize output
     if not isinstance(analysis.get("recommendations"), list):
@@ -191,3 +197,4 @@ def analyze_campaign(
         "customer_profile": customer_profile,
         **analysis,
     }
+

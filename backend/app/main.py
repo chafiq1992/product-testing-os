@@ -1494,7 +1494,6 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
         if req.metrics and isinstance(req.metrics, dict):
             campaign_metrics = req.metrics
         else:
-            # Fetch from Meta for the first campaign
             try:
                 if s_date and e_date:
                     summary = await run_in_threadpool(
@@ -1515,49 +1514,59 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
             except Exception:
                 campaign_metrics = req.metrics or {}
 
-        # ── 2) Fetch ad creatives from Meta ──
-        ad_creatives = []
-        try:
-            for cid in cids[:3]:  # limit to first 3 campaigns
-                creatives = await run_in_threadpool(get_campaign_ad_creatives, cid)
-                ad_creatives.extend(creatives or [])
-        except Exception:
-            pass
+        # ── 2) Fetch ad creatives from Meta + product info from Shopify IN PARALLEL ──
+        async def _fetch_creatives():
+            out: list = []
+            try:
+                for cid in cids[:2]:  # limit to first 2 campaigns for speed
+                    creatives = await asyncio.wait_for(
+                        run_in_threadpool(get_campaign_ad_creatives, cid),
+                        timeout=15,
+                    )
+                    out.extend(creatives or [])
+            except (asyncio.TimeoutError, Exception):
+                pass
+            return out
 
-        # ── 3) Fetch product info from Shopify ──
-        product_info: Dict[str, Any] = {}
-        if pid and pid.isdigit():
+        async def _fetch_product():
+            info: Dict[str, Any] = {}
+            if not (pid and pid.isdigit()):
+                return info
             try:
                 briefs = await run_in_threadpool(get_products_brief, [pid], store=store)
                 brief = (briefs or {}).get(pid) or {}
-                product_info["price"] = brief.get("price")
-                product_info["image_url"] = brief.get("image") or ""
-                product_info["inventory"] = brief.get("total_available")
+                info["price"] = brief.get("price")
+                info["image_url"] = brief.get("image") or ""
+                info["inventory"] = brief.get("total_available")
             except Exception:
                 pass
-            # Fetch product title + description via REST
             try:
                 from app.integrations.shopify_client import _rest_get_store
                 prod_data = await run_in_threadpool(
                     _rest_get_store, store, f"/products/{pid}.json?fields=id,title,body_html,handle,status"
                 )
                 prod = (prod_data or {}).get("product") or {}
-                product_info["title"] = prod.get("title") or ""
-                product_info["description"] = prod.get("body_html") or ""
-                product_info["handle"] = prod.get("handle") or ""
-                # Build product URL from shop domain
+                info["title"] = prod.get("title") or ""
+                info["description"] = prod.get("body_html") or ""
+                info["handle"] = prod.get("handle") or ""
                 try:
                     from app.integrations.shopify_client import _get_store_config
                     cfg = _get_store_config(store)
                     shop_domain = cfg.get("SHOP", "")
-                    if shop_domain and product_info.get("handle"):
-                        product_info["product_url"] = f"https://{shop_domain}/products/{product_info['handle']}"
+                    if shop_domain and info.get("handle"):
+                        info["product_url"] = f"https://{shop_domain}/products/{info['handle']}"
                 except Exception:
                     pass
             except Exception:
                 pass
+            return info
 
-        # ── 4) Run AI analysis pipeline ──
+        ad_creatives, product_info = await asyncio.gather(
+            _fetch_creatives(),
+            _fetch_product(),
+        )
+
+        # ── 3) Run AI analysis pipeline ──
         result = await run_in_threadpool(
             run_campaign_analysis,
             campaign_metrics=campaign_metrics,
@@ -1567,8 +1576,8 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
 
         # Attach raw inputs for transparency
         result["meta_inputs"] = campaign_metrics
-        result["ad_creatives_input"] = ad_creatives[:10]  # limit for response size
-        result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}  # omit large HTML
+        result["ad_creatives_input"] = ad_creatives[:10]
+        result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
 
         return {"data": result}
     except Exception as e:
