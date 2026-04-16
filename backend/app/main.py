@@ -1471,8 +1471,9 @@ class CampaignAnalyzeRequest(BaseModel):
     store: Optional[str] = None
     ad_account: Optional[str] = None
     date_range: Optional[Dict[str, str]] = None  # { start, end }
-    # Pre-computed metrics from frontend (avoids re-fetching)
     metrics: Optional[Dict[str, Any]] = None
+    campaign_age_days: Optional[int] = None  # days since campaign launch (from Product Life)
+    campaign_key: Optional[str] = None  # campaign_key for timeline saving
 
 
 @app.post("/api/campaign/analyze")
@@ -1567,6 +1568,9 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
         )
 
         # ── 3) Run AI analysis pipeline ──
+        # Inject campaign age into metrics so AI considers the launch phase
+        if req.campaign_age_days is not None:
+            campaign_metrics["campaign_age_days"] = req.campaign_age_days
         result = await run_in_threadpool(
             run_campaign_analysis,
             campaign_metrics=campaign_metrics,
@@ -1578,6 +1582,27 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
         result["meta_inputs"] = campaign_metrics
         result["ad_creatives_input"] = ad_creatives[:10]
         result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
+
+        # ── 4) Auto-save analysis to timeline ──
+        try:
+            campaign_key = (req.campaign_key or "").strip() or (cids[0] if cids else "")
+            if campaign_key:
+                import json as _json
+                summary_text = result.get("summary", "")
+                verdict = result.get("overall_verdict", "")
+                confidence = result.get("confidence_level", "")
+                age_label = f", Day {req.campaign_age_days}" if req.campaign_age_days else ""
+                timeline_text = _json.dumps({
+                    "type": "analysis",
+                    "verdict": verdict,
+                    "confidence": confidence,
+                    "summary": summary_text,
+                    "age_days": req.campaign_age_days,
+                    "analysis": result,
+                }, ensure_ascii=False)
+                db.append_campaign_timeline(store, campaign_key, timeline_text)
+        except Exception as save_err:
+            logger.warning("Failed to save analysis to timeline: %s", save_err)
 
         return {"data": result}
     except Exception as e:

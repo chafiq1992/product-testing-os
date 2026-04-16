@@ -1401,6 +1401,14 @@ export default function AdsManagementPage(){
                               setAnalysisError(null)
                               try{
                                 const ids = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
+                                // Compute campaign age from first campaign's created_time
+                                const firstCt = (d.rows[0] as any)?.created_time
+                                let ageDays: number|undefined = undefined
+                                if(firstCt){
+                                  const diff = Date.now() - new Date(firstCt).getTime()
+                                  ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24)))
+                                }
+                                const campaignKey = ids[0] || pid
                                 const res = await campaignAnalyze({
                                   campaign_ids: ids,
                                   product_id: pid||undefined,
@@ -1414,9 +1422,18 @@ export default function AdsManagementPage(){
                                     true_cpp: trueCppVal,
                                     status: statusLabel,
                                   },
+                                  campaign_age_days: ageDays,
+                                  campaign_key: campaignKey,
                                 })
                                 if(res?.error){ setAnalysisError(res.error) }
-                                else if(res?.data){ setAnalysisResult(res.data); setAnalysisOpen(true) }
+                                else if(res?.data){
+                                  setAnalysisResult(res.data); setAnalysisOpen(true)
+                                  // Refresh campaign meta to pick up new timeline entry
+                                  try{
+                                    const metaRes = await campaignMetaList(store)
+                                    if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                                  }catch{}
+                                }
                               }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
                               finally{ setAnalysisLoading(null) }
                             }}
@@ -1807,6 +1824,13 @@ export default function AdsManagementPage(){
                             const rk = (c.campaign_id || c.name || '') as any
                             const conf = (manualIds as any)[rk]
                             const prodId = (conf && conf.kind==='product' && conf.id)? conf.id : (pidSelf||undefined)
+                            // Compute campaign age from created_time
+                            const ct = (c as any)?.created_time
+                            let ageDays: number|undefined = undefined
+                            if(ct){
+                              const diff = Date.now() - new Date(ct).getTime()
+                              ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24)))
+                            }
                             const res = await campaignAnalyze({
                               campaign_id: cid,
                               product_id: prodId,
@@ -1820,9 +1844,18 @@ export default function AdsManagementPage(){
                                 true_cpp: trueCppVal,
                                 status: (c.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
                               },
+                              campaign_age_days: ageDays,
+                              campaign_key: cid,
                             })
                             if(res?.error){ setAnalysisError(res.error) }
-                            else if(res?.data){ setAnalysisResult(res.data); setAnalysisOpen(true) }
+                            else if(res?.data){
+                              setAnalysisResult(res.data); setAnalysisOpen(true)
+                              // Refresh campaign meta to pick up new timeline entry
+                              try{
+                                const metaRes = await campaignMetaList(store)
+                                if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                              }catch{}
+                            }
                           }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
                           finally{ setAnalysisLoading(null) }
                         }}
@@ -2079,6 +2112,10 @@ export default function AdsManagementPage(){
             setTimelineAdding(false)
           }
         }}
+        onViewAnalysis={(data:any)=>{
+          setAnalysisResult(data as CampaignAnalysisResult)
+          setAnalysisOpen(true)
+        }}
       />
 
       {/* Product Life Hover Tooltip */}
@@ -2205,9 +2242,9 @@ export default function AdsManagementPage(){
 }
 
 // Timeline Modal
-function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void }){
+function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void }){
   if(!open) return null
-  const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(a.at||'').localeCompare(String(b.at||'')))
+  const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(b.at||'').localeCompare(String(a.at||'')))
   function fmtDelta(prev:string|undefined, cur:string){
     if(!prev) return '—'
     try{
@@ -2223,6 +2260,20 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
       parts.push(`${mins}m`)
       return parts.join(' ')
     }catch{ return '—' }
+  }
+  // Try to parse analysis entries from JSON text
+  function parseAnalysis(text:string): { type:'analysis', verdict?:string, confidence?:string, summary?:string, age_days?:number, analysis?:any } | null {
+    try{
+      const obj = JSON.parse(text)
+      if(obj && obj.type === 'analysis') return obj
+    }catch{}
+    return null
+  }
+  const verdictColors: Record<string, string> = {
+    'kill': 'from-rose-500 to-red-600',
+    'optimize': 'from-amber-400 to-orange-500',
+    'scale': 'from-emerald-400 to-green-500',
+    'scale_aggressively': 'from-green-500 to-emerald-600',
   }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -2248,12 +2299,49 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
           </div>
           <div className="space-y-3">
             {entries.map((e, idx)=> {
-              const prev = idx>0? entries[idx-1] : undefined
+              const next = idx<entries.length-1? entries[idx+1] : undefined
+              const analysisData = parseAnalysis(e.text||'')
+              if(analysisData){
+                // Render analysis entry as a special card
+                const vc = verdictColors[analysisData.verdict||''] || 'from-slate-400 to-slate-500'
+                return (
+                  <div key={String(e.at||idx)} className="border rounded-lg overflow-hidden shadow-sm">
+                    <div className={`bg-gradient-to-r ${vc} px-3 py-2 text-white flex items-center justify-between`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">✨</span>
+                        <span className="font-semibold text-sm">AI Analysis</span>
+                        {analysisData.verdict && (
+                          <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wider">{analysisData.verdict.replace('_',' ')}</span>
+                        )}
+                        {analysisData.age_days != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">Day {analysisData.age_days}</span>
+                        )}
+                      </div>
+                      <span className="text-[10px] opacity-80">{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                    </div>
+                    <div className="px-3 py-2 bg-slate-50">
+                      {analysisData.confidence && (
+                        <div className="text-[10px] text-slate-500 mb-1">Confidence: <span className="font-semibold">{analysisData.confidence}</span></div>
+                      )}
+                      {analysisData.summary && (
+                        <p className="text-xs text-slate-700 leading-relaxed">{analysisData.summary}</p>
+                      )}
+                      {onViewAnalysis && analysisData.analysis && (
+                        <button
+                          onClick={()=> onViewAnalysis(analysisData.analysis)}
+                          className="mt-2 px-3 py-1 rounded bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold shadow-sm"
+                        >View Full Analysis</button>
+                      )}
+                    </div>
+                  </div>
+                )
+              }
+              // Regular text note
               return (
                 <div key={String(e.at||idx)} className="border rounded p-3 bg-slate-50">
                   <div className="text-xs text-slate-500 flex items-center justify-between">
                     <span>{String(e.at||'').replace('T',' ').replace('Z','')}</span>
-                    <span className="font-mono">{fmtDelta(prev?.at, e.at||'')}</span>
+                    <span className="font-mono">{fmtDelta(next?.at, e.at||'')}</span>
                   </div>
                   <div className="mt-2 text-sm text-slate-800 whitespace-pre-wrap">{e.text||''}</div>
                 </div>

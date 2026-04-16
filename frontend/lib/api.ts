@@ -1123,6 +1123,8 @@ export async function campaignAnalyze(payload: {
   ad_account?: string
   date_range?: { start: string, end: string }
   metrics?: Record<string, any>
+  campaign_age_days?: number
+  campaign_key?: string
 }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 120000 })
