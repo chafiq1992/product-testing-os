@@ -1463,7 +1463,10 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
     }
 
 
-# -------- Campaign AI Analyzer --------
+# -------- Campaign AI Analyzer (async job pattern) --------
+# In-memory job store: { job_id: { status, result, error } }
+_analysis_jobs: Dict[str, Dict[str, Any]] = {}
+
 class CampaignAnalyzeRequest(BaseModel):
     campaign_id: Optional[str] = None
     campaign_ids: Optional[List[str]] = None  # for group analysis
@@ -1476,34 +1479,25 @@ class CampaignAnalyzeRequest(BaseModel):
     campaign_key: Optional[str] = None  # campaign_key for timeline saving
 
 
-@app.post("/api/campaign/analyze")
-async def api_campaign_analyze(req: CampaignAnalyzeRequest):
-    """AI-powered campaign analysis: gathers Meta + Shopify data, runs two-phase AI pipeline."""
+def _run_analysis_job(job_id: str, req_data: dict):
+    """Run the full analysis pipeline in a background thread."""
     try:
-        cids = req.campaign_ids or ([req.campaign_id] if req.campaign_id else [])
-        cids = [str(c).strip() for c in cids if str(c or "").strip()]
-        if not cids:
-            return {"error": "campaign_id or campaign_ids required"}
+        cids = req_data.get("cids", [])
+        pid = req_data.get("pid", "")
+        store = req_data.get("store")
+        s_date = req_data.get("s_date", "")
+        e_date = req_data.get("e_date", "")
+        campaign_age_days = req_data.get("campaign_age_days")
+        campaign_key = req_data.get("campaign_key", "")
 
-        pid = (req.product_id or "").strip()
-        store = req.store or None
-        dr = req.date_range or {}
-        s_date = (dr.get("start") or "").split("T")[0]
-        e_date = (dr.get("end") or "").split("T")[0]
-
-        # ── 1) Gather campaign metrics (use frontend-provided or fetch from Meta) ──
-        if req.metrics and isinstance(req.metrics, dict):
-            campaign_metrics = req.metrics
-        else:
+        # 1) Campaign metrics
+        campaign_metrics = req_data.get("metrics") or {}
+        if not campaign_metrics:
             try:
                 if s_date and e_date:
-                    summary = await run_in_threadpool(
-                        get_campaign_summary, cids[0], since=s_date, until=e_date
-                    )
+                    summary = get_campaign_summary(cids[0], since=s_date, until=e_date)
                 else:
-                    summary = await run_in_threadpool(
-                        get_campaign_summary, cids[0], since="2024-01-01", until="2030-12-31"
-                    )
+                    summary = get_campaign_summary(cids[0], since="2024-01-01", until="2030-12-31")
                 campaign_metrics = {
                     "spend": summary.get("spend", 0),
                     "purchases": summary.get("purchases", 0),
@@ -1513,102 +1507,135 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
                     "status": summary.get("status"),
                 }
             except Exception:
-                campaign_metrics = req.metrics or {}
-
-        # ── 2) Fetch ad creatives from Meta + product info from Shopify IN PARALLEL ──
-        async def _fetch_creatives():
-            out: list = []
-            try:
-                for cid in cids[:2]:  # limit to first 2 campaigns for speed
-                    creatives = await asyncio.wait_for(
-                        run_in_threadpool(get_campaign_ad_creatives, cid),
-                        timeout=15,
-                    )
-                    out.extend(creatives or [])
-            except (asyncio.TimeoutError, Exception):
                 pass
-            return out
 
-        async def _fetch_product():
-            info: Dict[str, Any] = {}
-            if not (pid and pid.isdigit()):
-                return info
+        # 2) Fetch ad creatives + product info
+        ad_creatives: list = []
+        try:
+            for cid in cids[:2]:
+                creatives = get_campaign_ad_creatives(cid)
+                ad_creatives.extend(creatives or [])
+        except Exception:
+            pass
+
+        product_info: Dict[str, Any] = {}
+        if pid and pid.isdigit():
             try:
-                briefs = await run_in_threadpool(get_products_brief, [pid], store=store)
+                briefs = get_products_brief([pid], store=store)
                 brief = (briefs or {}).get(pid) or {}
-                info["price"] = brief.get("price")
-                info["image_url"] = brief.get("image") or ""
-                info["inventory"] = brief.get("total_available")
+                product_info["price"] = brief.get("price")
+                product_info["image_url"] = brief.get("image") or ""
+                product_info["inventory"] = brief.get("total_available")
             except Exception:
                 pass
             try:
                 from app.integrations.shopify_client import _rest_get_store
-                prod_data = await run_in_threadpool(
-                    _rest_get_store, store, f"/products/{pid}.json?fields=id,title,body_html,handle,status"
-                )
+                prod_data = _rest_get_store(store, f"/products/{pid}.json?fields=id,title,body_html,handle,status")
                 prod = (prod_data or {}).get("product") or {}
-                info["title"] = prod.get("title") or ""
-                info["description"] = prod.get("body_html") or ""
-                info["handle"] = prod.get("handle") or ""
+                product_info["title"] = prod.get("title") or ""
+                product_info["description"] = prod.get("body_html") or ""
+                product_info["handle"] = prod.get("handle") or ""
                 try:
                     from app.integrations.shopify_client import _get_store_config
                     cfg = _get_store_config(store)
                     shop_domain = cfg.get("SHOP", "")
-                    if shop_domain and info.get("handle"):
-                        info["product_url"] = f"https://{shop_domain}/products/{info['handle']}"
+                    if shop_domain and product_info.get("handle"):
+                        product_info["product_url"] = f"https://{shop_domain}/products/{product_info['handle']}"
                 except Exception:
                     pass
             except Exception:
                 pass
-            return info
 
-        ad_creatives, product_info = await asyncio.gather(
-            _fetch_creatives(),
-            _fetch_product(),
-        )
-
-        # ── 3) Run AI analysis pipeline ──
-        # Inject campaign age into metrics so AI considers the launch phase
-        if req.campaign_age_days is not None:
-            campaign_metrics["campaign_age_days"] = req.campaign_age_days
-        result = await run_in_threadpool(
-            run_campaign_analysis,
+        # 3) Run AI analysis
+        if campaign_age_days is not None:
+            campaign_metrics["campaign_age_days"] = campaign_age_days
+        result = run_campaign_analysis(
             campaign_metrics=campaign_metrics,
             ad_creatives=ad_creatives,
             product_info=product_info,
         )
 
-        # Attach raw inputs for transparency
+        # Attach raw inputs
         result["meta_inputs"] = campaign_metrics
         result["ad_creatives_input"] = ad_creatives[:10]
         result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
 
-        # ── 4) Auto-save analysis to timeline ──
+        # 4) Auto-save analysis to timeline
         try:
-            campaign_key = (req.campaign_key or "").strip() or (cids[0] if cids else "")
-            if campaign_key:
+            ck = campaign_key or (cids[0] if cids else "")
+            if ck:
                 import json as _json
-                summary_text = result.get("summary", "")
-                verdict = result.get("overall_verdict", "")
-                confidence = result.get("confidence_level", "")
-                age_label = f", Day {req.campaign_age_days}" if req.campaign_age_days else ""
                 timeline_text = _json.dumps({
                     "type": "analysis",
-                    "verdict": verdict,
-                    "confidence": confidence,
-                    "summary": summary_text,
-                    "age_days": req.campaign_age_days,
+                    "verdict": result.get("overall_verdict", ""),
+                    "confidence": result.get("confidence_level", ""),
+                    "summary": result.get("summary", ""),
+                    "age_days": campaign_age_days,
                     "analysis": result,
                 }, ensure_ascii=False)
-                db.append_campaign_timeline(store, campaign_key, timeline_text)
+                db.append_campaign_timeline(store, ck, timeline_text)
         except Exception as save_err:
             logger.warning("Failed to save analysis to timeline: %s", save_err)
 
-        return {"data": result}
+        _analysis_jobs[job_id] = {"status": "done", "result": result}
     except Exception as e:
         import traceback
         traceback.print_exc()
+        _analysis_jobs[job_id] = {"status": "error", "error": str(e)}
+
+
+@app.post("/api/campaign/analyze")
+async def api_campaign_analyze(req: CampaignAnalyzeRequest):
+    """Start AI-powered campaign analysis as a background job. Returns job_id immediately."""
+    import threading
+    from uuid import uuid4
+    try:
+        cids = req.campaign_ids or ([req.campaign_id] if req.campaign_id else [])
+        cids = [str(c).strip() for c in cids if str(c or "").strip()]
+        if not cids:
+            return {"error": "campaign_id or campaign_ids required"}
+
+        job_id = str(uuid4())
+        _analysis_jobs[job_id] = {"status": "pending"}
+
+        # Clean old jobs (keep last 50)
+        if len(_analysis_jobs) > 60:
+            keys = list(_analysis_jobs.keys())
+            for old_key in keys[:len(keys) - 50]:
+                _analysis_jobs.pop(old_key, None)
+
+        pid = (req.product_id or "").strip()
+        store = req.store or None
+        dr = req.date_range or {}
+        s_date = (dr.get("start") or "").split("T")[0]
+        e_date = (dr.get("end") or "").split("T")[0]
+
+        req_data = {
+            "cids": cids,
+            "pid": pid,
+            "store": store,
+            "s_date": s_date,
+            "e_date": e_date,
+            "metrics": req.metrics if isinstance(req.metrics, dict) else None,
+            "campaign_age_days": req.campaign_age_days,
+            "campaign_key": (req.campaign_key or "").strip(),
+        }
+
+        thread = threading.Thread(target=_run_analysis_job, args=(job_id, req_data), daemon=True)
+        thread.start()
+
+        return {"job_id": job_id}
+    except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/campaign/analyze/status/{job_id}")
+async def api_campaign_analyze_status(job_id: str):
+    """Poll for analysis job status. Returns {status: 'pending'|'done'|'error', result?, error?}"""
+    job = _analysis_jobs.get(job_id)
+    if not job:
+        return {"status": "not_found", "error": "Job not found"}
+    return job
 
 
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------
@@ -5981,9 +6008,101 @@ async def api_page_builder_preview_proxy(url: str):
 
 # ---- Widget JS serving ----
 
+_WIDGET_ALLOWED_HOSTS = {"admin.shopify.com"}
+_WIDGET_ALLOWED_HOST_SUFFIXES = (".myshopify.com", ".shopifypreview.com")
+_WIDGET_BLOCKED_UA_HINTS = (
+    "bot",
+    "crawler",
+    "spider",
+    "meta-externalads",
+    "facebookexternalhit",
+    "curl/",
+    "wget/",
+    "python-requests",
+)
+
+
+def _header_url_host(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        host = parsed.netloc or parsed.path
+    except Exception:
+        return ""
+    host = host.split("@")[-1].split(":")[0].strip().lower()
+    return host
+
+
+def _is_shopify_widget_request_host(host: str) -> bool:
+    if not host:
+        return False
+    return host in _WIDGET_ALLOWED_HOSTS or host.endswith(_WIDGET_ALLOWED_HOST_SUFFIXES)
+
+
+def _looks_like_shopify_theme_editor_widget_request(request: Request) -> bool:
+    """Best-effort gate for the widget asset.
+
+    Shopify's editor signals (`request.design_mode` / `Shopify.designMode`) are only
+    available after the theme HTML has already decided to load this script, so we use
+    request metadata to reject obvious direct/crawler fetches before serving the asset.
+    """
+    headers = request.headers
+    user_agent = (headers.get("user-agent") or "").lower()
+    if any(token in user_agent for token in _WIDGET_BLOCKED_UA_HINTS):
+        return False
+
+    referer_host = _header_url_host(headers.get("referer"))
+    origin_host = _header_url_host(headers.get("origin"))
+    if not (
+        _is_shopify_widget_request_host(referer_host)
+        or _is_shopify_widget_request_host(origin_host)
+    ):
+        return False
+
+    # Real browser script loads generally send Fetch Metadata headers. Keep these
+    # checks permissive enough to avoid breaking Shopify editor previews.
+    sec_fetch_dest = (headers.get("sec-fetch-dest") or "").strip().lower()
+    if sec_fetch_dest and sec_fetch_dest != "script":
+        return False
+
+    sec_fetch_mode = (headers.get("sec-fetch-mode") or "").strip().lower()
+    if sec_fetch_mode and sec_fetch_mode not in {"cors", "no-cors"}:
+        return False
+
+    sec_fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
+    if sec_fetch_site and sec_fetch_site not in {"cross-site", "same-site", "same-origin"}:
+        return False
+
+    # Direct top-level navigations to the JS URL are not valid widget loads.
+    if (headers.get("sec-fetch-user") or "").strip().lower() == "?1":
+        return False
+
+    return True
+
+
 @app.get("/api/page-builder/widget.js")
-async def api_page_builder_widget_js():
+async def api_page_builder_widget_js(request: Request):
     """Serve the AI page builder widget JS for theme injection."""
+    if not _looks_like_shopify_theme_editor_widget_request(request):
+        logger.warning(
+            "Blocked widget.js request host=%s referer=%s origin=%s ua=%s dest=%s site=%s mode=%s",
+            request.headers.get("host", ""),
+            request.headers.get("referer", ""),
+            request.headers.get("origin", ""),
+            request.headers.get("user-agent", ""),
+            request.headers.get("sec-fetch-dest", ""),
+            request.headers.get("sec-fetch-site", ""),
+            request.headers.get("sec-fetch-mode", ""),
+        )
+        return Response(
+            "// widget request blocked",
+            status_code=403,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
+        )
+
     # Check container path first (backend_static/), then local dev path (backend/static/)
     candidates = [
         Path("/app/backend_static/page-builder-widget.js"),
@@ -6000,7 +6119,11 @@ async def api_page_builder_widget_js():
     return Response(
         content,
         media_type="application/javascript",
-        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache",
+            "X-Robots-Tag": "noindex, nofollow",
+        },
     )
 
 

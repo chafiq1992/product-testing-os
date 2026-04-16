@@ -1125,8 +1125,36 @@ export async function campaignAnalyze(payload: {
   metrics?: Record<string, any>
   campaign_age_days?: number
   campaign_key?: string
-}){
+}): Promise<{ data?: CampaignAnalysisResult, error?: string }>{
   const body = { ...payload, store: payload.store ?? selectedStore() }
-  const {data} = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 120000 })
-  return data as { data?: CampaignAnalysisResult, error?: string }
+  // Step 1: Start the job (returns immediately with job_id)
+  const startRes = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 15000 })
+  const jobId = startRes.data?.job_id
+  if(!jobId){
+    // Fallback: old-style response with data/error directly
+    return startRes.data as { data?: CampaignAnalysisResult, error?: string }
+  }
+  // Step 2: Poll for result every 3 seconds (up to 5 minutes)
+  const maxAttempts = 100  // 100 * 3s = 5 minutes
+  for(let i = 0; i < maxAttempts; i++){
+    await new Promise(r => setTimeout(r, 3000))
+    try{
+      const statusRes = await axios.get(`${base}/api/campaign/analyze/status/${jobId}`, { timeout: 10000 })
+      const job = statusRes.data
+      if(job.status === 'done'){
+        return { data: job.result as CampaignAnalysisResult }
+      }
+      if(job.status === 'error'){
+        return { error: job.error || 'Analysis failed' }
+      }
+      if(job.status === 'not_found'){
+        return { error: 'Job not found' }
+      }
+      // status === 'pending' → keep polling
+    }catch(pollErr: any){
+      // Network blip during polling — keep trying
+      console.warn('Analysis poll error:', pollErr?.message)
+    }
+  }
+  return { error: 'Analysis timed out after 5 minutes' }
 }
