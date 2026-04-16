@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings } from 'lucide-react'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet } from '@/lib/api'
 
 const ALL_STORES = [
@@ -149,6 +149,11 @@ export default function AdsManagementPage(){
   const [plInstructions, setPlInstructions] = useState<Record<string, string[]>>({ testing: [], action1: [], micro_scaling: [], macro_scaling: [] })
   const [plSettingsOpen, setPlSettingsOpen] = useState<boolean>(false)
   const [plHover, setPlHover] = useState<{ key:string, phase:string, rect?:DOMRect }|null>(null)
+  // Search state
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [searchActive, setSearchActive] = useState<string>('')  // confirmed filter
+  const [searchFocused, setSearchFocused] = useState<boolean>(false)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -774,10 +779,53 @@ export default function AdsManagementPage(){
     | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
     | { kind:'campaign', row: MetaCampaignRow, groupProductId?: string, isChild?: boolean }
 
+  // Fuzzy search suggestions (instant, client-side on loaded campaigns)
+  const searchSuggestions = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q || q.length < 1) return []
+    const results: Array<{ id:string, name:string, score:number }> = []
+    for(const c of (items||[])){
+      const name = String(c.name||'').toLowerCase()
+      const id = String(c.campaign_id||'')
+      let score = 0
+      // Exact ID match = highest priority
+      if(id === q) score = 100
+      else if(id.includes(q)) score = 80
+      // Name starts with query
+      else if(name.startsWith(q)) score = 70
+      // Name contains query
+      else if(name.includes(q)) score = 50
+      // Fuzzy: check if all chars of query appear in order in name
+      else {
+        let qi = 0
+        for(let ni = 0; ni < name.length && qi < q.length; ni++){
+          if(name[ni] === q[qi]) qi++
+        }
+        if(qi === q.length) score = 20
+      }
+      if(score > 0) results.push({ id, name: c.name||id, score })
+    }
+    // Deduplicate by id
+    const seen = new Set<string>()
+    const deduped = results.filter(r => { if(seen.has(r.id)) return false; seen.add(r.id); return true })
+    deduped.sort((a,b) => b.score - a.score)
+    return deduped.slice(0, 12)
+  }, [searchQuery, items])
+
   const displayRows = useMemo<DisplayRow[]>(()=>{
+    const activeFilter = (searchActive||'').trim().toLowerCase()
     const out: DisplayRow[] = []
     for(const p of sortedParents){
       if(p.kind==='group'){
+        // If search active, check if any campaign in the group matches
+        if(activeFilter){
+          const matches = p.rows.some(r => {
+            const name = String(r.name||'').toLowerCase()
+            const id = String(r.campaign_id||'')
+            return name.includes(activeFilter) || id.includes(activeFilter)
+          })
+          if(!matches) continue
+        }
         out.push({ kind:'group', productId: p.productId, rows: p.rows, primary: p.primary })
         if(groupExpanded[p.productId]){
           const children = (p.rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
@@ -786,11 +834,16 @@ export default function AdsManagementPage(){
           }
         }
       }else{
+        if(activeFilter){
+          const name = String(p.row.name||'').toLowerCase()
+          const id = String(p.row.campaign_id||'')
+          if(!name.includes(activeFilter) && !id.includes(activeFilter)) continue
+        }
         out.push({ kind:'campaign', row: p.row, isChild: false })
       }
     }
     return out
-  }, [sortedParents, groupExpanded])
+  }, [sortedParents, groupExpanded, searchActive])
 
   const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
   const productIdToCount = useMemo(()=>{
@@ -918,9 +971,100 @@ export default function AdsManagementPage(){
             </div>
           </div>
         </div>
+        {/* Search + Toolbar */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-2">
-          <div className="text-sm text-slate-600">
-            Auto-merged by Product ID. Shopify Orders are counted once per product (spend is summed).
+          {/* Search Bar */}
+          <div className="relative" style={{minWidth:'320px', maxWidth:'480px'}}>
+            <div className="flex items-center gap-2 bg-white border rounded-xl px-3 py-1.5 shadow-sm focus-within:ring-2 focus-within:ring-blue-400 focus-within:border-blue-400 transition-all">
+              <Search className="w-4 h-4 text-slate-400 flex-shrink-0"/>
+              <input
+                ref={searchRef}
+                value={searchQuery}
+                onChange={(e) => { setSearchQuery(e.target.value); if(!e.target.value.trim()) setSearchActive('') }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+                onKeyDown={(e) => {
+                  if(e.key==='Enter'){
+                    if(searchSuggestions.length > 0){
+                      const first = searchSuggestions[0]
+                      setSearchActive(first.name.toLowerCase())
+                      setSearchQuery(first.name)
+                    } else {
+                      setSearchActive(searchQuery.toLowerCase())
+                    }
+                    setSearchFocused(false)
+                    searchRef.current?.blur()
+                  }
+                  if(e.key==='Escape'){
+                    setSearchQuery('')
+                    setSearchActive('')
+                    setSearchFocused(false)
+                    searchRef.current?.blur()
+                  }
+                }}
+                placeholder="Search campaigns by name or ID…"
+                className="flex-1 text-sm outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+              />
+              {(searchQuery || searchActive) && (
+                <button
+                  onClick={() => { setSearchQuery(''); setSearchActive(''); searchRef.current?.focus() }}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-4 h-4"/>
+                </button>
+              )}
+            </div>
+            {/* Suggestions Dropdown */}
+            {searchFocused && searchQuery.trim() && searchSuggestions.length > 0 && (
+              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+                {searchSuggestions.map(s => {
+                  const q = searchQuery.toLowerCase()
+                  const nameL = s.name.toLowerCase()
+                  const matchIdx = nameL.indexOf(q)
+                  return (
+                    <button
+                      key={s.id}
+                      className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center gap-2 text-sm border-b border-b-slate-100 last:border-b-0 transition-colors"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        setSearchQuery(s.name)
+                        setSearchActive(s.name.toLowerCase())
+                        setSearchFocused(false)
+                      }}
+                    >
+                      <Search className="w-3.5 h-3.5 text-slate-300 flex-shrink-0"/>
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate">
+                          {matchIdx >= 0 ? (
+                            <>
+                              <span className="text-slate-600">{s.name.slice(0, matchIdx)}</span>
+                              <span className="text-blue-600 font-semibold bg-blue-50 rounded px-0.5">{s.name.slice(matchIdx, matchIdx + q.length)}</span>
+                              <span className="text-slate-600">{s.name.slice(matchIdx + q.length)}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-600">{s.name}</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-400 font-mono">ID: {s.id}</div>
+                      </div>
+                      {s.score >= 80 && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-semibold">ID match</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {searchFocused && searchQuery.trim() && searchSuggestions.length === 0 && (
+              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl px-4 py-3 text-sm text-slate-400">
+                No campaigns matching "{searchQuery}"
+              </div>
+            )}
+            {searchActive && (
+              <div className="mt-1 flex items-center gap-1 text-xs text-blue-600">
+                <span>Filtered:</span>
+                <span className="font-semibold truncate max-w-[200px]">"{searchActive}"</span>
+                <button onClick={() => { setSearchQuery(''); setSearchActive('') }} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
