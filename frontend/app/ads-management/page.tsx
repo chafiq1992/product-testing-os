@@ -1134,94 +1134,87 @@ export default function AdsManagementPage(){
           </div>
         </div>
         <div className="overflow-x-auto bg-white border rounded-none">
-          <table className="min-w-full text-sm">
+          <table className="min-w-full text-xs">
             <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
-                <th className="px-1.5 py-0.5 font-semibold w-8">Sel</th>
-                <th className="px-1.5 py-0.5 font-semibold">Product</th>
-                <th className="px-1.5 py-0.5 font-semibold">
-                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                <th className="px-1 py-0.5 font-semibold w-6"></th>
+                <th className="px-1 py-0.5 font-semibold w-[80px]"></th>
+                <th className="px-1 py-0.5 font-semibold">
+                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
                     <span>Campaign</span>
-                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold">
+                <th className="px-1 py-0.5 font-semibold">
                   <span>Status</span>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
                     <span>Spend</span>
-                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 hover:text-slate-900">
-                    <span>Purchases</span>
-                    {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <span>Purch</span>
+                    {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
-                    <span>Cost / Purchase</span>
-                    {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <span>CPP</span>
+                    {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 hover:text-slate-900">
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
                     <span>CTR</span>
-                    {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                    {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 hover:text-slate-900">
-                    <span>Add to cart</span>
-                    {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <span>ATC</span>
+                    {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-emerald-700">
-                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 hover:text-emerald-800">
-                    <span>Shopify Orders</span>
-                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-emerald-700">
+                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-0.5 hover:text-emerald-800">
+                    <span>Orders</span>
+                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-emerald-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
-                    <span>True CPP</span>
-                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <span>tCPP</span>
+                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold">
-                  <span>Supplier</span>
-                </th>
-                <th className="px-1.5 py-0.5 font-semibold">
-                  <span>Supply available</span>
-                </th>
-                <th className="px-1.5 py-0.5 font-semibold text-indigo-700 text-right">
-                  <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
-                    <span>Inventory</span>
-                    {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400"/>}
+                <th className="px-1 py-0.5 font-semibold text-indigo-700 text-right">
+                  <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-0.5 hover:text-indigo-800">
+                    <span>Inv</span>
+                    {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-indigo-400"/>}
+                  </button>
+                  <span className="text-rose-500 ml-0.5">/</span>
+                  <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-0.5 hover:text-rose-800">
+                    <span className="text-rose-700">0v</span>
+                    {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
                   </button>
                 </th>
-                <th className="px-1.5 py-0.5 font-semibold text-rose-700 text-right">
-                  <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 hover:text-rose-800">
-                    <span>Zero-variant</span>
-                    {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-rose-400"/>}
-                  </button>
-                </th>
-                <th className="px-1.5 py-0.5 font-semibold text-violet-700" style={{minWidth:'160px'}}>Product Life</th>
-                <th className="px-1.5 py-0.5 font-semibold">Notes</th>
-                <th className="px-1.5 py-0.5 font-semibold text-right">Actions</th>
+                <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'120px'}}>Life</th>
+                <th className="px-1 py-0.5 font-semibold">Notes</th>
+                <th className="px-1 py-0.5 font-semibold text-right w-[90px]"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={18} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={15} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={18} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={15} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -1247,8 +1240,8 @@ export default function AdsManagementPage(){
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
-                        <td className="px-1.5 py-0.5"></td>
-                        <td className="px-1.5 py-0.5">
+                        <td className="px-1 py-0.5"></td>
+                        <td className="px-1 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
@@ -1256,45 +1249,43 @@ export default function AdsManagementPage(){
                             <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
                           )}
                         </td>
-                        <td className="px-1.5 py-0.5 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
+                        <td className="px-1 py-0.5 whitespace-nowrap">
+                          <div className="flex items-center gap-1">
                             <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
-                              className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
+                              className="px-1 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
                               title="Show merged campaigns"
                             >{groupExpanded[pid]? '▾' : '▸'}</button>
-                            <span className="font-medium">{d.primary.name || `Product ${pid}`}</span>
-                            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200">{d.rows.length} campaigns</span>
-                            <span className="text-xs text-slate-500 font-mono">ID {pid}</span>
+                            <span className="font-medium text-xs">{d.primary.name || `Product ${pid}`}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{d.rows.length} camps</span>
                           </div>
                         </td>
-                        <td className="px-1.5 py-0.5">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
+                        <td className="px-1 py-0.5">
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${statusClass}`}>{statusLabel}</span>
                         </td>
-                        <td className="px-1.5 py-0.5 text-right">${Number(m.spend||0).toFixed(2)}</td>
-                        <td className="px-1.5 py-0.5 text-right">{Number(m.purchases||0)}</td>
-                        <td className="px-1.5 py-0.5 text-right">{cpp}</td>
-                        <td className="px-1.5 py-0.5 text-right">{ctr}</td>
-                        <td className="px-1.5 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
-                        <td className="px-1.5 py-0.5">
+                        <td className="px-1 py-0.5 text-right">${Number(m.spend||0).toFixed(2)}</td>
+                        <td className="px-1 py-0.5 text-right">{Number(m.purchases||0)}</td>
+                        <td className="px-1 py-0.5 text-right">{cpp}</td>
+                        <td className="px-1 py-0.5 text-right">{ctr}</td>
+                        <td className="px-1 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
+                        <td className="px-1 py-0.5">
                           {orders==null ? (
                             <span className="text-slate-400">—</span>
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                           )}
                         </td>
-                        <td className="px-1.5 py-0.5 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
-                        <td className="px-1.5 py-0.5"><span className="text-slate-400">—</span></td>
-                        <td className="px-1.5 py-0.5"><span className="text-slate-400">—</span></td>
-                        <td className="px-1.5 py-0.5 text-right">
-                          {inv==null ? <span className="text-slate-400">—</span> : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
-                          )}
-                        </td>
-                        <td className="px-1.5 py-0.5 text-right">
-                          {zeros==null ? <span className="text-slate-400">—</span> : (
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
-                          )}
+                        <td className="px-1 py-0.5 text-right">{orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                        <td className="px-1 py-0.5 text-right">
+                          <div className="flex items-center justify-end gap-0.5">
+                            {inv==null ? <span className="text-slate-400">—</span> : (
+                              <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                            )}
+                            <span className="text-slate-300">/</span>
+                            {zeros==null ? <span className="text-slate-400">—</span> : (
+                              <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
+                            )}
+                          </div>
                         </td>
                         {/* Product Life */}
                         <td className="px-1.5 py-0.5">
@@ -1315,7 +1306,7 @@ export default function AdsManagementPage(){
                             const campaignKey = String(firstCampaign.campaign_id || pid)
                             const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
                             return (
-                              <div className="flex gap-0.5 relative" style={{minWidth:'140px'}}>
+                              <div className="flex gap-0.5 relative" style={{minWidth:'120px'}}>
                                 {phases.map((ph, idx) => {
                                   const phChecks = checks[ph.key] || {}
                                   const insts = plInstructions[ph.key] || []
@@ -1355,7 +1346,7 @@ export default function AdsManagementPage(){
                               setGroupNotes(prev=>{ const next={...prev, [pid]: v}; try{ localStorage.setItem('ptos_ads_group_notes_by_product', JSON.stringify(next)) }catch{}; return next })
                             }}
                             placeholder="Group notes"
-                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                            className="w-24 rounded border px-1 py-0.5 text-xs bg-white"
                           />
                         </td>
                         <td className="px-1.5 py-0.5 text-right">
@@ -1657,87 +1648,40 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-1.5 py-0.5 text-right">${(c.spend||0).toFixed(2)}</td>
-                    <td className="px-1.5 py-0.5 text-right">{c.purchases||0}</td>
-                    <td className="px-1.5 py-0.5 text-right">{cpp}</td>
-                    <td className="px-1.5 py-0.5 text-right">{ctr}</td>
-                    <td className="px-1.5 py-0.5 text-right">{c.add_to_cart||0}</td>
-                    <td className="px-1.5 py-0.5">
+                    <td className="px-1 py-0.5 text-right">${(c.spend||0).toFixed(2)}</td>
+                    <td className="px-1 py-0.5 text-right">{c.purchases||0}</td>
+                    <td className="px-1 py-0.5 text-right">{cpp}</td>
+                    <td className="px-1 py-0.5 text-right">{ctr}</td>
+                    <td className="px-1 py-0.5 text-right">{c.add_to_cart||0}</td>
+                    <td className="px-1 py-0.5">
                       {orders==null ? (
                         <span className="text-slate-400">—</span>
                       ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
                     </td>
-                    <td className="px-1.5 py-0.5 text-right">
+                    <td className="px-1 py-0.5 text-right">
                       {isChild ? (
                         <span className="text-slate-400">—</span>
                       ) : (
-                        orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp
+                        orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp
                       )}
                     </td>
-                    <td className="px-1.5 py-0.5">
-                      {(()=>{
-                        const rk = String(rowKey)
-                        const meta = (campaignMeta as any)[rk] || {}
-                        return (
-                          <input
-                            value={meta.supplier_name || ''}
-                            onChange={(e)=>{
-                              const v = e.target.value
-                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supplier_name: v } }))
-                            }}
-                            onBlur={async(e)=>{
-                              const v = e.target.value
-                              try{
-                                await campaignMetaUpsert({ campaign_key: rk, supplier_name: v, store })
-                              }catch{}
-                            }}
-                            placeholder="Supplier name"
-                            className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
-                          />
-                        )
-                      })()}
-                    </td>
-                    <td className="px-1.5 py-0.5">
-                      {(()=>{
-                        const rk = String(rowKey)
-                        const meta = (campaignMeta as any)[rk] || {}
-                        const raw = String(meta.supply_available || meta.supplier_alt_name || '').trim().toLowerCase()
-                        const isYes = raw==='yes' || raw==='y' || raw==='true' || raw==='1'
-                        const label = isYes? 'Yes' : 'No'
-                        const classes = isYes? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-rose-100 text-rose-700 border border-rose-200'
-                        return (
-                          <button
-                            onClick={async()=>{
-                              const next = isYes? 'no' : 'yes'
-                              setCampaignMeta(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{}), supply_available: next, supplier_alt_name: next } }))
-                              try{ await campaignMetaUpsert({ campaign_key: rk, supply_available: next, store }) }catch{}
-                            }}
-                            className={`px-2 py-0.5 rounded text-xs ${classes}`}
-                            title="Toggle supply availability"
-                          >{label}</button>
-                        )
-                      })()}
-                    </td>
-                    <td className="px-1.5 py-0.5 text-right">
+                    <td className="px-1 py-0.5 text-right">
                       {hasAnyPid ? (
-                        inv===null || inv===undefined ? (
-                          <span className="inline-block h-4 w-10 bg-indigo-50 rounded animate-pulse" />
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
-                        )
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-1.5 py-0.5 text-right">
-                      {hasAnyPid ? (
-                        zeros===null || zeros===undefined ? (
-                          <span className="inline-block h-4 w-10 bg-rose-50 rounded animate-pulse" />
-                        ) : (
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
-                        )
+                        <div className="flex items-center justify-end gap-0.5">
+                          {inv===null || inv===undefined ? (
+                            <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
+                          ) : (
+                            <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                          )}
+                          <span className="text-slate-300">/</span>
+                          {zeros===null || zeros===undefined ? (
+                            <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" />
+                          ) : (
+                            <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-slate-400">—</span>
                       )}
@@ -1760,7 +1704,7 @@ export default function AdsManagementPage(){
                         const campaignKey = String(c.campaign_id || rowKey)
                         const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
                         return (
-                          <div className="flex gap-0.5 relative" style={{minWidth:'140px'}}>
+                          <div className="flex gap-0.5 relative" style={{minWidth:'120px'}}>
                             {phases.map((ph, idx) => {
                               const phChecks = checks[ph.key] || {}
                               const insts = plInstructions[ph.key] || []
@@ -1798,8 +1742,8 @@ export default function AdsManagementPage(){
                           const v = e.target.value
                           setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
                         }}
-                        placeholder={isChild? 'Notes (campaign)' : 'Notes'}
-                        className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
+                        placeholder={isChild? 'Notes' : 'Notes'}
+                        className="w-24 rounded border px-1 py-0.5 text-xs bg-white"
                       />
                     </td>
                     <td className="px-1.5 py-0.5 text-right">
