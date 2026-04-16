@@ -12,8 +12,8 @@ from app.integrations.openai_client import client, DEFAULT_LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Use a fast model for Phase 1 (simple profiling), full model for Phase 2 (complex analysis)
-FAST_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
+# Model for campaign analysis (both phases)
+ANALYZER_MODEL = os.getenv("OPENAI_ANALYZER_MODEL", "gpt-4.1-mini")
 
 
 # ─────────────── Phase 1: Customer Profiler ───────────────
@@ -111,22 +111,29 @@ CAMPAIGN_ANALYST_PROMPT = (
 # ─────────────── Orchestration ───────────────
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=8))
-def _call_llm(system_prompt: str, user_content: str, model: str | None = None, max_tokens: int = 2000) -> dict:
+def _call_llm(system_prompt: str, user_content: str, model: str | None = None) -> dict:
     """Single LLM call returning parsed JSON."""
-    resp = client.chat.completions.create(
-        model=model or DEFAULT_LLM_MODEL,
-        messages=[
-            {"role": "system", "content": "Respond ONLY with a JSON object. No prose, no markdown."},
-            {"role": "user", "content": system_prompt + "\n\n" + user_content},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=max_tokens,
-        timeout=55,  # prevent hanging longer than Cloud Run frontend timeout
-    )
+    use_model = model or ANALYZER_MODEL
+    logger.info("Campaign Analyzer _call_llm: model=%s, input_len=%d", use_model, len(user_content))
+    try:
+        resp = client.chat.completions.create(
+            model=use_model,
+            messages=[
+                {"role": "system", "content": "Respond ONLY with a JSON object. No prose, no markdown."},
+                {"role": "user", "content": system_prompt + "\n\n" + user_content},
+            ],
+            response_format={"type": "json_object"},
+        )
+    except Exception as e:
+        logger.error("Campaign Analyzer _call_llm: OpenAI API error: %s", e)
+        raise
+
     text = resp.choices[0].message.content
+    logger.info("Campaign Analyzer _call_llm: response_len=%d, finish=%s", len(text or ""), resp.choices[0].finish_reason)
     try:
         return json.loads(text)
-    except Exception:
+    except Exception as e:
+        logger.error("Campaign Analyzer _call_llm: JSON parse failed: %s — raw[:500]: %s", e, (text or "")[:500])
         return {}
 
 
@@ -150,7 +157,9 @@ def analyze_campaign(
     Returns:
         { customer_profile, recommendations, scaling_plan, creative_analysis, ... }
     """
-    # ── Phase 1: Customer Profiler (use fast model — simpler task) ──
+    use_model = model or ANALYZER_MODEL
+
+    # ── Phase 1: Customer Profiler ──
     if customer_profile_override:
         customer_profile = customer_profile_override
     else:
@@ -162,20 +171,20 @@ def analyze_campaign(
             f"Product URL: {product_info.get('product_url', '')}\n"
             f"Image URL: {product_info.get('image_url', '')}\n"
         )
-        logger.info("Campaign Analyzer: Running Phase 1 (Customer Profiler) with %s", FAST_MODEL)
-        customer_profile = _call_llm(CUSTOMER_PROFILER_PROMPT, product_context, model=FAST_MODEL, max_tokens=800)
+        logger.info("Campaign Analyzer: Phase 1 (Customer Profiler) with %s", use_model)
+        customer_profile = _call_llm(CUSTOMER_PROFILER_PROMPT, product_context, model=use_model)
         if not customer_profile:
             customer_profile = {"error": "Could not generate customer profile"}
 
-    # ── Phase 2: Campaign Analyst (use full model for quality) ──
+    # ── Phase 2: Campaign Analyst ──
     analyst_input = (
         f"CUSTOMER PROFILE:\n{json.dumps(customer_profile, ensure_ascii=False)}\n\n"
         f"CAMPAIGN METRICS:\n{json.dumps(campaign_metrics, ensure_ascii=False)}\n\n"
         f"AD CREATIVES:\n{json.dumps(ad_creatives[:5], ensure_ascii=False)}\n\n"
         f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n"
     )
-    logger.info("Campaign Analyzer: Running Phase 2 (Campaign Analyst) with %s", model or DEFAULT_LLM_MODEL)
-    analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=model, max_tokens=3000)
+    logger.info("Campaign Analyzer: Phase 2 (Campaign Analyst) with %s", use_model)
+    analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=use_model)
 
     # Normalize output
     if not isinstance(analysis.get("recommendations"), list):
@@ -197,4 +206,3 @@ def analyze_campaign(
         "customer_profile": customer_profile,
         **analysis,
     }
-
