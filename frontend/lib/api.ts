@@ -1076,3 +1076,55 @@ export async function productLifeInstructionsSet(payload:{ phases: Record<string
   const {data} = await axios.post(`${base}/api/product_life/instructions`, body)
   return data as { data?: { phases: Record<string, string[]> }, error?: string }
 }
+
+// -------- Campaign AI Analyzer --------
+export type CampaignAnalysisResult = {
+  customer_profile: Record<string, any>
+  overall_verdict?: string
+  confidence_level?: string
+  summary?: string
+  recommendations: Array<{
+    priority: number
+    category: string
+    finding: string
+    recommendation: string
+    expected_impact: string
+  }>
+  scaling_plan: {
+    current_phase?: string
+    verdict?: string
+    next_steps?: string[]
+    budget_recommendation?: string
+    timeline?: string
+  }
+  creative_analysis?: {
+    headline_score?: number
+    headline_feedback?: string
+    ad_copy_score?: number
+    ad_copy_feedback?: string
+    suggested_headlines?: string[]
+    suggested_ad_copy?: string
+  }
+  customer_alignment?: {
+    score?: number
+    gaps?: string[]
+    opportunities?: string[]
+  }
+  meta_inputs?: Record<string, any>
+  ad_creatives_input?: Array<Record<string, string>>
+  product_info_input?: Record<string, any>
+}
+
+export async function campaignAnalyze(payload: {
+  campaign_id?: string
+  campaign_ids?: string[]
+  product_id?: string
+  store?: string
+  ad_account?: string
+  date_range?: { start: string, end: string }
+  metrics?: Record<string, any>
+}){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 120000 })
+  return data as { data?: CampaignAnalysisResult, error?: string }
+}

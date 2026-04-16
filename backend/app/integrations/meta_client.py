@@ -889,3 +889,71 @@ def create_draft_carousel_campaign(ad: dict) -> dict:
     })
     results["requests"] = requests_log
     return results
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def get_campaign_ad_creatives(campaign_id: str) -> list[dict]:
+    """Fetch ad creatives (headlines, primary text, description, landing URL) for all ads in a campaign.
+
+    Returns a list of dicts:
+      [{ ad_id, ad_name, headline, primary_text, description, landing_url }]
+    """
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    cid = str(campaign_id or "").strip()
+    if not cid:
+        return []
+
+    # 1) List ads under campaign
+    try:
+        ads_res = _get(f"{cid}/ads", {"fields": "id,name,creative{id}", "limit": 50})
+        ads_rows = (ads_res or {}).get("data") or []
+    except Exception:
+        ads_rows = []
+
+    out: list[dict] = []
+    for ad in (ads_rows or []):
+        ad_id = str((ad or {}).get("id") or "")
+        ad_name = (ad or {}).get("name") or ""
+        creative = (ad or {}).get("creative") or {}
+        creative_id = str(creative.get("id") or "")
+        if not creative_id:
+            out.append({"ad_id": ad_id, "ad_name": ad_name, "headline": "", "primary_text": "", "description": "", "landing_url": ""})
+            continue
+
+        # 2) Fetch creative details
+        try:
+            cr = _get(creative_id, {"fields": "name,object_story_spec,title,body,effective_object_story_id"})
+        except Exception:
+            cr = {}
+
+        headline = ""
+        primary_text = ""
+        description = ""
+        landing_url = ""
+
+        # Extract from object_story_spec.link_data
+        oss = (cr or {}).get("object_story_spec") or {}
+        link_data = oss.get("link_data") or {}
+        if link_data:
+            headline = str(link_data.get("name") or link_data.get("title") or "").strip()
+            primary_text = str(link_data.get("message") or "").strip()
+            description = str(link_data.get("description") or "").strip()
+            landing_url = str(link_data.get("link") or "").strip()
+
+        # Fallback to top-level fields
+        if not headline:
+            headline = str((cr or {}).get("title") or "").strip()
+        if not primary_text:
+            primary_text = str((cr or {}).get("body") or "").strip()
+
+        out.append({
+            "ad_id": ad_id,
+            "ad_name": ad_name,
+            "headline": headline,
+            "primary_text": primary_text,
+            "description": description,
+            "landing_url": landing_url,
+        })
+
+    return out

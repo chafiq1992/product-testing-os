@@ -46,6 +46,8 @@ from app.integrations.meta_client import get_ad_account_info, set_campaign_statu
 from app.integrations.meta_client import list_ads_for_adsets
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
+from app.integrations.meta_client import get_campaign_ad_creatives
+from app.campaign_analyzer import analyze_campaign as run_campaign_analysis
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
@@ -1459,6 +1461,120 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
         "campaign_meta": campaign_meta or {},
         "product_life_instructions": pl_instructions or {},
     }
+
+
+# -------- Campaign AI Analyzer --------
+class CampaignAnalyzeRequest(BaseModel):
+    campaign_id: Optional[str] = None
+    campaign_ids: Optional[List[str]] = None  # for group analysis
+    product_id: Optional[str] = None
+    store: Optional[str] = None
+    ad_account: Optional[str] = None
+    date_range: Optional[Dict[str, str]] = None  # { start, end }
+    # Pre-computed metrics from frontend (avoids re-fetching)
+    metrics: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/campaign/analyze")
+async def api_campaign_analyze(req: CampaignAnalyzeRequest):
+    """AI-powered campaign analysis: gathers Meta + Shopify data, runs two-phase AI pipeline."""
+    try:
+        cids = req.campaign_ids or ([req.campaign_id] if req.campaign_id else [])
+        cids = [str(c).strip() for c in cids if str(c or "").strip()]
+        if not cids:
+            return {"error": "campaign_id or campaign_ids required"}
+
+        pid = (req.product_id or "").strip()
+        store = req.store or None
+        dr = req.date_range or {}
+        s_date = (dr.get("start") or "").split("T")[0]
+        e_date = (dr.get("end") or "").split("T")[0]
+
+        # ── 1) Gather campaign metrics (use frontend-provided or fetch from Meta) ──
+        if req.metrics and isinstance(req.metrics, dict):
+            campaign_metrics = req.metrics
+        else:
+            # Fetch from Meta for the first campaign
+            try:
+                if s_date and e_date:
+                    summary = await run_in_threadpool(
+                        get_campaign_summary, cids[0], since=s_date, until=e_date
+                    )
+                else:
+                    summary = await run_in_threadpool(
+                        get_campaign_summary, cids[0], since="2024-01-01", until="2030-12-31"
+                    )
+                campaign_metrics = {
+                    "spend": summary.get("spend", 0),
+                    "purchases": summary.get("purchases", 0),
+                    "cpp": summary.get("cpp"),
+                    "ctr": summary.get("ctr"),
+                    "add_to_cart": summary.get("add_to_cart", 0),
+                    "status": summary.get("status"),
+                }
+            except Exception:
+                campaign_metrics = req.metrics or {}
+
+        # ── 2) Fetch ad creatives from Meta ──
+        ad_creatives = []
+        try:
+            for cid in cids[:3]:  # limit to first 3 campaigns
+                creatives = await run_in_threadpool(get_campaign_ad_creatives, cid)
+                ad_creatives.extend(creatives or [])
+        except Exception:
+            pass
+
+        # ── 3) Fetch product info from Shopify ──
+        product_info: Dict[str, Any] = {}
+        if pid and pid.isdigit():
+            try:
+                briefs = await run_in_threadpool(get_products_brief, [pid], store=store)
+                brief = (briefs or {}).get(pid) or {}
+                product_info["price"] = brief.get("price")
+                product_info["image_url"] = brief.get("image") or ""
+                product_info["inventory"] = brief.get("total_available")
+            except Exception:
+                pass
+            # Fetch product title + description via REST
+            try:
+                from app.integrations.shopify_client import _rest_get_store
+                prod_data = await run_in_threadpool(
+                    _rest_get_store, store, f"/products/{pid}.json?fields=id,title,body_html,handle,status"
+                )
+                prod = (prod_data or {}).get("product") or {}
+                product_info["title"] = prod.get("title") or ""
+                product_info["description"] = prod.get("body_html") or ""
+                product_info["handle"] = prod.get("handle") or ""
+                # Build product URL from shop domain
+                try:
+                    from app.integrations.shopify_client import _get_store_config
+                    cfg = _get_store_config(store)
+                    shop_domain = cfg.get("SHOP", "")
+                    if shop_domain and product_info.get("handle"):
+                        product_info["product_url"] = f"https://{shop_domain}/products/{product_info['handle']}"
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # ── 4) Run AI analysis pipeline ──
+        result = await run_in_threadpool(
+            run_campaign_analysis,
+            campaign_metrics=campaign_metrics,
+            ad_creatives=ad_creatives,
+            product_info=product_info,
+        )
+
+        # Attach raw inputs for transparency
+        result["meta_inputs"] = campaign_metrics
+        result["ad_creatives_input"] = ad_creatives[:10]  # limit for response size
+        result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}  # omit large HTML
+
+        return {"data": result}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------

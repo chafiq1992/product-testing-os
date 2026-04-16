@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -129,6 +129,11 @@ export default function AdsManagementPage(){
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+  // AI Campaign Analyzer state
+  const [analysisOpen, setAnalysisOpen] = useState<boolean>(false)
+  const [analysisLoading, setAnalysisLoading] = useState<string|null>(null) // campaign key being analyzed
+  const [analysisResult, setAnalysisResult] = useState<CampaignAnalysisResult|null>(null)
+  const [analysisError, setAnalysisError] = useState<string|null>(null)
   // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
@@ -1398,6 +1403,39 @@ export default function AdsManagementPage(){
                             }}
                             className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                           >Performance</button>
+                          <button
+                            disabled={analysisLoading===pid}
+                            onClick={async()=>{
+                              setAnalysisLoading(pid)
+                              setAnalysisError(null)
+                              try{
+                                const ids = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
+                                const res = await campaignAnalyze({
+                                  campaign_ids: ids,
+                                  product_id: pid||undefined,
+                                  metrics: {
+                                    spend: Number(m.spend||0),
+                                    purchases: Number(m.purchases||0),
+                                    ctr: m.ctr!=null? m.ctr : undefined,
+                                    cpp: m.cpp!=null? m.cpp : undefined,
+                                    add_to_cart: Number(m.add_to_cart||0),
+                                    shopify_orders: orders,
+                                    true_cpp: trueCppVal,
+                                    status: statusLabel,
+                                  },
+                                })
+                                if(res?.error){ setAnalysisError(res.error) }
+                                else if(res?.data){ setAnalysisResult(res.data); setAnalysisOpen(true) }
+                              }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
+                              finally{ setAnalysisLoading(null) }
+                            }}
+                            className={`ml-1 px-2 py-1 rounded text-xs font-semibold transition-all ${
+                              analysisLoading===pid
+                                ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
+                                : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
+                            }`}
+                          >{analysisLoading===pid ? '⏳ Analyzing…' : '✨ Analyze'}</button>
+                          {analysisError && analysisLoading===null && <span className="ml-1 text-[10px] text-rose-500">{analysisError.slice(0,40)}</span>}
                         </td>
                       </tr>
                     </Fragment>
@@ -1814,6 +1852,42 @@ export default function AdsManagementPage(){
                         }}
                         className="ml-2 px-2 py-1 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
                       >Timeline</button>
+                      <button
+                        disabled={analysisLoading===rowKey}
+                        onClick={async()=>{
+                          const cid = String(c.campaign_id||'')
+                          if(!cid) return
+                          setAnalysisLoading(rowKey)
+                          setAnalysisError(null)
+                          try{
+                            const rk = (c.campaign_id || c.name || '') as any
+                            const conf = (manualIds as any)[rk]
+                            const prodId = (conf && conf.kind==='product' && conf.id)? conf.id : (pidSelf||undefined)
+                            const res = await campaignAnalyze({
+                              campaign_id: cid,
+                              product_id: prodId,
+                              metrics: {
+                                spend: Number(c.spend||0),
+                                purchases: Number(c.purchases||0),
+                                ctr: c.ctr!=null? c.ctr : undefined,
+                                cpp: c.cpp!=null? c.cpp : undefined,
+                                add_to_cart: Number((c as any).add_to_cart||0),
+                                shopify_orders: orders,
+                                true_cpp: trueCppVal,
+                                status: (c.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
+                              },
+                            })
+                            if(res?.error){ setAnalysisError(res.error) }
+                            else if(res?.data){ setAnalysisResult(res.data); setAnalysisOpen(true) }
+                          }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
+                          finally{ setAnalysisLoading(null) }
+                        }}
+                        className={`ml-1 px-2 py-1 rounded text-xs font-semibold transition-all ${
+                          analysisLoading===rowKey
+                            ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
+                            : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
+                        }`}
+                      >{analysisLoading===rowKey ? '⏳ Analyzing…' : '✨ Analyze'}</button>
                     </td>
                   </tr>
                   {(()=>{
@@ -2036,6 +2110,7 @@ export default function AdsManagementPage(){
         </div>
       </div>
       <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
+      <AnalysisModal open={analysisOpen} onClose={()=>{ setAnalysisOpen(false); setAnalysisResult(null) }} result={analysisResult} />
       <TimelineModal
         open={timelineOpen.open}
         onClose={()=> setTimelineOpen({ open:false })}
@@ -2392,3 +2467,183 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
 }
 
 
+// -------- AI Campaign Analysis Modal --------
+function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>void, result:CampaignAnalysisResult|null }){
+  if(!open || !result) return null
+  const verdictColors: Record<string,string> = {
+    kill: 'from-rose-500 to-red-600',
+    optimize: 'from-amber-400 to-orange-500',
+    scale: 'from-emerald-400 to-green-500',
+    scale_aggressively: 'from-emerald-500 to-teal-500',
+  }
+  const verdictLabels: Record<string,string> = {
+    kill: '🛑 Kill Campaign',
+    optimize: '⚡ Optimize',
+    scale: '🚀 Scale',
+    scale_aggressively: '🔥 Scale Aggressively',
+  }
+  const catIcons: Record<string,string> = {
+    creative: '🎨', targeting: '🎯', budget: '💰', pricing: '💵',
+    landing_page: '🌐', offer: '🎁', ad_copy: '✍️', product: '📦',
+  }
+  const catColors: Record<string,string> = {
+    creative: 'bg-pink-50 border-pink-200 text-pink-800',
+    targeting: 'bg-blue-50 border-blue-200 text-blue-800',
+    budget: 'bg-amber-50 border-amber-200 text-amber-800',
+    pricing: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+    landing_page: 'bg-indigo-50 border-indigo-200 text-indigo-800',
+    offer: 'bg-violet-50 border-violet-200 text-violet-800',
+    ad_copy: 'bg-cyan-50 border-cyan-200 text-cyan-800',
+    product: 'bg-orange-50 border-orange-200 text-orange-800',
+  }
+  const ov = result.overall_verdict||'optimize'
+  const cp = result.customer_profile||{}
+  const sp = result.scaling_plan||{}
+  const ca = result.creative_analysis||{}
+  const cu = result.customer_alignment||{}
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/50 backdrop-blur-sm overflow-y-auto py-8" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden" onClick={e=> e.stopPropagation()}>
+        {/* Header */}
+        <div className={`bg-gradient-to-r ${verdictColors[ov]||'from-slate-500 to-slate-600'} px-6 py-5 text-white`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-2xl font-bold">{verdictLabels[ov]||ov}</div>
+              <div className="text-white/80 text-sm mt-1">{result.confidence_level||''}</div>
+            </div>
+            <button onClick={onClose} className="text-white/80 hover:text-white text-2xl font-bold w-10 h-10 flex items-center justify-center rounded-full hover:bg-white/20 transition-colors">✕</button>
+          </div>
+          {result.summary && <p className="mt-3 text-sm text-white/90 leading-relaxed">{result.summary}</p>}
+        </div>
+
+        <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+          {/* Customer Profile Card */}
+          {cp && Object.keys(cp).length>0 && !cp.error && (
+            <div className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-xl p-4">
+              <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">👤 Target Customer Profile</h3>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                {cp.target_gender && <div><span className="text-slate-500">Gender:</span> <span className="font-semibold text-slate-800">{cp.target_gender}</span></div>}
+                {cp.age_range && <div><span className="text-slate-500">Age:</span> <span className="font-semibold text-slate-800">{cp.age_range}</span></div>}
+                {cp.market_segment && <div className="col-span-2"><span className="text-slate-500">Segment:</span> <span className="font-semibold text-slate-800">{cp.market_segment}</span></div>}
+                {cp.buyer_persona && <div className="col-span-2"><span className="text-slate-500">Buyer:</span> <span className="font-semibold text-slate-800">{cp.buyer_persona}</span></div>}
+                {cp.price_sensitivity && <div><span className="text-slate-500">Price sensitivity:</span> <span className="font-semibold text-slate-800">{cp.price_sensitivity}</span></div>}
+                {cp.purchase_channel_preference && <div><span className="text-slate-500">Channel:</span> <span className="font-semibold text-slate-800">{cp.purchase_channel_preference}</span></div>}
+              </div>
+              {cp.psychographics && (
+                <div className="mt-3 space-y-2 text-xs">
+                  {cp.psychographics.pain_points && <div><span className="text-slate-500 font-medium">Pain points:</span> <span className="text-slate-700">{(cp.psychographics.pain_points||[]).join(' · ')}</span></div>}
+                  {cp.psychographics.buying_triggers && <div><span className="text-slate-500 font-medium">Buying triggers:</span> <span className="text-slate-700">{(cp.psychographics.buying_triggers||[]).join(' · ')}</span></div>}
+                  {cp.psychographics.values && <div><span className="text-slate-500 font-medium">Values:</span> <span className="text-slate-700">{(cp.psychographics.values||[]).join(' · ')}</span></div>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {result.recommendations && result.recommendations.length>0 && (
+            <div>
+              <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">📋 Recommendations <span className="text-xs font-normal text-slate-400">(sorted by impact)</span></h3>
+              <div className="space-y-2">
+                {result.recommendations.map((r,i)=> (
+                  <div key={i} className={`border rounded-xl p-3 ${catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800'}`}>
+                    <div className="flex items-start gap-2">
+                      <span className="text-lg">{catIcons[r.category]||'📌'}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/60 text-[10px] font-bold border">P{r.priority}</span>
+                          <span className="text-xs font-bold uppercase tracking-wide">{r.category.replace('_',' ')}</span>
+                        </div>
+                        <p className="text-xs leading-relaxed"><span className="font-semibold">Finding:</span> {r.finding}</p>
+                        <p className="text-xs leading-relaxed mt-1"><span className="font-semibold">Action:</span> {r.recommendation}</p>
+                        {r.expected_impact && <p className="text-[11px] mt-1 opacity-80">📈 {r.expected_impact}</p>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Creative Analysis */}
+          {ca && (ca.headline_score || ca.ad_copy_score) && (
+            <div className="bg-gradient-to-br from-cyan-50 to-white border border-cyan-200 rounded-xl p-4">
+              <h3 className="text-sm font-bold text-slate-700 mb-3">✍️ Creative Analysis</h3>
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                {ca.headline_score!=null && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold">Headline Score</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.headline_score>=7? 'bg-emerald-100 text-emerald-700' : ca.headline_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{ca.headline_score}/10</span>
+                    </div>
+                    {ca.headline_feedback && <p className="text-slate-600 leading-relaxed">{ca.headline_feedback}</p>}
+                  </div>
+                )}
+                {ca.ad_copy_score!=null && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold">Ad Copy Score</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.ad_copy_score>=7? 'bg-emerald-100 text-emerald-700' : ca.ad_copy_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{ca.ad_copy_score}/10</span>
+                    </div>
+                    {ca.ad_copy_feedback && <p className="text-slate-600 leading-relaxed">{ca.ad_copy_feedback}</p>}
+                  </div>
+                )}
+              </div>
+              {ca.suggested_headlines && ca.suggested_headlines.length>0 && (
+                <div className="mt-3">
+                  <div className="text-xs font-semibold text-slate-600 mb-1">💡 Suggested Headlines:</div>
+                  <div className="space-y-1">
+                    {ca.suggested_headlines.map((h,i)=> <div key={i} className="text-xs bg-white/60 rounded-lg px-3 py-1.5 border border-cyan-100">{h}</div>)}
+                  </div>
+                </div>
+              )}
+              {ca.suggested_ad_copy && (
+                <div className="mt-3">
+                  <div className="text-xs font-semibold text-slate-600 mb-1">💡 Suggested Ad Copy:</div>
+                  <div className="text-xs bg-white/60 rounded-lg px-3 py-2 border border-cyan-100 whitespace-pre-wrap">{ca.suggested_ad_copy}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Customer Alignment */}
+          {cu && cu.score!=null && (
+            <div className="bg-gradient-to-br from-violet-50 to-white border border-violet-200 rounded-xl p-4">
+              <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">🎯 Customer Alignment <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cu.score>=7? 'bg-emerald-100 text-emerald-700' : cu.score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{cu.score}/10</span></h3>
+              {cu.gaps && cu.gaps.length>0 && (
+                <div className="mb-2"><span className="text-xs font-semibold text-slate-600">Gaps:</span>
+                  <ul className="list-disc list-inside text-xs text-slate-600 mt-1 space-y-0.5">{cu.gaps.map((g,i)=> <li key={i}>{g}</li>)}</ul>
+                </div>
+              )}
+              {cu.opportunities && cu.opportunities.length>0 && (
+                <div><span className="text-xs font-semibold text-slate-600">Opportunities:</span>
+                  <ul className="list-disc list-inside text-xs text-emerald-700 mt-1 space-y-0.5">{cu.opportunities.map((o,i)=> <li key={i}>{o}</li>)}</ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Scaling Plan */}
+          {sp && (sp.verdict || sp.next_steps) && (
+            <div className={`bg-gradient-to-br ${ov==='kill'? 'from-rose-50 to-white border-rose-200' : 'from-emerald-50 to-white border-emerald-200'} border rounded-xl p-4`}>
+              <h3 className="text-sm font-bold text-slate-700 mb-2">🗺️ Scaling Plan — <span className="capitalize">{sp.current_phase?.replace('_',' ')||'N/A'}</span></h3>
+              {sp.verdict && <p className="text-xs text-slate-700 leading-relaxed mb-3">{sp.verdict}</p>}
+              {sp.next_steps && sp.next_steps.length>0 && (
+                <div className="mb-3">
+                  <div className="text-xs font-semibold text-slate-600 mb-1">Next Steps:</div>
+                  <ol className="list-decimal list-inside text-xs text-slate-700 space-y-1">{sp.next_steps.map((s,i)=> <li key={i}>{s}</li>)}</ol>
+                </div>
+              )}
+              {sp.budget_recommendation && <p className="text-xs"><span className="font-semibold">💰 Budget:</span> {sp.budget_recommendation}</p>}
+              {sp.timeline && <p className="text-xs mt-1"><span className="font-semibold">⏱ Timeline:</span> {sp.timeline}</p>}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 bg-slate-50 border-t flex justify-end">
+          <button onClick={onClose} className="px-6 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold transition-colors">Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
