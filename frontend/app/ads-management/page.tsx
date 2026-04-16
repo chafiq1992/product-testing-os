@@ -154,6 +154,7 @@ export default function AdsManagementPage(){
   const [searchActive, setSearchActive] = useState<string>('')  // confirmed filter
   const [searchFocused, setSearchFocused] = useState<boolean>(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const preSearchPresetRef = useRef<string>('')  // remember preset before search
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -242,6 +243,7 @@ export default function AdsManagementPage(){
       case 'last_6d_incl_today': return 'last 6 days (including today)'
       case 'last_7d_incl_today': return 'last 7 days (including today)'
       case 'custom': return 'custom'
+      case 'maximum': return 'all time (search)'
       default: return p
     }
   }
@@ -260,6 +262,7 @@ export default function AdsManagementPage(){
     // Simple pass-through for exact-day presets
     if(preset==='today') return { datePreset: 'today' }
     if(preset==='yesterday') return { datePreset: 'yesterday' }
+    if(preset==='maximum') return { datePreset: 'maximum' }
     // Fallback to a safe default
     const { start, end } = computeRange('last_7d_incl_today')
     return { range: { start, end } }
@@ -985,6 +988,8 @@ export default function AdsManagementPage(){
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
                 onKeyDown={(e) => {
                   if(e.key==='Enter'){
+                    // Save current date preset and reload with all-time
+                    if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
                     if(searchSuggestions.length > 0){
                       const first = searchSuggestions[0]
                       setSearchActive(first.name.toLowerCase())
@@ -994,12 +999,22 @@ export default function AdsManagementPage(){
                     }
                     setSearchFocused(false)
                     searchRef.current?.blur()
+                    // Reload with maximum date range
+                    setDatePreset('maximum')
+                    load('maximum', { stores: selectedStores, adAccounts: selectedAdAccounts })
                   }
                   if(e.key==='Escape'){
+                    const prev = preSearchPresetRef.current || 'last_7d'
+                    preSearchPresetRef.current = ''
                     setSearchQuery('')
                     setSearchActive('')
                     setSearchFocused(false)
                     searchRef.current?.blur()
+                    // Restore original date preset and reload
+                    if(datePreset === 'maximum'){
+                      setDatePreset(prev)
+                      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+                    }
                   }
                 }}
                 placeholder="Search campaigns by name or ID…"
@@ -1007,7 +1022,16 @@ export default function AdsManagementPage(){
               />
               {(searchQuery || searchActive) && (
                 <button
-                  onClick={() => { setSearchQuery(''); setSearchActive(''); searchRef.current?.focus() }}
+                  onClick={() => {
+                    const prev = preSearchPresetRef.current || 'last_7d'
+                    preSearchPresetRef.current = ''
+                    setSearchQuery(''); setSearchActive(''); searchRef.current?.focus()
+                    // Restore original date preset and reload
+                    if(datePreset === 'maximum'){
+                      setDatePreset(prev)
+                      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+                    }
+                  }}
                   className="text-slate-400 hover:text-slate-600"
                 >
                   <X className="w-4 h-4"/>
@@ -1027,9 +1051,14 @@ export default function AdsManagementPage(){
                       className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center gap-2 text-sm border-b border-b-slate-100 last:border-b-0 transition-colors"
                       onMouseDown={(e) => {
                         e.preventDefault()
+                        // Save current date preset and reload with all-time
+                        if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
                         setSearchQuery(s.name)
                         setSearchActive(s.name.toLowerCase())
                         setSearchFocused(false)
+                        // Reload with maximum date range
+                        setDatePreset('maximum')
+                        load('maximum', { stores: selectedStores, adAccounts: selectedAdAccounts })
                       }}
                     >
                       <Search className="w-3.5 h-3.5 text-slate-300 flex-shrink-0"/>
@@ -1062,7 +1091,16 @@ export default function AdsManagementPage(){
               <div className="mt-1 flex items-center gap-1 text-xs text-blue-600">
                 <span>Filtered:</span>
                 <span className="font-semibold truncate max-w-[200px]">"{searchActive}"</span>
-                <button onClick={() => { setSearchQuery(''); setSearchActive('') }} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
+                <button onClick={() => {
+                  const prev = preSearchPresetRef.current || 'last_7d'
+                  preSearchPresetRef.current = ''
+                  setSearchQuery(''); setSearchActive('')
+                  // Restore original date preset and reload
+                  if(datePreset === 'maximum'){
+                    setDatePreset(prev)
+                    load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+                  }
+                }} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
               </div>
             )}
           </div>
