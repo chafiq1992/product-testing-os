@@ -9,4 +9,4 @@ COPY backend/app /app/app
 ENV PYTHONPATH=/app
 
 EXPOSE 8000
-CMD ["bash", "-lc", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["bash", "-lc", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300"]
