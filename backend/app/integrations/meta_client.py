@@ -434,7 +434,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     status_map: dict[str, str] = {}
     try:
         cparams = {
-            "fields": "id,name,effective_status,configured_status",
+            "fields": "id,name,effective_status,configured_status,created_time",
             "filtering": json.dumps([
                 {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
             ]),
@@ -449,6 +449,16 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
                 status_map[cid] = str(eff or "")
     except Exception:
         status_map = {}
+    # Build created_time lookup from campaign metadata
+    created_map: dict[str, str] = {}
+    try:
+        for c in (crows or []):
+            cid = str((c or {}).get("id") or "")
+            ct = (c or {}).get("created_time")
+            if cid and ct:
+                created_map[cid] = str(ct)
+    except Exception:
+        created_map = {}
     out: list[dict] = []
     for r in rows:
         name = (r or {}).get("campaign_name")
@@ -479,6 +489,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
             "ctr": round(ctr, 3) if ctr is not None else None,
             "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
             "status": (status_map.get(str(cid)) or "").upper() if cid else None,
+            "created_time": created_map.get(str(cid)) if cid else None,
         })
     return out
 

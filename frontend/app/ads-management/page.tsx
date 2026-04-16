@@ -1,8 +1,8 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -138,13 +138,17 @@ export default function AdsManagementPage(){
     try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes_by_product')||'{}') }catch{ return {} }
   })
   const [groupTarget, setGroupTarget] = useState<string>('') // product id
-  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?:Array<{text:string, at:string}> }>>({})
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?:Array<{text:string, at:string}>, product_life_checks?:Record<string, Record<string, boolean>> }>>({})
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
-  const browserTz = useMemo(()=> {
+  const browserTz = useMemo(()=>{
     try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined }catch{ return undefined }
   }, [])
+  // Product Life state
+  const [plInstructions, setPlInstructions] = useState<Record<string, string[]>>({ testing: [], action1: [], micro_scaling: [], macro_scaling: [] })
+  const [plSettingsOpen, setPlSettingsOpen] = useState<boolean>(false)
+  const [plHover, setPlHover] = useState<{ key:string, phase:string, rect?:DOMRect }|null>(null)
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -319,6 +323,10 @@ export default function AdsManagementPage(){
           if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
         }
         allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
+        // Extract product life instructions from bundle (last one wins – they're global per store)
+        if(bundle?.product_life_instructions?.phases){
+          setPlInstructions(bundle.product_life_instructions.phases)
+        }
       }
 
       // If extra stores selected, load their mappings + meta too (fast DB calls)
@@ -877,52 +885,36 @@ export default function AdsManagementPage(){
               </div>
             )}
           </div>
+          <button onClick={()=>setPlSettingsOpen(true)} className="rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm" title="Product Life Settings">
+            <Settings className="w-4 h-4"/>
+          </button>
           <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
           </button>
-          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
+          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm">Home</Link>
         </div>
       </header>
 
-      <div className="p-4 md:p-6">
+      <div className="px-1.5 py-0.5">
         {error && (
-          <div className="mb-3 text-sm text-red-600">{error}</div>
+          <div className="mb-2 text-xs text-red-600">{error}</div>
         )}
-        {/* Summary Header */}
-        <div className="mb-4 rounded-2xl overflow-hidden shadow-lg bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 text-white">
-          <div className="p-4 md:p-6">
-            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
-              <div>
-                <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
-                <div className="text-lg font-semibold">{adAccountName || adAccount || '—'}</div>
-                <div className="text-xs opacity-80">Range: {datePreset==='custom'? `${customStart||'—'} to ${customEnd||'—'}` : presetLabel(datePreset)} • Store{selectedStores.length>1?'s':''}: {selectedStores.join(', ')||'—'}</div>
-              </div>
-              <div className="text-sm opacity-90 flex items-center gap-2">
-                <Rocket className="w-4 h-4"/>
-                <span>Performance overview</span>
-              </div>
+        {/* Compact Summary Bar */}
+        <div className="mb-2 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 text-white px-4 py-2">
+          <div className="flex items-center justify-between flex-wrap gap-x-6 gap-y-1">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="opacity-70">{adAccountName || adAccount || '—'}</span>
+              <span className="opacity-50">•</span>
+              <span className="opacity-70">{datePreset==='custom'? `${customStart||'—'}→${customEnd||'—'}` : presetLabel(datePreset)}</span>
+              <span className="opacity-50">•</span>
+              <span className="opacity-70">{selectedStores.join(', ')||'—'}</span>
             </div>
-            <div className="mt-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="flex items-center justify-between text-xs opacity-90"><span>Total Spend</span><DollarSign className="w-4 h-4 opacity-90"/></div>
-                <div className="mt-1 text-xl font-bold">{fmtCurrency(totalSpend)}</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="flex items-center justify-between text-xs opacity-90"><span>Shopify Orders (table)</span><ShoppingCart className="w-4 h-4 opacity-90"/></div>
-                <div className="mt-1 text-xl font-bold">{fmtInt(tableOrdersTotal)}</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="flex items-center justify-between text-xs opacity-90"><span>Store Orders (all)</span><ShoppingCart className="w-4 h-4 opacity-90"/></div>
-                <div className="mt-1 text-xl font-bold">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="flex items-center justify-between text-xs opacity-90"><span>Total CPP</span><Calculator className="w-4 h-4 opacity-90"/></div>
-                <div className="mt-1 text-xl font-bold">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</div>
-              </div>
-              <div className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
-                <div className="flex items-center justify-between text-xs opacity-90"><span>Full Store CPP</span><Calculator className="w-4 h-4 opacity-90"/></div>
-                <div className="mt-1 text-xl font-bold">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</div>
-              </div>
+            <div className="flex items-center gap-4 text-xs">
+              <div><span className="opacity-70">Spend </span><span className="font-bold text-sm">{fmtCurrency(totalSpend)}</span></div>
+              <div><span className="opacity-70">Orders </span><span className="font-bold text-sm">{fmtInt(tableOrdersTotal)}</span></div>
+              <div><span className="opacity-70">Store </span><span className="font-bold text-sm">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</span></div>
+              <div><span className="opacity-70">CPP </span><span className="font-bold text-sm">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</span></div>
+              <div><span className="opacity-70">Full CPP </span><span className="font-bold text-sm">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</span></div>
             </div>
           </div>
         </div>
@@ -958,90 +950,91 @@ export default function AdsManagementPage(){
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
               <tr className="text-left">
-                <th className="px-3 py-2 font-semibold w-8">Sel</th>
-                <th className="px-3 py-2 font-semibold">Product</th>
-                <th className="px-3 py-2 font-semibold">
+                <th className="px-1.5 py-0.5 font-semibold w-8">Sel</th>
+                <th className="px-1.5 py-0.5 font-semibold">Product</th>
+                <th className="px-1.5 py-0.5 font-semibold">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold">
+                <th className="px-1.5 py-0.5 font-semibold">
                   <span>Status</span>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Spend</span>
                     {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Purchases</span>
                     {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Cost / Purchase</span>
                     {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>CTR</span>
                     {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>Add to cart</span>
                     {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-emerald-700">
+                <th className="px-1.5 py-0.5 font-semibold text-emerald-700">
                   <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 hover:text-emerald-800">
                     <span>Shopify Orders</span>
                     {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 hover:text-slate-900">
                     <span>True CPP</span>
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold">
+                <th className="px-1.5 py-0.5 font-semibold">
                   <span>Supplier</span>
                 </th>
-                <th className="px-3 py-2 font-semibold">
+                <th className="px-1.5 py-0.5 font-semibold">
                   <span>Supply available</span>
                 </th>
-                <th className="px-3 py-2 font-semibold text-indigo-700 text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-indigo-700 text-right">
                   <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 hover:text-indigo-800">
                     <span>Inventory</span>
                     {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold text-rose-700 text-right">
+                <th className="px-1.5 py-0.5 font-semibold text-rose-700 text-right">
                   <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 hover:text-rose-800">
                     <span>Zero-variant</span>
                     {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3.5 h-3.5 text-rose-400"/>}
                   </button>
                 </th>
-                <th className="px-3 py-2 font-semibold">Notes</th>
-                <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                <th className="px-1.5 py-0.5 font-semibold text-violet-700" style={{minWidth:'160px'}}>Product Life</th>
+                <th className="px-1.5 py-0.5 font-semibold">Notes</th>
+                <th className="px-1.5 py-0.5 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={17} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={18} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={17} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={18} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -1067,16 +1060,16 @@ export default function AdsManagementPage(){
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
-                        <td className="px-3 py-2"></td>
-                        <td className="px-3 py-2">
+                        <td className="px-1.5 py-0.5"></td>
+                        <td className="px-1.5 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
+                            <img src={img} alt="product" className="w-10 h-10 rounded object-cover border" />
                           ) : (
-                            <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
+                            <span className="inline-block w-10 h-10 rounded bg-slate-50 border" />
                           )}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className="px-1.5 py-0.5 whitespace-nowrap">
                           <div className="flex items-center gap-2">
                             <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
@@ -1088,35 +1081,86 @@ export default function AdsManagementPage(){
                             <span className="text-xs text-slate-500 font-mono">ID {pid}</span>
                           </div>
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-1.5 py-0.5">
                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
                         </td>
-                        <td className="px-3 py-2 text-right">${Number(m.spend||0).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right">{Number(m.purchases||0)}</td>
-                        <td className="px-3 py-2 text-right">{cpp}</td>
-                        <td className="px-3 py-2 text-right">{ctr}</td>
-                        <td className="px-3 py-2 text-right">{Number(m.add_to_cart||0)}</td>
-                        <td className="px-3 py-2">
+                        <td className="px-1.5 py-0.5 text-right">${Number(m.spend||0).toFixed(2)}</td>
+                        <td className="px-1.5 py-0.5 text-right">{Number(m.purchases||0)}</td>
+                        <td className="px-1.5 py-0.5 text-right">{cpp}</td>
+                        <td className="px-1.5 py-0.5 text-right">{ctr}</td>
+                        <td className="px-1.5 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
+                        <td className="px-1.5 py-0.5">
                           {orders==null ? (
                             <span className="text-slate-400">—</span>
                           ) : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
-                        <td className="px-3 py-2"><span className="text-slate-400">—</span></td>
-                        <td className="px-3 py-2"><span className="text-slate-400">—</span></td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-1.5 py-0.5 text-right">{orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
+                        <td className="px-1.5 py-0.5"><span className="text-slate-400">—</span></td>
+                        <td className="px-1.5 py-0.5"><span className="text-slate-400">—</span></td>
+                        <td className="px-1.5 py-0.5 text-right">
                           {inv==null ? <span className="text-slate-400">—</span> : (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-1.5 py-0.5 text-right">
                           {zeros==null ? <span className="text-slate-400">—</span> : (
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
                           )}
                         </td>
-                        <td className="px-3 py-2">
+                        {/* Product Life */}
+                        <td className="px-1.5 py-0.5">
+                          {(()=>{
+                            const firstCampaign = d.rows[0]
+                            const ct = (firstCampaign as any)?.created_time
+                            if(!ct) return <span className="text-slate-400 text-xs">—</span>
+                            const startDate = new Date(ct)
+                            const now = new Date()
+                            const daysSinceCreation = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000*60*60*24)))
+                            const phases = [
+                              { key: 'testing', label: 'Test', days: 3, start: 0 },
+                              { key: 'action1', label: 'Act1', days: 3, start: 3 },
+                              { key: 'micro_scaling', label: 'Micro', days: 7, start: 6 },
+                              { key: 'macro_scaling', label: 'Macro', days: 999, start: 13 },
+                            ]
+                            const currentPhaseIdx = daysSinceCreation >= 13 ? 3 : daysSinceCreation >= 6 ? 2 : daysSinceCreation >= 3 ? 1 : 0
+                            const campaignKey = String(firstCampaign.campaign_id || pid)
+                            const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
+                            return (
+                              <div className="flex gap-0.5 relative" style={{minWidth:'140px'}}>
+                                {phases.map((ph, idx) => {
+                                  const phChecks = checks[ph.key] || {}
+                                  const insts = plInstructions[ph.key] || []
+                                  const checkedCount = insts.filter((_:any, i:number) => phChecks[String(i)]).length
+                                  const mostChecked = insts.length > 0 && checkedCount >= Math.ceil(insts.length / 2)
+                                  const isCurrent = idx === currentPhaseIdx
+                                  const isPast = idx < currentPhaseIdx
+                                  const isFuture = idx > currentPhaseIdx
+                                  let bg = 'bg-slate-200'
+                                  if(isCurrent) bg = 'bg-green-300'
+                                  else if(isPast && mostChecked) bg = 'bg-green-700'
+                                  else if(isPast && !mostChecked) bg = 'bg-amber-400'
+                                  return (
+                                    <div
+                                      key={ph.key}
+                                      className={`flex-1 h-5 ${bg} ${idx===0?'rounded-l':''} ${idx===3?'rounded-r':''} cursor-pointer relative group/pl`}
+                                      title={`${ph.label} (Day ${ph.start}+)`}
+                                      onMouseEnter={(e) => {
+                                        const rect = e.currentTarget.getBoundingClientRect()
+                                        setPlHover({ key: campaignKey, phase: ph.key, rect })
+                                      }}
+                                      onMouseLeave={() => setPlHover(null)}
+                                    >
+                                      <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white/80 select-none">{ph.label}</span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-1.5 py-0.5">
                           <input
                             value={noteVal}
                             onChange={(e)=>{
@@ -1127,7 +1171,7 @@ export default function AdsManagementPage(){
                             className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
                           />
                         </td>
-                        <td className="px-3 py-2 text-right">
+                        <td className="px-1.5 py-0.5 text-right">
                           <button
                             onClick={async()=>{
                               setPerfOpen(true)
@@ -1201,26 +1245,26 @@ export default function AdsManagementPage(){
                 return (
                   <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
                   <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent} ${isChild? 'opacity-95' : ''}`}>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5">
                       <input
                         type="checkbox"
                         checked={!!selectedKeys[String(rowKey)]}
                         onChange={(e)=> toggleSelect(String(rowKey), e.target.checked)}
                       />
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="product" className="w-20 h-20 rounded object-cover border" />
+                        <img src={img} alt="product" className="w-10 h-10 rounded object-cover border" />
                       ) : (
                         hasAnyPid ? (
-                          <span className="inline-block w-20 h-20 rounded bg-slate-100 border animate-pulse" />
+                          <span className="inline-block w-10 h-10 rounded bg-slate-100 border animate-pulse" />
                         ) : (
-                          <span className="inline-block w-20 h-20 rounded bg-slate-50 border" />
+                          <span className="inline-block w-10 h-10 rounded bg-slate-50 border" />
                         )
                       )}
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
+                    <td className="px-1.5 py-0.5 whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <button
                           onClick={async()=>{
@@ -1352,7 +1396,7 @@ export default function AdsManagementPage(){
                         })()}
                       </div>
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5">
                       {(()=>{
                         const st = (c.status||'').toUpperCase()
                         const active = st==='ACTIVE'
@@ -1393,26 +1437,26 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-3 py-2 text-right">${(c.spend||0).toFixed(2)}</td>
-                    <td className="px-3 py-2 text-right">{c.purchases||0}</td>
-                    <td className="px-3 py-2 text-right">{cpp}</td>
-                    <td className="px-3 py-2 text-right">{ctr}</td>
-                    <td className="px-3 py-2 text-right">{c.add_to_cart||0}</td>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5 text-right">${(c.spend||0).toFixed(2)}</td>
+                    <td className="px-1.5 py-0.5 text-right">{c.purchases||0}</td>
+                    <td className="px-1.5 py-0.5 text-right">{cpp}</td>
+                    <td className="px-1.5 py-0.5 text-right">{ctr}</td>
+                    <td className="px-1.5 py-0.5 text-right">{c.add_to_cart||0}</td>
+                    <td className="px-1.5 py-0.5">
                       {orders==null ? (
                         <span className="text-slate-400">—</span>
                       ) : (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-1.5 py-0.5 text-right">
                       {isChild ? (
                         <span className="text-slate-400">—</span>
                       ) : (
                         orders==null ? <span className="inline-block h-4 w-12 bg-slate-100 rounded animate-pulse" /> : trueCpp
                       )}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5">
                       {(()=>{
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
@@ -1435,7 +1479,7 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-1.5 py-0.5">
                       {(()=>{
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
@@ -1456,7 +1500,7 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-1.5 py-0.5 text-right">
                       {hasAnyPid ? (
                         inv===null || inv===undefined ? (
                           <span className="inline-block h-4 w-10 bg-indigo-50 rounded animate-pulse" />
@@ -1467,7 +1511,7 @@ export default function AdsManagementPage(){
                         <span className="text-slate-400">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-1.5 py-0.5 text-right">
                       {hasAnyPid ? (
                         zeros===null || zeros===undefined ? (
                           <span className="inline-block h-4 w-10 bg-rose-50 rounded animate-pulse" />
@@ -1478,7 +1522,56 @@ export default function AdsManagementPage(){
                         <span className="text-slate-400">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2">
+                    {/* Product Life */}
+                    <td className="px-1.5 py-0.5">
+                      {(()=>{
+                        const ct = (c as any)?.created_time
+                        if(!ct) return <span className="text-slate-400 text-xs">—</span>
+                        const startDate = new Date(ct)
+                        const now = new Date()
+                        const daysSinceCreation = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000*60*60*24)))
+                        const phases = [
+                          { key: 'testing', label: 'Test', days: 3, start: 0 },
+                          { key: 'action1', label: 'Act1', days: 3, start: 3 },
+                          { key: 'micro_scaling', label: 'Micro', days: 7, start: 6 },
+                          { key: 'macro_scaling', label: 'Macro', days: 999, start: 13 },
+                        ]
+                        const currentPhaseIdx = daysSinceCreation >= 13 ? 3 : daysSinceCreation >= 6 ? 2 : daysSinceCreation >= 3 ? 1 : 0
+                        const campaignKey = String(c.campaign_id || rowKey)
+                        const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
+                        return (
+                          <div className="flex gap-0.5 relative" style={{minWidth:'140px'}}>
+                            {phases.map((ph, idx) => {
+                              const phChecks = checks[ph.key] || {}
+                              const insts = plInstructions[ph.key] || []
+                              const checkedCount = insts.filter((_:any, i:number) => phChecks[String(i)]).length
+                              const mostChecked = insts.length > 0 && checkedCount >= Math.ceil(insts.length / 2)
+                              const isCurrent = idx === currentPhaseIdx
+                              const isPast = idx < currentPhaseIdx
+                              let bg = 'bg-slate-200'
+                              if(isCurrent) bg = 'bg-green-300'
+                              else if(isPast && mostChecked) bg = 'bg-green-700'
+                              else if(isPast && !mostChecked) bg = 'bg-amber-400'
+                              return (
+                                <div
+                                  key={ph.key}
+                                  className={`flex-1 h-5 ${bg} ${idx===0?'rounded-l':''} ${idx===3?'rounded-r':''} cursor-pointer relative`}
+                                  title={`${ph.label} (Day ${ph.start}+)`}
+                                  onMouseEnter={(e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect()
+                                    setPlHover({ key: campaignKey, phase: ph.key, rect })
+                                  }}
+                                  onMouseLeave={() => setPlHover(null)}
+                                >
+                                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white/80 select-none">{ph.label}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )
+                      })()}
+                    </td>
+                    <td className="px-1.5 py-0.5">
                       <input
                         value={notes[rowKey as any]||''}
                         onChange={(e)=>{
@@ -1489,7 +1582,7 @@ export default function AdsManagementPage(){
                         className="w-44 rounded-md border px-2 py-1 text-sm bg-white"
                       />
                     </td>
-                    <td className="px-3 py-2 text-right">
+                    <td className="px-1.5 py-0.5 text-right">
                       <button
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
@@ -1552,7 +1645,7 @@ export default function AdsManagementPage(){
                       const adsets = adsetsByCampaign[cid]||[]
                       return (
                         <tr className="border-b last:border-b-0">
-                          <td className="px-3 py-2 bg-slate-50" colSpan={colSpan}>
+                          <td className="px-1.5 py-0.5 bg-slate-50" colSpan={colSpan}>
                             {loadingAdsets ? (
                               <div className="text-xs text-slate-500">Loading ad sets…</div>
                             ) : (
@@ -1731,7 +1824,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-3 py-2 bg-slate-50" colSpan={15}>
+                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={15}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (
@@ -1786,6 +1879,126 @@ export default function AdsManagementPage(){
           }
         }}
       />
+
+      {/* Product Life Hover Tooltip */}
+      {plHover && plHover.rect && (()=>{
+        const phaseLabels: Record<string,string> = { testing: 'Testing Phase', action1: 'Action 1 Phase', micro_scaling: 'Micro Scaling', macro_scaling: 'Macro Scaling' }
+        const insts = plInstructions[plHover.phase] || []
+        const campaignKey = plHover.key
+        const checks = ((campaignMeta[campaignKey] as any)?.product_life_checks || {}) as Record<string, Record<string, boolean>>
+        const phChecks = checks[plHover.phase] || {}
+        const top = plHover.rect.bottom + 8
+        const left = Math.max(8, Math.min(plHover.rect.left, window.innerWidth - 340))
+        return (
+          <div
+            className="fixed z-[9999] bg-white border border-slate-200 rounded-xl shadow-2xl p-4"
+            style={{ top, left, minWidth: 280, maxWidth: 340 }}
+            onMouseEnter={() => {/* keep open */}}
+            onMouseLeave={() => setPlHover(null)}
+          >
+            <div className="font-semibold text-sm text-violet-700 mb-2">{phaseLabels[plHover.phase] || plHover.phase}</div>
+            {insts.length === 0 ? (
+              <p className="text-xs text-slate-400">No instructions set. Use the ⚙ Settings button to add phase instructions.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {insts.map((inst: string, i: number) => {
+                  const checked = !!phChecks[String(i)]
+                  return (
+                    <li key={i} className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={async (e) => {
+                          const val = e.target.checked
+                          const newPhChecks = { ...phChecks, [String(i)]: val }
+                          const newChecks = { ...checks, [plHover.phase]: newPhChecks }
+                          setCampaignMeta(prev => ({
+                            ...prev,
+                            [campaignKey]: { ...(prev[campaignKey] || {}), product_life_checks: newChecks }
+                          }))
+                          try {
+                            await campaignMetaUpsert({ campaign_key: campaignKey, product_life_checks: newChecks, store } as any)
+                          } catch {}
+                        }}
+                        className="mt-0.5 accent-violet-600 w-4 h-4 rounded"
+                      />
+                      <span className={`text-xs ${checked ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{inst}</span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* Product Life Settings Modal */}
+      {plSettingsOpen && (
+        <div className="fixed inset-0 z-[9998] bg-black/50 flex items-center justify-center" onClick={() => setPlSettingsOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-slate-900">Product Life Settings</h2>
+              <button onClick={() => setPlSettingsOpen(false)} className="text-slate-400 hover:text-slate-700 text-xl">✕</button>
+            </div>
+            <p className="text-sm text-slate-500 mb-4">Configure instructions for each phase. These instructions will appear when hovering over the Product Life progress bar.</p>
+            {(['testing', 'action1', 'micro_scaling', 'macro_scaling'] as const).map(phase => {
+              const labels: Record<string,string> = { testing: '🧪 Testing Phase (Day 0-2)', action1: '⚡ Action 1 Phase (Day 3-5)', micro_scaling: '📈 Micro Scaling (Day 6-12)', macro_scaling: '🚀 Macro Scaling (Day 13+)' }
+              const insts = plInstructions[phase] || []
+              return (
+                <div key={phase} className="mb-4 p-3 border rounded-xl bg-slate-50">
+                  <div className="font-semibold text-sm text-slate-800 mb-2">{labels[phase]}</div>
+                  {insts.map((inst, i) => (
+                    <div key={i} className="flex items-center gap-2 mb-1">
+                      <span className="text-xs text-slate-500 w-5">{i+1}.</span>
+                      <input
+                        value={inst}
+                        onChange={(e) => {
+                          const newInsts = [...insts]
+                          newInsts[i] = e.target.value
+                          setPlInstructions(prev => ({ ...prev, [phase]: newInsts }))
+                        }}
+                        className="flex-1 rounded border px-2 py-1 text-sm bg-white"
+                      />
+                      <button
+                        onClick={() => {
+                          const newInsts = insts.filter((_: any, j: number) => j !== i)
+                          setPlInstructions(prev => ({ ...prev, [phase]: newInsts }))
+                        }}
+                        className="text-rose-400 hover:text-rose-600 text-xs px-1"
+                      >✕</button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setPlInstructions(prev => ({ ...prev, [phase]: [...(prev[phase] || []), ''] }))}
+                    className="mt-1 text-xs text-violet-600 hover:text-violet-800"
+                  >+ Add instruction</button>
+                </div>
+              )
+            })}
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setPlSettingsOpen(false)} className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-sm">Cancel</button>
+              <button
+                onClick={async () => {
+                  try {
+                    // Filter out empty instructions
+                    const cleaned: Record<string, string[]> = {}
+                    for (const [k, v] of Object.entries(plInstructions)) {
+                      cleaned[k] = (v || []).filter((s: string) => s.trim() !== '')
+                    }
+                    setPlInstructions(cleaned)
+                    await productLifeInstructionsSet({ phases: cleaned, store })
+                    setPlSettingsOpen(false)
+                  } catch (e: any) {
+                    alert('Failed to save: ' + (e?.message || e))
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm"
+              >Save Instructions</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }
@@ -1829,7 +2042,7 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
             <button
               onClick={async()=>{ if(draft.trim()){ await onAdd(draft.trim()) } }}
               disabled={adding || !draft.trim()}
-              className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-60"
+              className="px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-60"
             >{adding? 'Adding…' : 'Add'}</button>
           </div>
           <div className="space-y-3">

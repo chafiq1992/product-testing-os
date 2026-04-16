@@ -613,8 +613,9 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
 export type AdsManagementBundle = {
   campaigns: MetaCampaignRow[],
   mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
-  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text: string, at: string }> }>,
+  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text: string, at: string }>, product_life_checks?: Record<string, Record<string, boolean>> }>,
   ad_account?: { id?: string, name?: string },
+  product_life_instructions: { phases: Record<string, string[]> },
 }
 export async function fetchAdsManagementBundle(payload: {
   date_preset?: string,
@@ -641,6 +642,7 @@ export type MetaCampaignRow = {
   ctr?: number|null,
   add_to_cart: number,
   status?: string|null,
+  created_time?: string|null,
 }
 export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string, range?: { start?: string, end?: string }){
   const parts: string[] = []
@@ -1057,4 +1059,20 @@ export async function marketingMediaBuyer(payload:{
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/page-builder/marketing/media-buyer`, body, { timeout: 90000 })
   return data as { data?: { image_prompts: Array<{ prompt: string, format: string, style: string, platform: string, headline_overlay: string }>, video_concepts: Array<{ title: string, duration: string, hook: string, body: string, cta: string, style: string, music_mood: string }>, format_recommendations: Array<{ format: string, why: string, platform: string }>, creative_notes: string }, error?: string }
+}
+
+// -------- Product Life --------
+export async function productLifeInstructionsGet(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/product_life/instructions${q}`)
+  return data as { data?: { phases: Record<string, string[]> }, error?: string }
+}
+
+export async function productLifeInstructionsSet(payload:{ phases: Record<string, string[]>, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/product_life/instructions`, body)
+  return data as { data?: { phases: Record<string, string[]> }, error?: string }
 }

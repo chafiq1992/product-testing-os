@@ -1232,6 +1232,7 @@ class CampaignMetaUpsertRequest(BaseModel):
     supplier_name: Optional[str] = None
     supplier_alt_name: Optional[str] = None  # legacy
     supply_available: Optional[str] = None   # new
+    product_life_checks: Optional[Dict[str, Any]] = None  # per-campaign phase checks
     store: Optional[str] = None
 
 
@@ -1248,6 +1249,8 @@ async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
             patch["supplier_alt_name"] = req.supplier_alt_name
         if isinstance(req.supply_available, str):
             patch["supply_available"] = req.supply_available
+        if req.product_life_checks is not None:
+            patch["product_life_checks"] = req.product_life_checks
         data = db.set_campaign_meta(req.store, key, patch)
         return {"data": data}
     except Exception as e:
@@ -1279,6 +1282,34 @@ async def api_campaign_timeline_add(req: CampaignTimelineAddRequest):
         return {"data": data}
     except Exception as e:
         return {"error": str(e)}
+
+
+# -------- Product Life Instructions (global per store) --------
+class ProductLifeInstructionsRequest(BaseModel):
+    phases: Dict[str, list]  # { "testing": ["instruction1", ...], "action1": [...], ... }
+    store: Optional[str] = None
+
+
+@app.get("/api/product_life/instructions")
+async def api_get_product_life_instructions(store: str | None = None):
+    try:
+        data = db.get_app_setting(store, "product_life_instructions")
+        if not isinstance(data, dict):
+            data = {"phases": {"testing": [], "action1": [], "micro_scaling": [], "macro_scaling": []}}
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {"phases": {"testing": [], "action1": [], "micro_scaling": [], "macro_scaling": []}}}
+
+
+@app.post("/api/product_life/instructions")
+async def api_set_product_life_instructions(req: ProductLifeInstructionsRequest):
+    try:
+        data = {"phases": req.phases or {}}
+        saved = db.set_app_setting(req.store, "product_life_instructions", data)
+        return {"data": saved if isinstance(saved, dict) else data}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 
 # -------- Ads Management Bundle (single-request aggregation) --------
@@ -1406,16 +1437,27 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
         except Exception:
             return {}
 
-    campaigns_result, mappings, campaign_meta = await asyncio.gather(
+    async def _fetch_product_life_instructions():
+        try:
+            data = db.get_app_setting(store, "product_life_instructions")
+            if not isinstance(data, dict):
+                data = {"phases": {"testing": [], "action1": [], "micro_scaling": [], "macro_scaling": []}}
+            return data
+        except Exception:
+            return {"phases": {"testing": [], "action1": [], "micro_scaling": [], "macro_scaling": []}}
+
+    campaigns_result, mappings, campaign_meta, pl_instructions = await asyncio.gather(
         _fetch_campaigns(),
         _fetch_mappings(),
         _fetch_meta(),
+        _fetch_product_life_instructions(),
     )
 
     return {
         "campaigns": campaigns_result or [],
         "mappings": mappings or {},
         "campaign_meta": campaign_meta or {},
+        "product_life_instructions": pl_instructions or {},
     }
 
 

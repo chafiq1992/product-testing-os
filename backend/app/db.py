@@ -683,7 +683,7 @@ def set_campaign_meta(store: str | None, campaign_key: str, patch: Dict[str, Any
     data = dict(existing)
     for k, v in (patch or {}).items():
         # Only allow specific fields
-        if k in ("supplier_name", "supplier_alt_name", "supply_available", "timeline"):
+        if k in ("supplier_name", "supplier_alt_name", "supply_available", "timeline", "product_life_checks"):
             data[k] = v
     saved = set_app_setting(store, key, data)
     try:
