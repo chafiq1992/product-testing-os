@@ -2501,7 +2501,11 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
 
 // -------- AI Campaign Analysis Modal --------
 function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>void, result:CampaignAnalysisResult|null }){
+  const [openSections, setOpenSections] = useState<Record<string,boolean>>({ recommendations: true, scaling: true })
+  const toggle = (key:string) => setOpenSections(p => ({ ...p, [key]: !p[key] }))
+
   if(!open || !result) return null
+
   const verdictColors: Record<string,string> = {
     kill: 'from-rose-500 to-red-600',
     optimize: 'from-amber-400 to-orange-500',
@@ -2513,6 +2517,12 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
     optimize: '⚡ Optimize',
     scale: '🚀 Scale',
     scale_aggressively: '🔥 Scale Aggressively',
+  }
+  const verdictBg: Record<string,string> = {
+    kill: 'bg-rose-500',
+    optimize: 'bg-amber-500',
+    scale: 'bg-emerald-500',
+    scale_aggressively: 'bg-teal-500',
   }
   const catIcons: Record<string,string> = {
     creative: '🎨', targeting: '🎯', budget: '💰', pricing: '💵',
@@ -2533,149 +2543,323 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
   const sp = result.scaling_plan||{}
   const ca = result.creative_analysis||{}
   const cu = result.customer_alignment||{}
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/50 backdrop-blur-sm overflow-y-auto py-8" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden" onClick={e=> e.stopPropagation()}>
-        {/* Header */}
-        <div className={`bg-gradient-to-r ${verdictColors[ov]||'from-slate-500 to-slate-600'} px-6 py-5 text-white`}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-2xl font-bold">{verdictLabels[ov]||ov}</div>
-              <div className="text-white/80 text-sm mt-1">{result.confidence_level||''}</div>
-            </div>
-            <button onClick={onClose} className="text-white/80 hover:text-white text-2xl font-bold w-10 h-10 flex items-center justify-center rounded-full hover:bg-white/20 transition-colors">✕</button>
+
+  // Score ring component
+  const ScoreRing = ({ score, max=10, size=40, label }:{ score:number, max?:number, size?:number, label?:string }) => {
+    const pct = Math.min(100, (score/max)*100)
+    const color = score >= 7 ? '#10b981' : score >= 4 ? '#f59e0b' : '#ef4444'
+    const r = (size-6)/2
+    const circ = 2*Math.PI*r
+    const offset = circ - (pct/100)*circ
+    return (
+      <div className="flex flex-col items-center gap-1">
+        <svg width={size} height={size} className="transform -rotate-90">
+          <circle cx={size/2} cy={size/2} r={r} stroke="#e5e7eb" strokeWidth={4} fill="none"/>
+          <circle cx={size/2} cy={size/2} r={r} stroke={color} strokeWidth={4} fill="none"
+            strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition:'stroke-dashoffset 0.6s ease' }}/>
+        </svg>
+        <div className="absolute flex items-center justify-center" style={{ width:size, height:size }}>
+          <span className="text-xs font-bold" style={{ color }}>{score}</span>
+        </div>
+        {label && <span className="text-[9px] text-slate-500 font-medium">{label}</span>}
+      </div>
+    )
+  }
+
+  // Section accordion
+  const Section = ({ id, icon, title, badge, children, defaultOpen }:{ id:string, icon:string, title:string, badge?:React.ReactNode, children:React.ReactNode, defaultOpen?:boolean }) => {
+    const isOpen = openSections[id] ?? (defaultOpen || false)
+    return (
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => toggle(id)}
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors group"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base">{icon}</span>
+            <span className="text-sm font-semibold text-slate-800">{title}</span>
+            {badge}
           </div>
-          {result.summary && <p className="mt-3 text-sm text-white/90 leading-relaxed">{result.summary}</p>}
+          <svg
+            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+        {isOpen && (
+          <div className="px-4 pb-4 border-t border-slate-100">
+            {children}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/50 backdrop-blur-sm overflow-y-auto py-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden" onClick={e=> e.stopPropagation()}>
+
+        {/* ── Header with verdict ── */}
+        <div className={`bg-gradient-to-r ${verdictColors[ov]||'from-slate-500 to-slate-600'} px-6 py-5 text-white relative overflow-hidden`}>
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(255,255,255,0.1),transparent_70%)]"/>
+          <div className="relative flex items-center justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-3">
+                <div className="text-2xl font-bold tracking-tight">{verdictLabels[ov]||ov}</div>
+                {result.confidence_level && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-[11px] font-semibold backdrop-blur-sm">{result.confidence_level}</span>
+                )}
+              </div>
+              {result.summary && <p className="mt-2.5 text-sm text-white/90 leading-relaxed max-w-xl">{result.summary}</p>}
+            </div>
+            <button onClick={onClose} className="text-white/80 hover:text-white text-xl font-bold w-9 h-9 flex items-center justify-center rounded-full hover:bg-white/20 transition-colors flex-shrink-0 ml-4">✕</button>
+          </div>
+
+          {/* Quick stats strip */}
+          {result.meta_inputs && (
+            <div className="relative mt-4 flex items-center gap-4 text-[11px] text-white/70">
+              {result.meta_inputs.spend != null && <span>💵 Spend: <b className="text-white">${Number(result.meta_inputs.spend).toFixed(2)}</b></span>}
+              {result.meta_inputs.purchases != null && <span>🛒 Purchases: <b className="text-white">{result.meta_inputs.purchases}</b></span>}
+              {result.meta_inputs.ctr != null && <span>👆 CTR: <b className="text-white">{Number(result.meta_inputs.ctr).toFixed(2)}%</b></span>}
+              {result.meta_inputs.cpp != null && <span>💰 CPP: <b className="text-white">${Number(result.meta_inputs.cpp).toFixed(2)}</b></span>}
+              {result.meta_inputs.campaign_age_days != null && <span>📅 Day <b className="text-white">{result.meta_inputs.campaign_age_days}</b></span>}
+            </div>
+          )}
         </div>
 
-        <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-          {/* Customer Profile Card */}
-          {cp && Object.keys(cp).length>0 && !cp.error && (
-            <div className="bg-gradient-to-br from-slate-50 to-white border border-slate-200 rounded-xl p-4">
-              <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">👤 Target Customer Profile</h3>
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                {cp.target_gender && <div><span className="text-slate-500">Gender:</span> <span className="font-semibold text-slate-800">{cp.target_gender}</span></div>}
-                {cp.age_range && <div><span className="text-slate-500">Age:</span> <span className="font-semibold text-slate-800">{cp.age_range}</span></div>}
-                {cp.market_segment && <div className="col-span-2"><span className="text-slate-500">Segment:</span> <span className="font-semibold text-slate-800">{cp.market_segment}</span></div>}
-                {cp.buyer_persona && <div className="col-span-2"><span className="text-slate-500">Buyer:</span> <span className="font-semibold text-slate-800">{cp.buyer_persona}</span></div>}
-                {cp.price_sensitivity && <div><span className="text-slate-500">Price sensitivity:</span> <span className="font-semibold text-slate-800">{cp.price_sensitivity}</span></div>}
-                {cp.purchase_channel_preference && <div><span className="text-slate-500">Channel:</span> <span className="font-semibold text-slate-800">{cp.purchase_channel_preference}</span></div>}
-              </div>
-              {cp.psychographics && (
-                <div className="mt-3 space-y-2 text-xs">
-                  {cp.psychographics.pain_points && <div><span className="text-slate-500 font-medium">Pain points:</span> <span className="text-slate-700">{(cp.psychographics.pain_points||[]).join(' · ')}</span></div>}
-                  {cp.psychographics.buying_triggers && <div><span className="text-slate-500 font-medium">Buying triggers:</span> <span className="text-slate-700">{(cp.psychographics.buying_triggers||[]).join(' · ')}</span></div>}
-                  {cp.psychographics.values && <div><span className="text-slate-500 font-medium">Values:</span> <span className="text-slate-700">{(cp.psychographics.values||[]).join(' · ')}</span></div>}
+        {/* ── Body: collapsible sections ── */}
+        <div className="p-5 space-y-3 max-h-[65vh] overflow-y-auto bg-slate-50/50">
+
+          {/* Scaling Plan — always first and prominent */}
+          {sp && (sp.verdict || sp.next_steps) && (
+            <Section id="scaling" icon="🗺️" title={`Scaling Plan — ${sp.current_phase?.replace('_',' ')||'N/A'}`}
+              badge={<span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${verdictBg[ov]||'bg-slate-500'}`}>{ov.replace('_',' ').toUpperCase()}</span>}
+            >
+              <div className="mt-3 space-y-3">
+                {sp.verdict && <p className="text-sm text-slate-700 leading-relaxed bg-white rounded-lg p-3 border border-slate-100">{sp.verdict}</p>}
+                {sp.next_steps && sp.next_steps.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">Next Steps:</div>
+                    <div className="space-y-1.5">
+                      {sp.next_steps.map((s,i)=> (
+                        <div key={i} className="flex items-start gap-2.5 bg-white rounded-lg px-3 py-2 border border-slate-100">
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">{i+1}</span>
+                          <span className="text-xs text-slate-700 leading-relaxed">{s}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-4">
+                  {sp.budget_recommendation && (
+                    <div className="flex-1 bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">💰 Budget</div>
+                      <div className="text-xs text-slate-800">{sp.budget_recommendation}</div>
+                    </div>
+                  )}
+                  {sp.timeline && (
+                    <div className="flex-1 bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">⏱ Timeline</div>
+                      <div className="text-xs text-slate-800">{sp.timeline}</div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </div>
+            </Section>
           )}
 
           {/* Recommendations */}
           {result.recommendations && result.recommendations.length>0 && (
-            <div>
-              <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">📋 Recommendations <span className="text-xs font-normal text-slate-400">(sorted by impact)</span></h3>
-              <div className="space-y-2">
+            <Section id="recommendations" icon="📋" title="Recommendations"
+              badge={<span className="text-[10px] text-slate-400 font-normal ml-1">{result.recommendations.length} items · sorted by impact</span>}
+            >
+              <div className="mt-3 space-y-2">
                 {result.recommendations.map((r,i)=> (
-                  <div key={i} className={`border rounded-xl p-3 ${catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800'}`}>
-                    <div className="flex items-start gap-2">
-                      <span className="text-lg">{catIcons[r.category]||'📌'}</span>
+                  <div key={i} className={`border rounded-xl p-3 transition-all hover:shadow-sm ${catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800'}`}>
+                    <div className="flex items-start gap-2.5">
+                      <span className="text-base flex-shrink-0">{catIcons[r.category]||'📌'}</span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/60 text-[10px] font-bold border">P{r.priority}</span>
-                          <span className="text-xs font-bold uppercase tracking-wide">{r.category.replace('_',' ')}</span>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 text-[10px] font-bold border shadow-sm">P{r.priority}</span>
+                          <span className="text-[11px] font-bold uppercase tracking-wider opacity-80">{r.category.replace('_',' ')}</span>
                         </div>
-                        <p className="text-xs leading-relaxed"><span className="font-semibold">Finding:</span> {r.finding}</p>
-                        <p className="text-xs leading-relaxed mt-1"><span className="font-semibold">Action:</span> {r.recommendation}</p>
-                        {r.expected_impact && <p className="text-[11px] mt-1 opacity-80">📈 {r.expected_impact}</p>}
+                        <div className="bg-white/50 rounded-lg p-2.5 space-y-1.5">
+                          <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">📊 Finding:</span> {r.finding}</p>
+                          <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">✅ Action:</span> {r.recommendation}</p>
+                          {r.expected_impact && <p className="text-[11px] opacity-75 italic">📈 Expected: {r.expected_impact}</p>}
+                        </div>
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
+            </Section>
           )}
 
           {/* Creative Analysis */}
           {ca && (ca.headline_score || ca.ad_copy_score) && (
-            <div className="bg-gradient-to-br from-cyan-50 to-white border border-cyan-200 rounded-xl p-4">
-              <h3 className="text-sm font-bold text-slate-700 mb-3">✍️ Creative Analysis</h3>
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                {ca.headline_score!=null && (
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold">Headline Score</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.headline_score>=7? 'bg-emerald-100 text-emerald-700' : ca.headline_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{ca.headline_score}/10</span>
+            <Section id="creative" icon="✍️" title="Creative Analysis"
+              badge={
+                <div className="flex items-center gap-2 ml-2">
+                  {ca.headline_score!=null && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.headline_score>=7? 'bg-emerald-100 text-emerald-700' : ca.headline_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>H: {ca.headline_score}/10</span>}
+                  {ca.ad_copy_score!=null && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.ad_copy_score>=7? 'bg-emerald-100 text-emerald-700' : ca.ad_copy_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>C: {ca.ad_copy_score}/10</span>}
+                </div>
+              }
+            >
+              <div className="mt-3 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {ca.headline_score!=null && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-slate-700">Headline Score</span>
+                        <div className="relative">
+                          <ScoreRing score={ca.headline_score} />
+                        </div>
+                      </div>
+                      {ca.headline_feedback && <p className="text-[11px] text-slate-600 leading-relaxed">{ca.headline_feedback}</p>}
                     </div>
-                    {ca.headline_feedback && <p className="text-slate-600 leading-relaxed">{ca.headline_feedback}</p>}
+                  )}
+                  {ca.ad_copy_score!=null && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-slate-700">Ad Copy Score</span>
+                        <div className="relative">
+                          <ScoreRing score={ca.ad_copy_score} />
+                        </div>
+                      </div>
+                      {ca.ad_copy_feedback && <p className="text-[11px] text-slate-600 leading-relaxed">{ca.ad_copy_feedback}</p>}
+                    </div>
+                  )}
+                </div>
+
+                {ca.suggested_headlines && ca.suggested_headlines.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Headlines</div>
+                    <div className="space-y-1.5">
+                      {ca.suggested_headlines.map((h,i)=> (
+                        <div key={i} className="text-xs bg-gradient-to-r from-cyan-50 to-white rounded-lg px-3 py-2 border border-cyan-100 flex items-center gap-2">
+                          <span className="text-cyan-500 font-bold text-[10px]">H{i+1}</span>
+                          <span className="text-slate-700">{h}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
-                {ca.ad_copy_score!=null && (
+                {ca.suggested_ad_copy && (
                   <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-semibold">Ad Copy Score</span>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.ad_copy_score>=7? 'bg-emerald-100 text-emerald-700' : ca.ad_copy_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{ca.ad_copy_score}/10</span>
-                    </div>
-                    {ca.ad_copy_feedback && <p className="text-slate-600 leading-relaxed">{ca.ad_copy_feedback}</p>}
+                    <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Ad Copy</div>
+                    <div className="text-xs bg-gradient-to-r from-cyan-50 to-white rounded-lg px-3 py-2.5 border border-cyan-100 whitespace-pre-wrap text-slate-700 leading-relaxed">{ca.suggested_ad_copy}</div>
                   </div>
                 )}
               </div>
-              {ca.suggested_headlines && ca.suggested_headlines.length>0 && (
-                <div className="mt-3">
-                  <div className="text-xs font-semibold text-slate-600 mb-1">💡 Suggested Headlines:</div>
-                  <div className="space-y-1">
-                    {ca.suggested_headlines.map((h,i)=> <div key={i} className="text-xs bg-white/60 rounded-lg px-3 py-1.5 border border-cyan-100">{h}</div>)}
+            </Section>
+          )}
+
+          {/* Customer Profile */}
+          {cp && Object.keys(cp).length>0 && !cp.error && (
+            <Section id="customer" icon="👤" title="Target Customer Profile">
+              <div className="mt-3">
+                <div className="grid grid-cols-2 gap-2.5">
+                  {cp.target_gender && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Gender</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.target_gender}</div>
+                    </div>
+                  )}
+                  {cp.age_range && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Age Range</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.age_range}</div>
+                    </div>
+                  )}
+                  {cp.market_segment && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100 col-span-2">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Market Segment</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.market_segment}</div>
+                    </div>
+                  )}
+                  {cp.buyer_persona && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100 col-span-2">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Buyer Persona</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.buyer_persona}</div>
+                    </div>
+                  )}
+                  {cp.price_sensitivity && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Price Sensitivity</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5 capitalize">{cp.price_sensitivity}</div>
+                    </div>
+                  )}
+                  {cp.purchase_channel_preference && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Channel</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.purchase_channel_preference}</div>
+                    </div>
+                  )}
+                </div>
+                {cp.psychographics && (
+                  <div className="mt-3 space-y-2">
+                    {cp.psychographics.pain_points && cp.psychographics.pain_points.length>0 && (
+                      <div className="bg-rose-50/50 rounded-lg px-3 py-2 border border-rose-100">
+                        <div className="text-[10px] text-rose-500 font-semibold uppercase tracking-wider mb-1">Pain Points</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.pain_points.map((p:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-rose-100 text-rose-700">{p}</span>)}</div>
+                      </div>
+                    )}
+                    {cp.psychographics.buying_triggers && cp.psychographics.buying_triggers.length>0 && (
+                      <div className="bg-emerald-50/50 rounded-lg px-3 py-2 border border-emerald-100">
+                        <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">Buying Triggers</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.buying_triggers.map((t:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-emerald-100 text-emerald-700">{t}</span>)}</div>
+                      </div>
+                    )}
+                    {cp.psychographics.values && cp.psychographics.values.length>0 && (
+                      <div className="bg-violet-50/50 rounded-lg px-3 py-2 border border-violet-100">
+                        <div className="text-[10px] text-violet-600 font-semibold uppercase tracking-wider mb-1">Core Values</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.values.map((v:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-violet-100 text-violet-700">{v}</span>)}</div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
-              {ca.suggested_ad_copy && (
-                <div className="mt-3">
-                  <div className="text-xs font-semibold text-slate-600 mb-1">💡 Suggested Ad Copy:</div>
-                  <div className="text-xs bg-white/60 rounded-lg px-3 py-2 border border-cyan-100 whitespace-pre-wrap">{ca.suggested_ad_copy}</div>
-                </div>
-              )}
-            </div>
+                )}
+                {cp.competing_alternatives && cp.competing_alternatives.length>0 && (
+                  <div className="mt-2 bg-white rounded-lg px-3 py-2 border border-slate-100">
+                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Competing Alternatives</div>
+                    <div className="flex flex-wrap gap-1.5">{cp.competing_alternatives.map((a:string,i:number) => <span key={i} className="text-[11px] bg-slate-100 rounded-full px-2.5 py-0.5 text-slate-700">{a}</span>)}</div>
+                  </div>
+                )}
+              </div>
+            </Section>
           )}
 
           {/* Customer Alignment */}
           {cu && cu.score!=null && (
-            <div className="bg-gradient-to-br from-violet-50 to-white border border-violet-200 rounded-xl p-4">
-              <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">🎯 Customer Alignment <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${cu.score>=7? 'bg-emerald-100 text-emerald-700' : cu.score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{cu.score}/10</span></h3>
-              {cu.gaps && cu.gaps.length>0 && (
-                <div className="mb-2"><span className="text-xs font-semibold text-slate-600">Gaps:</span>
-                  <ul className="list-disc list-inside text-xs text-slate-600 mt-1 space-y-0.5">{cu.gaps.map((g,i)=> <li key={i}>{g}</li>)}</ul>
-                </div>
-              )}
-              {cu.opportunities && cu.opportunities.length>0 && (
-                <div><span className="text-xs font-semibold text-slate-600">Opportunities:</span>
-                  <ul className="list-disc list-inside text-xs text-emerald-700 mt-1 space-y-0.5">{cu.opportunities.map((o,i)=> <li key={i}>{o}</li>)}</ul>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Scaling Plan */}
-          {sp && (sp.verdict || sp.next_steps) && (
-            <div className={`bg-gradient-to-br ${ov==='kill'? 'from-rose-50 to-white border-rose-200' : 'from-emerald-50 to-white border-emerald-200'} border rounded-xl p-4`}>
-              <h3 className="text-sm font-bold text-slate-700 mb-2">🗺️ Scaling Plan — <span className="capitalize">{sp.current_phase?.replace('_',' ')||'N/A'}</span></h3>
-              {sp.verdict && <p className="text-xs text-slate-700 leading-relaxed mb-3">{sp.verdict}</p>}
-              {sp.next_steps && sp.next_steps.length>0 && (
-                <div className="mb-3">
-                  <div className="text-xs font-semibold text-slate-600 mb-1">Next Steps:</div>
-                  <ol className="list-decimal list-inside text-xs text-slate-700 space-y-1">{sp.next_steps.map((s,i)=> <li key={i}>{s}</li>)}</ol>
-                </div>
-              )}
-              {sp.budget_recommendation && <p className="text-xs"><span className="font-semibold">💰 Budget:</span> {sp.budget_recommendation}</p>}
-              {sp.timeline && <p className="text-xs mt-1"><span className="font-semibold">⏱ Timeline:</span> {sp.timeline}</p>}
-            </div>
+            <Section id="alignment" icon="🎯" title="Customer Alignment"
+              badge={<span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ml-2 ${cu.score>=7? 'bg-emerald-100 text-emerald-700' : cu.score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{cu.score}/10</span>}
+            >
+              <div className="mt-3 space-y-3">
+                {cu.gaps && cu.gaps.length>0 && (
+                  <div className="bg-rose-50/50 rounded-lg px-3 py-2.5 border border-rose-100">
+                    <div className="text-[10px] text-rose-500 font-semibold uppercase tracking-wider mb-1.5">⚠️ Gaps</div>
+                    <div className="space-y-1">{cu.gaps.map((g,i)=> <div key={i} className="text-xs text-rose-700 flex items-start gap-1.5"><span className="text-rose-400 mt-0.5">•</span>{g}</div>)}</div>
+                  </div>
+                )}
+                {cu.opportunities && cu.opportunities.length>0 && (
+                  <div className="bg-emerald-50/50 rounded-lg px-3 py-2.5 border border-emerald-100">
+                    <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1.5">🌟 Opportunities</div>
+                    <div className="space-y-1">{cu.opportunities.map((o,i)=> <div key={i} className="text-xs text-emerald-700 flex items-start gap-1.5"><span className="text-emerald-400 mt-0.5">•</span>{o}</div>)}</div>
+                  </div>
+                )}
+              </div>
+            </Section>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-slate-50 border-t flex justify-end">
-          <button onClick={onClose} className="px-6 py-2 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-sm font-semibold transition-colors">Close</button>
+        <div className="px-6 py-3 bg-white border-t border-slate-100 flex justify-end">
+          <button onClick={onClose} className="px-6 py-2 rounded-xl bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white text-sm font-semibold transition-all shadow-sm hover:shadow">Close</button>
         </div>
       </div>
     </div>
   )
 }
+
