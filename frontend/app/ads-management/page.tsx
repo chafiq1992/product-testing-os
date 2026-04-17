@@ -1,8 +1,8 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -160,6 +160,10 @@ export default function AdsManagementPage(){
   const [searchFocused, setSearchFocused] = useState<boolean>(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
+  // Inventory hover tooltip state
+  const [invHover, setInvHover] = useState<{ pid: string, rect?: DOMRect }|null>(null)
+  const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }>>({})
+  const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
   const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
   const tableOrdersTotal = useMemo(()=>{
@@ -905,8 +909,72 @@ export default function AdsManagementPage(){
     return sortDir==='asc'? <ArrowUp className="w-3.5 h-3.5"/> : <ArrowDown className="w-3.5 h-3.5"/>
   }
 
+  async function loadVariantInventory(pid: string){
+    if(variantInventoryCache[pid] || variantInventoryLoading[pid]) return
+    setVariantInventoryLoading(prev => ({ ...prev, [pid]: true }))
+    try{
+      const res = await shopifyProductVariantsInventory({ product_id: pid })
+      if((res as any)?.data){
+        setVariantInventoryCache(prev => ({ ...prev, [pid]: (res as any).data }))
+      }
+    }catch{}
+    finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
+  }
+
+  function InventoryTooltip(){
+    if(!invHover || !invHover.rect) return null
+    const pid = invHover.pid
+    const data = variantInventoryCache[pid]
+    const loading = variantInventoryLoading[pid]
+    const rect = invHover.rect
+    // Position tooltip below the hovered element
+    const top = rect.bottom + 4
+    const left = Math.max(4, rect.left - 60)
+    return (
+      <div
+        className="fixed z-[999] bg-white border border-slate-200 rounded-lg shadow-xl p-2 text-xs"
+        style={{ top, left, maxWidth: '420px', maxHeight: '320px', overflowY: 'auto' }}
+        onMouseEnter={() => {}} // keep tooltip visible
+        onMouseLeave={() => setInvHover(null)}
+      >
+        {loading && <div className="text-slate-400 py-2 px-3">Loading variants…</div>}
+        {!loading && !data && <div className="text-slate-400 py-2 px-3">No data</div>}
+        {!loading && data && data.sizes.length === 0 && <div className="text-slate-400 py-2 px-3">No variants</div>}
+        {!loading && data && data.sizes.length > 0 && (
+          <table className="border-collapse w-full">
+            <thead>
+              <tr>
+                <th className="px-1.5 py-1 text-left text-slate-500 font-medium border-b border-slate-100" style={{minWidth:'44px'}}></th>
+                {data.sizes.map(s => (
+                  <th key={s} className="px-1.5 py-1 text-center text-slate-600 font-semibold border-b border-slate-100 whitespace-nowrap" style={{minWidth:'28px'}}>{s}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.colors.map(color => (
+                <tr key={color} className="border-b border-slate-50 last:border-b-0">
+                  <td className="px-1.5 py-0.5 text-slate-600 font-medium whitespace-nowrap">{color}</td>
+                  {data.sizes.map(size => {
+                    const qty = (data.matrix[color] || {})[size] ?? 0
+                    const bg = qty === 0 ? 'bg-red-100 text-red-700' : qty <= 2 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                    return (
+                      <td key={size} className="px-1.5 py-0.5 text-center">
+                        <span className={`inline-block min-w-[22px] px-1 py-0.5 rounded text-[10px] font-bold ${bg}`}>{qty}</span>
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
+      <InventoryTooltip />
       <header className="min-h-16 py-2 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
@@ -1201,20 +1269,19 @@ export default function AdsManagementPage(){
                     {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
                   </button>
                 </th>
-                <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'120px'}}>Life</th>
-                <th className="px-1 py-0.5 font-semibold">Notes</th>
-                <th className="px-1 py-0.5 font-semibold text-right w-[90px]"></th>
+                <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'80px', maxWidth:'100px'}}>Life</th>
+                <th className="px-1 py-0.5 font-semibold text-right w-[70px]"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={15} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={15} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -1277,7 +1344,14 @@ export default function AdsManagementPage(){
                         </td>
                         <td className="px-1 py-0.5 text-right">{orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
                         <td className="px-1 py-0.5 text-right">
-                          <div className="flex items-center justify-end gap-0.5">
+                          <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                            onMouseEnter={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              setInvHover({ pid, rect })
+                              loadVariantInventory(pid)
+                            }}
+                            onMouseLeave={() => setInvHover(null)}
+                          >
                             {inv==null ? <span className="text-slate-400">—</span> : (
                               <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
                             )}
@@ -1306,7 +1380,7 @@ export default function AdsManagementPage(){
                             const campaignKey = String(firstCampaign.campaign_id || pid)
                             const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
                             return (
-                              <div className="flex gap-0.5 relative" style={{minWidth:'120px'}}>
+                              <div className="flex gap-0.5 relative" style={{minWidth:'80px', maxWidth:'100px'}}>
                                 {phases.map((ph, idx) => {
                                   const phChecks = checks[ph.key] || {}
                                   const insts = plInstructions[ph.key] || []
@@ -1338,19 +1412,10 @@ export default function AdsManagementPage(){
                             )
                           })()}
                         </td>
-                        <td className="px-1.5 py-0.5">
-                          <input
-                            value={noteVal}
-                            onChange={(e)=>{
-                              const v = e.target.value
-                              setGroupNotes(prev=>{ const next={...prev, [pid]: v}; try{ localStorage.setItem('ptos_ads_group_notes_by_product', JSON.stringify(next)) }catch{}; return next })
-                            }}
-                            placeholder="Group notes"
-                            className="w-24 rounded border px-1 py-0.5 text-xs bg-white"
-                          />
-                        </td>
-                        <td className="px-1.5 py-0.5 text-right">
+                        <td className="px-1 py-0.5 text-right">
+                          <div className="flex items-center justify-end gap-1">
                           <button
+                            title="Performance"
                             onClick={async()=>{
                               setPerfOpen(true)
                               setPerfLoading(true)
@@ -1377,7 +1442,6 @@ export default function AdsManagementPage(){
                                 })
                                 setPerfMetrics(mergedDays)
                                 setPerfCampaign({ id: pid, name: `Merged (${d.rows.length} campaigns)` })
-                                // Orders per day: use the product id once (avoid double counting)
                                 const mergedOrders: number[] = []
                                 for(const day of mergedDays){
                                   let o1 = 0
@@ -1392,8 +1456,8 @@ export default function AdsManagementPage(){
                                 setPerfLoading(false)
                               }
                             }}
-                            className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
-                          >Performance</button>
+                            className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors"
+                          ><BarChart3 className="w-3.5 h-3.5"/></button>
                           <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{
@@ -1437,13 +1501,14 @@ export default function AdsManagementPage(){
                               }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
                               finally{ setAnalysisLoading(null) }
                             }}
-                            className={`ml-1 px-2 py-1 rounded text-xs font-semibold transition-all ${
+                            title="Analyze"
+                            className={`p-1.5 rounded transition-all ${
                               analysisLoading===pid
                                 ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
                                 : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
                             }`}
-                          >{analysisLoading===pid ? '⏳ Analyzing…' : '✨ Analyze'}</button>
-                          {analysisError && analysisLoading===null && <span className="ml-1 text-[10px] text-rose-500">{analysisError.slice(0,40)}</span>}
+                          ><Sparkles className="w-3.5 h-3.5"/></button>
+                          </div>
                         </td>
                       </tr>
                     </Fragment>
@@ -1686,7 +1751,16 @@ export default function AdsManagementPage(){
                     </td>
                     <td className="px-1 py-0.5 text-right">
                       {hasAnyPid ? (
-                        <div className="flex items-center justify-end gap-0.5">
+                        <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                          onMouseEnter={(e) => {
+                            if(pidSelf){
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              setInvHover({ pid: pidSelf, rect })
+                              loadVariantInventory(pidSelf)
+                            }
+                          }}
+                          onMouseLeave={() => setInvHover(null)}
+                        >
                           {inv===null || inv===undefined ? (
                             <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
                           ) : (
@@ -1721,7 +1795,7 @@ export default function AdsManagementPage(){
                         const campaignKey = String(c.campaign_id || rowKey)
                         const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
                         return (
-                          <div className="flex gap-0.5 relative" style={{minWidth:'120px'}}>
+                          <div className="flex gap-0.5 relative" style={{minWidth:'80px', maxWidth:'100px'}}>
                             {phases.map((ph, idx) => {
                               const phChecks = checks[ph.key] || {}
                               const insts = plInstructions[ph.key] || []
@@ -1752,19 +1826,10 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-1.5 py-0.5">
-                      <input
-                        value={notes[rowKey as any]||''}
-                        onChange={(e)=>{
-                          const v = e.target.value
-                          setNotes(prev=>{ const next={...prev, [rowKey as any]: v}; try{ localStorage.setItem('ptos_notes', JSON.stringify(next)) }catch{}; return next })
-                        }}
-                        placeholder={isChild? 'Notes' : 'Notes'}
-                        className="w-24 rounded border px-1 py-0.5 text-xs bg-white"
-                      />
-                    </td>
-                    <td className="px-1.5 py-0.5 text-right">
+                    <td className="px-1 py-0.5 text-right">
+                      <div className="flex items-center justify-end gap-1">
                       <button
+                        title="Performance"
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
                           setPerfOpen(true)
@@ -1775,7 +1840,6 @@ export default function AdsManagementPage(){
                             const res = await fetchCampaignPerformance(cid, 6, browserTz)
                             const days = (((res as any)?.data||{}).days)||[]
                             setPerfMetrics(days)
-                            // Load Shopify orders per day based on mapping or numeric id
                             const rk = (c.campaign_id || c.name || '') as any
                             const conf = (manualIds as any)[rk]
                             const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
@@ -1804,16 +1868,18 @@ export default function AdsManagementPage(){
                             setPerfLoading(false)
                           }
                         }}
-                        className="px-2 py-1 rounded bg-slate-200 hover:bg-slate-300 text-xs"
-                      >Performance</button>
+                        className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors"
+                      ><BarChart3 className="w-3.5 h-3.5"/></button>
                       <button
+                        title="Timeline"
                         onClick={()=>{
                           setTimelineDraft('')
                           setTimelineOpen({ open: true, campaign: { id: String(c.campaign_id||''), name: c.name||'' } })
                         }}
-                        className="ml-2 px-2 py-1 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
-                      >Timeline</button>
+                        className="p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
+                      ><Clock className="w-3.5 h-3.5"/></button>
                       <button
+                        title="Analyze"
                         disabled={analysisLoading===rowKey}
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
@@ -1824,7 +1890,6 @@ export default function AdsManagementPage(){
                             const rk = (c.campaign_id || c.name || '') as any
                             const conf = (manualIds as any)[rk]
                             const prodId = (conf && conf.kind==='product' && conf.id)? conf.id : (pidSelf||undefined)
-                            // Compute campaign age from created_time
                             const ct = (c as any)?.created_time
                             let ageDays: number|undefined = undefined
                             if(ct){
@@ -1850,7 +1915,6 @@ export default function AdsManagementPage(){
                             if(res?.error){ setAnalysisError(res.error) }
                             else if(res?.data){
                               setAnalysisResult(res.data); setAnalysisOpen(true)
-                              // Refresh campaign meta to pick up new timeline entry
                               try{
                                 const metaRes = await campaignMetaList(store)
                                 if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
@@ -1859,18 +1923,19 @@ export default function AdsManagementPage(){
                           }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
                           finally{ setAnalysisLoading(null) }
                         }}
-                        className={`ml-1 px-2 py-1 rounded text-xs font-semibold transition-all ${
+                        className={`p-1.5 rounded transition-all ${
                           analysisLoading===rowKey
                             ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
                             : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
                         }`}
-                      >{analysisLoading===rowKey ? '⏳ Analyzing…' : '✨ Analyze'}</button>
+                      ><Sparkles className="w-3.5 h-3.5"/></button>
+                      </div>
                     </td>
                   </tr>
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 17
+                    const colSpan = 13
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -2057,7 +2122,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={15}>
+                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={13}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (

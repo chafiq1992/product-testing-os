@@ -1147,6 +1147,30 @@ async def api_products_brief(req: ProductsBriefRequest):
         return {"error": str(e), "data": {}}
 
 
+class ProductVariantsInventoryRequest(BaseModel):
+    product_id: str
+    store: Optional[str] = None
+
+
+@app.post("/api/shopify/product_variants_inventory")
+async def api_product_variants_inventory(req: ProductVariantsInventoryRequest):
+    """Return variant-level inventory breakdown (sizes x colors matrix) for a product."""
+    try:
+        pid = (req.product_id or "").strip()
+        if not pid or not pid.isdigit():
+            return {"data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
+        key = _cache_key("shopify_product_variants_inv", {"store": req.store or None, "id": pid})
+
+        async def _compute():
+            from app.integrations.shopify_client import get_product_variants_inventory
+            return await run_in_threadpool(get_product_variants_inventory, pid, store=req.store)
+
+        data = await _cached(key, 300, _compute)
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
+
+
 class OrdersTotalCountRequest(BaseModel):
     start: Optional[str] = None  # YYYY-MM-DD
     end: Optional[str] = None    # YYYY-MM-DD

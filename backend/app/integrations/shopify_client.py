@@ -1734,6 +1734,118 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
     return {"image": image, "total_available": total_available, "zero_variants": zero_variants, "zero_sizes": zero_sizes, "price": price}
 
 
+def get_product_variants_inventory(numeric_product_id: str, *, store: str | None = None) -> dict:
+    """Return variant-level inventory breakdown for a product.
+
+    Returns:
+      {
+        "sizes": ["38", "39", ...],
+        "colors": ["Black", "Brown", ...],
+        "matrix": { "Black": { "38": 5, "39": 0, ... }, ... },
+        "total_available": int
+      }
+    """
+    try:
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        p = (pdata or {}).get("product") or {}
+    except Exception:
+        return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+
+    variants = p.get("variants") or []
+    options = p.get("options") or []
+
+    # Determine which option index is Size and which is Color
+    size_idx = None
+    color_idx = None
+    for idx, opt in enumerate(options):
+        name = str((opt or {}).get("name") or "").strip().lower()
+        if "size" in name or "taille" in name:
+            size_idx = idx
+        elif "color" in name or "colour" in name or "couleur" in name:
+            color_idx = idx
+
+    # If only one option exists, treat it as Size (no color dimension)
+    if len(options) == 1:
+        size_idx = 0
+        color_idx = None
+    elif len(options) >= 2 and size_idx is None and color_idx is None:
+        # Heuristic: first option is Size, second is Color
+        size_idx = 0
+        color_idx = 1
+
+    # Collect inventory_item_ids to query levels
+    inv_ids: list[str] = []
+    for v in variants:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            if iid and iid != "None":
+                inv_ids.append(iid)
+        except Exception:
+            continue
+
+    inv_map: dict[str, int] = {}
+    if inv_ids:
+        chunk = 50
+        for i in range(0, len(inv_ids), chunk):
+            ids = ",".join(inv_ids[i:i + chunk])
+            try:
+                data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={ids}")
+                levels = (data or {}).get("inventory_levels") or []
+                for lv in levels:
+                    try:
+                        iid = str(lv.get("inventory_item_id"))
+                        avail = int(lv.get("available") or 0)
+                        inv_map[iid] = inv_map.get(iid, 0) + avail
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    # Build the matrix
+    sizes_set: list[str] = []
+    colors_set: list[str] = []
+    matrix: dict[str, dict[str, int]] = {}
+    total_available = 0
+
+    for v in variants:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            avail = inv_map.get(iid, 0)
+            total_available += max(0, avail)
+
+            opt_vals = [
+                str((v or {}).get("option1") or "").strip(),
+                str((v or {}).get("option2") or "").strip(),
+                str((v or {}).get("option3") or "").strip(),
+            ]
+
+            size_val = opt_vals[size_idx] if size_idx is not None and size_idx < len(opt_vals) else "Default"
+            color_val = opt_vals[color_idx] if color_idx is not None and color_idx < len(opt_vals) else "Default"
+
+            if not size_val:
+                size_val = "Default"
+            if not color_val:
+                color_val = "Default"
+
+            if size_val not in sizes_set:
+                sizes_set.append(size_val)
+            if color_val not in colors_set:
+                colors_set.append(color_val)
+
+            if color_val not in matrix:
+                matrix[color_val] = {}
+            matrix[color_val][size_val] = matrix[color_val].get(size_val, 0) + avail
+        except Exception:
+            continue
+
+    return {
+        "sizes": sizes_set,
+        "colors": colors_set,
+        "matrix": matrix,
+        "total_available": total_available,
+    }
+
+
 def count_paid_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None, include_closed: bool = True) -> int:
     """Count PAID orders (financial_status == paid/partially_paid) created within [created_at_min, created_at_max]
     that include the given numeric product/variant ID in line items.
