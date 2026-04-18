@@ -1167,3 +1167,19 @@ export async function campaignAnalyze(payload: {
   }
   return { error: 'Analysis timed out after 5 minutes' }
 }
+
+// -------- Campaign Analysis Checks (implementation checkmarks) --------
+export async function campaignAnalysisChecksSave(payload: { campaign_key: string, checks: Record<string, boolean>, store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign/analysis_checks`, body)
+  return data as { data?: any, error?: string }
+}
+
+export async function campaignAnalysisChecksGet(campaign_key: string, store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/campaign/analysis_checks/${encodeURIComponent(campaign_key)}${qp}`)
+  return data as { data?: Record<string, boolean>, error?: string }
+}

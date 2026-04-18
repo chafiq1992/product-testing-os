@@ -1309,8 +1309,42 @@ async def api_campaign_timeline_add(req: CampaignTimelineAddRequest):
     except Exception as e:
         return {"error": str(e)}
 
+# -------- Campaign Analysis Checks (per-campaign implementation checkmarks) --------
+class AnalysisChecksRequest(BaseModel):
+    campaign_key: str
+    checks: Dict[str, bool]  # { "rec_0": true, "step_1": false, ... }
+    store: Optional[str] = None
 
-# -------- Product Life Instructions (global per store) --------
+
+@app.post("/api/campaign/analysis_checks")
+async def api_save_analysis_checks(req: AnalysisChecksRequest):
+    """Save analysis checkmarks for a campaign."""
+    try:
+        key = (req.campaign_key or "").strip()
+        if not key:
+            return {"error": "missing_campaign_key"}
+        data = db.set_campaign_meta(req.store, key, {"analysis_checks": req.checks or {}})
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign/analysis_checks/{campaign_key}")
+async def api_get_analysis_checks(campaign_key: str, store: str | None = None):
+    """Get saved analysis checkmarks for a campaign."""
+    try:
+        key = (campaign_key or "").strip()
+        if not key:
+            return {"data": {}}
+        meta = db.get_app_setting(store, f"campaign_meta:{key}")
+        if not isinstance(meta, dict):
+            return {"data": {}}
+        return {"data": meta.get("analysis_checks") or {}}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+
 class ProductLifeInstructionsRequest(BaseModel):
     phases: Dict[str, list]  # { "testing": ["instruction1", ...], "action1": [...], ... }
     store: Optional[str] = None
@@ -1570,13 +1604,88 @@ def _run_analysis_job(job_id: str, req_data: dict):
             except Exception:
                 pass
 
-        # 3) Run AI analysis
+        # 3) Load previous analysis context (for feedback loop)
+        previous_analysis_context = None
+        try:
+            ck = campaign_key or (cids[0] if cids else "")
+            if ck:
+                meta = db.get_app_setting(store, f"campaign_meta:{ck}")
+                if isinstance(meta, dict):
+                    # Get saved checks
+                    saved_checks = meta.get("analysis_checks") or {}
+                    # Find the most recent analysis from timeline
+                    timeline = meta.get("timeline") or []
+                    prev_analysis = None
+                    for entry in reversed(timeline):
+                        try:
+                            text = entry.get("text", "") if isinstance(entry, dict) else str(entry)
+                            parsed = json.loads(text) if isinstance(text, str) else text
+                            if isinstance(parsed, dict) and parsed.get("type") == "analysis":
+                                prev_analysis = parsed
+                                break
+                        except Exception:
+                            continue
+                    
+                    if prev_analysis and saved_checks:
+                        import json as _json
+                        prev_result = prev_analysis.get("analysis") or {}
+                        prev_recs = prev_result.get("recommendations") or []
+                        prev_steps = (prev_result.get("scaling_plan") or {}).get("next_steps") or []
+                        
+                        # Build implementation status
+                        implemented_recs = []
+                        not_implemented_recs = []
+                        for idx, rec in enumerate(prev_recs):
+                            check_key = f"rec_{idx}"
+                            item_desc = f"[P{rec.get('priority', '?')} {rec.get('category', '')}] {rec.get('recommendation', '')}"
+                            if saved_checks.get(check_key):
+                                implemented_recs.append(item_desc)
+                            else:
+                                not_implemented_recs.append(item_desc)
+                        
+                        implemented_steps = []
+                        not_implemented_steps = []
+                        for idx, step in enumerate(prev_steps):
+                            check_key = f"step_{idx}"
+                            if saved_checks.get(check_key):
+                                implemented_steps.append(step)
+                            else:
+                                not_implemented_steps.append(step)
+                        
+                        if implemented_recs or not_implemented_recs:
+                            ctx_parts = []
+                            ctx_parts.append(f"PREVIOUS ANALYSIS (verdict: {prev_analysis.get('verdict', 'N/A')}, confidence: {prev_analysis.get('confidence', 'N/A')}):")
+                            ctx_parts.append(f"Summary: {prev_analysis.get('summary', 'N/A')}")
+                            if implemented_recs:
+                                ctx_parts.append(f"\n✅ IMPLEMENTED by the user ({len(implemented_recs)} items):")
+                                for item in implemented_recs:
+                                    ctx_parts.append(f"  - {item}")
+                            if not_implemented_recs:
+                                ctx_parts.append(f"\n❌ NOT YET IMPLEMENTED ({len(not_implemented_recs)} items):")
+                                for item in not_implemented_recs:
+                                    ctx_parts.append(f"  - {item}")
+                            if implemented_steps:
+                                ctx_parts.append(f"\n✅ COMPLETED next steps:")
+                                for item in implemented_steps:
+                                    ctx_parts.append(f"  - {item}")
+                            if not_implemented_steps:
+                                ctx_parts.append(f"\n❌ PENDING next steps:")
+                                for item in not_implemented_steps:
+                                    ctx_parts.append(f"  - {item}")
+                            
+                            previous_analysis_context = "\n".join(ctx_parts)
+                            logger.info("Campaign Analyzer: loaded previous analysis context (%d chars)", len(previous_analysis_context))
+        except Exception as ctx_err:
+            logger.warning("Failed to load previous analysis context: %s", ctx_err)
+
+        # 4) Run AI analysis
         if campaign_age_days is not None:
             campaign_metrics["campaign_age_days"] = campaign_age_days
         result = run_campaign_analysis(
             campaign_metrics=campaign_metrics,
             ad_creatives=ad_creatives,
             product_info=product_info,
+            previous_analysis_context=previous_analysis_context,
         )
 
         # Attach raw inputs
@@ -1584,7 +1693,7 @@ def _run_analysis_job(job_id: str, req_data: dict):
         result["ad_creatives_input"] = ad_creatives[:10]
         result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
 
-        # 4) Auto-save analysis to timeline
+        # 5) Auto-save analysis to timeline + reset checks for new analysis
         try:
             ck = campaign_key or (cids[0] if cids else "")
             if ck:
@@ -1598,6 +1707,8 @@ def _run_analysis_job(job_id: str, req_data: dict):
                     "analysis": result,
                 }, ensure_ascii=False)
                 db.append_campaign_timeline(store, ck, timeline_text)
+                # Reset analysis checks for the new analysis
+                db.set_campaign_meta(store, ck, {"analysis_checks": {}})
         except Exception as save_err:
             logger.warning("Failed to save analysis to timeline: %s", save_err)
 

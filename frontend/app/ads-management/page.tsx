@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -134,6 +134,9 @@ export default function AdsManagementPage(){
   const [analysisLoading, setAnalysisLoading] = useState<string|null>(null) // campaign key being analyzed
   const [analysisResult, setAnalysisResult] = useState<CampaignAnalysisResult|null>(null)
   const [analysisError, setAnalysisError] = useState<string|null>(null)
+  const [analysisChecks, setAnalysisChecks] = useState<Record<string, boolean>>({})
+  const [analysisCampaignKey, setAnalysisCampaignKey] = useState<string|null>(null)
+  const [analysisSaving, setAnalysisSaving] = useState<boolean>(false)
   // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
@@ -913,9 +916,24 @@ export default function AdsManagementPage(){
     if(variantInventoryCache[pid] || variantInventoryLoading[pid]) return
     setVariantInventoryLoading(prev => ({ ...prev, [pid]: true }))
     try{
-      const res = await shopifyProductVariantsInventory({ product_id: pid })
-      if((res as any)?.data){
-        setVariantInventoryCache(prev => ({ ...prev, [pid]: (res as any).data }))
+      // Try all selected stores in parallel – use the first one that returns real data
+      const storesToTry = selectedStores.length > 0 ? selectedStores : [store]
+      const results = await Promise.allSettled(
+        storesToTry.map(st => shopifyProductVariantsInventory({ product_id: pid, store: st }))
+      )
+      let best: any = null
+      for(const r of results){
+        if(r.status === 'fulfilled'){
+          const d = (r.value as any)?.data
+          if(d && (d.sizes?.length > 0 || d.total_available > 0)){
+            best = d
+            break
+          }
+          if(!best && d) best = d
+        }
+      }
+      if(best){
+        setVariantInventoryCache(prev => ({ ...prev, [pid]: best }))
       }
     }catch{}
     finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
@@ -1492,6 +1510,13 @@ export default function AdsManagementPage(){
                                 if(res?.error){ setAnalysisError(res.error) }
                                 else if(res?.data){
                                   setAnalysisResult(res.data); setAnalysisOpen(true)
+                                  setAnalysisCampaignKey(campaignKey)
+                                  // Load saved checks for this campaign
+                                  try{
+                                    const checksRes = await campaignAnalysisChecksGet(campaignKey, store)
+                                    if(checksRes?.data) setAnalysisChecks(checksRes.data)
+                                    else setAnalysisChecks({})
+                                  }catch{ setAnalysisChecks({}) }
                                   // Refresh campaign meta to pick up new timeline entry
                                   try{
                                     const metaRes = await campaignMetaList(store)
@@ -1915,6 +1940,13 @@ export default function AdsManagementPage(){
                             if(res?.error){ setAnalysisError(res.error) }
                             else if(res?.data){
                               setAnalysisResult(res.data); setAnalysisOpen(true)
+                              setAnalysisCampaignKey(cid)
+                              // Load saved checks for this campaign
+                              try{
+                                const checksRes = await campaignAnalysisChecksGet(cid, store)
+                                if(checksRes?.data) setAnalysisChecks(checksRes.data)
+                                else setAnalysisChecks({})
+                              }catch{ setAnalysisChecks({}) }
                               try{
                                 const metaRes = await campaignMetaList(store)
                                 if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
@@ -2152,7 +2184,21 @@ export default function AdsManagementPage(){
         </div>
       </div>
       <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
-      <AnalysisModal open={analysisOpen} onClose={()=>{ setAnalysisOpen(false); setAnalysisResult(null) }} result={analysisResult} />
+      <AnalysisModal
+        open={analysisOpen}
+        onClose={()=>{ setAnalysisOpen(false); setAnalysisResult(null); setAnalysisChecks({}); setAnalysisCampaignKey(null) }}
+        result={analysisResult}
+        checks={analysisChecks}
+        onCheckChange={(key: string, val: boolean) => setAnalysisChecks(prev => ({ ...prev, [key]: val }))}
+        saving={analysisSaving}
+        onSave={async () => {
+          if(!analysisCampaignKey) return
+          setAnalysisSaving(true)
+          try{ await campaignAnalysisChecksSave({ campaign_key: analysisCampaignKey, checks: analysisChecks, store }) }catch{}
+          finally{ setAnalysisSaving(false) }
+        }}
+        campaignKey={analysisCampaignKey}
+      />
       <TimelineModal
         open={timelineOpen.open}
         onClose={()=> setTimelineOpen({ open:false })}
@@ -2565,7 +2611,16 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
 
 
 // -------- AI Campaign Analysis Modal --------
-function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>void, result:CampaignAnalysisResult|null }){
+function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, onSave, campaignKey }:{
+  open:boolean,
+  onClose:()=>void,
+  result:CampaignAnalysisResult|null,
+  checks: Record<string, boolean>,
+  onCheckChange: (key: string, val: boolean) => void,
+  saving: boolean,
+  onSave: () => void,
+  campaignKey: string|null,
+}){
   const [openSections, setOpenSections] = useState<Record<string,boolean>>({ recommendations: true, scaling: true })
   const toggle = (key:string) => setOpenSections(p => ({ ...p, [key]: !p[key] }))
 
@@ -2608,6 +2663,38 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
   const sp = result.scaling_plan||{}
   const ca = result.creative_analysis||{}
   const cu = result.customer_alignment||{}
+
+  // Compute total checkable items and checked count
+  const checkableKeys: string[] = []
+  ;(result.recommendations||[]).forEach((_: any,i: number) => checkableKeys.push(`rec_${i}`))
+  ;(sp.next_steps||[]).forEach((_: any,i: number) => checkableKeys.push(`step_${i}`))
+  ;(ca.suggested_headlines||[]).forEach((_: any,i: number) => checkableKeys.push(`headline_${i}`))
+  ;(cu.gaps||[]).forEach((_: any,i: number) => checkableKeys.push(`gap_${i}`))
+  ;(cu.opportunities||[]).forEach((_: any,i: number) => checkableKeys.push(`opp_${i}`))
+  const checkedCount = checkableKeys.filter(k => !!checks[k]).length
+  const totalCheckable = checkableKeys.length
+
+  // Checkmark component
+  const CheckBox = ({ checkKey }: { checkKey: string }) => {
+    const checked = !!checks[checkKey]
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); onCheckChange(checkKey, !checked) }}
+        className={`flex-shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+          checked
+            ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+            : 'border-slate-300 hover:border-emerald-400 hover:bg-emerald-50'
+        }`}
+        title={checked ? 'Mark as not done' : 'Mark as done'}
+      >
+        {checked && (
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>
+        )}
+      </button>
+    )
+  }
 
   // Score ring component
   const ScoreRing = ({ score, max=10, size=40, label }:{ score:number, max?:number, size?:number, label?:string }) => {
@@ -2676,6 +2763,14 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
                 {result.confidence_level && (
                   <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-[11px] font-semibold backdrop-blur-sm">{result.confidence_level}</span>
                 )}
+                {totalCheckable > 0 && (
+                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold backdrop-blur-sm ${
+                    checkedCount === totalCheckable ? 'bg-emerald-400/30 text-emerald-100' :
+                    checkedCount > 0 ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70'
+                  }`}>
+                    {checkedCount === totalCheckable ? '✓ All done' : `${checkedCount}/${totalCheckable} done`}
+                  </span>
+                )}
               </div>
               {result.summary && <p className="mt-2.5 text-sm text-white/90 leading-relaxed max-w-xl">{result.summary}</p>}
             </div>
@@ -2708,12 +2803,19 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
                   <div>
                     <div className="text-xs font-semibold text-slate-600 mb-2">Next Steps:</div>
                     <div className="space-y-1.5">
-                      {sp.next_steps.map((s,i)=> (
-                        <div key={i} className="flex items-start gap-2.5 bg-white rounded-lg px-3 py-2 border border-slate-100">
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">{i+1}</span>
-                          <span className="text-xs text-slate-700 leading-relaxed">{s}</span>
-                        </div>
-                      ))}
+                      {sp.next_steps.map((s,i)=> {
+                        const ck = `step_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`flex items-start gap-2.5 rounded-lg px-3 py-2 border transition-all duration-200 ${
+                            done ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'
+                          }`}>
+                            <CheckBox checkKey={ck} />
+                            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">{i+1}</span>
+                            <span className={`text-xs leading-relaxed ${done ? 'text-emerald-700 line-through opacity-70' : 'text-slate-700'}`}>{s}</span>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -2738,27 +2840,41 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
           {/* Recommendations */}
           {result.recommendations && result.recommendations.length>0 && (
             <Section id="recommendations" icon="📋" title="Recommendations"
-              badge={<span className="text-[10px] text-slate-400 font-normal ml-1">{result.recommendations.length} items · sorted by impact</span>}
+              badge={
+                <span className="text-[10px] text-slate-400 font-normal ml-1">
+                  {result.recommendations.length} items · {result.recommendations.filter((_: any,i: number)=> !!checks[`rec_${i}`]).length} done
+                </span>
+              }
             >
               <div className="mt-3 space-y-2">
-                {result.recommendations.map((r,i)=> (
-                  <div key={i} className={`border rounded-xl p-3 transition-all hover:shadow-sm ${catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800'}`}>
-                    <div className="flex items-start gap-2.5">
-                      <span className="text-base flex-shrink-0">{catIcons[r.category]||'📌'}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 text-[10px] font-bold border shadow-sm">P{r.priority}</span>
-                          <span className="text-[11px] font-bold uppercase tracking-wider opacity-80">{r.category.replace('_',' ')}</span>
-                        </div>
-                        <div className="bg-white/50 rounded-lg p-2.5 space-y-1.5">
-                          <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">📊 Finding:</span> {r.finding}</p>
-                          <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">✅ Action:</span> {r.recommendation}</p>
-                          {r.expected_impact && <p className="text-[11px] opacity-75 italic">📈 Expected: {r.expected_impact}</p>}
+                {result.recommendations.map((r,i)=> {
+                  const ck = `rec_${i}`
+                  const done = !!checks[ck]
+                  return (
+                    <div key={i} className={`border rounded-xl p-3 transition-all duration-200 hover:shadow-sm ${
+                      done
+                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                        : (catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800')
+                    }`}>
+                      <div className="flex items-start gap-2.5">
+                        <CheckBox checkKey={ck} />
+                        <span className="text-base flex-shrink-0">{catIcons[r.category]||'📌'}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 text-[10px] font-bold border shadow-sm">P{r.priority}</span>
+                            <span className="text-[11px] font-bold uppercase tracking-wider opacity-80">{r.category.replace('_',' ')}</span>
+                            {done && <span className="text-[10px] text-emerald-600 font-semibold">✓ Implemented</span>}
+                          </div>
+                          <div className={`bg-white/50 rounded-lg p-2.5 space-y-1.5 ${done ? 'opacity-70' : ''}`}>
+                            <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">📊 Finding:</span> {r.finding}</p>
+                            <p className={`text-xs leading-relaxed ${done ? 'line-through' : ''}`}><span className="font-semibold text-slate-600">✅ Action:</span> {r.recommendation}</p>
+                            {r.expected_impact && <p className="text-[11px] opacity-75 italic">📈 Expected: {r.expected_impact}</p>}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </Section>
           )}
@@ -2803,12 +2919,19 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
                   <div>
                     <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Headlines</div>
                     <div className="space-y-1.5">
-                      {ca.suggested_headlines.map((h,i)=> (
-                        <div key={i} className="text-xs bg-gradient-to-r from-cyan-50 to-white rounded-lg px-3 py-2 border border-cyan-100 flex items-center gap-2">
-                          <span className="text-cyan-500 font-bold text-[10px]">H{i+1}</span>
-                          <span className="text-slate-700">{h}</span>
-                        </div>
-                      ))}
+                      {ca.suggested_headlines.map((h,i)=> {
+                        const ck = `headline_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`text-xs rounded-lg px-3 py-2 border flex items-center gap-2 transition-all duration-200 ${
+                            done ? 'bg-emerald-50 border-emerald-200' : 'bg-gradient-to-r from-cyan-50 to-white border-cyan-100'
+                          }`}>
+                            <CheckBox checkKey={ck} />
+                            <span className="text-cyan-500 font-bold text-[10px]">H{i+1}</span>
+                            <span className={`text-slate-700 ${done ? 'line-through opacity-70' : ''}`}>{h}</span>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -2905,13 +3028,31 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
                 {cu.gaps && cu.gaps.length>0 && (
                   <div className="bg-rose-50/50 rounded-lg px-3 py-2.5 border border-rose-100">
                     <div className="text-[10px] text-rose-500 font-semibold uppercase tracking-wider mb-1.5">⚠️ Gaps</div>
-                    <div className="space-y-1">{cu.gaps.map((g,i)=> <div key={i} className="text-xs text-rose-700 flex items-start gap-1.5"><span className="text-rose-400 mt-0.5">•</span>{g}</div>)}</div>
+                    <div className="space-y-1.5">{cu.gaps.map((g,i)=> {
+                      const ck = `gap_${i}`
+                      const done = !!checks[ck]
+                      return (
+                        <div key={i} className={`text-xs flex items-start gap-2 transition-all duration-200 ${done ? 'text-emerald-600' : 'text-rose-700'}`}>
+                          <CheckBox checkKey={ck} />
+                          <span className={done ? 'line-through opacity-70' : ''}>{g}</span>
+                        </div>
+                      )
+                    })}</div>
                   </div>
                 )}
                 {cu.opportunities && cu.opportunities.length>0 && (
                   <div className="bg-emerald-50/50 rounded-lg px-3 py-2.5 border border-emerald-100">
                     <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1.5">🌟 Opportunities</div>
-                    <div className="space-y-1">{cu.opportunities.map((o,i)=> <div key={i} className="text-xs text-emerald-700 flex items-start gap-1.5"><span className="text-emerald-400 mt-0.5">•</span>{o}</div>)}</div>
+                    <div className="space-y-1.5">{cu.opportunities.map((o,i)=> {
+                      const ck = `opp_${i}`
+                      const done = !!checks[ck]
+                      return (
+                        <div key={i} className={`text-xs flex items-start gap-2 transition-all duration-200 ${done ? 'text-slate-500' : 'text-emerald-700'}`}>
+                          <CheckBox checkKey={ck} />
+                          <span className={done ? 'line-through opacity-70' : ''}>{o}</span>
+                        </div>
+                      )
+                    })}</div>
                   </div>
                 )}
               </div>
@@ -2919,8 +3060,35 @@ function AnalysisModal({ open, onClose, result }:{ open:boolean, onClose:()=>voi
           )}
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-3 bg-white border-t border-slate-100 flex justify-end">
+        {/* Footer with Save Progress */}
+        <div className="px-6 py-3 bg-white border-t border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {totalCheckable > 0 && (
+              <>
+                {/* Progress bar */}
+                <div className="flex items-center gap-2">
+                  <div className="w-24 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500 transition-all duration-500"
+                      style={{ width: `${totalCheckable > 0 ? (checkedCount / totalCheckable) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-medium">{checkedCount}/{totalCheckable}</span>
+                </div>
+                <button
+                  onClick={onSave}
+                  disabled={saving}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    saving
+                      ? 'bg-slate-100 text-slate-400 cursor-wait'
+                      : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white shadow-sm hover:shadow'
+                  }`}
+                >
+                  {saving ? 'Saving…' : '💾 Save Progress'}
+                </button>
+              </>
+            )}
+          </div>
           <button onClick={onClose} className="px-6 py-2 rounded-xl bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white text-sm font-semibold transition-all shadow-sm hover:shadow">Close</button>
         </div>
       </div>

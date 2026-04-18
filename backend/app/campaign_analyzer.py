@@ -150,6 +150,7 @@ def analyze_campaign(
     product_info: dict,
     customer_profile_override: dict | None = None,
     model: str | None = None,
+    previous_analysis_context: str | None = None,
 ) -> dict:
     """Run the two-phase analysis pipeline.
 
@@ -159,6 +160,7 @@ def analyze_campaign(
         product_info: { title, price, description, image_url, handle, product_url }
         customer_profile_override: skip Phase 1 if already known
         model: OpenAI model override
+        previous_analysis_context: formatted string describing previous analysis + implementation status
 
     Returns:
         { customer_profile, recommendations, scaling_plan, creative_analysis, ... }
@@ -189,6 +191,21 @@ def analyze_campaign(
         f"AD CREATIVES:\n{json.dumps(ad_creatives[:5], ensure_ascii=False)}\n\n"
         f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n"
     )
+
+    # Inject previous analysis context for feedback loop
+    if previous_analysis_context:
+        analyst_input += (
+            f"\n\n--- FEEDBACK LOOP: PREVIOUS ANALYSIS & IMPLEMENTATION STATUS ---\n"
+            f"{previous_analysis_context}\n"
+            f"---\n"
+            f"IMPORTANT INSTRUCTIONS FOR THIS FOLLOW-UP ANALYSIS:\n"
+            f"1. Review the IMPLEMENTED items above. Evaluate whether those changes likely improved performance based on the current metrics.\n"
+            f"2. For NOT YET IMPLEMENTED items, decide if they are still relevant given the current data — keep, update, or drop them.\n"
+            f"3. DO NOT repeat recommendations that were already implemented unless they need further iteration.\n"
+            f"4. Provide NEW, more advanced recommendations building on what was already done.\n"
+            f"5. In your summary, briefly mention what progress was made since the last analysis.\n"
+        )
+
     logger.info("Campaign Analyzer: Phase 2 (Campaign Analyst) with %s", use_model)
     analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=use_model)
 
@@ -212,3 +229,4 @@ def analyze_campaign(
         "customer_profile": customer_profile,
         **analysis,
     }
+
