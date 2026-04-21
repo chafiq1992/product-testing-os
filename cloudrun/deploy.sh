@@ -54,7 +54,10 @@ API_FLAGS=(
   --allow-unauthenticated --port 8000
   --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",CHATKIT_WORKFLOW_ID="$CHATKIT_WORKFLOW_ID",CHATKIT_WORKFLOW_VERSION="$CHATKIT_WORKFLOW_VERSION"
   --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
-  --min-instances=0 --max-instances=5
+  --concurrency=80 --cpu=1 --memory=512Mi
+  --min-instances=0 --max-instances=3
+  --cpu-boost --cpu-throttling
+  --timeout=300
 )
 
 # If a bucket is provided, mount it at /app/uploads via Cloud Storage FUSE
@@ -71,7 +74,7 @@ gcloud run deploy "$API_SVC" "${API_FLAGS[@]}"
 API_URL=$(gcloud run services describe "$API_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "API deployed at: $API_URL"
 
-gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$WORKER_IMG" --platform managed --no-allow-unauthenticated --port 8080  --cpu 1 --memory 1Gi --min-instances=1 --max-instances=1  --set-env-vars CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
+gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$WORKER_IMG" --platform managed --no-allow-unauthenticated --port 8080  --cpu 1 --memory 512Mi --min-instances=0 --max-instances=2 --cpu-boost --cpu-throttling  --set-env-vars CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
 
 WORKER_URL=$(gcloud run services describe "$WORKER_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "Worker deployed at: $WORKER_URL (private)"
@@ -84,7 +87,7 @@ steps:
 images: ['${FRONTEND_IMG}']
 YAML
 
-gcloud run deploy "$FRONTEND_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$FRONTEND_IMG" --platform managed --allow-unauthenticated --port 8080 --min-instances=0 --max-instances=3
+gcloud run deploy "$FRONTEND_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$FRONTEND_IMG" --platform managed --allow-unauthenticated --port 8080 --min-instances=0 --max-instances=3 --cpu-boost --cpu-throttling --concurrency=80 --cpu=1 --memory=256Mi
 FRONTEND_URL=$(gcloud run services describe "$FRONTEND_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "Frontend deployed at: $FRONTEND_URL"
 echo "Next: set NEXT_PUBLIC_API_BASE_URL=$API_URL in frontend/.env.local and rebuild if needed."

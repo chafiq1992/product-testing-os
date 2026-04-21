@@ -35,16 +35,16 @@ steps:
   name: gcr.io/google.com/cloudsdktool/cloud-sdk
   entrypoint: gcloud
   args:
-    ["run","deploy","${_APP_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_APP_SVC}:$SHORT_SHA","--region","${_REGION}","--allow-unauthenticated","--port","8080","--timeout","600",
+    ["run","deploy","${_APP_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_APP_SVC}:$SHORT_SHA","--region","${_REGION}","--allow-unauthenticated","--port","8080","--timeout","300","--concurrency","80","--cpu","1","--memory","512Mi","--min-instances","0","--max-instances","3","--cpu-boost","--cpu-throttling",
      "--set-env-vars","SHOPIFY_SHOP_DOMAIN=${_SHOPIFY_SHOP_DOMAIN},SHOPIFY_API_VERSION=2025-07,META_AD_ACCOUNT_ID=${_META_AD_ACCOUNT_ID},META_PAGE_ID=${_META_PAGE_ID},META_API_VERSION=v23.0,CELERY_BROKER_URL=${_CELERY_URL},CELERY_RESULT_BACKEND=${_CELERY_URL}",
      "--set-secrets","OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest"]
 
-# Deploy worker service
+# Deploy worker service (scale-to-zero when idle to save costs)
 - id: Deploy Worker
   name: gcr.io/google.com/cloudsdktool/cloud-sdk
   entrypoint: gcloud
   args:
-    ["run","deploy","${_WORKER_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA","--region","${_REGION}","--no-allow-unauthenticated","--port","8080","--min-instances","1","--max-instances","1",
+    ["run","deploy","${_WORKER_SVC}","--image","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_WORKER_SVC}:$SHORT_SHA","--region","${_REGION}","--no-allow-unauthenticated","--port","8080","--min-instances","0","--max-instances","2","--cpu","1","--memory","512Mi","--cpu-boost","--cpu-throttling",
      "--set-env-vars","SHOPIFY_SHOP_DOMAIN=${_SHOPIFY_SHOP_DOMAIN},SHOPIFY_API_VERSION=2025-07,META_AD_ACCOUNT_ID=${_META_AD_ACCOUNT_ID},META_PAGE_ID=${_META_PAGE_ID},META_API_VERSION=v23.0,CELERY_BROKER_URL=${_CELERY_URL},CELERY_RESULT_BACKEND=${_CELERY_URL}",
      "--set-secrets","OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest"]
 images:

@@ -1,8 +1,8 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -137,6 +137,16 @@ export default function AdsManagementPage(){
   const [analysisChecks, setAnalysisChecks] = useState<Record<string, boolean>>({})
   const [analysisCampaignKey, setAnalysisCampaignKey] = useState<string|null>(null)
   const [analysisSaving, setAnalysisSaving] = useState<boolean>(false)
+  // Multi-campaign analysis state
+  const [multiAnalysisResults, setMultiAnalysisResults] = useState<Record<string, CampaignAnalysisResult>>({})
+  const [multiAnalysisLoading, setMultiAnalysisLoading] = useState<boolean>(false)
+  const [multiAnalysisProgress, setMultiAnalysisProgress] = useState<{ done: number, total: number }>({ done: 0, total: 0 })
+  // Action Tasks state
+  const [actionTasks, setActionTasks] = useState<ActionTask[]>([])
+  const [actionTasksSummary, setActionTasksSummary] = useState<string>('')
+  const [actionTasksOpen, setActionTasksOpen] = useState<boolean>(false)
+  const [actionTasksLoading, setActionTasksLoading] = useState<boolean>(false)
+  const [actionTasksLoaded, setActionTasksLoaded] = useState<boolean>(false)
   // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
@@ -554,6 +564,17 @@ export default function AdsManagementPage(){
       if(!initialLoadDone.current){
         initialLoadDone.current = true
         load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })
+      }
+      // Load saved action tasks
+      if(!actionTasksLoaded){
+        try{
+          const res = await getActionTasks(store)
+          if(res?.data){
+            setActionTasks(res.data.tasks || [])
+            setActionTasksSummary(res.data.summary || '')
+            setActionTasksLoaded(true)
+          }
+        }catch{}
       }
     })()
   }, [])
@@ -1035,6 +1056,117 @@ export default function AdsManagementPage(){
           <button onClick={()=>setPlSettingsOpen(true)} className="rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm" title="Product Life Settings">
             <Settings className="w-4 h-4"/>
           </button>
+          {/* ── Analyze Selected button ── */}
+          {selectedCount > 0 && (
+            <button
+              disabled={multiAnalysisLoading}
+              onClick={async()=>{
+                const keys = Object.keys(selectedKeys).filter(k => !!selectedKeys[k])
+                if(keys.length === 0) return
+                setMultiAnalysisLoading(true)
+                setMultiAnalysisResults({})
+                setMultiAnalysisProgress({ done: 0, total: keys.length })
+                const results: Record<string, CampaignAnalysisResult> = {}
+                for(let i = 0; i < keys.length; i++){
+                  const rk = keys[i]
+                  // Find the campaign row
+                  const row = (items||[]).find(r => String(r.campaign_id||r.name||'') === rk)
+                  if(!row) { setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 })); continue }
+                  try{
+                    const cid = String(row.campaign_id||'')
+                    const rkSelf = (row.campaign_id || row.name || '') as any
+                    const confSelf = (manualIds as any)[rkSelf]
+                    const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id) ? confSelf.id : extractNumericId((row.name||'').trim())
+                    const ct = (row as any)?.created_time
+                    let ageDays: number|undefined = undefined
+                    if(ct){ const diff = Date.now() - new Date(ct).getTime(); ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24))) }
+                    const orders = getOrders(row)
+                    const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
+                    const res = await campaignAnalyze({
+                      campaign_id: cid || undefined,
+                      product_id: pidSelf || undefined,
+                      metrics: {
+                        spend: Number(row.spend||0),
+                        purchases: Number(row.purchases||0),
+                        ctr: row.ctr!=null? row.ctr : undefined,
+                        cpp: row.cpp!=null? row.cpp : undefined,
+                        add_to_cart: Number((row as any).add_to_cart||0),
+                        shopify_orders: orders,
+                        true_cpp: trueCppVal,
+                        status: (row.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
+                      },
+                      campaign_age_days: ageDays,
+                      campaign_key: cid || rk,
+                    })
+                    if(res?.data){
+                      results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
+                    }
+                  }catch{}
+                  setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 }))
+                  setMultiAnalysisResults({ ...results })
+                }
+                setMultiAnalysisResults(results)
+                setMultiAnalysisLoading(false)
+              }}
+              className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
+                multiAnalysisLoading
+                  ? 'bg-gradient-to-r from-violet-300 to-fuchsia-300 cursor-wait animate-pulse'
+                  : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 shadow-sm hover:shadow-md'
+              }`}
+            >
+              <Sparkles className="w-4 h-4"/>
+              {multiAnalysisLoading
+                ? `Analyzing ${multiAnalysisProgress.done}/${multiAnalysisProgress.total}…`
+                : `Analyze ${selectedCount} selected`
+              }
+            </button>
+          )}
+          {/* ── Generate Actions button (after multi-analysis) ── */}
+          {Object.keys(multiAnalysisResults).length > 0 && !multiAnalysisLoading && (
+            <button
+              disabled={actionTasksLoading}
+              onClick={async()=>{
+                setActionTasksLoading(true)
+                try{
+                  const analyses = Object.values(multiAnalysisResults)
+                  const res = await generateActionTasks({ analyses, store })
+                  if(res?.data){
+                    setActionTasks(res.data.tasks || [])
+                    setActionTasksSummary(res.data.summary || '')
+                    setActionTasksOpen(true)
+                    setMultiAnalysisResults({})
+                  }
+                }catch{}
+                finally{ setActionTasksLoading(false) }
+              }}
+              className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
+                actionTasksLoading
+                  ? 'bg-gradient-to-r from-amber-300 to-orange-300 cursor-wait animate-pulse'
+                  : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-sm hover:shadow-md'
+              }`}
+            >
+              <Zap className="w-4 h-4"/>
+              {actionTasksLoading ? 'Generating tasks…' : `Generate Actions (${Object.keys(multiAnalysisResults).length})`}
+            </button>
+          )}
+          {/* ── Tasks icon with badge ── */}
+          {(()=>{
+            const incomplete = actionTasks.filter(t => !t.done).length
+            return (
+              <button
+                onClick={()=> setActionTasksOpen(true)}
+                className="relative rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm transition-all"
+                title="Action Tasks"
+              >
+                <ClipboardList className="w-4 h-4"/>
+                {incomplete > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[10px] font-bold flex items-center justify-center shadow-sm animate-bounce" style={{animationDuration:'2s'}}>
+                    {incomplete}
+                  </span>
+                )}
+              </button>
+            )
+          })()}
           <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
           </button>
@@ -2199,6 +2331,22 @@ export default function AdsManagementPage(){
         }}
         campaignKey={analysisCampaignKey}
       />
+      <TasksPopup
+        open={actionTasksOpen}
+        onClose={()=> setActionTasksOpen(false)}
+        tasks={actionTasks}
+        summary={actionTasksSummary}
+        onToggleTask={async(taskId: string)=>{
+          const updated = actionTasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t)
+          setActionTasks(updated)
+          try{ await saveActionTasks({ tasks: updated, store }) }catch{}
+        }}
+        onClearAll={async()=>{
+          setActionTasks([])
+          setActionTasksSummary('')
+          try{ await clearActionTasks(store) }catch{}
+        }}
+      />
       <TimelineModal
         open={timelineOpen.open}
         onClose={()=> setTimelineOpen({ open:false })}
@@ -2610,6 +2758,227 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
 }
 
 
+function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:{
+  open: boolean,
+  onClose: ()=>void,
+  tasks: ActionTask[],
+  summary: string,
+  onToggleTask: (taskId: string)=>void,
+  onClearAll: ()=>void,
+}){
+  const [filter, setFilter] = useState<'all'|'urgent'|'done'>('all')
+
+  if(!open) return null
+
+  const filtered = tasks.filter(t => {
+    if(filter === 'urgent') return !t.done && (t.priority <= 2 || t.urgency === 'immediate' || t.urgency === 'today')
+    if(filter === 'done') return t.done
+    return true
+  })
+  const doneCount = tasks.filter(t => t.done).length
+  const totalCount = tasks.length
+  const urgentCount = tasks.filter(t => !t.done && t.priority <= 2).length
+  const pct = totalCount > 0 ? (doneCount / totalCount) * 100 : 0
+
+  const urgencyColors: Record<string,string> = {
+    immediate: 'bg-rose-100 text-rose-700 border-rose-200',
+    today: 'bg-amber-100 text-amber-700 border-amber-200',
+    this_week: 'bg-blue-100 text-blue-700 border-blue-200',
+    when_possible: 'bg-slate-100 text-slate-600 border-slate-200',
+  }
+  const urgencyLabels: Record<string,string> = {
+    immediate: '🔴 Immediate',
+    today: '🟡 Today',
+    this_week: '🔵 This week',
+    when_possible: '⚪ When possible',
+  }
+  const catIcons: Record<string,string> = {
+    kill: '🛑', scale: '🚀', creative: '🎨', budget: '💰',
+    targeting: '🎯', inventory: '📦', pricing: '💵',
+    optimization: '⚡', testing: '🧪',
+  }
+  const catColors: Record<string,string> = {
+    kill: 'bg-rose-500', scale: 'bg-emerald-500', creative: 'bg-pink-500',
+    budget: 'bg-amber-500', targeting: 'bg-blue-500', inventory: 'bg-indigo-500',
+    pricing: 'bg-teal-500', optimization: 'bg-violet-500', testing: 'bg-cyan-500',
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white/95 backdrop-blur-xl shadow-2xl w-full max-w-lg h-full overflow-hidden flex flex-col border-l border-slate-200"
+        style={{ animation: 'slideInRight 0.3s ease-out' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-5 py-4 text-white relative overflow-hidden flex-shrink-0">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_30%,rgba(139,92,246,0.15),transparent_60%)]"/>
+          <div className="relative flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shadow-lg">
+                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-bold tracking-tight">Action Tasks</h2>
+                <div className="text-[11px] text-white/60">{totalCount} tasks · {doneCount} completed</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {urgentCount > 0 && (
+                <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 text-[11px] font-bold animate-pulse">
+                  {urgentCount} urgent
+                </span>
+              )}
+              <button onClick={onClose} className="text-white/60 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
+            </div>
+          </div>
+          {/* Progress bar */}
+          {totalCount > 0 && (
+            <div className="relative mt-3 flex items-center gap-3">
+              <div className="flex-1 h-2 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-700 ease-out ${pct >= 100 ? 'bg-gradient-to-r from-emerald-400 to-emerald-300' : 'bg-gradient-to-r from-violet-400 to-fuchsia-400'}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className={`text-xs font-bold ${pct >= 100 ? 'text-emerald-300' : 'text-white/70'}`}>
+                {pct >= 100 ? '✓ All done!' : `${Math.round(pct)}%`}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Summary */}
+        {summary && (
+          <div className="px-5 py-3 bg-gradient-to-r from-violet-50 to-fuchsia-50 border-b border-violet-100 flex-shrink-0">
+            <p className="text-xs text-violet-800 leading-relaxed">{summary}</p>
+          </div>
+        )}
+
+        {/* Filter tabs */}
+        <div className="flex items-center gap-1 px-5 py-2 border-b border-slate-100 bg-slate-50 flex-shrink-0">
+          {([
+            { key: 'all' as const, label: 'All', count: totalCount },
+            { key: 'urgent' as const, label: '🔴 Urgent', count: urgentCount },
+            { key: 'done' as const, label: '✅ Done', count: doneCount },
+          ]).map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setFilter(tab.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                filter === tab.key
+                  ? 'bg-white text-slate-800 shadow-sm border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'
+              }`}
+            >
+              {tab.label} <span className="text-[10px] opacity-60">({tab.count})</span>
+            </button>
+          ))}
+          <div className="flex-1"/>
+          {totalCount > 0 && (
+            <button
+              onClick={onClearAll}
+              className="text-[10px] text-slate-400 hover:text-rose-500 font-medium transition-colors"
+            >Clear all</button>
+          )}
+        </div>
+
+        {/* Task list */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+          {filtered.length === 0 && (
+            <div className="text-center py-12">
+              <div className="text-4xl mb-3">{filter === 'done' ? '🎯' : filter === 'urgent' ? '🎉' : '📋'}</div>
+              <div className="text-sm text-slate-500 font-medium">
+                {filter === 'done' ? 'No completed tasks yet' : filter === 'urgent' ? 'No urgent tasks — great job!' : 'No tasks yet. Analyze campaigns to generate tasks.'}
+              </div>
+            </div>
+          )}
+          {filtered.map(task => {
+            const isDone = task.done
+            return (
+              <div
+                key={task.id}
+                className={`group rounded-xl border p-3.5 transition-all duration-300 hover:shadow-md ${
+                  isDone
+                    ? 'bg-emerald-50/60 border-emerald-200/60 opacity-70'
+                    : task.priority <= 2
+                      ? 'bg-white border-rose-200 shadow-sm shadow-rose-100/50'
+                      : 'bg-white border-slate-200 shadow-sm'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  {/* Checkbox */}
+                  <button
+                    onClick={() => onToggleTask(task.id)}
+                    className={`flex-shrink-0 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 mt-0.5 ${
+                      isDone
+                        ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+                        : 'border-slate-300 hover:border-violet-400 hover:bg-violet-50 group-hover:border-violet-400'
+                    }`}
+                  >
+                    {isDone && (
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+                      </svg>
+                    )}
+                  </button>
+
+                  <div className="flex-1 min-w-0">
+                    {/* Top line: priority + category + urgency */}
+                    <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-black text-white ${
+                        task.priority <= 1 ? 'bg-rose-500' : task.priority <= 2 ? 'bg-amber-500' : task.priority <= 3 ? 'bg-blue-500' : 'bg-slate-400'
+                      }`}>P{task.priority}</span>
+                      <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${catColors[task.category] || 'bg-slate-500'}`}>
+                        {catIcons[task.category] || '📌'} {task.category?.replace('_',' ')}
+                      </span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${urgencyColors[task.urgency] || urgencyColors.when_possible}`}>
+                        {urgencyLabels[task.urgency] || task.urgency}
+                      </span>
+                    </div>
+
+                    {/* Title */}
+                    <div className={`text-sm font-semibold leading-snug mb-1 ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>
+                      {task.title}
+                    </div>
+
+                    {/* Description */}
+                    <p className={`text-xs leading-relaxed mb-2 ${isDone ? 'text-emerald-600/60 line-through' : 'text-slate-600'}`}>
+                      {task.description}
+                    </p>
+
+                    {/* Campaigns tags + impact */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(task.campaigns||[]).slice(0, 3).map((c, i) => (
+                        <span key={i} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium truncate max-w-[140px]" title={c}>{c}</span>
+                      ))}
+                      {(task.campaigns||[]).length > 3 && (
+                        <span className="text-[10px] text-slate-400">+{task.campaigns.length - 3} more</span>
+                      )}
+                    </div>
+                    {task.expected_impact && (
+                      <div className={`mt-1.5 text-[11px] italic ${isDone ? 'text-emerald-500/60' : 'text-violet-600'}`}>
+                        📈 {task.expected_impact}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <style jsx>{`
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
 // -------- AI Campaign Analysis Modal --------
 function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, onSave, campaignKey }:{
   open:boolean,

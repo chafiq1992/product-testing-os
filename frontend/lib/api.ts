@@ -1183,3 +1183,77 @@ export async function campaignAnalysisChecksGet(campaign_key: string, store?: st
   const {data} = await axios.get(`${base}/api/campaign/analysis_checks/${encodeURIComponent(campaign_key)}${qp}`)
   return data as { data?: Record<string, boolean>, error?: string }
 }
+
+// -------- Action Tasks (AI-generated management task list) --------
+export type ActionTask = {
+  id: string
+  priority: number
+  urgency: string
+  category: string
+  title: string
+  description: string
+  campaigns: string[]
+  expected_impact: string
+  done: boolean
+}
+
+export type ActionTasksResult = {
+  summary: string
+  urgent_count: number
+  tasks: ActionTask[]
+}
+
+export async function generateActionTasks(payload: {
+  analyses: any[]
+  store?: string
+}): Promise<{ data?: ActionTasksResult, error?: string }>{
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  // Step 1: Start the job
+  const startRes = await axios.post(`${base}/api/campaign/generate_action_tasks`, body, { timeout: 15000 })
+  const jobId = startRes.data?.job_id
+  if(!jobId){
+    return startRes.data as { data?: ActionTasksResult, error?: string }
+  }
+  // Step 2: Poll for result every 3 seconds (up to 3 minutes)
+  const maxAttempts = 60
+  for(let i = 0; i < maxAttempts; i++){
+    await new Promise(r => setTimeout(r, 3000))
+    try{
+      const statusRes = await axios.get(`${base}/api/campaign/generate_action_tasks/status/${jobId}`, { timeout: 10000 })
+      const job = statusRes.data
+      if(job.status === 'done'){
+        return { data: job.result as ActionTasksResult }
+      }
+      if(job.status === 'error'){
+        return { error: job.error || 'Task generation failed' }
+      }
+    }catch(pollErr: any){
+      console.warn('Action task poll error:', pollErr?.message)
+    }
+  }
+  return { error: 'Task generation timed out after 3 minutes' }
+}
+
+export async function getActionTasks(store?: string): Promise<{ data?: ActionTasksResult, error?: string }>{
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/campaign/action_tasks${qp}`)
+  return data as { data?: ActionTasksResult, error?: string }
+}
+
+export async function saveActionTasks(payload: { tasks: ActionTask[], store?: string }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const {data} = await axios.post(`${base}/api/campaign/action_tasks/save`, body)
+  return data as { data?: any, error?: string }
+}
+
+export async function clearActionTasks(store?: string){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.delete(`${base}/api/campaign/action_tasks${qp}`)
+  return data as { data?: { ok: boolean }, error?: string }
+}

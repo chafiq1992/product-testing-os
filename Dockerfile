@@ -17,7 +17,7 @@ FROM python:3.11-slim AS backend-build
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --compile -r requirements.txt
 # Copy backend source
 COPY backend/app ./app
 
@@ -26,11 +26,17 @@ COPY backend/app ./app
 ####################################
 FROM python:3.11-slim
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8080 \
+    MALLOC_ARENA_MAX=2
 
 # Install Python dependencies
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --compile -r requirements.txt && \
+    find /usr/local -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null; \
+    find /usr/local -name '*.pyc' -delete 2>/dev/null; \
+    true
 
 # Copy backend code from build stage
 COPY --from=backend-build /app/app ./app

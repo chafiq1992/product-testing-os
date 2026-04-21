@@ -47,7 +47,7 @@ from app.integrations.meta_client import list_ads_for_adsets
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
-from app.campaign_analyzer import analyze_campaign as run_campaign_analysis
+from app.campaign_analyzer import analyze_campaign as run_campaign_analysis, generate_action_tasks as run_action_task_generation
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
@@ -1771,6 +1771,110 @@ async def api_campaign_analyze_status(job_id: str):
     if not job:
         return {"status": "not_found", "error": "Job not found"}
     return job
+
+
+# -------- Action Task Agent (generate tasks from multiple analyses) --------
+_action_task_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+class GenerateActionTasksRequest(BaseModel):
+    analyses: list  # list of campaign analysis results
+    store: Optional[str] = None
+
+
+def _run_action_task_job(job_id: str, analyses: list, store: str | None):
+    """Run the action task generation in a background thread."""
+    try:
+        result = run_action_task_generation(analyses=analyses)
+        # Save tasks to DB
+        try:
+            db.set_app_setting(store, "action_tasks", result)
+        except Exception as save_err:
+            logger.warning("Failed to save action tasks: %s", save_err)
+        _action_task_jobs[job_id] = {"status": "done", "result": result}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _action_task_jobs[job_id] = {"status": "error", "error": str(e)}
+
+
+@app.post("/api/campaign/generate_action_tasks")
+async def api_generate_action_tasks(req: GenerateActionTasksRequest):
+    """Start action task generation as a background job."""
+    import threading
+    from uuid import uuid4
+    try:
+        if not req.analyses or not isinstance(req.analyses, list):
+            return {"error": "analyses list required"}
+
+        job_id = str(uuid4())
+        _action_task_jobs[job_id] = {"status": "pending"}
+
+        # Clean old jobs
+        if len(_action_task_jobs) > 30:
+            keys = list(_action_task_jobs.keys())
+            for old_key in keys[:len(keys) - 20]:
+                _action_task_jobs.pop(old_key, None)
+
+        thread = threading.Thread(
+            target=_run_action_task_job,
+            args=(job_id, req.analyses, req.store),
+            daemon=True,
+        )
+        thread.start()
+        return {"job_id": job_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign/generate_action_tasks/status/{job_id}")
+async def api_action_task_status(job_id: str):
+    """Poll for action task generation status."""
+    job = _action_task_jobs.get(job_id)
+    if not job:
+        return {"status": "not_found", "error": "Job not found"}
+    return job
+
+
+@app.get("/api/campaign/action_tasks")
+async def api_get_action_tasks(store: str | None = None):
+    """Get saved action tasks for a store."""
+    try:
+        data = db.get_app_setting(store, "action_tasks")
+        if not isinstance(data, dict):
+            return {"data": {"summary": "", "urgent_count": 0, "tasks": []}}
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {"summary": "", "urgent_count": 0, "tasks": []}}
+
+
+class SaveActionTasksRequest(BaseModel):
+    tasks: list  # full tasks array with done states
+    store: Optional[str] = None
+
+
+@app.post("/api/campaign/action_tasks/save")
+async def api_save_action_tasks(req: SaveActionTasksRequest):
+    """Save updated task check states."""
+    try:
+        existing = db.get_app_setting(req.store, "action_tasks")
+        if not isinstance(existing, dict):
+            existing = {"summary": "", "urgent_count": 0, "tasks": []}
+        existing["tasks"] = req.tasks or []
+        saved = db.set_app_setting(req.store, "action_tasks", existing)
+        return {"data": saved if isinstance(saved, dict) else existing}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/campaign/action_tasks")
+async def api_clear_action_tasks(store: str | None = None):
+    """Clear all action tasks for a store."""
+    try:
+        db.set_app_setting(store, "action_tasks", {"summary": "", "urgent_count": 0, "tasks": []})
+        return {"data": {"ok": True}}
+    except Exception as e:
+        return {"error": str(e), "data": {"ok": False}}
 
 
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------

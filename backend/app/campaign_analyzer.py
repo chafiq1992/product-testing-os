@@ -230,3 +230,148 @@ def analyze_campaign(
         **analysis,
     }
 
+
+# ─────────────── Action Task Agent ───────────────
+
+ACTION_TASK_AGENT_PROMPT = (
+    "You are a senior Ad Operations Manager and Task Planner who manages a team of employees "
+    "running Meta (Facebook/Instagram) ad campaigns for an ecommerce business.\n\n"
+    "Task: You have just received AI analysis reports for MULTIPLE campaigns. "
+    "Your job is to distill ALL the analyses into a CLEAR, ACTIONABLE task list that your "
+    "management employees can follow immediately.\n\n"
+    "RULES FOR TASK CREATION:\n"
+    "1. CROSS-REFERENCE campaigns: if 3 campaigns all need better creatives, create ONE task "
+    "   that references all 3 instead of 3 separate tasks.\n"
+    "2. PRIORITIZE by impact: tasks that save money or increase revenue come first.\n"
+    "3. BE SPECIFIC: 'Increase budget for campaign X from $20 to $40' not 'adjust budgets'.\n"
+    "4. KILL decisions first: if any campaign should be killed, that's always top priority.\n"
+    "5. Group SCALING actions: if multiple campaigns should scale, bundle them.\n"
+    "6. Include INVENTORY alerts: if stock is low for a product being advertised, flag it.\n"
+    "7. Maximum 15 tasks. Merge similar ones aggressively.\n"
+    "8. Each task must be completable by ONE person in ONE sitting.\n"
+    "9. Match the language of the campaigns (if Arabic/French, write tasks in same language).\n\n"
+    "Output Contract — return ONE valid JSON object:\n"
+    "{\n"
+    '  "summary": string (2-3 sentence overview of the portfolio health),\n'
+    '  "urgent_count": number (how many tasks are urgent/P1),\n'
+    '  "tasks": [\n'
+    "    {\n"
+    '      "id": string (unique, e.g. "task_1"),\n'
+    '      "priority": number (1=most urgent, 5=nice-to-have),\n'
+    '      "urgency": string ("immediate"|"today"|"this_week"|"when_possible"),\n'
+    '      "category": string ("kill"|"scale"|"creative"|"budget"|"targeting"|"inventory"|"pricing"|"optimization"|"testing"),\n'
+    '      "title": string (short action title, max 10 words),\n'
+    '      "description": string (detailed instructions, be very specific),\n'
+    '      "campaigns": string[] (campaign names or IDs this applies to),\n'
+    '      "expected_impact": string (what will improve and by how much),\n'
+    '      "done": false\n'
+    "    }\n"
+    '  ] (sorted by priority ascending, then urgency)\n'
+    "}\n\n"
+    "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
+)
+
+
+def generate_action_tasks(
+    *,
+    analyses: list[dict],
+    model: str | None = None,
+) -> dict:
+    """Generate actionable management tasks from multiple campaign analyses.
+
+    Args:
+        analyses: list of campaign analysis results (each contains verdict, recommendations, etc.)
+        model: OpenAI model override
+
+    Returns:
+        { summary, urgent_count, tasks: [...] }
+    """
+    use_model = model or ANALYZER_MODEL
+
+    # Build input context from all analyses
+    campaigns_context = []
+    for i, analysis in enumerate(analyses):
+        campaign_name = analysis.get("campaign_name") or analysis.get("campaign_key") or f"Campaign {i+1}"
+        verdict = analysis.get("overall_verdict", "unknown")
+        summary = analysis.get("summary", "")
+        confidence = analysis.get("confidence_level", "")
+        meta_inputs = analysis.get("meta_inputs") or {}
+        recommendations = analysis.get("recommendations") or []
+        scaling_plan = analysis.get("scaling_plan") or {}
+        creative_analysis = analysis.get("creative_analysis") or {}
+        customer_alignment = analysis.get("customer_alignment") or {}
+        product_info = analysis.get("product_info_input") or {}
+
+        campaign_block = (
+            f"\n--- CAMPAIGN {i+1}: {campaign_name} ---\n"
+            f"Verdict: {verdict} | Confidence: {confidence}\n"
+            f"Summary: {summary}\n"
+            f"Metrics: spend=${meta_inputs.get('spend', 0)}, "
+            f"purchases={meta_inputs.get('purchases', 0)}, "
+            f"CPP=${meta_inputs.get('cpp', 'N/A')}, "
+            f"CTR={meta_inputs.get('ctr', 'N/A')}%, "
+            f"orders={meta_inputs.get('shopify_orders', 'N/A')}, "
+            f"true_cpp=${meta_inputs.get('true_cpp', 'N/A')}, "
+            f"age={meta_inputs.get('campaign_age_days', 'N/A')} days\n"
+            f"Product: {product_info.get('title', 'Unknown')} (inventory: {product_info.get('inventory', 'N/A')})\n"
+        )
+
+        if scaling_plan:
+            campaign_block += (
+                f"Scaling: phase={scaling_plan.get('current_phase', 'N/A')}, "
+                f"budget_rec={scaling_plan.get('budget_recommendation', 'N/A')}\n"
+            )
+
+        if recommendations:
+            campaign_block += "Recommendations:\n"
+            for rec in recommendations[:5]:
+                campaign_block += (
+                    f"  P{rec.get('priority', '?')} [{rec.get('category', '')}]: "
+                    f"{rec.get('recommendation', '')}\n"
+                )
+
+        if customer_alignment and customer_alignment.get("score") is not None:
+            campaign_block += f"Customer Alignment: {customer_alignment.get('score', 'N/A')}/10\n"
+            gaps = customer_alignment.get("gaps") or []
+            if gaps:
+                campaign_block += f"  Gaps: {'; '.join(gaps[:3])}\n"
+
+        campaigns_context.append(campaign_block)
+
+    user_content = (
+        f"PORTFOLIO OF {len(analyses)} CAMPAIGNS TO CREATE TASKS FOR:\n"
+        + "\n".join(campaigns_context)
+    )
+
+    logger.info("Action Task Agent: generating tasks from %d analyses with %s", len(analyses), use_model)
+    result = _call_llm(ACTION_TASK_AGENT_PROMPT, user_content, model=use_model)
+
+    # Normalize output
+    if not isinstance(result.get("tasks"), list):
+        result["tasks"] = []
+    if not isinstance(result.get("summary"), str):
+        result["summary"] = ""
+    if not isinstance(result.get("urgent_count"), int):
+        result["urgent_count"] = len([t for t in result.get("tasks", []) if t.get("priority") == 1])
+
+    # Ensure all tasks have required fields
+    for i, task in enumerate(result["tasks"]):
+        if not task.get("id"):
+            task["id"] = f"task_{i}"
+        if "done" not in task:
+            task["done"] = False
+        if not isinstance(task.get("campaigns"), list):
+            task["campaigns"] = []
+
+    # Sort by priority then urgency
+    urgency_order = {"immediate": 0, "today": 1, "this_week": 2, "when_possible": 3}
+    try:
+        result["tasks"].sort(key=lambda t: (
+            int(t.get("priority", 99)),
+            urgency_order.get(t.get("urgency", "when_possible"), 4),
+        ))
+    except Exception:
+        pass
+
+    return result
+
