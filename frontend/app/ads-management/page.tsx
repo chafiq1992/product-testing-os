@@ -1134,6 +1134,37 @@ export default function AdsManagementPage(){
                     setActionTasks(res.data.tasks || [])
                     setActionTasksSummary(res.data.summary || '')
                     setActionTasksOpen(true)
+                    // Auto-add each task to the per-campaign timeline(s)
+                    const tasks = res.data.tasks || []
+                    for(const task of tasks){
+                      const campaignKeys = (task.campaigns || []).map((cn: string) => {
+                        // Find campaign_id by name match
+                        const matchRow = (items||[]).find((r: any) => (r.name||'') === cn || String(r.campaign_id||'') === cn)
+                        return matchRow ? String(matchRow.campaign_id || matchRow.name || '') : cn
+                      }).filter(Boolean)
+                      const uniqueKeys = [...new Set(campaignKeys)]
+                      for(const ck of uniqueKeys){
+                        try{
+                          const taskEntry = JSON.stringify({
+                            type: 'task',
+                            id: task.id,
+                            priority: task.priority,
+                            urgency: task.urgency,
+                            category: task.category,
+                            title: task.title,
+                            description: task.description,
+                            expected_impact: task.expected_impact,
+                            done: false,
+                          })
+                          await campaignTimelineAdd({ campaign_key: ck, text: taskEntry, store })
+                        }catch{}
+                      }
+                    }
+                    // Refresh meta to show task badges
+                    try{
+                      const metaRes = await campaignMetaList(store)
+                      if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                    }catch{}
                     setMultiAnalysisResults({})
                   }
                 }catch{}
@@ -1565,50 +1596,6 @@ export default function AdsManagementPage(){
                         <td className="px-1 py-0.5 text-right">
                           <div className="flex items-center justify-end gap-1">
                           <button
-                            title="Performance"
-                            onClick={async()=>{
-                              setPerfOpen(true)
-                              setPerfLoading(true)
-                              try{
-                                const ids = (d.rows||[]).map(r=> String(r.campaign_id||'')).filter(Boolean)
-                                const results = await Promise.all(ids.map(cid=> fetchCampaignPerformance(cid, 6, browserTz).catch(()=> null as any)))
-                                const daysByDate: Record<string, { date:string, spend:number, purchases:number, add_to_cart:number }> = {}
-                                for(const res of results){
-                                  const days = (((res as any)?.data||{}).days)||[]
-                                  for(const dd of (days||[])){
-                                    const date = String(dd.date||'')
-                                    if(!date) continue
-                                    const cur = (daysByDate[date] ||= { date, spend:0, purchases:0, add_to_cart:0 })
-                                    cur.spend += Number(dd.spend||0)
-                                    cur.purchases += Number(dd.purchases||0)
-                                    cur.add_to_cart += Number((dd as any).add_to_cart||0)
-                                  }
-                                }
-                                const dates = Object.keys(daysByDate).sort()
-                                const mergedDays = dates.map(date=>{
-                                  const x = daysByDate[date]
-                                  const cpp = (x.purchases||0)>0 ? (x.spend / x.purchases) : null
-                                  return { date, spend: x.spend, purchases: x.purchases, cpp, ctr: null, add_to_cart: x.add_to_cart }
-                                })
-                                setPerfMetrics(mergedDays)
-                                setPerfCampaign({ id: pid, name: `Merged (${d.rows.length} campaigns)` })
-                                const mergedOrders: number[] = []
-                                for(const day of mergedDays){
-                                  let o1 = 0
-                                  try{
-                                    const oc = await shopifyOrdersCountByTitle({ names: [pid], start: day.date, end: day.date, include_closed: true, date_field: 'processed' })
-                                    o1 = Number(((oc as any)?.data||{})[pid] ?? 0)
-                                  }catch{}
-                                  mergedOrders.push((o1||0))
-                                }
-                                setPerfOrders(mergedOrders)
-                              }finally{
-                                setPerfLoading(false)
-                              }
-                            }}
-                            className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors"
-                          ><BarChart3 className="w-3.5 h-3.5"/></button>
-                          <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{
                               setAnalysisLoading(pid)
@@ -2002,39 +1989,49 @@ export default function AdsManagementPage(){
                             const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
                             const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
                             const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
-                            const ordersPerDay: number[] = []
-                            for(const d of (days||[])){
-                              const start = d.date
-                              const end = d.date
+                            // Batch all Shopify order requests in parallel for reliability
+                            const ordersPerDay = await Promise.all((days||[]).map(async (dd: any) => {
+                              const dayDate = dd.date
                               try{
                                 if(prodId){
-                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start, end, include_closed: true, date_field: 'processed' })
-                                  const count = ((oc as any)?.data||{})[prodId] ?? 0
-                                  ordersPerDay.push(Number(count||0))
+                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start: dayDate, end: dayDate, include_closed: true, date_field: 'processed' })
+                                  return Number(((oc as any)?.data||{})[prodId] ?? 0)
                                 }else if(collId){
-                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start, end, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                  const count = Number(((oc as any)?.data||{})?.count ?? 0)
-                                  ordersPerDay.push(Number(count||0))
-                                }else{
-                                  ordersPerDay.push(0)
+                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start: dayDate, end: dayDate, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+                                  return Number(((oc as any)?.data||{})?.count ?? 0)
                                 }
-                              }catch{ ordersPerDay.push(0) }
-                            }
+                                return 0
+                              }catch{ return 0 }
+                            }))
                             setPerfOrders(ordersPerDay)
                           }finally{
                             setPerfLoading(false)
                           }
                         }}
-                        className="p-1.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 transition-colors"
+                        className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
                       ><BarChart3 className="w-3.5 h-3.5"/></button>
-                      <button
-                        title="Timeline"
-                        onClick={()=>{
-                          setTimelineDraft('')
-                          setTimelineOpen({ open: true, campaign: { id: String(c.campaign_id||''), name: c.name||'' } })
-                        }}
-                        className="p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
-                      ><Clock className="w-3.5 h-3.5"/></button>
+                      {(()=>{
+                        const ck = String(c.campaign_id||c.name||'')
+                        const tl = (campaignMeta[ck] as any)?.timeline || []
+                        const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
+                        return (
+                          <button
+                            title="Timeline"
+                            onClick={()=>{
+                              setTimelineDraft('')
+                              setTimelineOpen({ open: true, campaign: { id: String(c.campaign_id||''), name: c.name||'' } })
+                            }}
+                            className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
+                          >
+                            <Clock className="w-3.5 h-3.5"/>
+                            {incompleteTasks > 0 && (
+                              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[8px] font-bold flex items-center justify-center shadow-sm">
+                                {incompleteTasks}
+                              </span>
+                            )}
+                          </button>
+                        )
+                      })()}
                       <button
                         title="Analyze"
                         disabled={analysisLoading===rowKey}
@@ -2073,6 +2070,18 @@ export default function AdsManagementPage(){
                             else if(res?.data){
                               setAnalysisResult(res.data); setAnalysisOpen(true)
                               setAnalysisCampaignKey(cid)
+                              // Auto-add analysis result to campaign timeline
+                              try{
+                                const timelineEntry = JSON.stringify({
+                                  type: 'analysis',
+                                  verdict: res.data.overall_verdict||'',
+                                  confidence: res.data.confidence_level||'',
+                                  summary: res.data.summary||'',
+                                  age_days: ageDays,
+                                  analysis: res.data,
+                                })
+                                await campaignTimelineAdd({ campaign_key: cid, text: timelineEntry, store })
+                              }catch{}
                               // Load saved checks for this campaign
                               try{
                                 const checksRes = await campaignAnalysisChecksGet(cid, store)
@@ -2375,6 +2384,38 @@ export default function AdsManagementPage(){
           setAnalysisResult(data as CampaignAnalysisResult)
           setAnalysisOpen(true)
         }}
+        onToggleTask={async(entryIdx: number, taskData: any)=>{
+          if(!timelineOpen.campaign) return
+          const ck = String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')
+          const timeline = [...((campaignMeta[ck] as any)?.timeline || [])]
+          if(entryIdx < 0 || entryIdx >= timeline.length) return
+          try{
+            const entry = timeline[entryIdx]
+            const parsed = JSON.parse(entry.text || '{}')
+            const nowDone = !parsed.done
+            const updated = { ...parsed, done: nowDone, completed_at: nowDone ? new Date().toISOString().slice(0,16).replace('T',' ') : undefined }
+            // Update the timeline entry text with new done state
+            timeline[entryIdx] = { ...entry, text: JSON.stringify(updated) }
+            // Optimistically update local state
+            setCampaignMeta(prev => ({
+              ...prev,
+              [ck]: { ...prev[ck], timeline }
+            }))
+            // Save all timeline entries back - we need to update the specific entry
+            // Use campaignTimelineAdd with the full timeline replacement
+            // Since the API only supports "add", we re-save via campaignMetaUpsert-style
+            // Actually, let's use a direct approach: add a new entry marking the task done,
+            // and update the original entry text in the meta
+            await campaignTimelineAdd({ campaign_key: ck, text: JSON.stringify({ type: 'task_update', task_id: parsed.id, done: nowDone, at: new Date().toISOString() }), store })
+            // Refresh to get server state
+            try{
+              const res = await campaignMetaList(store)
+              if((res as any)?.data) setCampaignMeta((res as any).data)
+            }catch{}
+          }catch(err){
+            console.error('Failed to toggle task:', err)
+          }
+        }}
       />
 
       {/* Product Life Hover Tooltip */}
@@ -2501,7 +2542,7 @@ export default function AdsManagementPage(){
 }
 
 // Timeline Modal
-function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void }){
+function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
   if(!open) return null
   const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(b.at||'').localeCompare(String(a.at||'')))
   function fmtDelta(prev:string|undefined, cur:string){
@@ -2520,11 +2561,11 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
       return parts.join(' ')
     }catch{ return '—' }
   }
-  // Try to parse analysis entries from JSON text
-  function parseAnalysis(text:string): { type:'analysis', verdict?:string, confidence?:string, summary?:string, age_days?:number, analysis?:any } | null {
+  // Try to parse structured entries from JSON text
+  function parseStructured(text:string): { type:string, [k:string]:any } | null {
     try{
       const obj = JSON.parse(text)
-      if(obj && obj.type === 'analysis') return obj
+      if(obj && obj.type) return obj
     }catch{}
     return null
   }
@@ -2534,84 +2575,191 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
     'scale': 'from-emerald-400 to-green-500',
     'scale_aggressively': 'from-green-500 to-emerald-600',
   }
+  const urgencyColors: Record<string, string> = {
+    'critical': 'bg-rose-100 text-rose-700 border-rose-200',
+    'high': 'bg-amber-100 text-amber-700 border-amber-200',
+    'medium': 'bg-blue-100 text-blue-700 border-blue-200',
+    'low': 'bg-slate-100 text-slate-600 border-slate-200',
+  }
+  const catIcons: Record<string, string> = {
+    creative: '🎨', targeting: '🎯', budget: '💰', pricing: '💵',
+    landing_page: '🌐', offer: '🎁', ad_copy: '✍️', product: '📦',
+    scaling: '🚀', optimization: '⚡', kill: '🛑',
+  }
+  // Count tasks
+  const taskEntries = entries.filter(e => { const d = parseStructured(e.text||''); return d?.type === 'task' })
+  const incompleteTasks = taskEntries.filter(e => { const d = parseStructured(e.text||''); return d && !d.done }).length
+  const completedTasks = taskEntries.length - incompleteTasks
+
+  // Find original (unsorted) index for a sorted entry
+  const originalTimeline = meta?.timeline || []
+  function findOrigIndex(entry: {text:string, at:string}): number {
+    return originalTimeline.findIndex(e => e.at === entry.at && e.text === entry.text)
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-[92vw] max-w-2xl max-h-[90vh] overflow-auto">
-        <div className="p-4 border-b flex items-center justify-between">
-          <div className="font-semibold text-lg">Timeline · {campaign?.name||campaign?.id}</div>
-          <button onClick={onClose} className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">Close</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{animation:'perfFadeIn 0.2s ease-out'}}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-gradient-to-b from-slate-50 to-white rounded-2xl shadow-2xl w-[94vw] max-w-2xl max-h-[92vh] overflow-auto border border-slate-200/60" style={{animation:'perfSlideUp 0.3s ease-out'}}>
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 py-4 rounded-t-2xl flex items-center justify-between relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_50%,rgba(99,102,241,0.12),transparent_60%)]"/>
+          <div className="relative flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shadow-lg">
+              <Clock className="w-5 h-5 text-white"/>
+            </div>
+            <div>
+              <h2 className="text-white font-bold text-lg tracking-tight">Timeline</h2>
+              <p className="text-white/50 text-xs">{campaign?.name||campaign?.id}</p>
+            </div>
+          </div>
+          <div className="relative flex items-center gap-3">
+            {taskEntries.length > 0 && (
+              <div className="flex items-center gap-2">
+                {incompleteTasks > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-bold">{incompleteTasks} tasks pending</span>
+                )}
+                {completedTasks > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">{completedTasks} done</span>
+                )}
+              </div>
+            )}
+            <button onClick={onClose} className="text-white/60 hover:text-white w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
+          </div>
         </div>
-        <div className="p-4 space-y-4">
+        <div className="p-5 space-y-4">
           <div className="flex items-center gap-2">
             <input
               value={draft}
               onChange={(e)=> setDraft(e.target.value)}
-              placeholder="Add a note"
-              className="flex-1 rounded-md border px-3 py-2 text-sm bg-white"
+              placeholder="Add a note…"
+              className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 outline-none transition-all"
+              onKeyDown={(e)=>{ if(e.key==='Enter' && draft.trim()){ e.preventDefault(); onAdd(draft.trim()) }}}
             />
             <button
               onClick={async()=>{ if(draft.trim()){ await onAdd(draft.trim()) } }}
               disabled={adding || !draft.trim()}
-              className="px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-sm disabled:opacity-60"
+              className="px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 hover:from-indigo-600 hover:to-violet-600 text-white text-sm font-semibold disabled:opacity-40 shadow-sm transition-all"
             >{adding? 'Adding…' : 'Add'}</button>
           </div>
           <div className="space-y-3">
             {entries.map((e, idx)=> {
               const next = idx<entries.length-1? entries[idx+1] : undefined
-              const analysisData = parseAnalysis(e.text||'')
-              if(analysisData){
-                // Render analysis entry as a special card
-                const vc = verdictColors[analysisData.verdict||''] || 'from-slate-400 to-slate-500'
+              const structured = parseStructured(e.text||'')
+
+              // Task entry
+              if(structured && structured.type === 'task'){
+                const isDone = !!structured.done
+                const urgClass = urgencyColors[(structured.urgency||'').toLowerCase()] || urgencyColors.medium
+                const catIcon = catIcons[(structured.category||'').toLowerCase()] || '📋'
+                const origIdx = findOrigIndex(e)
                 return (
-                  <div key={String(e.at||idx)} className="border rounded-lg overflow-hidden shadow-sm">
+                  <div key={String(e.at||'')+String(idx)} className={`rounded-xl border overflow-hidden transition-all ${isDone ? 'border-slate-200 bg-slate-50/50 opacity-75' : 'border-indigo-200/60 bg-white shadow-sm hover:shadow-md'}`}>
+                    <div className="px-3 py-2.5 flex items-start gap-2.5">
+                      {/* Checkbox */}
+                      <button
+                        onClick={()=> onToggleTask && onToggleTask(origIdx, structured)}
+                        className={`flex-shrink-0 mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+                          isDone
+                            ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+                            : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50'
+                        }`}
+                        title={isDone ? 'Mark as not done' : 'Mark as done'}
+                      >
+                        {isDone && (
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          <span className="text-sm">{catIcon}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border ${urgClass}`}>{structured.urgency||'medium'}</span>
+                          {structured.priority && (
+                            <span className="px-1 py-0.5 rounded bg-slate-100 text-[9px] text-slate-500 font-mono">P{structured.priority}</span>
+                          )}
+                          <span className="text-[9px] text-slate-400 ml-auto">{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                        </div>
+                        <div className={`text-sm font-semibold ${isDone ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                          {structured.title||'Untitled task'}
+                        </div>
+                        {structured.description && (
+                          <div className={`text-xs mt-0.5 ${isDone ? 'text-slate-400 line-through' : 'text-slate-600'}`}>{structured.description}</div>
+                        )}
+                        {structured.expected_impact && (
+                          <div className={`text-[10px] mt-1 italic ${isDone ? 'text-slate-400' : 'text-indigo-600'}`}>📈 {structured.expected_impact}</div>
+                        )}
+                        {isDone && structured.completed_at && (
+                          <div className="text-[9px] text-emerald-500 mt-1 font-medium">✓ Completed {structured.completed_at}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
+
+              // Analysis entry
+              if(structured && structured.type === 'analysis'){
+                const vc = verdictColors[structured.verdict||''] || 'from-slate-400 to-slate-500'
+                return (
+                  <div key={String(e.at||idx)} className="border rounded-xl overflow-hidden shadow-sm">
                     <div className={`bg-gradient-to-r ${vc} px-3 py-2 text-white flex items-center justify-between`}>
                       <div className="flex items-center gap-2">
                         <span className="text-lg">✨</span>
                         <span className="font-semibold text-sm">AI Analysis</span>
-                        {analysisData.verdict && (
-                          <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wider">{analysisData.verdict.replace('_',' ')}</span>
+                        {structured.verdict && (
+                          <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wider">{structured.verdict.replace('_',' ')}</span>
                         )}
-                        {analysisData.age_days != null && (
-                          <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">Day {analysisData.age_days}</span>
+                        {structured.age_days != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">Day {structured.age_days}</span>
                         )}
                       </div>
                       <span className="text-[10px] opacity-80">{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
                     </div>
                     <div className="px-3 py-2 bg-slate-50">
-                      {analysisData.confidence && (
-                        <div className="text-[10px] text-slate-500 mb-1">Confidence: <span className="font-semibold">{analysisData.confidence}</span></div>
+                      {structured.confidence && (
+                        <div className="text-[10px] text-slate-500 mb-1">Confidence: <span className="font-semibold">{structured.confidence}</span></div>
                       )}
-                      {analysisData.summary && (
-                        <p className="text-xs text-slate-700 leading-relaxed">{analysisData.summary}</p>
+                      {structured.summary && (
+                        <p className="text-xs text-slate-700 leading-relaxed">{structured.summary}</p>
                       )}
-                      {onViewAnalysis && analysisData.analysis && (
+                      {onViewAnalysis && structured.analysis && (
                         <button
-                          onClick={()=> onViewAnalysis(analysisData.analysis)}
-                          className="mt-2 px-3 py-1 rounded bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold shadow-sm"
+                          onClick={()=> onViewAnalysis(structured.analysis)}
+                          className="mt-2 px-3 py-1 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold shadow-sm"
                         >View Full Analysis</button>
                       )}
                     </div>
                   </div>
                 )
               }
+
               // Regular text note
               return (
-                <div key={String(e.at||idx)} className="border rounded p-3 bg-slate-50">
-                  <div className="text-xs text-slate-500 flex items-center justify-between">
-                    <span>{String(e.at||'').replace('T',' ').replace('Z','')}</span>
-                    <span className="font-mono">{fmtDelta(next?.at, e.at||'')}</span>
+                <div key={String(e.at||idx)} className="rounded-xl border border-slate-200/60 p-3 bg-white hover:shadow-sm transition-shadow">
+                  <div className="text-xs text-slate-400 flex items-center justify-between mb-1.5">
+                    <span>{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                    <span className="font-mono text-[10px]">{fmtDelta(next?.at, e.at||'')}</span>
                   </div>
-                  <div className="mt-2 text-sm text-slate-800 whitespace-pre-wrap">{e.text||''}</div>
+                  <div className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{e.text||''}</div>
                 </div>
               )
             })}
             {entries.length===0 && (
-              <div className="text-sm text-slate-500">No notes yet.</div>
+              <div className="text-center py-8">
+                <div className="text-3xl mb-2">📝</div>
+                <div className="text-sm text-slate-500">No timeline entries yet.</div>
+                <div className="text-xs text-slate-400 mt-1">Add notes, and AI analysis &amp; tasks will appear here.</div>
+              </div>
             )}
           </div>
         </div>
       </div>
+      <style jsx>{`
+        @keyframes perfFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes perfSlideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      `}</style>
     </div>
   )
 }
@@ -2621,9 +2769,6 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   if(!open) return null
   const labels = (days||[]).map(d=> d.date)
   const spend = (days||[]).map(d=> d.spend||0)
-  const purchases = (days||[]).map(d=> d.purchases||0)
-  const ctr = (days||[]).map(d=> (d.ctr||0)*1)
-  const cpp = (days||[]).map(d=> d.cpp==null? 0 : (d.cpp||0))
   const atc = (days||[]).map(d=> d.add_to_cart||0)
   const ordersArr = (orders||[])
   const trueCpp = (days||[]).map((d,i)=> {
@@ -2633,125 +2778,284 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
   })
   const [showOrders, setShowOrders] = useState(true)
   const [showATC, setShowATC] = useState(true)
+  // Totals for KPI summary
+  const totalSpend = spend.reduce((a,b)=> a+b, 0)
+  const totalOrders = ordersArr.reduce((a,b)=> a+b, 0)
+  const totalATC = atc.reduce((a,b)=> a+b, 0)
+  const totalPurchases = (days||[]).reduce((a,d)=> a+(d.purchases||0), 0)
+  const avgTrueCpp = totalOrders>0? totalSpend/totalOrders : null
+  const avgCtr = (()=>{ const ctrs = (days||[]).filter(d=> d.ctr!=null).map(d=> d.ctr||0); return ctrs.length>0? ctrs.reduce((a,b)=>a+b,0)/ctrs.length : null })()
+  // Spend trend (last day vs first day)
+  const spendTrend = spend.length>=2? (spend[spend.length-1] - spend[0]) : 0
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white rounded-lg shadow-xl w-[92vw] max-w-5xl max-h-[90vh] overflow-auto">
-        <div className="p-4 border-b flex items-center justify-between">
-          <div className="font-semibold text-lg">Performance · {campaign?.name||campaign?.id}</div>
-          <button onClick={onClose} className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200">Close</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{animation:'perfFadeIn 0.2s ease-out'}}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-gradient-to-b from-slate-50 to-white rounded-2xl shadow-2xl w-[94vw] max-w-5xl max-h-[92vh] overflow-auto border border-slate-200/60" style={{animation:'perfSlideUp 0.3s ease-out'}}>
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 py-4 rounded-t-2xl flex items-center justify-between relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(59,130,246,0.12),transparent_60%)]"/>
+          <div className="relative flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg">
+              <BarChart3 className="w-5 h-5 text-white"/>
+            </div>
+            <div>
+              <h2 className="text-white font-bold text-lg tracking-tight">Performance</h2>
+              <p className="text-white/50 text-xs">{campaign?.name||campaign?.id}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="relative text-white/60 hover:text-white w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
         </div>
-        <div className="p-4">
+        <div className="p-5">
           {loading ? (
-            <div className="text-slate-500">Loading…</div>
-          ) : (
             <div className="space-y-4">
-              <div className="flex items-center gap-4 text-sm">
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={showOrders} onChange={(e)=> setShowOrders(e.target.checked)} />
-                  <span>Show Orders</span>
-                </label>
-                <label className="inline-flex items-center gap-2">
-                  <input type="checkbox" checked={showATC} onChange={(e)=> setShowATC(e.target.checked)} />
-                  <span>Show Add to cart</span>
-                </label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[1,2,3,4].map(i=> <div key={i} className="h-24 rounded-xl bg-slate-100 animate-pulse"/>)}
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {(days||[]).map((d,i)=> (
-                  <div key={d.date+String(i)} className="border rounded p-3 bg-slate-50">
-                    <div className="text-xs text-slate-500">{d.date}</div>
-                    <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
-                      <div className="text-slate-500">Spend</div><div className="text-right font-semibold">${(d.spend||0).toFixed(2)}</div>
-                      <div className="text-slate-500">Purchases</div><div className="text-right font-semibold">{d.purchases||0}</div>
-                      <div className="text-slate-500">CPP</div><div className="text-right font-semibold">{d.cpp!=null? `$${(d.cpp||0).toFixed(2)}` : '—'}</div>
-                      <div className="text-slate-500">CTR</div><div className="text-right font-semibold">{d.ctr!=null? `${(d.ctr*1).toFixed(2)}%` : '—'}</div>
-                      <div className="text-slate-500">Add to cart</div><div className="text-right font-semibold">{d.add_to_cart||0}</div>
-                      <div className="text-slate-500">Shopify Orders</div><div className="text-right font-semibold">{(ordersArr[i]||0)}</div>
-                      <div className="text-slate-500">True CPP</div><div className="text-right font-semibold">{(ordersArr[i]||0)>0? `$${(trueCpp[i]||0).toFixed(2)}` : '—'}</div>
-                    </div>
+              <div className="h-72 rounded-xl bg-slate-100 animate-pulse"/>
+              <div className="grid grid-cols-3 gap-3">
+                {[1,2,3].map(i=> <div key={i} className="h-28 rounded-xl bg-slate-100 animate-pulse"/>)}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* KPI Summary Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200/60 p-4">
+                  <div className="text-xs text-emerald-600 font-medium mb-1">Total Spend</div>
+                  <div className="text-2xl font-bold text-emerald-800">${totalSpend.toFixed(2)}</div>
+                  <div className={`text-[10px] mt-1 font-semibold ${spendTrend<=0?'text-emerald-600':'text-rose-500'}`}>
+                    {spendTrend<=0?'↓':'↑'} ${Math.abs(spendTrend).toFixed(2)} trend
                   </div>
-                ))}
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200/60 p-4">
+                  <div className="text-xs text-blue-600 font-medium mb-1">Shopify Orders</div>
+                  <div className="text-2xl font-bold text-blue-800">{totalOrders}</div>
+                  <div className="text-[10px] mt-1 text-blue-500 font-semibold">{(days||[]).length} days tracked</div>
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-violet-50 to-violet-100/50 border border-violet-200/60 p-4">
+                  <div className="text-xs text-violet-600 font-medium mb-1">True CPP</div>
+                  <div className="text-2xl font-bold text-violet-800">{avgTrueCpp!=null? `$${avgTrueCpp.toFixed(2)}` : '—'}</div>
+                  <div className="text-[10px] mt-1 text-violet-500 font-semibold">avg cost/order</div>
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-amber-50 to-amber-100/50 border border-amber-200/60 p-4">
+                  <div className="text-xs text-amber-600 font-medium mb-1">Add to Cart</div>
+                  <div className="text-2xl font-bold text-amber-800">{totalATC}</div>
+                  <div className="text-[10px] mt-1 text-amber-500 font-semibold">
+                    {avgCtr!=null? `${(avgCtr*1).toFixed(2)}% avg CTR` : ''}
+                  </div>
+                </div>
               </div>
-              <div className="mt-4">
-                <div className="mb-2 text-sm text-slate-600">Daily performance (Spend/True CPP lines, Orders/ATC lines)</div>
+              {/* Toggle Pills */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={()=> setShowOrders(!showOrders)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                    showOrders ? 'bg-blue-600 text-white shadow-sm shadow-blue-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${showOrders?'bg-white':'bg-blue-400'}`}/>
+                  Orders
+                </button>
+                <button
+                  onClick={()=> setShowATC(!showATC)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                    showATC ? 'bg-amber-500 text-white shadow-sm shadow-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${showATC?'bg-white':'bg-amber-400'}`}/>
+                  Add to Cart
+                </button>
+              </div>
+              {/* Chart */}
+              <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
                 <PerformanceChart labels={labels} spend={spend} trueCpp={trueCpp} orders={ordersArr} addToCart={atc} showOrders={showOrders} showATC={showATC} />
+              </div>
+              {/* Day-by-day detail cards */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
+                {(days||[]).map((d,i)=> {
+                  const dayTcpp = (ordersArr[i]||0)>0? ((d.spend||0)/(ordersArr[i]||1)) : null
+                  const dayTcppColor = dayTcpp==null? 'text-slate-400' : dayTcpp<2? 'text-emerald-600' : dayTcpp<3? 'text-amber-600' : 'text-rose-600'
+                  return (
+                    <div key={d.date+String(i)} className="rounded-xl border border-slate-200/60 bg-gradient-to-b from-white to-slate-50/50 p-3 hover:shadow-md transition-shadow">
+                      <div className="text-[11px] font-semibold text-slate-800 mb-2 pb-1 border-b border-slate-100">{d.date}</div>
+                      <div className="space-y-1 text-xs">
+                        <div className="flex justify-between"><span className="text-slate-500">Spend</span><span className="font-bold text-emerald-700">${(d.spend||0).toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Purchases</span><span className="font-bold">{d.purchases||0}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">CPP</span><span className="font-bold">{d.cpp!=null? `$${(d.cpp||0).toFixed(2)}` : '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">CTR</span><span className="font-bold">{d.ctr!=null? `${(d.ctr*1).toFixed(2)}%` : '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">ATC</span><span className="font-bold text-amber-700">{d.add_to_cart||0}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Orders</span><span className="font-bold text-blue-700">{(ordersArr[i]||0)}</span></div>
+                        <div className="flex justify-between border-t border-slate-100 pt-1 mt-1"><span className="text-slate-500 font-medium">True CPP</span><span className={`font-bold ${dayTcppColor}`}>{dayTcpp!=null? `$${dayTcpp.toFixed(2)}` : '—'}</span></div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
         </div>
       </div>
+      <style jsx>{`
+        @keyframes perfFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes perfSlideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      `}</style>
     </div>
   )
 }
 
 function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], trueCpp:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
-  const w = 1000, h = 320, padL = 56, padR = 56, padT = 24, padB = 40
+  const [hoverIdx, setHoverIdx] = useState<number|null>(null)
+  const w = 1000, h = 360, padL = 60, padR = 60, padT = 50, padB = 50
   const innerW = w - padL - padR
   const innerH = h - padT - padB
   const n = Math.max(1, labels.length)
   const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
-  // Dynamic left axis based on Spend/True CPP in $ (rounded to nearest 25 up, min 25)
-  const maxDataValue = Math.max(1, ...spend.map(v=>Number(v||0)), ...trueCpp.map(v=>Number(v||0)))
-  const maxRounded = Math.max(25, Math.ceil(maxDataValue/25)*25)
-  const minSpend = 0, maxSpend = maxRounded
-  const minCount = 1, maxCount = 100
-  const clamp = (v:number, lo:number, hi:number)=> Math.max(lo, Math.min(hi, v||0))
-  const yLeft = (v:number)=> padT + innerH - ((clamp(v, minSpend, maxSpend)-minSpend)/(maxSpend-minSpend))*innerH
-  const yRight = (v:number)=> padT + innerH - ((clamp(v, minCount, maxCount)-minCount)/(maxCount-minCount))*innerH
-  const gridLines = 5
-  const leftTicksBase = [0, 0.25, 0.5, 0.75, 1]
-  const leftTicks = leftTicksBase.map(p=> Math.round(p*maxSpend))
-  const rightTicks = [1,25,50,75,100]
-  // Build line paths (spend, orders, atc)
-  const pathSpend = `M ${xs[0]},${yLeft(spend[0]||0)} ` + spend.slice(1).map((v,i)=> `L ${xs[i+1]},${yLeft(v||0)}`).join(' ')
-  const pathTrueCpp = `M ${xs[0]},${yLeft(trueCpp[0]||0)} ` + trueCpp.slice(1).map((v,i)=> `L ${xs[i+1]},${yLeft(v||0)}`).join(' ')
-  const pathOrders = `M ${xs[0]},${yRight(orders[0]||0)} ` + orders.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
-  const pathATC = `M ${xs[0]},${yRight(addToCart[0]||0)} ` + addToCart.slice(1).map((v,i)=> `L ${xs[i+1]},${yRight(v||0)}`).join(' ')
+  // Dynamic left axis (Spend/True CPP in $)
+  const maxDataLeft = Math.max(1, ...spend.map(v=>Number(v||0)), ...trueCpp.map(v=>Number(v||0)))
+  const maxLeft = Math.max(10, Math.ceil(maxDataLeft * 1.15 / 5) * 5)
+  // Dynamic right axis (Orders/ATC)
+  const maxDataRight = Math.max(1, ...orders.map(v=>Number(v||0)), ...addToCart.map(v=>Number(v||0)))
+  const maxRight = Math.max(5, Math.ceil(maxDataRight * 1.15 / 5) * 5)
+  const yLeft = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxLeft))/maxLeft)*innerH
+  const yRight = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxRight))/maxRight)*innerH
+  const leftTicks = Array.from({length:5}, (_,i)=> Math.round((i/4)*maxLeft))
+  const rightTicks = Array.from({length:5}, (_,i)=> Math.round((i/4)*maxRight))
+  // Smooth curve helper (monotone cubic)
+  function smoothPath(pts: [number,number][]): string {
+    if(pts.length<2) return pts.length===1? `M ${pts[0][0]},${pts[0][1]}` : ''
+    let d = `M ${pts[0][0]},${pts[0][1]}`
+    for(let i=0;i<pts.length-1;i++){
+      const x0=pts[i][0],y0=pts[i][1],x1=pts[i+1][0],y1=pts[i+1][1]
+      const cx=(x0+x1)/2
+      d += ` C ${cx},${y0} ${cx},${y1} ${x1},${y1}`
+    }
+    return d
+  }
+  // Build smooth paths
+  const spendPts: [number,number][] = xs.map((x,i)=> [x, yLeft(spend[i]||0)])
+  const tcppPts: [number,number][] = xs.map((x,i)=> [x, yLeft(trueCpp[i]||0)])
+  const ordersPts: [number,number][] = xs.map((x,i)=> [x, yRight(orders[i]||0)])
+  const atcPts: [number,number][] = xs.map((x,i)=> [x, yRight(addToCart[i]||0)])
+  const pathSpend = smoothPath(spendPts)
+  const pathTrueCpp = smoothPath(tcppPts)
+  const pathOrders = smoothPath(ordersPts)
+  const pathATC = smoothPath(atcPts)
+  // Area fill paths (close to bottom)
+  const btm = padT + innerH
+  function areaPath(pts: [number,number][]) {
+    if(pts.length<2) return ''
+    return smoothPath(pts) + ` L ${pts[pts.length-1][0]},${btm} L ${pts[0][0]},${btm} Z`
+  }
+  const areaSpend = areaPath(spendPts)
+  const areaOrders = areaPath(ordersPts)
+  const areaATC = areaPath(atcPts)
+  // Unique gradient IDs
+  const uid = useRef(Math.random().toString(36).slice(2,8))
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto">
-      <rect x={0} y={0} width={w} height={h} fill="#ffffff"/>
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto select-none" onMouseLeave={()=> setHoverIdx(null)}>
+      <defs>
+        <linearGradient id={`spendG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.25"/>
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0.02"/>
+        </linearGradient>
+        <linearGradient id={`ordersG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.20"/>
+          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02"/>
+        </linearGradient>
+        <linearGradient id={`atcG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.02"/>
+        </linearGradient>
+      </defs>
+      <rect x={0} y={0} width={w} height={h} rx={12} fill="#fafbfc"/>
       {/* Horizontal gridlines */}
       {leftTicks.map((tick,i)=> (
-        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#e5e7eb" strokeDasharray="2 2"/>
+        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#e2e8f0" strokeDasharray="4 3" strokeWidth={0.8}/>
       ))}
       {/* Vertical gridlines per day */}
       {xs.map((x,i)=> (
-        <line key={`v${i}`} x1={x} y1={padT} x2={x} y2={h-padB} stroke="#f1f5f9" />
+        <line key={`v${i}`} x1={x} y1={padT} x2={x} y2={h-padB} stroke="#f1f5f9" strokeWidth={0.8}/>
       ))}
+      {/* Area fills */}
+      <path d={areaSpend} fill={`url(#spendG_${uid.current})`}/>
+      {showOrders && <path d={areaOrders} fill={`url(#ordersG_${uid.current})`}/>}
+      {showATC && <path d={areaATC} fill={`url(#atcG_${uid.current})`}/>}
       {/* Lines */}
-      <path d={pathSpend} fill="none" stroke="#10b981" strokeWidth={2.5} />
-      <path d={pathTrueCpp} fill="none" stroke="#7c3aed" strokeWidth={2.5} />
-      {showOrders && (<path d={pathOrders} fill="none" stroke="#2563eb" strokeWidth={2.5} />)}
-      {showATC && (<path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2.5} />)}
-      {/* Axis labels */}
-      {leftTicks.map((tick,i)=> (
-        <text key={`lt${i}`} x={padL-8} y={yLeft(tick)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#64748b">${tick}</text>
-      ))}
-      {rightTicks.map((tick,i)=> (
-        <text key={`rt${i}`} x={w-padR+8} y={yRight(tick)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#64748b">{tick}</text>
-      ))}
+      <path d={pathSpend} fill="none" stroke="#10b981" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>
+      <path d={pathTrueCpp} fill="none" stroke="#8b5cf6" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6 3"/>
+      {showOrders && <path d={pathOrders} fill="none" stroke="#3b82f6" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>}
+      {showATC && <path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>}
+      {/* Data points */}
       {xs.map((x,i)=> (
-        <text key={`x${i}`} x={x} y={h-10} textAnchor="middle" fontSize="10" fill="#64748b">{labels[i].slice(5)}</text>
-      ))}
-      {/* True CPP value labels */}
-      {xs.map((x,i)=> (
-        <g key={`tc${i}`}>
-          <circle cx={x} cy={yLeft(trueCpp[i]||0)} r={3} fill="#7c3aed" />
-          {(trueCpp[i]||0) > 0 && (
-            <text x={x} y={yLeft(trueCpp[i]||0)-8} textAnchor="middle" fontSize="10" fill="#7c3aed">${(trueCpp[i]||0).toFixed(2)}</text>
-          )}
+        <g key={`dp${i}`}>
+          <circle cx={x} cy={yLeft(spend[i]||0)} r={hoverIdx===i?5:3.5} fill="#10b981" stroke="white" strokeWidth={2} className="transition-all duration-150"/>
+          <circle cx={x} cy={yLeft(trueCpp[i]||0)} r={hoverIdx===i?5:3.5} fill="#8b5cf6" stroke="white" strokeWidth={2} className="transition-all duration-150"/>
+          {showOrders && <circle cx={x} cy={yRight(orders[i]||0)} r={hoverIdx===i?5:3.5} fill="#3b82f6" stroke="white" strokeWidth={2} className="transition-all duration-150"/>}
+          {showATC && <circle cx={x} cy={yRight(addToCart[i]||0)} r={hoverIdx===i?5:3.5} fill="#f59e0b" stroke="white" strokeWidth={2} className="transition-all duration-150"/>}
         </g>
       ))}
-      {/* Legends */}
+      {/* Left axis labels */}
+      {leftTicks.map((tick,i)=> (
+        <text key={`lt${i}`} x={padL-10} y={yLeft(tick)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">${tick}</text>
+      ))}
+      {/* Right axis labels */}
+      {rightTicks.map((tick,i)=> (
+        <text key={`rt${i}`} x={w-padR+10} y={yRight(tick)} textAnchor="start" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">{tick}</text>
+      ))}
+      {/* Axis titles */}
+      <text x={padL-10} y={padT-14} textAnchor="end" fontSize="9" fill="#94a3b8" fontWeight="600">$ USD</text>
+      <text x={w-padR+10} y={padT-14} textAnchor="start" fontSize="9" fill="#94a3b8" fontWeight="600">Count</text>
+      {/* X axis date labels */}
+      {xs.map((x,i)=> (
+        <text key={`x${i}`} x={x} y={h-14} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="500">{labels[i]?.slice(5)||''}</text>
+      ))}
+      {/* Hover zones (invisible rects for interactive tooltips) */}
+      {xs.map((x,i)=> {
+        const colW = innerW / Math.max(1, n-1)
+        return (
+          <rect key={`hz${i}`} x={x-colW/2} y={padT} width={colW} height={innerH} fill="transparent" onMouseEnter={()=> setHoverIdx(i)} onMouseMove={()=> setHoverIdx(i)}/>
+        )
+      })}
+      {/* Hover highlight line */}
+      {hoverIdx!=null && (
+        <line x1={xs[hoverIdx]} y1={padT} x2={xs[hoverIdx]} y2={h-padB} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 2"/>
+      )}
+      {/* Hover Tooltip */}
+      {hoverIdx!=null && (()=>{
+        const tx = xs[hoverIdx]
+        const ttW = 170, ttH = 140
+        const flipRight = tx + ttW + 20 > w
+        const ttX = flipRight? tx - ttW - 12 : tx + 12
+        const ttY = Math.max(padT, Math.min(h - padB - ttH - 10, padT + 20))
+        const i = hoverIdx
+        const dayTcpp = (orders[i]||0)>0? ((spend[i]||0)/(orders[i]||1)) : null
+        return (
+          <g>
+            <rect x={ttX} y={ttY} width={ttW} height={ttH} rx={10} fill="white" stroke="#e2e8f0" strokeWidth={1} filter="drop-shadow(0 4px 12px rgba(0,0,0,0.08))"/>
+            <text x={ttX+12} y={ttY+18} fontSize="11" fontWeight="700" fill="#1e293b">{labels[i]||''}</text>
+            <line x1={ttX+12} y1={ttY+24} x2={ttX+ttW-12} y2={ttY+24} stroke="#f1f5f9" strokeWidth={1}/>
+            <circle cx={ttX+16} cy={ttY+38} r={4} fill="#10b981"/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">Spend</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill="#10b981">${(spend[i]||0).toFixed(2)}</text>
+            <circle cx={ttX+16} cy={ttY+56} r={4} fill="#8b5cf6"/><text x={ttX+26} y={ttY+60} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+60} textAnchor="end" fontSize="10" fontWeight="700" fill="#8b5cf6">{dayTcpp!=null?`$${dayTcpp.toFixed(2)}`:'—'}</text>
+            <circle cx={ttX+16} cy={ttY+74} r={4} fill="#3b82f6"/><text x={ttX+26} y={ttY+78} fontSize="10" fill="#64748b">Orders</text><text x={ttX+ttW-12} y={ttY+78} textAnchor="end" fontSize="10" fontWeight="700" fill="#3b82f6">{orders[i]||0}</text>
+            <circle cx={ttX+16} cy={ttY+92} r={4} fill="#f59e0b"/><text x={ttX+26} y={ttY+96} fontSize="10" fill="#64748b">ATC</text><text x={ttX+ttW-12} y={ttY+96} textAnchor="end" fontSize="10" fontWeight="700" fill="#f59e0b">{addToCart[i]||0}</text>
+            <circle cx={ttX+16} cy={ttY+110} r={4} fill="#64748b"/><text x={ttX+26} y={ttY+114} fontSize="10" fill="#64748b">Purchases</text><text x={ttX+ttW-12} y={ttY+114} textAnchor="end" fontSize="10" fontWeight="700" fill="#64748b">{(trueCpp[i]||0)>0?Math.round(spend[i]/(trueCpp[i]||1)):0}</text>
+            <text x={ttX+ttW-12} y={ttY+132} textAnchor="end" fontSize="9" fill="#94a3b8">hover for details</text>
+          </g>
+        )
+      })()}
+      {/* Legend */}
       <g>
-        <rect x={padL} y={8} width={18} height={2} fill="#10b981"/>
-        <text x={padL+24} y={12} fontSize="11" fill="#334155">Spend ($)</text>
-        <rect x={padL+120} y={8} width={18} height={2} fill="#7c3aed"/>
-        <text x={padL+146} y={12} fontSize="11" fill="#334155">True CPP ($)</text>
-        <rect x={padL+260} y={8} width={18} height={2} fill="#2563eb"/>
-        <text x={padL+286} y={12} fontSize="11" fill="#334155">Orders</text>
-        <rect x={padL+360} y={8} width={18} height={2} fill="#f59e0b"/>
-        <text x={padL+386} y={12} fontSize="11" fill="#334155">Add to cart</text>
+        {[
+          { color: '#10b981', label: 'Spend ($)', x: padL },
+          { color: '#8b5cf6', label: 'True CPP ($)', x: padL + 110 },
+          { color: '#3b82f6', label: 'Orders', x: padL + 240 },
+          { color: '#f59e0b', label: 'Add to Cart', x: padL + 330 },
+        ].map(leg=> (
+          <g key={leg.label}>
+            <circle cx={leg.x} cy={14} r={4} fill={leg.color}/>
+            <text x={leg.x+10} y={17} fontSize="11" fill="#475569" fontWeight="500">{leg.label}</text>
+          </g>
+        ))}
       </g>
     </svg>
   )
