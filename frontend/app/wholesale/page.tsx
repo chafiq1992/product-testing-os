@@ -7,7 +7,7 @@ import {
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
   Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
   ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin, ClipboardList, FileText,
-  CreditCard, AlertCircle, ChevronRight, Edit3, Users
+  CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -1144,12 +1144,12 @@ function SettingsRow({ label, value }: { label: string; value: string }) {
 // ─── Stats Card ──────────────────────────────────────────
 function StatsCard({ label, value, sub, icon }: any) {
   return (
-    <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 flex items-start gap-4">
-      <div className="p-3 bg-slate-50 rounded-xl">{icon}</div>
-      <div>
-        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider leading-none mb-1">{label}</p>
-        <p className="text-xl md:text-2xl font-bold">{value}</p>
-        <p className="text-[10px] md:text-xs text-slate-400 mt-1">{sub}</p>
+    <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-3">
+      <div className="p-2 bg-slate-50 rounded-xl flex-shrink-0">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider leading-none">{label}</p>
+        <p className="text-lg font-black leading-tight">{value}</p>
+        <p className="text-[9px] text-slate-400 truncate">{sub}</p>
       </div>
     </div>
   )
@@ -1160,6 +1160,8 @@ function StatsCard({ label, value, sub, icon }: any) {
 // ═══════════════════════════════════════════════════
 function OverviewTab({ products, loading, orderStats, copy, lang }: { products: any[]; loading: boolean; orderStats: any; copy: AppCopy; lang: Lang }) {
   const locale = getLocale(lang)
+  const [dateRange, setDateRange] = useState('all')
+
   const totalStock = useMemo(() => products.reduce((a, p) => {
     const vars = p.variants || []
     return a + vars.reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
@@ -1169,6 +1171,28 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
     const vars = p.variants || []
     return a + vars.reduce((s: number, v: any) => s + (parseFloat(v.price) || 0) * (parseInt(v.inventory_quantity) || 0), 0)
   }, 0), [products])
+
+  // Filter orders by date range
+  const filteredStats = useMemo(() => {
+    if (!orderStats?.all_orders) return orderStats
+    if (dateRange === 'all') return orderStats
+    const now = new Date()
+    let cutoff = new Date()
+    if (dateRange === 'today') cutoff.setHours(0,0,0,0)
+    else if (dateRange === '7d') cutoff.setDate(now.getDate() - 7)
+    else if (dateRange === '30d') cutoff.setDate(now.getDate() - 30)
+    else if (dateRange === '90d') cutoff.setDate(now.getDate() - 90)
+    const filtered = orderStats.all_orders.filter((o: any) => new Date(o.created_at) >= cutoff)
+    const totalOrders = filtered.length
+    const totalUnits = filtered.reduce((s: number, o: any) => s + (o.units || 0), 0)
+    const totalRevenue = filtered.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0)
+    return { ...orderStats, total_orders: totalOrders, total_units_sold: totalUnits, total_revenue: Math.round(totalRevenue * 100) / 100 }
+  }, [orderStats, dateRange])
+
+  const avgOrderValue = useMemo(() => {
+    if (!filteredStats?.total_orders || filteredStats.total_orders === 0) return 0
+    return Math.round((filteredStats.total_revenue / filteredStats.total_orders) * 100) / 100
+  }, [filteredStats])
 
   const segmentData = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -1181,43 +1205,54 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
     return Object.entries(counts).map(([name, count]) => ({ name: getSegmentLabel(name, lang), count }))
   }, [products, lang])
 
+  const dateRanges = [
+    { value: 'today', label: 'Today' },
+    { value: '7d', label: '7 Days' },
+    { value: '30d', label: '30 Days' },
+    { value: '90d', label: '90 Days' },
+    { value: 'all', label: 'All Time' },
+  ]
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-in">
-      <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
-        <div>
-          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">{copy.overviewTitle}</h2>
-          <p className="text-slate-500 text-sm">{copy.overviewSub}</p>
-        </div>
-        <div className="bg-white border p-3 rounded-2xl shadow-sm flex items-center gap-3">
-          <div className="p-2 bg-blue-50 rounded-lg text-blue-600"><Package size={18}/></div>
+    <div className="space-y-4 max-w-6xl mx-auto animate-in pb-6">
+      {/* Header + Date Range */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
           <div>
-            <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">{copy.totalProducts}</span>
-            <p className="text-lg font-bold">{loading ? '...' : products.length}</p>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight">{copy.overviewTitle}</h2>
+            <p className="text-slate-500 text-xs">{copy.overviewSub}</p>
+          </div>
+          <div className="bg-white border border-slate-200 p-1 rounded-xl shadow-sm flex items-center gap-0.5 text-[10px] font-bold">
+            {dateRanges.map(r => (
+              <button key={r.value} onClick={() => setDateRange(r.value)} className={`px-2.5 py-1.5 rounded-lg transition-all ${dateRange === r.value ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}>
+                {r.label}
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-        <StatsCard label={copy.inventoryLevel} value={loading ? '...' : totalStock.toLocaleString(locale)} sub={copy.inventoryLevelSub} icon={<Box size={20} className="text-blue-600" />} />
-        <StatsCard label={copy.inventoryValue} value={loading ? '...' : formatDh(totalValue, locale)} sub={copy.inventoryValueSub} icon={<DollarSign size={20} className="text-green-600" />} />
-        <StatsCard label={copy.ordersStat} value={orderStats ? orderStats.total_orders : '...'} sub={orderStats ? `${formatDh(orderStats.total_revenue, locale)} ${copy.revenueLabel}` : copy.ordersStatSub} icon={<ShoppingCart size={20} className="text-emerald-600" />} />
-        <StatsCard label={copy.unitsSold} value={orderStats ? orderStats.total_units_sold : '...'} sub={copy.unitsSoldSub} icon={<TrendingUp size={20} className="text-orange-600" />} />
+      {/* Metrics Grid - 2x3 compact grid, all visible on mobile */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 md:gap-3">
+        <StatsCard label={copy.totalProducts} value={loading ? '...' : products.length} sub={copy.inventoryLevelSub} icon={<Package size={16} className="text-blue-600" />} />
+        <StatsCard label={copy.inventoryLevel} value={loading ? '...' : totalStock.toLocaleString(locale)} sub="Total units in stock" icon={<Box size={16} className="text-indigo-600" />} />
+        <StatsCard label={copy.inventoryValue} value={loading ? '...' : formatDh(totalValue, locale)} sub="Stock value" icon={<DollarSign size={16} className="text-green-600" />} />
+        <StatsCard label={copy.ordersStat} value={filteredStats ? filteredStats.total_orders : '...'} sub={filteredStats ? ` ` : '...'} icon={<ShoppingCart size={16} className="text-emerald-600" />} />
+        <StatsCard label={copy.unitsSold} value={filteredStats ? filteredStats.total_units_sold : '...'} sub={copy.unitsSoldSub} icon={<TrendingUp size={16} className="text-orange-600" />} />
+        <StatsCard label="Avg Order" value={filteredStats ? formatDh(avgOrderValue, locale) : '...'} sub="Per order value" icon={<BarChart3 size={16} className="text-purple-600" />} />
       </div>
 
-      {/* Segment breakdown */}
+      {/* Segment breakdown - compact */}
       {segmentData.length > 0 && (
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-lg font-bold mb-4">{copy.productsBySegment}</h3>
-          <div className="space-y-3">
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+          <h3 className="text-sm font-bold mb-3">{copy.productsBySegment}</h3>
+          <div className="space-y-2">
             {segmentData.map(s => (
-              <div key={s.name} className="flex items-center gap-4">
-                <div className="w-24 text-sm font-semibold text-slate-600">{s.name}</div>
-                <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full flex items-center justify-end pr-2"
-                    style={{ width: `${Math.max(10, (s.count / Math.max(products.length, 1)) * 100)}%` }}
-                  >
-                    <span className="text-[10px] text-white font-bold">{s.count}</span>
+              <div key={s.name} className="flex items-center gap-3">
+                <div className="w-20 text-xs font-semibold text-slate-600 truncate">{s.name}</div>
+                <div className="flex-1 bg-slate-100 rounded-full h-5 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full flex items-center justify-end pr-2" style={{ width: `%` }}>
+                    <span className="text-[9px] text-white font-bold">{s.count}</span>
                   </div>
                 </div>
               </div>
@@ -1226,24 +1261,24 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
         </div>
       )}
 
-      {/* Recent products */}
+      {/* Recent products - compact */}
       {products.length > 0 && (
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-          <h3 className="text-lg font-bold mb-4">{copy.recentProducts}</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+          <h3 className="text-sm font-bold mb-3">{copy.recentProducts}</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {products.slice(0, 6).map((p: any) => (
-              <div key={p.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="w-12 h-12 rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center flex-shrink-0">
+              <div key={p.id} className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="w-10 h-10 rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center flex-shrink-0">
                   {p.images?.[0]?.src ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={p.images[0].src} alt="" className="w-full h-full object-cover" />
                   ) : (
-                    <ImageIcon size={20} className="text-slate-300" />
+                    <ImageIcon size={16} className="text-slate-300" />
                   )}
                 </div>
                 <div className="overflow-hidden">
-                  <p className="text-sm font-bold truncate">{p.title}</p>
-                  <p className="text-[10px] text-slate-500">{formatDh(p.variants?.[0]?.price || '0.00', locale)}</p>
+                  <p className="text-xs font-bold truncate">{p.title}</p>
+                  <p className="text-[9px] text-slate-500">{formatDh(p.variants?.[0]?.price || '0.00', locale)}</p>
                 </div>
               </div>
             ))}
@@ -1309,73 +1344,54 @@ function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrd
         </select>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto">
-        <table className="w-full text-left min-w-[700px]">
-          <thead className="bg-slate-50 text-slate-400 text-[10px] font-bold uppercase tracking-widest">
-            <tr>
-              <th className="px-6 py-4">{copy.productDetail}</th>
-              <th className="px-6 py-4 text-center">{copy.status}</th>
-              <th className="px-6 py-4 text-center">{copy.stock}</th>
-              <th className="px-6 py-4 text-right">{copy.price}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {loading && (
-              <tr><td colSpan={4} className="px-6 py-16 text-center">
-                <Loader2 className="animate-spin text-blue-500 mx-auto mb-2" size={24} />
-                <p className="text-slate-400 text-sm">{copy.loadingProducts}</p>
-              </td></tr>
-            )}
-            {!loading && filtered.map((p: any) => {
-              const qty = (p.variants || []).reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
-              const price = p.variants?.[0]?.price || '0.00'
-              return (
-                <tr key={p.id} className="hover:bg-slate-50/50 transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center">
-                        {p.images?.[0]?.src ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={p.images[0].src} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <ImageIcon size={20} className="text-slate-300" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">{p.title || copy.untitled}</p>
-                        <p className="text-[10px] text-slate-400 font-mono">ID: {p.id}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-tight ${p.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-slate-100 text-slate-500'}`}>
-                      {p.status === 'active' ? copy.activeStatus : copy.inactiveStatus}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-center font-bold text-sm">{qty}</td>
-                  <td className="px-6 py-4 text-right font-bold">{formatDh(price, locale)}</td>
-                </tr>
-              )
-            })}
-            {!loading && filtered.length === 0 && (
-              <tr><td colSpan={4} className="px-6 py-16 text-center">
-                <div className="flex flex-col items-center gap-3">
-                  <div className="w-16 h-16 bg-slate-50 text-slate-200 rounded-full flex items-center justify-center"><Package size={32}/></div>
-                  <p className="text-slate-400 font-medium">{copy.noProducts}</p>
+      {/* Inventory Cards - Compact, no horizontal scroll */}
+      <div className="space-y-2">
+        {loading && (
+          <div className="py-12 text-center">
+            <Loader2 className="animate-spin text-blue-500 mx-auto mb-2" size={24} />
+            <p className="text-slate-400 text-sm">{copy.loadingProducts}</p>
+          </div>
+        )}
+        {!loading && filtered.map((p: any) => {
+          const qty = (p.variants || []).reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
+          const price = p.variants?.[0]?.price || '0.00'
+          const variantCount = (p.variants || []).length
+          return (
+            <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-3 flex items-center gap-3 hover:border-blue-200 transition-all">
+              <div className="w-11 h-11 rounded-lg bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center">
+                {p.images?.[0]?.src ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={p.images[0].src} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <ImageIcon size={16} className="text-slate-300" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-bold text-slate-900 truncate">{p.title || copy.untitled}</p>
+                <p className="text-[9px] text-slate-400">{variantCount} variant{variantCount !== 1 ? 's' : ''}</p>
+              </div>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${p.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-slate-100 text-slate-500'}`}>
+                  {p.status === 'active' ? copy.activeStatus : copy.inactiveStatus}
+                </span>
+                <div className="text-right">
+                  <p className="text-xs font-black text-slate-900">{qty} <span className="text-[9px] text-slate-400 font-bold">pcs</span></p>
+                  <p className="text-[10px] font-bold text-slate-500">{formatDh(price, locale)}</p>
                 </div>
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+              </div>
+            </div>
+          )
+        })}
+        {!loading && filtered.length === 0 && (
+          <div className="py-12 text-center">
+            <div className="w-16 h-16 bg-slate-50 text-slate-200 rounded-full flex items-center justify-center mx-auto mb-3"><Package size={32}/></div>
+            <p className="text-slate-400 font-medium">{copy.noProducts}</p>
+          </div>
+        )}
       </div>
     </div>
   )
 }
-
-// ═══════════════════════════════════════════════════
-//  ADD NEW PRODUCT TAB
-// ═══════════════════════════════════════════════════
 function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => void; copy: AppCopy; lang: Lang }) {
   const [saving, setSaving] = useState(false)
   const [colorInput, setColorInput] = useState('')

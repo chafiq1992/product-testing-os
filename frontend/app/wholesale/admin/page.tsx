@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { UserPlus, Users, Trash2, Loader2, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Package } from 'lucide-react'
+import { UserPlus, Users, Trash2, Loader2, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Package, Pencil, X, Save } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 
@@ -25,6 +25,11 @@ export default function WholesaleAdminPage() {
   const [showPw, setShowPw] = useState(false)
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+  const [editVendor, setEditVendor] = useState<any>(null)
+  const [editName, setEditName] = useState('')
+  const [editStoreType, setEditStoreType] = useState('shoes')
+  const [editPassword, setEditPassword] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
 
   async function loadVendors() {
     setLoading(true)
@@ -58,6 +63,34 @@ export default function WholesaleAdminPage() {
     } catch (err: any) {
       showToast('error', err?.message || 'Network error')
     } finally { setSaving(false) }
+  }
+
+  function startEdit(v: any) {
+    setEditVendor(v)
+    setEditName(v.name || '')
+    setEditStoreType(v.store_type || 'shoes')
+    setEditPassword('')
+  }
+
+  async function handleEditSave() {
+    if (!editVendor) return
+    if (!editName.trim()) { showToast('error', 'Name is required'); return }
+    setEditSaving(true)
+    try {
+      const body: any = {
+        name: editName.trim(),
+        username: editVendor.username,
+        password: editPassword.trim() || 'UNCHANGED_PLACEHOLDER',
+        store_type: editStoreType,
+      }
+      const res = await apiPost('/api/wholesale/vendors', body)
+      if (res?.error) { showToast('error', res.error); return }
+      showToast('success', 'Vendor updated successfully!')
+      setEditVendor(null)
+      loadVendors()
+    } catch (err: any) {
+      showToast('error', err?.message || 'Network error')
+    } finally { setEditSaving(false) }
   }
 
   return (
@@ -191,7 +224,7 @@ export default function WholesaleAdminPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {vendors.map((v: any) => (
-                <div key={v.id || v.username} className="bg-slate-50 border border-slate-100 rounded-2xl p-5 hover:border-blue-200 transition-all group">
+                <div key={v.id || v.username} className="bg-slate-50 border border-slate-100 rounded-2xl p-5 hover:border-blue-200 transition-all group relative">
                   <div className="flex items-center gap-4 mb-3">
                     <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-2xl flex items-center justify-center text-white text-lg font-black shadow-md">
                       {(v.name || 'V').charAt(0).toUpperCase()}
@@ -206,6 +239,9 @@ export default function WholesaleAdminPage() {
                     <p>ID: <span className="text-slate-600 font-mono">{v.id}</span></p>
                     {v.created_at && <p>Created: <span className="text-slate-600">{new Date(v.created_at).toLocaleDateString()}</span></p>}
                   </div>
+                  <button onClick={() => startEdit(v)} className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl text-xs font-bold transition-all">
+                    <Pencil size={12} /> Edit Vendor
+                  </button>
                 </div>
               ))}
             </div>

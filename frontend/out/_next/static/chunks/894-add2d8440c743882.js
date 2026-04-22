@@ -1,4 +1,4 @@
-(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[20],{8030:function(t,e,r){"use strict";r.d(e,{Z:function(){return o}});var n=r(2265);/**
+(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[894],{8030:function(t,e,r){"use strict";r.d(e,{Z:function(){return o}});var n=r(2265);/**
  * @license lucide-react v0.441.0 - ISC
  *
  * This source code is licensed under the ISC license.
@@ -23,7 +23,12 @@
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
- */let n=(0,r(8030).Z)("Camera",[["path",{d:"M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",key:"1tc9qg"}],["circle",{cx:"12",cy:"13",r:"3",key:"1vg3eu"}]])},7592:function(t,e,r){"use strict";r.d(e,{Z:function(){return n}});/**
+ */let n=(0,r(8030).Z)("Camera",[["path",{d:"M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",key:"1tc9qg"}],["circle",{cx:"12",cy:"13",r:"3",key:"1vg3eu"}]])},3409:function(t,e,r){"use strict";r.d(e,{Z:function(){return n}});/**
+ * @license lucide-react v0.441.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */let n=(0,r(8030).Z)("ChartColumn",[["path",{d:"M3 3v16a2 2 0 0 0 2 2h16",key:"c24i48"}],["path",{d:"M18 17V9",key:"2bz60n"}],["path",{d:"M13 17V5",key:"1frdt8"}],["path",{d:"M8 17v-3",key:"17ska0"}]])},7592:function(t,e,r){"use strict";r.d(e,{Z:function(){return n}});/**
  * @license lucide-react v0.441.0 - ISC
  *
  * This source code is licensed under the ISC license.

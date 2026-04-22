@@ -5362,7 +5362,7 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
             "id": vendor_id,
             "name": name,
             "username": username,
-            "password_hash": _hash_password(password),
+            "password_hash": existing.get("password_hash", _hash_password(password)) if password == "UNCHANGED_PLACEHOLDER" else _hash_password(password),
             "store_type": store_type,
             "created_at": existing.get("created_at") or datetime.utcnow().isoformat() + "Z",
             "updated_at": datetime.utcnow().isoformat() + "Z",
