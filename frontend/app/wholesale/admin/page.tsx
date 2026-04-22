@@ -21,6 +21,7 @@ export default function WholesaleAdminPage() {
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [storeType, setStoreType] = useState('shoes')
   const [showPw, setShowPw] = useState(false)
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
@@ -49,10 +50,10 @@ export default function WholesaleAdminPage() {
     }
     setSaving(true)
     try {
-      const res = await apiPost('/api/wholesale/vendors', { name: name.trim(), username: username.trim(), password: password.trim() })
+      const res = await apiPost('/api/wholesale/vendors', { name: name.trim(), username: username.trim(), password: password.trim(), store_type: storeType })
       if (res?.error) { showToast('error', res.error); return }
       showToast('success', `Vendor "${name.trim()}" created successfully!`)
-      setName(''); setUsername(''); setPassword('')
+      setName(''); setUsername(''); setPassword(''); setStoreType('shoes')
       loadVendors()
     } catch (err: any) {
       showToast('error', err?.message || 'Network error')
@@ -96,7 +97,7 @@ export default function WholesaleAdminPage() {
             Create New Vendor
           </h2>
           <form onSubmit={handleCreate} className="space-y-5">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
               <div>
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Vendor / Company Name</label>
                 <input
@@ -126,6 +127,18 @@ export default function WholesaleAdminPage() {
                     {showPw ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Store Type</label>
+                <select
+                  value={storeType} onChange={e => setStoreType(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/30 transition"
+                >
+                  <option value="shoes">Shoes</option>
+                  <option value="clothes">Clothes</option>
+                  <option value="electronics">Electronics</option>
+                  <option value="general">General</option>
+                </select>
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -186,6 +199,7 @@ export default function WholesaleAdminPage() {
                     <div>
                       <h4 className="font-bold text-sm">{v.name}</h4>
                       <p className="text-[10px] text-slate-500 font-mono">@{v.username}</p>
+                      {v.store_type && <span className="inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-blue-50 text-blue-600 border border-blue-100">{v.store_type}</span>}
                     </div>
                   </div>
                   <div className="space-y-1.5 text-[10px] font-semibold text-slate-400">

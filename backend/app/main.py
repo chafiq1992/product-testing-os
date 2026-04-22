@@ -5309,10 +5309,14 @@ def _hash_password(pw: str) -> str:
     return hashlib.sha256((pw or "").encode("utf-8")).hexdigest()
 
 
+WHOLESALE_STORE_TYPES = ["shoes", "clothes", "electronics", "general"]
+
+
 class WholesaleVendorCreate(BaseModel):
     name: str
     username: str
     password: str
+    store_type: Optional[str] = "shoes"
 
 
 class WholesaleProductCreate(BaseModel):
@@ -5351,11 +5355,15 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
         if not isinstance(existing, dict):
             existing = {}
 
+        raw_type = (req.store_type or "shoes").strip().lower()
+        store_type = raw_type if raw_type in WHOLESALE_STORE_TYPES else "shoes"
+
         vendor_data = {
             "id": vendor_id,
             "name": name,
             "username": username,
             "password_hash": _hash_password(password),
+            "store_type": store_type,
             "created_at": existing.get("created_at") or datetime.utcnow().isoformat() + "Z",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
@@ -5803,6 +5811,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
                 },
                 "tags": order_tags,
                 "financial_status": "pending",
+                "inventory_behaviour": "decrement_obeying_policy",
                 "send_receipt": False,
                 "send_fulfillment_receipt": False,
             }

@@ -966,7 +966,7 @@ function Dashboard({
   const renderContent = () => {
     switch (activeTab) {
       case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
-      case 'inventory': return <InventoryTab products={products} loading={loadingProducts} copy={copy} lang={lang} />
+      case 'inventory': return <InventoryTab products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} />
       case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} copy={copy} lang={lang} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} />
@@ -995,7 +995,6 @@ function Dashboard({
             <ShoppingCart size={20}/>
             <span className="font-bold text-sm">{copy.createOrder}</span>
           </button>
-          <NavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label={copy.addProduct} />
         </div>
         <div className="p-4 border-t border-slate-100">
           <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
@@ -1086,17 +1085,12 @@ function Dashboard({
       </main>
 
       {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-2 py-2 flex justify-around items-center z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
-        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label={copy.home} />
-        <MobileNavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.stock} />
-        <div className="relative -top-5">
-          <button onClick={()=>setActiveTab('create-order')} className={`w-13 h-13 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 p-3 ${activeTab==='create-order'?'bg-emerald-600 text-white shadow-emerald-300':'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-300'}`}>
-            <ShoppingCart size={24} />
-          </button>
-        </div>
-        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
-        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label={copy.customers} />
-        <MobileNavItem active={activeTab==='add-new'} onClick={()=>setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label={copy.add} />
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-3 py-2 flex justify-around items-center z-50 shadow-[0_-8px_30px_rgba(0,0,0,0.08)]">
+        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={24}/>} label={copy.home} />
+        <MobileNavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={24}/>} label={copy.stock} />
+        <MobileNavItem active={activeTab==='create-order'} onClick={()=>setActiveTab('create-order')} icon={<ShoppingCart size={24}/>} label={copy.createOrder} isHighlight />
+        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={24}/>} label={copy.orders} />
+        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={24}/>} label={copy.customers} />
       </nav>
     </div>
   )
@@ -1113,11 +1107,27 @@ function NavItem({ active, onClick, icon, label }: any) {
     </button>
   )
 }
-function MobileNavItem({ active, onClick, icon, label }: any) {
+function MobileNavItem({ active, onClick, icon, label, isHighlight }: any) {
+  if (isHighlight) {
+    return (
+      <button onClick={onClick} className={`flex flex-col items-center justify-center gap-0.5 min-h-[52px] min-w-[56px] rounded-2xl transition-all duration-200 px-2 ${
+        active
+          ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200/50 scale-105'
+          : 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
+      }`}>
+        {icon}
+        <span className="text-[10px] font-black uppercase tracking-tight leading-tight">{label}</span>
+      </button>
+    )
+  }
   return (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-colors ${active ? 'text-blue-600' : 'text-slate-400'}`}>
+    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-0.5 min-h-[52px] min-w-[56px] rounded-2xl transition-all duration-200 px-2 ${
+      active
+        ? 'bg-blue-50 text-blue-600 shadow-sm'
+        : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+    }`}>
       {icon}
-      <span className="text-[10px] font-bold uppercase tracking-tighter">{label}</span>
+      <span className={`text-[10px] font-bold uppercase tracking-tight leading-tight ${active ? 'font-black' : ''}`}>{label}</span>
     </button>
   )
 }
@@ -1247,7 +1257,7 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
 // ═══════════════════════════════════════════════════
 //  INVENTORY TAB
 // ═══════════════════════════════════════════════════
-function InventoryTab({ products, loading, copy, lang }: { products: any[]; loading: boolean; copy: AppCopy; lang: Lang }) {
+function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrder }: { products: any[]; loading: boolean; copy: AppCopy; lang: Lang; onAddProduct?: () => void; onCreateOrder?: () => void }) {
   const [search, setSearch] = useState('')
   const [segFilter, setSegFilter] = useState('All')
   const locale = getLocale(lang)
@@ -1267,6 +1277,20 @@ function InventoryTab({ products, loading, copy, lang }: { products: any[]; load
         <div>
           <h2 className="text-2xl font-bold">{copy.inventoryTitle}</h2>
           <p className="text-slate-500 text-sm">{copy.inventorySub}</p>
+        </div>
+        <div className="flex gap-2">
+          {onAddProduct && (
+            <button onClick={onAddProduct} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-5 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200/50 transition-all active:scale-[0.97] text-sm">
+              <PlusCircle size={18} />
+              {copy.addProduct}
+            </button>
+          )}
+          {onCreateOrder && (
+            <button onClick={onCreateOrder} className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white px-5 py-3 rounded-2xl font-bold shadow-lg shadow-emerald-200/50 transition-all active:scale-[0.97] text-sm">
+              <ShoppingCart size={18} />
+              {copy.createOrder}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1380,7 +1404,17 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     const cog = toNumber(form.cogPrice)
     return unitSalePrice - cog
   }, [form.cogPrice, unitSalePrice])
+  const storeType = vendor.store_type || vendor.storeType || 'shoes'
+  const isShoes = storeType === 'shoes'
+  const isClothes = storeType === 'clothes'
+  const isElectronics = storeType === 'electronics' || storeType === 'general'
   const isArabic = lang === 'ar'
+
+  // Clothes-specific state
+  const CLOTHES_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL']
+  const [clothesSizes, setClothesSizes] = useState<Record<string, number>>({})
+  // Electronics/General simple quantity
+  const [simpleQty, setSimpleQty] = useState(1)
 
   function addColor() {
     const c = colorInput.trim()
@@ -1478,27 +1512,50 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 
   async function handleSubmit() {
     if (!imageUrl) { alert(copy.uploadImageRequired); return }
-    if (form.colors.length === 0) { alert(copy.colorRequired); return }
+    if (isShoes || isClothes) {
+      if (form.colors.length === 0) { alert(copy.colorRequired); return }
+    }
     if (unitSalePrice <= 0) { alert(copy.unitSalePriceRequired); return }
-    if (form.sizeGroups.length === 0) { alert(copy.stockVariantRequired); return }
-    if (form.sizeGroups.some(group => !group.sku.trim())) { alert(copy.skuRequired); return }
-    if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { alert(copy.piecesPerCrateRequired); return }
-    if (form.sizeGroups.some(group => group.crateQty <= 0)) { alert(copy.crateQuantityRequired); return }
+    if (isShoes) {
+      if (form.sizeGroups.length === 0) { alert(copy.stockVariantRequired); return }
+      if (form.sizeGroups.some(group => !group.sku.trim())) { alert(copy.skuRequired); return }
+      if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { alert(copy.piecesPerCrateRequired); return }
+      if (form.sizeGroups.some(group => group.crateQty <= 0)) { alert(copy.crateQuantityRequired); return }
+    }
     setSaving(true)
     try {
-      const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, {
+      // Build request body based on store type
+      const reqBody: any = {
         cog_price: parseFloat(form.cogPrice) || undefined,
         sale_price: unitSalePrice || undefined,
-        colors: form.colors.length > 0 ? form.colors : undefined,
-        size_groups: form.sizeGroups.map(group => ({
+        image_url: imageUrl || undefined,
+      }
+      if (isShoes || isClothes) {
+        reqBody.colors = form.colors.length > 0 ? form.colors : undefined
+      }
+      if (isShoes) {
+        reqBody.size_groups = form.sizeGroups.map(group => ({
           from: group.from,
           to: group.to,
           pcs_per_crate: group.pcsPerCrate,
           crate_quantity: group.crateQty,
           sku: group.sku.trim(),
-        })),
-        image_url: imageUrl || undefined,
-      })
+        }))
+      }
+      if (isClothes) {
+        const activeSizes = Object.entries(clothesSizes).filter(([, qty]) => qty > 0)
+        reqBody.size_groups = activeSizes.map(([size, qty]) => ({
+          from: size, to: size, pcs_per_crate: 1, crate_quantity: qty, sku: form.sizeGroups[0]?.sku?.trim() || '',
+        }))
+      }
+      if (isElectronics) {
+        reqBody.title = form.title || undefined
+        reqBody.description = form.description || undefined
+        reqBody.size_groups = [{
+          from: 'default', to: 'default', pcs_per_crate: 1, crate_quantity: simpleQty, sku: form.sizeGroups[0]?.sku?.trim() || '',
+        }]
+      }
+      const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, reqBody)
       if (res?.error) { alert(`${copy.errorPrefix}: ${res.error}`); return }
       alert(copy.productCreatedSuccess)
       onDone()
@@ -1604,9 +1661,40 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         )}
       </section>
 
+
+      {/* Electronics/General: Product Name & Description */}
+      {isElectronics && (
+        <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+          <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+            <TagIcon size={14} /> Product Details
+          </h3>
+          <div className="space-y-4">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Product Name</label>
+              <input type="text" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/30" placeholder="Enter product name..." />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Description / Configuration</label>
+              <textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium outline-none resize-none h-24 focus:ring-2 focus:ring-blue-500/30" placeholder="Product description, specs, configuration..." />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">SKU</label>
+                <input type="text" value={form.sizeGroups[0]?.sku || ''} onChange={e => updateSizeGroup(0, 'sku', e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="SKU-001" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Quantity</label>
+                <input type="number" value={simpleQty} onChange={e => setSimpleQty(parseInt(e.target.value) || 1)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" min="1" />
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LEFT COLUMN */}
         <div className="space-y-6">
+          {(isShoes || isClothes) && (
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
               <TagIcon size={14} /> {copy.colorsTitle}
@@ -1657,6 +1745,46 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               </div>
             </div>
           </section>
+          )}
+
+          {/* Clothes: Size Selector */}
+          {isClothes && (
+            <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+                <Layers size={14} /> Sizes & Quantities
+              </h3>
+              <div className="mb-3">
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">SKU</label>
+                <input type="text" value={form.sizeGroups[0]?.sku || ''} onChange={e => updateSizeGroup(0, 'sku', e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="SKU-001" />
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                {CLOTHES_SIZES.map(size => (
+                  <div key={size} className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setClothesSizes(prev => ({ ...prev, [size]: (prev[size] || 0) > 0 ? 0 : 1 }))}
+                      className={`px-3 py-2 rounded-xl text-xs font-black uppercase border-2 transition-all ${
+                        (clothesSizes[size] || 0) > 0
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-200'
+                          : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-blue-300'
+                      }`}>
+                      {size}
+                    </button>
+                    {(clothesSizes[size] || 0) > 0 && (
+                      <input
+                        type="number"
+                        value={clothesSizes[size] || 1}
+                        onChange={e => setClothesSizes(prev => ({ ...prev, [size]: parseInt(e.target.value) || 1 }))}
+                        className="w-14 text-center bg-blue-50 border border-blue-200 rounded-lg px-1 py-1 text-xs font-bold outline-none"
+                        min="1"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-3">Tap a size to activate it, then set the quantity below.</p>
+            </section>
+          )}
         </div>
 
         {/* RIGHT COLUMN */}
@@ -1688,6 +1816,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           </section>
 
           {/* Size Groups / Quantities */}
+          {isShoes && (
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-2 tracking-widest">
@@ -1755,6 +1884,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             </div>
             <p className="text-[10px] text-slate-400 mt-3">{copy.stockVariantNote}</p>
           </section>
+          )}
 
           <section className="hidden bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
