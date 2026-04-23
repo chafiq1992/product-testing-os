@@ -2981,18 +2981,22 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
   const btm = padT + innerH
   const targetY = yLeft(TARGET_CPP)
   const uid = useRef(Math.random().toString(36).slice(2,8))
-  // Build green/red segmented CPP line + area
-  const cppSegments: Array<{path:string, areaPath:string, color:string}> = []
+  // 3-tier CPP color: <$2 green, $2-$3 amber, >$3 red
+  function cppColor(v: number): string { return v < 2 ? '#10b981' : v < 3 ? '#f59e0b' : '#ef4444' }
+  function cppGradKey(v: number): string { return v < 2 ? 'cppGreen' : v < 3 ? 'cppAmber' : 'cppRed' }
+  // Build segmented CPP line + area
+  const cppSegments: Array<{path:string, areaPath:string, color:string, gradKey:string}> = []
   for(let i=0;i<tcppPts.length-1;i++){
     const [x0,y0] = tcppPts[i]
     const [x1,y1] = tcppPts[i+1]
     const v0 = trueCpp[i]||0, v1 = trueCpp[i+1]||0
-    const aboveTarget = (v0+v1)/2 >= TARGET_CPP
-    const color = aboveTarget ? '#ef4444' : '#10b981'
+    const avg = (v0+v1)/2
+    const color = cppColor(avg)
+    const gk = cppGradKey(avg)
     const cx = (x0+x1)/2
     const seg = `M ${x0},${y0} C ${cx},${y0} ${cx},${y1} ${x1},${y1}`
     const area = `${seg} L ${x1},${btm} L ${x0},${btm} Z`
-    cppSegments.push({ path: seg, areaPath: area, color })
+    cppSegments.push({ path: seg, areaPath: area, color, gradKey: gk })
   }
   const barW = Math.max(8, Math.min(60, innerW / Math.max(1, n) * 0.5))
   return (
@@ -3009,6 +3013,10 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
         <linearGradient id={`cppGreen_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#10b981" stopOpacity="0.18"/>
           <stop offset="100%" stopColor="#10b981" stopOpacity="0.03"/>
+        </linearGradient>
+        <linearGradient id={`cppAmber_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.03"/>
         </linearGradient>
         <linearGradient id={`cppRed_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#ef4444" stopOpacity="0.18"/>
@@ -3035,13 +3043,14 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
       <line x1={padL} y1={targetY} x2={w-padR} y2={targetY} stroke="#64748b" strokeWidth={1.5} strokeDasharray="8 4" opacity={0.6}/>
       <rect x={w-padR+4} y={targetY-10} width={50} height={20} rx={4} fill="#f1f5f9" stroke="#e2e8f0" strokeWidth={0.5}/>
       <text x={w-padR+8} y={targetY+4} fontSize="10" fontWeight="700" fill="#475569">$2 avg</text>
-      {/* Green/Red zone subtle fills */}
+      {/* Green/Amber/Red zone subtle fills */}
       <rect x={padL} y={targetY} width={innerW} height={btm - targetY} rx={0} fill="#10b981" opacity={0.03}/>
-      <rect x={padL} y={padT} width={innerW} height={targetY - padT} rx={0} fill="#ef4444" opacity={0.03}/>
+      <rect x={padL} y={yLeft(3)} width={innerW} height={targetY - yLeft(3)} rx={0} fill="#f59e0b" opacity={0.03}/>
+      <rect x={padL} y={padT} width={innerW} height={yLeft(3) - padT} rx={0} fill="#ef4444" opacity={0.03}/>
       {/* CPP colored segments */}
       {cppSegments.map((seg,i)=> (
         <g key={`cpps${i}`}>
-          <path d={seg.areaPath} fill={`url(#${seg.color==='#10b981'?'cppGreen':'cppRed'}_${uid.current})`}/>
+          <path d={seg.areaPath} fill={`url(#${seg.gradKey}_${uid.current})`}/>
           <path d={seg.path} fill="none" stroke={seg.color} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"/>
         </g>
       ))}
@@ -3056,7 +3065,7 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
       {/* Data points */}
       {xs.map((x,i)=> {
         const cppVal = trueCpp[i]||0
-        const dotColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
+        const dotColor = cppColor(cppVal)
         return (
           <g key={`dp${i}`}>
             <circle cx={x} cy={yLeft(cppVal)} r={hoverIdx===i?6:4} fill={dotColor} stroke="white" strokeWidth={2.5} className="transition-all duration-150"/>
@@ -3069,7 +3078,7 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
       {xs.map((x,i)=> {
         const cppVal = trueCpp[i]||0
         if(cppVal <= 0) return null
-        const dotColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
+        const dotColor = cppColor(cppVal)
         return <text key={`cl${i}`} x={x} y={yLeft(cppVal)-10} textAnchor="middle" fontSize="10" fontWeight="700" fill={dotColor}>${cppVal.toFixed(2)}</text>
       })}
       {/* Left axis labels */}
@@ -3096,13 +3105,13 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
         const ttX = (tx + ttW + 20 > w)? tx - ttW - 12 : tx + 12
         const ttY = Math.max(padT, Math.min(h - padB - ttH - 10, padT + 20))
         const cppVal = trueCpp[i]||0
-        const cppColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
+        const cppClr = cppColor(cppVal)
         return (
           <g>
             <rect x={ttX} y={ttY} width={ttW} height={ttH} rx={10} fill="white" stroke="#e2e8f0" strokeWidth={1} filter="drop-shadow(0 4px 12px rgba(0,0,0,0.08))"/>
             <text x={ttX+12} y={ttY+18} fontSize="11" fontWeight="700" fill="#1e293b">{labels[i]||''}</text>
             <line x1={ttX+12} y1={ttY+24} x2={ttX+ttW-12} y2={ttY+24} stroke="#f1f5f9" strokeWidth={1}/>
-            <circle cx={ttX+16} cy={ttY+38} r={4} fill={cppColor}/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill={cppColor}>{cppVal>0?`$${cppVal.toFixed(2)}`:'—'}</text>
+            <circle cx={ttX+16} cy={ttY+38} r={4} fill={cppClr}/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill={cppClr}>{cppVal>0?`$${cppVal.toFixed(2)}`:'—'}</text>
             <circle cx={ttX+16} cy={ttY+56} r={4} fill="#94a3b8"/><text x={ttX+26} y={ttY+60} fontSize="10" fill="#64748b">Spend</text><text x={ttX+ttW-12} y={ttY+60} textAnchor="end" fontSize="10" fontWeight="600" fill="#94a3b8">${(spend[i]||0).toFixed(2)}</text>
             <circle cx={ttX+16} cy={ttY+74} r={4} fill="#3b82f6"/><text x={ttX+26} y={ttY+78} fontSize="10" fill="#64748b">Orders</text><text x={ttX+ttW-12} y={ttY+78} textAnchor="end" fontSize="10" fontWeight="700" fill="#3b82f6">{orders[i]||0}</text>
             <circle cx={ttX+16} cy={ttY+92} r={4} fill="#f59e0b"/><text x={ttX+26} y={ttY+96} fontSize="10" fill="#64748b">ATC</text><text x={ttX+ttW-12} y={ttY+96} textAnchor="end" fontSize="10" fontWeight="700" fill="#f59e0b">{addToCart[i]||0}</text>
@@ -3112,10 +3121,11 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
       <g>
         {[
           { color: '#10b981', label: 'CPP < $2', x: padL },
-          { color: '#ef4444', label: 'CPP ≥ $2', x: padL + 90 },
-          { color: '#e2e8f0', label: 'Budget', x: padL + 180 },
-          { color: '#3b82f6', label: 'Orders', x: padL + 260 },
-          { color: '#f59e0b', label: 'ATC', x: padL + 340 },
+          { color: '#f59e0b', label: 'CPP $2-$3', x: padL + 90 },
+          { color: '#ef4444', label: 'CPP > $3', x: padL + 190 },
+          { color: '#e2e8f0', label: 'Budget', x: padL + 280 },
+          { color: '#3b82f6', label: 'Orders', x: padL + 360 },
+          { color: '#f59e0b', label: 'ATC', x: padL + 440 },
         ].map(leg=> (
           <g key={leg.label}>
             <circle cx={leg.x} cy={14} r={4} fill={leg.color}/>
