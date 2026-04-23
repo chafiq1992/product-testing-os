@@ -1596,6 +1596,44 @@ export default function AdsManagementPage(){
                         <td className="px-1 py-0.5 text-right">
                           <div className="flex items-center justify-end gap-1">
                           <button
+                            title="Performance"
+                            onClick={async()=>{
+                              setPerfOpen(true)
+                              setPerfLoading(true)
+                              try{
+                                const campaignIds = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
+                                setPerfCampaign({ id: pid, name: d.primary.name || `Product ${pid}` })
+                                // Fetch performance for all campaigns in the group and merge by date
+                                const allPerf = await Promise.all(campaignIds.map(cid =>
+                                  fetchCampaignPerformance(cid, 6, browserTz).then(r => (((r as any)?.data||{}).days)||[]).catch(()=> [])
+                                ))
+                                // Merge by date: sum spend, purchases, add_to_cart per date
+                                const dateMap: Record<string, {date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number}> = {}
+                                for(const days of allPerf){
+                                  for(const dd of days){
+                                    if(!dateMap[dd.date]) dateMap[dd.date] = { date: dd.date, spend: 0, purchases: 0, add_to_cart: 0 }
+                                    dateMap[dd.date].spend += Number(dd.spend||0)
+                                    dateMap[dd.date].purchases += Number(dd.purchases||0)
+                                    dateMap[dd.date].add_to_cart += Number(dd.add_to_cart||0)
+                                  }
+                                }
+                                const mergedDays = Object.values(dateMap).sort((a,b) => a.date.localeCompare(b.date))
+                                setPerfMetrics(mergedDays)
+                                // Fetch Shopify orders per day by product ID
+                                const ordersPerDay = await Promise.all(mergedDays.map(async (dd) => {
+                                  try{
+                                    const oc = await shopifyOrdersCountByTitle({ names: [pid], start: dd.date, end: dd.date, include_closed: true, date_field: 'processed' })
+                                    return Number(((oc as any)?.data||{})[pid] ?? 0)
+                                  }catch{ return 0 }
+                                }))
+                                setPerfOrders(ordersPerDay)
+                              }finally{
+                                setPerfLoading(false)
+                              }
+                            }}
+                            className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
+                          ><BarChart3 className="w-3.5 h-3.5"/></button>
+                          <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{
                               setAnalysisLoading(pid)
@@ -1972,7 +2010,7 @@ export default function AdsManagementPage(){
                     </td>
                     <td className="px-1 py-0.5 text-right">
                       <div className="flex items-center justify-end gap-1">
-                      <button
+                      {!isChild && <button
                         title="Performance"
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
@@ -2009,7 +2047,7 @@ export default function AdsManagementPage(){
                           }
                         }}
                         className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
-                      ><BarChart3 className="w-3.5 h-3.5"/></button>
+                      ><BarChart3 className="w-3.5 h-3.5"/></button>}
                       {(()=>{
                         const ck = String(c.campaign_id||c.name||'')
                         const tl = (campaignMeta[ck] as any)?.timeline || []
@@ -2905,21 +2943,24 @@ function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ o
 
 function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], trueCpp:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
   const [hoverIdx, setHoverIdx] = useState<number|null>(null)
+  const TARGET_CPP = 2
   const w = 1000, h = 360, padL = 60, padR = 60, padT = 50, padB = 50
   const innerW = w - padL - padR
   const innerH = h - padT - padB
   const n = Math.max(1, labels.length)
   const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
-  // Dynamic left axis (Spend/True CPP in $)
-  const maxDataLeft = Math.max(1, ...spend.map(v=>Number(v||0)), ...trueCpp.map(v=>Number(v||0)))
-  const maxLeft = Math.max(10, Math.ceil(maxDataLeft * 1.15 / 5) * 5)
-  // Dynamic right axis (Orders/ATC)
+  // Left axis: CPP-focused, centered around $2 target
+  const maxCpp = Math.max(TARGET_CPP * 2, ...trueCpp.map(v=>Number(v||0)))
+  const maxLeft = Math.max(4, Math.ceil(maxCpp * 1.2))
+  // Right axis: Orders/ATC
   const maxDataRight = Math.max(1, ...orders.map(v=>Number(v||0)), ...addToCart.map(v=>Number(v||0)))
   const maxRight = Math.max(5, Math.ceil(maxDataRight * 1.15 / 5) * 5)
   const yLeft = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxLeft))/maxLeft)*innerH
   const yRight = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxRight))/maxRight)*innerH
-  const leftTicks = Array.from({length:5}, (_,i)=> Math.round((i/4)*maxLeft))
+  const leftTicks = Array.from({length:5}, (_,i)=> Number(((i/4)*maxLeft).toFixed(1)))
   const rightTicks = Array.from({length:5}, (_,i)=> Math.round((i/4)*maxRight))
+  // Spend scale for background bars
+  const maxSpend = Math.max(1, ...spend.map(v=>Number(v||0)))
   // Smooth curve helper (monotone cubic)
   function smoothPath(pts: [number,number][]): string {
     if(pts.length<2) return pts.length===1? `M ${pts[0][0]},${pts[0][1]}` : ''
@@ -2932,124 +2973,149 @@ function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrder
     return d
   }
   // Build smooth paths
-  const spendPts: [number,number][] = xs.map((x,i)=> [x, yLeft(spend[i]||0)])
   const tcppPts: [number,number][] = xs.map((x,i)=> [x, yLeft(trueCpp[i]||0)])
   const ordersPts: [number,number][] = xs.map((x,i)=> [x, yRight(orders[i]||0)])
   const atcPts: [number,number][] = xs.map((x,i)=> [x, yRight(addToCart[i]||0)])
-  const pathSpend = smoothPath(spendPts)
-  const pathTrueCpp = smoothPath(tcppPts)
   const pathOrders = smoothPath(ordersPts)
   const pathATC = smoothPath(atcPts)
-  // Area fill paths (close to bottom)
   const btm = padT + innerH
-  function areaPath(pts: [number,number][]) {
-    if(pts.length<2) return ''
-    return smoothPath(pts) + ` L ${pts[pts.length-1][0]},${btm} L ${pts[0][0]},${btm} Z`
-  }
-  const areaSpend = areaPath(spendPts)
-  const areaOrders = areaPath(ordersPts)
-  const areaATC = areaPath(atcPts)
-  // Unique gradient IDs
+  const targetY = yLeft(TARGET_CPP)
   const uid = useRef(Math.random().toString(36).slice(2,8))
+  // Build green/red segmented CPP line + area
+  const cppSegments: Array<{path:string, areaPath:string, color:string}> = []
+  for(let i=0;i<tcppPts.length-1;i++){
+    const [x0,y0] = tcppPts[i]
+    const [x1,y1] = tcppPts[i+1]
+    const v0 = trueCpp[i]||0, v1 = trueCpp[i+1]||0
+    const aboveTarget = (v0+v1)/2 >= TARGET_CPP
+    const color = aboveTarget ? '#ef4444' : '#10b981'
+    const cx = (x0+x1)/2
+    const seg = `M ${x0},${y0} C ${cx},${y0} ${cx},${y1} ${x1},${y1}`
+    const area = `${seg} L ${x1},${btm} L ${x0},${btm} Z`
+    cppSegments.push({ path: seg, areaPath: area, color })
+  }
+  const barW = Math.max(8, Math.min(60, innerW / Math.max(1, n) * 0.5))
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto select-none" onMouseLeave={()=> setHoverIdx(null)}>
       <defs>
-        <linearGradient id={`spendG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#10b981" stopOpacity="0.25"/>
-          <stop offset="100%" stopColor="#10b981" stopOpacity="0.02"/>
-        </linearGradient>
-        <linearGradient id={`ordersG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.20"/>
+        <linearGradient id={`ordG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15"/>
           <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02"/>
         </linearGradient>
         <linearGradient id={`atcG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.18"/>
+          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.12"/>
           <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.02"/>
+        </linearGradient>
+        <linearGradient id={`cppGreen_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0.03"/>
+        </linearGradient>
+        <linearGradient id={`cppRed_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ef4444" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#ef4444" stopOpacity="0.03"/>
         </linearGradient>
       </defs>
       <rect x={0} y={0} width={w} height={h} rx={12} fill="#fafbfc"/>
-      {/* Horizontal gridlines */}
+      {/* Subtle horizontal gridlines */}
       {leftTicks.map((tick,i)=> (
-        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#e2e8f0" strokeDasharray="4 3" strokeWidth={0.8}/>
+        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#f1f5f9" strokeWidth={0.8}/>
       ))}
-      {/* Vertical gridlines per day */}
-      {xs.map((x,i)=> (
-        <line key={`v${i}`} x1={x} y1={padT} x2={x} y2={h-padB} stroke="#f1f5f9" strokeWidth={0.8}/>
-      ))}
-      {/* Area fills */}
-      <path d={areaSpend} fill={`url(#spendG_${uid.current})`}/>
-      {showOrders && <path d={areaOrders} fill={`url(#ordersG_${uid.current})`}/>}
-      {showATC && <path d={areaATC} fill={`url(#atcG_${uid.current})`}/>}
-      {/* Lines */}
-      <path d={pathSpend} fill="none" stroke="#10b981" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>
-      <path d={pathTrueCpp} fill="none" stroke="#8b5cf6" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6 3"/>
-      {showOrders && <path d={pathOrders} fill="none" stroke="#3b82f6" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>}
-      {showATC && <path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"/>}
-      {/* Data points */}
-      {xs.map((x,i)=> (
-        <g key={`dp${i}`}>
-          <circle cx={x} cy={yLeft(spend[i]||0)} r={hoverIdx===i?5:3.5} fill="#10b981" stroke="white" strokeWidth={2} className="transition-all duration-150"/>
-          <circle cx={x} cy={yLeft(trueCpp[i]||0)} r={hoverIdx===i?5:3.5} fill="#8b5cf6" stroke="white" strokeWidth={2} className="transition-all duration-150"/>
-          {showOrders && <circle cx={x} cy={yRight(orders[i]||0)} r={hoverIdx===i?5:3.5} fill="#3b82f6" stroke="white" strokeWidth={2} className="transition-all duration-150"/>}
-          {showATC && <circle cx={x} cy={yRight(addToCart[i]||0)} r={hoverIdx===i?5:3.5} fill="#f59e0b" stroke="white" strokeWidth={2} className="transition-all duration-150"/>}
+      {/* Budget/Spend background bars — very faint */}
+      {xs.map((x,i)=> {
+        const barH = (Number(spend[i]||0) / maxSpend) * (innerH * 0.85)
+        return <rect key={`sb${i}`} x={x - barW/2} y={btm - barH} width={barW} height={barH} rx={4} fill="#e2e8f0" opacity={0.35}/>
+      })}
+      {xs.map((x,i)=> {
+        const val = spend[i]||0
+        if(val <= 0) return null
+        const barH = (val / maxSpend) * (innerH * 0.85)
+        return <text key={`sl${i}`} x={x} y={btm - barH - 4} textAnchor="middle" fontSize="8" fill="#94a3b8" fontWeight="500">${val.toFixed(0)}</text>
+      })}
+      {/* $2 Target line */}
+      <line x1={padL} y1={targetY} x2={w-padR} y2={targetY} stroke="#64748b" strokeWidth={1.5} strokeDasharray="8 4" opacity={0.6}/>
+      <rect x={w-padR+4} y={targetY-10} width={50} height={20} rx={4} fill="#f1f5f9" stroke="#e2e8f0" strokeWidth={0.5}/>
+      <text x={w-padR+8} y={targetY+4} fontSize="10" fontWeight="700" fill="#475569">$2 avg</text>
+      {/* Green/Red zone subtle fills */}
+      <rect x={padL} y={targetY} width={innerW} height={btm - targetY} rx={0} fill="#10b981" opacity={0.03}/>
+      <rect x={padL} y={padT} width={innerW} height={targetY - padT} rx={0} fill="#ef4444" opacity={0.03}/>
+      {/* CPP colored segments */}
+      {cppSegments.map((seg,i)=> (
+        <g key={`cpps${i}`}>
+          <path d={seg.areaPath} fill={`url(#${seg.color==='#10b981'?'cppGreen':'cppRed'}_${uid.current})`}/>
+          <path d={seg.path} fill="none" stroke={seg.color} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"/>
         </g>
       ))}
+      {showOrders && <>
+        <path d={smoothPath(ordersPts) + ` L ${ordersPts[ordersPts.length-1]?.[0]||0},${btm} L ${ordersPts[0]?.[0]||0},${btm} Z`} fill={`url(#ordG_${uid.current})`}/>
+        <path d={pathOrders} fill="none" stroke="#3b82f6" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" opacity={0.7}/>
+      </>}
+      {showATC && <>
+        <path d={smoothPath(atcPts) + ` L ${atcPts[atcPts.length-1]?.[0]||0},${btm} L ${atcPts[0]?.[0]||0},${btm} Z`} fill={`url(#atcG_${uid.current})`}/>
+        <path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" opacity={0.7}/>
+      </>}
+      {/* Data points */}
+      {xs.map((x,i)=> {
+        const cppVal = trueCpp[i]||0
+        const dotColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
+        return (
+          <g key={`dp${i}`}>
+            <circle cx={x} cy={yLeft(cppVal)} r={hoverIdx===i?6:4} fill={dotColor} stroke="white" strokeWidth={2.5} className="transition-all duration-150"/>
+            {showOrders && <circle cx={x} cy={yRight(orders[i]||0)} r={hoverIdx===i?4:2.5} fill="#3b82f6" stroke="white" strokeWidth={1.5} opacity={0.7} className="transition-all duration-150"/>}
+            {showATC && <circle cx={x} cy={yRight(addToCart[i]||0)} r={hoverIdx===i?4:2.5} fill="#f59e0b" stroke="white" strokeWidth={1.5} opacity={0.7} className="transition-all duration-150"/>}
+          </g>
+        )
+      })}
+      {/* CPP value labels */}
+      {xs.map((x,i)=> {
+        const cppVal = trueCpp[i]||0
+        if(cppVal <= 0) return null
+        const dotColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
+        return <text key={`cl${i}`} x={x} y={yLeft(cppVal)-10} textAnchor="middle" fontSize="10" fontWeight="700" fill={dotColor}>${cppVal.toFixed(2)}</text>
+      })}
       {/* Left axis labels */}
       {leftTicks.map((tick,i)=> (
         <text key={`lt${i}`} x={padL-10} y={yLeft(tick)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">${tick}</text>
       ))}
-      {/* Right axis labels */}
       {rightTicks.map((tick,i)=> (
         <text key={`rt${i}`} x={w-padR+10} y={yRight(tick)} textAnchor="start" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">{tick}</text>
       ))}
-      {/* Axis titles */}
-      <text x={padL-10} y={padT-14} textAnchor="end" fontSize="9" fill="#94a3b8" fontWeight="600">$ USD</text>
+      <text x={padL-10} y={padT-14} textAnchor="end" fontSize="9" fill="#94a3b8" fontWeight="600">True CPP $</text>
       <text x={w-padR+10} y={padT-14} textAnchor="start" fontSize="9" fill="#94a3b8" fontWeight="600">Count</text>
-      {/* X axis date labels */}
       {xs.map((x,i)=> (
         <text key={`x${i}`} x={x} y={h-14} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="500">{labels[i]?.slice(5)||''}</text>
       ))}
-      {/* Hover zones (invisible rects for interactive tooltips) */}
+      {/* Hover zones */}
       {xs.map((x,i)=> {
         const colW = innerW / Math.max(1, n-1)
-        return (
-          <rect key={`hz${i}`} x={x-colW/2} y={padT} width={colW} height={innerH} fill="transparent" onMouseEnter={()=> setHoverIdx(i)} onMouseMove={()=> setHoverIdx(i)}/>
-        )
+        return <rect key={`hz${i}`} x={x-colW/2} y={padT} width={colW} height={innerH} fill="transparent" onMouseEnter={()=> setHoverIdx(i)} onMouseMove={()=> setHoverIdx(i)}/>
       })}
-      {/* Hover highlight line */}
-      {hoverIdx!=null && (
-        <line x1={xs[hoverIdx]} y1={padT} x2={xs[hoverIdx]} y2={h-padB} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 2"/>
-      )}
-      {/* Hover Tooltip */}
+      {hoverIdx!=null && <line x1={xs[hoverIdx]} y1={padT} x2={xs[hoverIdx]} y2={h-padB} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 2"/>}
       {hoverIdx!=null && (()=>{
-        const tx = xs[hoverIdx]
-        const ttW = 170, ttH = 140
-        const flipRight = tx + ttW + 20 > w
-        const ttX = flipRight? tx - ttW - 12 : tx + 12
+        const tx = xs[hoverIdx]; const i = hoverIdx
+        const ttW = 160, ttH = 120
+        const ttX = (tx + ttW + 20 > w)? tx - ttW - 12 : tx + 12
         const ttY = Math.max(padT, Math.min(h - padB - ttH - 10, padT + 20))
-        const i = hoverIdx
-        const dayTcpp = (orders[i]||0)>0? ((spend[i]||0)/(orders[i]||1)) : null
+        const cppVal = trueCpp[i]||0
+        const cppColor = cppVal >= TARGET_CPP ? '#ef4444' : '#10b981'
         return (
           <g>
             <rect x={ttX} y={ttY} width={ttW} height={ttH} rx={10} fill="white" stroke="#e2e8f0" strokeWidth={1} filter="drop-shadow(0 4px 12px rgba(0,0,0,0.08))"/>
             <text x={ttX+12} y={ttY+18} fontSize="11" fontWeight="700" fill="#1e293b">{labels[i]||''}</text>
             <line x1={ttX+12} y1={ttY+24} x2={ttX+ttW-12} y2={ttY+24} stroke="#f1f5f9" strokeWidth={1}/>
-            <circle cx={ttX+16} cy={ttY+38} r={4} fill="#10b981"/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">Spend</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill="#10b981">${(spend[i]||0).toFixed(2)}</text>
-            <circle cx={ttX+16} cy={ttY+56} r={4} fill="#8b5cf6"/><text x={ttX+26} y={ttY+60} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+60} textAnchor="end" fontSize="10" fontWeight="700" fill="#8b5cf6">{dayTcpp!=null?`$${dayTcpp.toFixed(2)}`:'—'}</text>
+            <circle cx={ttX+16} cy={ttY+38} r={4} fill={cppColor}/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill={cppColor}>{cppVal>0?`$${cppVal.toFixed(2)}`:'—'}</text>
+            <circle cx={ttX+16} cy={ttY+56} r={4} fill="#94a3b8"/><text x={ttX+26} y={ttY+60} fontSize="10" fill="#64748b">Spend</text><text x={ttX+ttW-12} y={ttY+60} textAnchor="end" fontSize="10" fontWeight="600" fill="#94a3b8">${(spend[i]||0).toFixed(2)}</text>
             <circle cx={ttX+16} cy={ttY+74} r={4} fill="#3b82f6"/><text x={ttX+26} y={ttY+78} fontSize="10" fill="#64748b">Orders</text><text x={ttX+ttW-12} y={ttY+78} textAnchor="end" fontSize="10" fontWeight="700" fill="#3b82f6">{orders[i]||0}</text>
             <circle cx={ttX+16} cy={ttY+92} r={4} fill="#f59e0b"/><text x={ttX+26} y={ttY+96} fontSize="10" fill="#64748b">ATC</text><text x={ttX+ttW-12} y={ttY+96} textAnchor="end" fontSize="10" fontWeight="700" fill="#f59e0b">{addToCart[i]||0}</text>
-            <circle cx={ttX+16} cy={ttY+110} r={4} fill="#64748b"/><text x={ttX+26} y={ttY+114} fontSize="10" fill="#64748b">Purchases</text><text x={ttX+ttW-12} y={ttY+114} textAnchor="end" fontSize="10" fontWeight="700" fill="#64748b">{(trueCpp[i]||0)>0?Math.round(spend[i]/(trueCpp[i]||1)):0}</text>
-            <text x={ttX+ttW-12} y={ttY+132} textAnchor="end" fontSize="9" fill="#94a3b8">hover for details</text>
           </g>
         )
       })()}
-      {/* Legend */}
       <g>
         {[
-          { color: '#10b981', label: 'Spend ($)', x: padL },
-          { color: '#8b5cf6', label: 'True CPP ($)', x: padL + 110 },
-          { color: '#3b82f6', label: 'Orders', x: padL + 240 },
-          { color: '#f59e0b', label: 'Add to Cart', x: padL + 330 },
+          { color: '#10b981', label: 'CPP < $2', x: padL },
+          { color: '#ef4444', label: 'CPP ≥ $2', x: padL + 90 },
+          { color: '#e2e8f0', label: 'Budget', x: padL + 180 },
+          { color: '#3b82f6', label: 'Orders', x: padL + 260 },
+          { color: '#f59e0b', label: 'ATC', x: padL + 340 },
         ].map(leg=> (
           <g key={leg.label}>
             <circle cx={leg.x} cy={14} r={4} fill={leg.color}/>
