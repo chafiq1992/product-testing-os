@@ -1256,4 +1256,52 @@ export async function clearActionTasks(store?: string){
   const qp = params.length? `?${params.join('&')}` : ''
   const {data} = await axios.delete(`${base}/api/campaign/action_tasks${qp}`)
   return data as { data?: { ok: boolean }, error?: string }
-}
+}
+
+
+// -------- Bulk Analyze All Active Campaigns --------
+export type BulkAnalysisJob = {
+  job_id?: string
+  status: 'pending' | 'fetching_campaigns' | 'analyzing' | 'generating_tasks' | 'done' | 'error'
+  progress?: { done: number, total: number, phase: string }
+  error?: string
+  result?: {
+    task_count?: number
+    incomplete_count?: number
+    summary?: string
+    analyses_count?: number
+    groups_analyzed?: string[]
+    message?: string
+  }
+  date_range?: { start: string, end: string }
+  updated_at?: string
+}
+
+export async function analyzeAllCampaigns(payload: {
+  store?: string
+  ad_account?: string
+  date_range?: { start: string, end: string }
+}): Promise<{ job_id?: string, error?: string }> {
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const { data } = await axios.post(`${base}/api/campaign/analyze_all`, body, { timeout: 15000 })
+  return data as { job_id?: string, error?: string }
+}
+
+export async function getAnalyzeAllStatus(jobId: string, store?: string): Promise<BulkAnalysisJob> {
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length ? `?${params.join('&')}` : ''
+  const { data } = await axios.get(`${base}/api/campaign/analyze_all/status/${encodeURIComponent(jobId)}${qp}`, { timeout: 10000 })
+  return data as BulkAnalysisJob
+}
+
+export async function getLatestBulkAnalysis(store?: string): Promise<{ data?: BulkAnalysisJob | null, error?: string }> {
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  const qp = params.length ? `?${params.join('&')}` : ''
+  const { data } = await axios.get(`${base}/api/campaign/analyze_all/latest${qp}`)
+  return data as { data?: BulkAnalysisJob | null, error?: string }
+}
+

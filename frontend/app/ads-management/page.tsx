@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, analyzeAllCampaigns, getAnalyzeAllStatus, getLatestBulkAnalysis, type BulkAnalysisJob } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -147,6 +147,10 @@ export default function AdsManagementPage(){
   const [actionTasksOpen, setActionTasksOpen] = useState<boolean>(false)
   const [actionTasksLoading, setActionTasksLoading] = useState<boolean>(false)
   const [actionTasksLoaded, setActionTasksLoaded] = useState<boolean>(false)
+  // Bulk Analyze All state
+  const [bulkAnalysisJobId, setBulkAnalysisJobId] = useState<string|null>(null)
+  const [bulkAnalysisStatus, setBulkAnalysisStatus] = useState<BulkAnalysisJob|null>(null)
+  const bulkPollRef = useRef<ReturnType<typeof setInterval>|null>(null)
   // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
@@ -576,8 +580,49 @@ export default function AdsManagementPage(){
           }
         }catch{}
       }
+      // Restore active bulk analysis job (if browser was closed mid-job)
+      try{
+        const latestRes = await getLatestBulkAnalysis(store)
+        const latest = latestRes?.data
+        if(latest && latest.status && latest.status !== 'done' && latest.status !== 'error' && latest.job_id){
+          setBulkAnalysisJobId(latest.job_id)
+          setBulkAnalysisStatus(latest)
+          startBulkPoll(latest.job_id)
+        } else if(latest){
+          setBulkAnalysisStatus(latest)
+        }
+      }catch{}
     })()
   }, [])
+
+  // Bulk analysis polling helper
+  function startBulkPoll(jobId: string){
+    // Clear any existing poll
+    if(bulkPollRef.current) clearInterval(bulkPollRef.current)
+    bulkPollRef.current = setInterval(async()=>{
+      try{
+        const status = await getAnalyzeAllStatus(jobId, store)
+        setBulkAnalysisStatus(status)
+        if(status.status === 'done' || status.status === 'error'){
+          if(bulkPollRef.current) clearInterval(bulkPollRef.current)
+          bulkPollRef.current = null
+          // Refresh campaign meta to pick up new group timeline entries
+          try{
+            const metaRes = await campaignMetaList(store)
+            if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+          }catch{}
+          // Refresh action tasks
+          try{
+            const tasksRes = await getActionTasks(store)
+            if(tasksRes?.data){
+              setActionTasks(tasksRes.data.tasks || [])
+              setActionTasksSummary(tasksRes.data.summary || '')
+            }
+          }catch{}
+        }
+      }catch{}
+    }, 5000)
+  }
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
@@ -1056,6 +1101,52 @@ export default function AdsManagementPage(){
           <button onClick={()=>setPlSettingsOpen(true)} className="rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm" title="Product Life Settings">
             <Settings className="w-4 h-4"/>
           </button>
+          {/* ── Analyze All Active button ── */}
+          <button
+            disabled={!!(bulkAnalysisStatus && bulkAnalysisStatus.status !== 'done' && bulkAnalysisStatus.status !== 'error')}
+            onClick={async()=>{
+              try{
+                const { start, end } = effectiveYmdRange(datePreset)
+                const res = await analyzeAllCampaigns({
+                  store,
+                  ad_account: adAccount || undefined,
+                  date_range: { start, end },
+                })
+                if(res?.job_id){
+                  setBulkAnalysisJobId(res.job_id)
+                  setBulkAnalysisStatus({ status: 'pending', progress: { done: 0, total: 0, phase: 'starting' } })
+                  startBulkPoll(res.job_id)
+                }
+              }catch{}
+            }}
+            className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
+              bulkAnalysisStatus && bulkAnalysisStatus.status !== 'done' && bulkAnalysisStatus.status !== 'error'
+                ? 'bg-gradient-to-r from-emerald-300 to-teal-300 cursor-wait animate-pulse'
+                : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-sm hover:shadow-md'
+            }`}
+            title="Analyze all active campaigns with spend > $30"
+          >
+            <Zap className="w-4 h-4"/>
+            {(()=>{
+              const s = bulkAnalysisStatus
+              if(!s || s.status === 'done' || s.status === 'error') return 'Analyze All Active'
+              if(s.status === 'fetching_campaigns' || s.status === 'pending') return 'Starting…'
+              if(s.status === 'analyzing') return `Analyzing ${s.progress?.done||0}/${s.progress?.total||'?'}…`
+              if(s.status === 'generating_tasks') return 'Generating tasks…'
+              return 'Processing…'
+            })()}
+          </button>
+          {/* Bulk analysis done badge */}
+          {bulkAnalysisStatus?.status === 'done' && bulkAnalysisStatus.result && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-200">
+              ✓ {bulkAnalysisStatus.result.analyses_count || 0} analyzed · {bulkAnalysisStatus.result.task_count || 0} tasks
+            </span>
+          )}
+          {bulkAnalysisStatus?.status === 'error' && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-rose-50 text-rose-600 text-xs font-medium border border-rose-200">
+              ✗ Analysis failed
+            </span>
+          )}
           {/* ── Analyze Selected button ── */}
           {selectedCount > 0 && (
             <button
@@ -1633,6 +1724,29 @@ export default function AdsManagementPage(){
                             }}
                             className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
                           ><BarChart3 className="w-3.5 h-3.5"/></button>
+                          {/* Group Timeline button with red badge */}
+                          {(()=>{
+                            const groupKey = `group:${pid}`
+                            const tl = (campaignMeta[groupKey] as any)?.timeline || []
+                            const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
+                            return (
+                              <button
+                                title="Group Timeline"
+                                onClick={()=>{
+                                  setTimelineDraft('')
+                                  setTimelineOpen({ open: true, campaign: { id: groupKey, name: d.primary.name || `Product ${pid}` } })
+                                }}
+                                className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
+                              >
+                                <Clock className="w-3.5 h-3.5"/>
+                                {incompleteTasks > 0 && (
+                                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[9px] font-bold flex items-center justify-center shadow-sm animate-bounce" style={{animationDuration:'2s'}}>
+                                    {incompleteTasks}
+                                  </span>
+                                )}
+                              </button>
+                            )
+                          })()}
                           <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{

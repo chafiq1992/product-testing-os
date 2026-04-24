@@ -720,6 +720,74 @@ def append_campaign_timeline(store: str | None, campaign_key: str, text: str) ->
     except Exception:
         return {}
 
+
+# ─────── Bulk Analysis Jobs (persisted in AppSetting) ───────
+
+def save_bulk_analysis_job(store: str | None, job_id: str, data: dict) -> dict:
+    """Save/update a bulk analysis job state in DB for persistence across browser close."""
+    if not isinstance(job_id, str) or not job_id.strip():
+        return {}
+    key = f"bulk_analysis_job:{job_id.strip()}"
+    payload = dict(data or {})
+    payload["job_id"] = job_id.strip()
+    payload["updated_at"] = _now().isoformat() + "Z"
+    saved = set_app_setting(store, key, payload)
+    try:
+        return saved if isinstance(saved, dict) else (json.loads(saved) if isinstance(saved, str) else {})
+    except Exception:
+        return {}
+
+
+def get_bulk_analysis_job(store: str | None, job_id: str) -> dict | None:
+    """Read a bulk analysis job state from DB."""
+    if not isinstance(job_id, str) or not job_id.strip():
+        return None
+    key = f"bulk_analysis_job:{job_id.strip()}"
+    val = get_app_setting(store, key)
+    return val if isinstance(val, dict) else None
+
+
+def get_latest_bulk_analysis_job(store: str | None) -> dict | None:
+    """Find the most recent bulk analysis job for a store."""
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like("bulk_analysis_job:%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.order_by(desc(AppSetting.updated_at)).limit(5).all()
+        for r in rows:
+            try:
+                val = json.loads(r.value) if r.value else {}
+                if isinstance(val, dict):
+                    return val
+            except Exception:
+                continue
+        return None
+
+
+def append_group_timeline(store: str | None, product_id: str, text: str) -> dict:
+    """Append a timeline note to a product-group timeline; returns updated meta dict.
+    Uses campaign_meta with key 'group:{product_id}' to leverage existing infrastructure.
+    """
+    if not isinstance(product_id, str) or not product_id.strip():
+        return {}
+    return append_campaign_timeline(store, f"group:{product_id.strip()}", text)
+
+
+def get_group_timeline(store: str | None, product_id: str) -> list:
+    """Read the timeline entries for a product group."""
+    if not isinstance(product_id, str) or not product_id.strip():
+        return []
+    key = f"campaign_meta:group:{product_id.strip()}"
+    try:
+        existing = get_app_setting(store, key) or {}
+        if not isinstance(existing, dict):
+            return []
+        tl = existing.get("timeline")
+        return list(tl) if isinstance(tl, list) else []
+    except Exception:
+        return []
+
+
 def upsert_campaign_mapping(store: str | None, campaign_key: str, kind: str, target_id: str) -> dict:
     with SessionLocal() as session:
         pk = _mk_pk(store, campaign_key)

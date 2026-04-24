@@ -1877,6 +1877,412 @@ async def api_clear_action_tasks(store: str | None = None):
         return {"error": str(e), "data": {"ok": False}}
 
 
+# -------- Bulk Analyze All Active Campaigns (background job, DB-persisted) --------
+import re as _re_mod
+
+def _extract_product_id_from_name(name: str | None) -> str | None:
+    """Extract a numeric product ID (3+ digits) from a campaign name."""
+    try:
+        n = str(name or "")
+        m = _re_mod.search(r"(\d{3,})", n)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | None, s_date: str, e_date: str):
+    """Run the full analyze-all pipeline in a background thread.
+    
+    This thread is non-daemon and persists job state to DB, so it
+    survives browser close and can be polled later.
+    """
+    logger = logging.getLogger("bulk_analysis")
+    try:
+        # --- Step 1: Save initial state ---
+        db.save_bulk_analysis_job(store, job_id, {
+            "status": "fetching_campaigns",
+            "progress": {"done": 0, "total": 0, "phase": "fetching"},
+        })
+
+        # --- Step 2: Fetch all campaigns from Meta ---
+        acct = _normalize_ad_acct_id(ad_account)
+        if not acct:
+            try:
+                conf = db.get_app_setting(store, "meta_ad_account")
+                acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
+            except Exception:
+                acct = None
+
+        campaigns = list_active_campaigns_with_insights(
+            "last_7d",
+            ad_account_id=acct or None,
+            since=s_date,
+            until=e_date,
+        )
+        if not campaigns:
+            campaigns = []
+
+        # --- Step 3: Filter to ACTIVE + spend > $30 ---
+        active_campaigns = [
+            c for c in campaigns
+            if str(c.get("status", "")).upper() == "ACTIVE"
+            and float(c.get("spend", 0) or 0) > 30
+        ]
+
+        if not active_campaigns:
+            db.save_bulk_analysis_job(store, job_id, {
+                "status": "done",
+                "progress": {"done": 0, "total": 0, "phase": "done"},
+                "result": {"message": "No active campaigns with spend > $30 found", "task_count": 0},
+            })
+            return
+
+        # --- Step 4: Group campaigns by product ID ---
+        mappings = {}
+        try:
+            mappings = db.list_campaign_mappings(store) or {}
+        except Exception:
+            pass
+
+        by_pid: dict[str, list] = {}
+        ungrouped: list = []
+        for c in active_campaigns:
+            cid = str(c.get("campaign_id") or "")
+            name = str(c.get("name") or "")
+            pid = None
+            # Check manual mapping first
+            for key in (cid, name):
+                if not key:
+                    continue
+                m = mappings.get(key)
+                if m and m.get("kind") == "product" and m.get("id"):
+                    pid = str(m.get("id") or m.get("target_id") or "")
+                    break
+            # Fallback to extracting from name
+            if not pid:
+                pid = _extract_product_id_from_name(name)
+            if pid:
+                by_pid.setdefault(pid, []).append(c)
+            else:
+                ungrouped.append(c)
+
+        # For ungrouped campaigns, treat each as its own "group"
+        all_groups: list[dict] = []
+        for pid, rows in by_pid.items():
+            all_groups.append({"product_id": pid, "campaigns": rows})
+        for c in ungrouped:
+            fake_pid = str(c.get("campaign_id") or c.get("name") or "")
+            all_groups.append({"product_id": fake_pid, "campaigns": [c]})
+
+        total_groups = len(all_groups)
+        db.save_bulk_analysis_job(store, job_id, {
+            "status": "analyzing",
+            "progress": {"done": 0, "total": total_groups, "phase": "analyzing"},
+        })
+
+        # --- Step 5: Analyze each group ---
+        all_analyses: list[dict] = []
+        for idx, group in enumerate(all_groups):
+            pid = group["product_id"]
+            rows = group["campaigns"]
+            try:
+                # Aggregate metrics across all campaigns in the group
+                total_spend = sum(float(c.get("spend", 0) or 0) for c in rows)
+                total_purchases = sum(int(c.get("purchases", 0) or 0) for c in rows)
+                total_atc = sum(int(c.get("add_to_cart", 0) or 0) for c in rows)
+                # Weighted average CTR
+                ctr_val = None
+                try:
+                    ctr_sum = sum(float(c.get("ctr", 0) or 0) * float(c.get("spend", 0) or 0) for c in rows)
+                    if total_spend > 0:
+                        ctr_val = ctr_sum / total_spend
+                except Exception:
+                    pass
+                cpp_val = (total_spend / total_purchases) if total_purchases > 0 else None
+
+                # Campaign age from first campaign's created_time
+                age_days = None
+                for c in rows:
+                    ct = c.get("created_time")
+                    if ct:
+                        try:
+                            from datetime import datetime as _dt
+                            diff = _dt.utcnow() - _dt.fromisoformat(str(ct).replace("Z", "+00:00").replace("+00:00", ""))
+                            age_days = max(0, diff.days)
+                        except Exception:
+                            pass
+                        break
+
+                # Fetch ad creatives from first campaign
+                ad_creatives = []
+                try:
+                    cid0 = str(rows[0].get("campaign_id", ""))
+                    if cid0:
+                        ad_creatives = get_campaign_ad_creatives(cid0) or []
+                except Exception:
+                    pass
+
+                # Fetch product info
+                product_info: dict = {}
+                if pid and pid.isdigit():
+                    try:
+                        briefs = get_products_brief([pid], store=store)
+                        brief = (briefs or {}).get(pid) or {}
+                        product_info["price"] = brief.get("price")
+                        product_info["image_url"] = brief.get("image") or ""
+                        product_info["inventory"] = brief.get("total_available")
+                    except Exception:
+                        pass
+                    try:
+                        from app.integrations.shopify_client import _rest_get_store
+                        prod_data = _rest_get_store(store, f"/products/{pid}.json?fields=id,title,body_html,handle,status")
+                        prod = (prod_data or {}).get("product") or {}
+                        product_info["title"] = prod.get("title") or ""
+                        product_info["description"] = prod.get("body_html") or ""
+                        product_info["handle"] = prod.get("handle") or ""
+                    except Exception:
+                        pass
+
+                # Shopify orders count
+                shopify_orders = None
+                try:
+                    if pid and pid.isdigit():
+                        from app.integrations.shopify_client import count_orders_by_product_or_variant_processed_batch
+                        oc = count_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True) or {}
+                        shopify_orders = int(oc.get(pid, 0) or 0)
+                except Exception:
+                    pass
+
+                true_cpp = (total_spend / shopify_orders) if shopify_orders and shopify_orders > 0 else None
+
+                campaign_metrics = {
+                    "spend": total_spend,
+                    "purchases": total_purchases,
+                    "ctr": ctr_val,
+                    "cpp": cpp_val,
+                    "add_to_cart": total_atc,
+                    "shopify_orders": shopify_orders,
+                    "true_cpp": true_cpp,
+                    "status": "Active",
+                }
+                if age_days is not None:
+                    campaign_metrics["campaign_age_days"] = age_days
+
+                # Run AI analysis
+                result = run_campaign_analysis(
+                    campaign_metrics=campaign_metrics,
+                    ad_creatives=ad_creatives,
+                    product_info=product_info,
+                )
+                result["meta_inputs"] = campaign_metrics
+                result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
+                result["campaign_name"] = product_info.get("title") or rows[0].get("name") or pid
+                result["campaign_key"] = pid
+                result["product_id"] = pid
+                result["campaign_ids"] = [str(c.get("campaign_id", "")) for c in rows]
+
+                # Save analysis to group timeline
+                try:
+                    timeline_text = json.dumps({
+                        "type": "analysis",
+                        "verdict": result.get("overall_verdict", ""),
+                        "confidence": result.get("confidence_level", ""),
+                        "summary": result.get("summary", ""),
+                        "age_days": age_days,
+                        "analysis": result,
+                        "source": "bulk_analyze_all",
+                        "job_id": job_id,
+                    }, ensure_ascii=False)
+                    db.append_group_timeline(store, pid, timeline_text)
+                except Exception as te:
+                    logger.warning("Failed to save bulk analysis to group timeline: %s", te)
+
+                all_analyses.append(result)
+
+            except Exception as e:
+                logger.warning("Bulk analysis failed for product group %s: %s", pid, e)
+                import traceback
+                traceback.print_exc()
+
+            # Update progress
+            db.save_bulk_analysis_job(store, job_id, {
+                "status": "analyzing",
+                "progress": {"done": idx + 1, "total": total_groups, "phase": "analyzing"},
+            })
+
+        if not all_analyses:
+            db.save_bulk_analysis_job(store, job_id, {
+                "status": "done",
+                "progress": {"done": total_groups, "total": total_groups, "phase": "done"},
+                "result": {"message": "No analyses completed successfully", "task_count": 0},
+            })
+            return
+
+        # --- Step 6: Generate action tasks from all analyses ---
+        db.save_bulk_analysis_job(store, job_id, {
+            "status": "generating_tasks",
+            "progress": {"done": total_groups, "total": total_groups, "phase": "generating_tasks"},
+        })
+
+        try:
+            tasks_result = run_action_task_generation(analyses=all_analyses)
+        except Exception as te:
+            logger.error("Bulk task generation failed: %s", te)
+            tasks_result = {"summary": "Task generation failed", "urgent_count": 0, "tasks": []}
+
+        # Save tasks to DB
+        try:
+            db.set_app_setting(store, "action_tasks", tasks_result)
+        except Exception:
+            pass
+
+        # --- Step 7: Save tasks to group timelines ---
+        tasks = tasks_result.get("tasks") or []
+        for task in tasks:
+            # Map task.campaigns (names) -> product IDs
+            task_campaign_names = task.get("campaigns") or []
+            target_pids: set = set()
+            for cn in task_campaign_names:
+                # Find which product group this campaign belongs to
+                for g in all_groups:
+                    for c in g["campaigns"]:
+                        if c.get("name") == cn or str(c.get("campaign_id", "")) == cn:
+                            target_pids.add(g["product_id"])
+                            break
+            if not target_pids:
+                # Fallback: add to all groups
+                target_pids = {g["product_id"] for g in all_groups}
+
+            for tpid in target_pids:
+                try:
+                    task_entry = json.dumps({
+                        "type": "task",
+                        "id": task.get("id", ""),
+                        "priority": task.get("priority"),
+                        "urgency": task.get("urgency", ""),
+                        "category": task.get("category", ""),
+                        "title": task.get("title", ""),
+                        "description": task.get("description", ""),
+                        "expected_impact": task.get("expected_impact", ""),
+                        "campaigns": task.get("campaigns", []),
+                        "done": False,
+                        "source": "bulk_analyze_all",
+                        "job_id": job_id,
+                    }, ensure_ascii=False)
+                    db.append_group_timeline(store, tpid, task_entry)
+                except Exception:
+                    pass
+
+        # --- Step 8: Mark job done ---
+        total_task_count = len(tasks)
+        incomplete_count = len([t for t in tasks if not t.get("done")])
+        db.save_bulk_analysis_job(store, job_id, {
+            "status": "done",
+            "progress": {"done": total_groups, "total": total_groups, "phase": "done"},
+            "result": {
+                "task_count": total_task_count,
+                "incomplete_count": incomplete_count,
+                "summary": tasks_result.get("summary", ""),
+                "analyses_count": len(all_analyses),
+                "groups_analyzed": [g["product_id"] for g in all_groups],
+            },
+        })
+
+        # Refresh campaign meta cache
+        try:
+            _analysis_cache_buster = f"bulk_done_{job_id}"
+        except Exception:
+            pass
+
+        logger.info("Bulk analysis job %s completed: %d groups, %d analyses, %d tasks",
+                     job_id, total_groups, len(all_analyses), total_task_count)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        try:
+            db.save_bulk_analysis_job(store, job_id, {
+                "status": "error",
+                "error": str(e),
+                "progress": {"done": 0, "total": 0, "phase": "error"},
+            })
+        except Exception:
+            pass
+
+
+class BulkAnalyzeRequest(BaseModel):
+    store: Optional[str] = None
+    ad_account: Optional[str] = None
+    date_range: Optional[Dict[str, str]] = None  # { start, end }
+
+
+@app.post("/api/campaign/analyze_all")
+async def api_analyze_all_campaigns(req: BulkAnalyzeRequest):
+    """Start bulk analysis of all active campaigns with spend > $30.
+    
+    Runs entirely in the background — survives browser close.
+    Job state is persisted to DB for reliable polling.
+    """
+    from uuid import uuid4
+    try:
+        job_id = str(uuid4())
+        store = req.store or None
+        dr = req.date_range or {}
+        s_date = (dr.get("start") or "").split("T")[0]
+        e_date = (dr.get("end") or "").split("T")[0]
+
+        # Default to last 7 days if no range provided
+        if not s_date or not e_date:
+            from datetime import timedelta
+            now = datetime.utcnow()
+            s_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+            e_date = now.strftime("%Y-%m-%d")
+
+        # Save initial job state
+        db.save_bulk_analysis_job(store, job_id, {
+            "status": "pending",
+            "progress": {"done": 0, "total": 0, "phase": "starting"},
+            "date_range": {"start": s_date, "end": e_date},
+        })
+
+        # Launch background thread (daemon=False so it survives request lifecycle)
+        thread = threading.Thread(
+            target=_run_bulk_analysis_job,
+            args=(job_id, store, req.ad_account, s_date, e_date),
+            daemon=False,
+            name=f"bulk-analysis-{job_id[:8]}",
+        )
+        thread.start()
+
+        return {"job_id": job_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/campaign/analyze_all/status/{job_id}")
+async def api_analyze_all_status(job_id: str, store: str | None = None):
+    """Poll for bulk analysis job status. Reads from DB (not in-memory)."""
+    try:
+        job = db.get_bulk_analysis_job(store, job_id)
+        if not job:
+            return {"status": "not_found", "error": "Job not found"}
+        return job
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/api/campaign/analyze_all/latest")
+async def api_analyze_all_latest(store: str | None = None):
+    """Get the latest bulk analysis job for badge display and state restoration."""
+    try:
+        job = db.get_latest_bulk_analysis_job(store)
+        if not job:
+            return {"data": None}
+        return {"data": job}
+    except Exception as e:
+        return {"error": str(e), "data": None}
+
+
 # -------- Profit Calculator costs (per product, stored in AppSetting) --------
 class ProfitCostsUpsertRequest(BaseModel):
     product_id: str
