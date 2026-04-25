@@ -105,7 +105,7 @@ const WHOLESALE_COPY = {
     logout: 'Logout',
     role: 'Vendor',
     overviewTitle: 'Dashboard Overview',
-    overviewSub: 'Performance metrics for your products on MMD store.',
+    overviewSub: 'Performance metrics for your products on your store.',
     totalProducts: 'Total Products',
     inventoryLevel: 'Inventory Level',
     inventoryLevelSub: 'Total units in stock',
@@ -116,7 +116,7 @@ const WHOLESALE_COPY = {
     unitsSold: 'Units Sold',
     unitsSoldSub: 'Total items ordered',
     inventoryTitle: 'Live Inventory',
-    inventorySub: 'Products on the MMD Shopify store assigned to you.',
+    inventorySub: 'Products assigned to you in your Shopify store.',
     searchProducts: 'Search products...',
     allSegments: 'All Segments',
     noProducts: 'No products found.',
@@ -149,7 +149,7 @@ const WHOLESALE_COPY = {
     logout: 'تسجيل الخروج',
     role: 'تاجر',
     overviewTitle: 'نظرة عامة',
-    overviewSub: 'أهم الأرقام ديال المنتوجات ديالك فمتجر MMD.',
+    overviewSub: 'أهم الأرقام ديال المنتوجات ديالك فمتجرك.',
     totalProducts: 'مجموع المنتوجات',
     inventoryLevel: 'مستوى الستوك',
     inventoryLevelSub: 'مجموع الوحدات فالستوك',
@@ -197,7 +197,7 @@ const WHOLESALE_TEXT = {
     logout: 'Logout',
     role: 'Vendor',
     overviewTitle: 'Dashboard Overview',
-    overviewSub: 'Performance metrics for your products on MMD store.',
+    overviewSub: 'Performance metrics for your products on your store.',
     totalProducts: 'Total Products',
     inventoryLevel: 'Inventory Level',
     inventoryLevelSub: 'Total units in stock',
@@ -208,7 +208,7 @@ const WHOLESALE_TEXT = {
     unitsSold: 'Units Sold',
     unitsSoldSub: 'Total items ordered',
     inventoryTitle: 'Live Inventory',
-    inventorySub: 'Products on the MMD Shopify store assigned to you.',
+    inventorySub: 'Products assigned to you in your Shopify store.',
     searchProducts: 'Search products...',
     allSegments: 'All Segments',
     noProducts: 'No products found.',
@@ -387,7 +387,7 @@ const WHOLESALE_TEXT = {
     logout: 'تسجيل الخروج',
     role: 'مورّد',
     overviewTitle: 'لوحة المتابعة',
-    overviewSub: 'مؤشرات أداء منتجاتك في متجر MMD.',
+    overviewSub: 'مؤشرات أداء منتجاتك في متجرك.',
     totalProducts: 'إجمالي المنتجات',
     inventoryLevel: 'مستوى المخزون',
     inventoryLevelSub: 'إجمالي الوحدات المتاحة',
@@ -398,7 +398,7 @@ const WHOLESALE_TEXT = {
     unitsSold: 'الوحدات المباعة',
     unitsSoldSub: 'إجمالي القطع المطلوبة',
     inventoryTitle: 'المخزون المباشر',
-    inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بـ MMD.',
+    inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بك.',
     searchProducts: 'ابحث عن المنتجات...',
     allSegments: 'جميع الفئات',
     noProducts: 'لم يتم العثور على منتجات.',
@@ -564,7 +564,7 @@ const ARABIC_TEXT_OVERRIDES = {
   logout: 'تسجيل الخروج',
   role: 'مورّد',
   overviewTitle: 'لوحة المتابعة',
-  overviewSub: 'مؤشرات أداء منتجاتك في متجر MMD.',
+  overviewSub: 'مؤشرات أداء منتجاتك في متجرك.',
   totalProducts: 'إجمالي المنتجات',
   inventoryLevel: 'مستوى المخزون',
   inventoryLevelSub: 'إجمالي الوحدات المتاحة',
@@ -575,7 +575,7 @@ const ARABIC_TEXT_OVERRIDES = {
   unitsSold: 'الوحدات المباعة',
   unitsSoldSub: 'إجمالي القطع المطلوبة',
   inventoryTitle: 'المخزون المباشر',
-  inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بـ MMD.',
+  inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بك.',
   searchProducts: 'ابحث عن المنتجات...',
   allSegments: 'جميع الفئات',
   noProducts: 'لم يتم العثور على منتجات.',
@@ -975,9 +975,9 @@ function Dashboard({
     switch (activeTab) {
       case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
       case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
-      case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} copy={copy} lang={lang} />
+      case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
-      case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} />
+      case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
     }
@@ -996,13 +996,9 @@ function Dashboard({
         </div>
         <div className="flex-1 p-4 space-y-2">
           <NavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label={copy.overview} />
-          <NavItem active={activeTab==='inventory'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.inventory} />
-          <NavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
+          <NavItem active={activeTab==='orders' || activeTab==='create-order'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
+          <NavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.inventory} />
           <NavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label={copy.customers} />
-          <button onClick={()=>setActiveTab('create-order')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${activeTab==='create-order' ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'}`}>
-            <ShoppingCart size={20}/>
-            <span className="font-bold text-sm">{copy.createOrder}</span>
-          </button>
         </div>
         <div className="p-4 border-t border-slate-100">
           <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
@@ -1023,31 +1019,35 @@ function Dashboard({
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pb-24 md:pb-8">
         <div className="sticky top-0 z-30 px-3 pt-3 md:px-8 md:pt-6 bg-slate-50/95 backdrop-blur">
-          <div className="relative rounded-2xl md:rounded-[28px] border border-slate-200/80 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_35%),linear-gradient(135deg,_rgba(15,23,42,0.98),_rgba(30,41,59,0.92)_45%,_rgba(8,47,73,0.98))] px-3 py-2.5 md:px-7 md:py-5 text-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
-            <div className="flex items-center justify-between gap-3">
+          <div className="relative rounded-2xl md:rounded-[24px] border border-slate-200/80 bg-white px-3 py-2.5 md:px-7 md:py-4 text-slate-900 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <div className="min-w-0 flex items-center gap-2.5">
-                <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-xl md:rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-slate-950 shadow-lg shadow-cyan-900/30">
+                <div className="flex h-9 w-9 md:h-10 md:w-10 items-center justify-center rounded-xl md:rounded-2xl bg-slate-950 text-white shadow-lg shadow-slate-200">
                   <Package size={18} />
                 </div>
                 <div className="min-w-0">
-                  <p className="truncate text-sm md:text-lg font-black tracking-[0.16em] uppercase">{copy.brand}</p>
-                  <p className="hidden md:block text-[10px] uppercase tracking-[0.35em] text-cyan-100/80">{copy.brandTag}</p>
+                  <p className="truncate text-sm md:text-lg font-black tracking-[0.12em] uppercase">{copy.brand}</p>
+                  <p className="hidden md:block text-[10px] uppercase tracking-[0.3em] text-slate-400">{copy.brandTag}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="min-w-0 text-center">
+                <p className="truncate text-xs font-bold uppercase tracking-[0.22em] text-slate-400">{copy.role}</p>
+                <p className="truncate text-lg md:text-2xl font-black text-slate-950">{vendor.name || vendor.username || '-'}</p>
+              </div>
+              <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={toggleLang}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] md:px-4 md:py-2 md:text-sm font-bold text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] md:px-4 md:py-2 md:text-sm font-bold text-slate-700 transition hover:bg-slate-100"
                 >
-                  <span className="hidden sm:inline text-cyan-200">{copy.languageLabel}</span>
-                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-[10px]">{lang === 'ar' ? copy.arabic : copy.english}</span>
+                  <span className="hidden sm:inline text-slate-500">{copy.languageLabel}</span>
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] shadow-sm">{lang === 'ar' ? copy.arabic : copy.english}</span>
                 </button>
                 <div className="relative">
                   <button
                     type="button"
                     onClick={() => setShowSettings(v => !v)}
-                    className="inline-flex h-10 w-10 md:h-11 md:w-11 items-center justify-center rounded-xl md:rounded-2xl border border-white/15 bg-white/10 text-white shadow-lg shadow-slate-950/20 transition hover:bg-white/15"
+                    className="inline-flex h-10 w-10 md:h-11 md:w-11 items-center justify-center rounded-xl md:rounded-2xl border border-slate-200 bg-slate-50 text-slate-700 transition hover:bg-slate-100"
                     title={copy.settingsTitle}
                   >
                     <Settings size={17} />
@@ -1094,11 +1094,10 @@ function Dashboard({
 
       {/* Mobile Bottom Nav */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-3 py-2 flex justify-around items-center z-50 shadow-[0_-8px_30px_rgba(0,0,0,0.08)]">
-        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={24}/>} label={copy.home} />
-        <MobileNavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={24}/>} label={copy.stock} />
-        <MobileNavItem active={activeTab==='create-order'} onClick={()=>setActiveTab('create-order')} icon={<ShoppingCart size={24}/>} label={copy.createOrder} isHighlight />
-        <MobileNavItem active={activeTab==='orders'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={24}/>} label={copy.orders} />
-        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={24}/>} label={copy.customers} />
+        <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={30}/>} label={copy.home} />
+        <MobileNavItem active={activeTab==='orders' || activeTab==='create-order'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={30}/>} label={copy.orders} />
+        <MobileNavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={30}/>} label={copy.stock} />
+        <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={30}/>} label={copy.customers} />
       </nav>
     </div>
   )
@@ -1118,24 +1117,24 @@ function NavItem({ active, onClick, icon, label }: any) {
 function MobileNavItem({ active, onClick, icon, label, isHighlight }: any) {
   if (isHighlight) {
     return (
-      <button onClick={onClick} className={`flex flex-col items-center justify-center gap-0.5 min-h-[52px] min-w-[56px] rounded-2xl transition-all duration-200 px-2 ${
+      <button onClick={onClick} className={`flex flex-col items-center justify-center gap-1 min-h-[64px] min-w-[72px] rounded-2xl transition-all duration-200 px-2 ${
         active
           ? 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg shadow-emerald-200/50 scale-105'
           : 'text-emerald-600 bg-emerald-50 hover:bg-emerald-100'
       }`}>
         {icon}
-        <span className="text-[10px] font-black uppercase tracking-tight leading-tight">{label}</span>
+        <span className="text-[11px] font-black uppercase tracking-tight leading-tight">{label}</span>
       </button>
     )
   }
   return (
-    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-0.5 min-h-[52px] min-w-[56px] rounded-2xl transition-all duration-200 px-2 ${
+    <button onClick={onClick} className={`flex flex-col items-center justify-center gap-1 min-h-[64px] min-w-[72px] rounded-2xl border transition-all duration-200 px-2 ${
       active
-        ? 'bg-blue-50 text-blue-600 shadow-sm'
-        : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+        ? 'border-blue-200 bg-blue-600 text-white shadow-lg shadow-blue-200 scale-105'
+        : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
     }`}>
       {icon}
-      <span className={`text-[10px] font-bold uppercase tracking-tight leading-tight ${active ? 'font-black' : ''}`}>{label}</span>
+      <span className={`text-[11px] font-bold uppercase tracking-tight leading-tight ${active ? 'font-black' : ''}`}>{label}</span>
     </button>
   )
 }
@@ -2344,7 +2343,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{copy.paymentNote}</p>
                 <p className="mt-3 text-sm text-slate-600">{copy.thankYou}</p>
-                <p className="mt-2 text-xs text-slate-400">{vendor.name} · MMD Wholesale · {invoiceDate}</p>
+                <p className="mt-2 text-xs text-slate-400">{vendor.name} · Wholesale · {invoiceDate}</p>
               </div>
               <div className="rounded-3xl border border-slate-200 bg-slate-950 p-5 text-white">
                 <div className="space-y-3">
@@ -2969,7 +2968,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               <div className="min-h-[118px] space-y-1 rounded-[22px] border border-slate-200 px-4 py-4">
                 <p className={invoiceLabelClass}>{copy.billFrom}</p>
                 <p className={invoiceBodyTextClass}>{vendor.name}</p>
-                <p className={invoiceMutedTextClass}>MMD Wholesale</p>
+                <p className={invoiceMutedTextClass}>Wholesale</p>
                 <p className={invoiceMutedTextClass}>Casablanca, Morocco</p>
               </div>
             </section>
@@ -3218,7 +3217,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   )
 }
 
-function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: Lang }) {
+function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor: any; copy: AppCopy; lang: Lang; onCreateOrder?: () => void; onAddProduct?: () => void }) {
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -3369,14 +3368,28 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
   return (
     <div className="max-w-4xl mx-auto space-y-4 pb-24 animate-in">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-bold">{copy.ordersTitle}</h2>
           <p className="text-sm text-slate-500">{orders.length} {copy.totalOrdersLabel}</p>
         </div>
-        <button onClick={fetchOrders} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
-          <RefreshCw size={18} className="text-slate-500" />
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {onCreateOrder && (
+            <button onClick={onCreateOrder} className="flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white px-4 py-2.5 rounded-xl font-bold shadow-lg shadow-emerald-200/50 transition-all active:scale-[0.97] text-sm">
+              <ShoppingCart size={18} />
+              {copy.createOrder}
+            </button>
+          )}
+          {onAddProduct && (
+            <button onClick={onAddProduct} className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-4 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-200/50 transition-all active:scale-[0.97] text-sm">
+              <PlusCircle size={18} />
+              {copy.addProduct}
+            </button>
+          )}
+          <button onClick={fetchOrders} className="p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
+            <RefreshCw size={18} className="text-slate-500" />
+          </button>
+        </div>
       </div>
 
       {/* Search + Filters */}
