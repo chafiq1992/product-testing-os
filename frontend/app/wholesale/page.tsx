@@ -7,7 +7,7 @@ import {
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
   Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
   ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin, ClipboardList, FileText,
-  CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3
+  CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2
 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -1306,6 +1306,8 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
   const [stockQty, setStockQty] = useState('')
   const [stockSaving, setStockSaving] = useState(false)
   const [stockMessage, setStockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [imageModal, setImageModal] = useState<{ src: string; title: string } | null>(null)
+  const [imageSharing, setImageSharing] = useState(false)
   const locale = getLocale(lang)
   const isArabic = lang === 'ar'
   const inventoryLabels = {
@@ -1316,6 +1318,8 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     saved: isArabic ? 'تم تحديث المخزون' : 'Inventory updated',
     failed: isArabic ? 'تعذر تحديث المخزون' : 'Could not update inventory',
     variants: isArabic ? 'المتغيرات' : 'variants',
+    preview: isArabic ? 'معاينة الصورة' : 'Image preview',
+    share: isArabic ? 'مشاركة' : 'Share',
   }
 
   const filtered = useMemo(() => {
@@ -1351,6 +1355,34 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       setStockMessage({ type: 'error', text: `${inventoryLabels.failed}: ${err?.message || err}` })
     } finally {
       setStockSaving(false)
+    }
+  }
+
+  async function shareProductImage() {
+    if (!imageModal?.src) return
+    setImageSharing(true)
+    const shareText = `${imageModal.title}\n${imageModal.src}`
+    try {
+      if (navigator.share) {
+        try {
+          const response = await fetch(imageModal.src, { mode: 'cors' })
+          const blob = await response.blob()
+          const ext = blob.type?.split('/')[1] || 'jpg'
+          const file = new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}.${ext}`, { type: blob.type || 'image/jpeg' })
+          const shareData = { title: imageModal.title, text: imageModal.title, files: [file] }
+          if (navigator.canShare?.(shareData)) {
+            await navigator.share(shareData)
+            return
+          }
+        } catch {
+          // Fall back to sharing the image URL when the CDN blocks file sharing.
+        }
+        await navigator.share({ title: imageModal.title, text: shareText, url: imageModal.src })
+        return
+      }
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer')
+    } finally {
+      setImageSharing(false)
     }
   }
 
@@ -1407,14 +1439,20 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
           return (
             <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-3 hover:border-blue-200 transition-all">
               <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-lg bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center">
+              <button
+                type="button"
+                onClick={() => p.images?.[0]?.src && setImageModal({ src: p.images[0].src, title: p.title || copy.untitled })}
+                disabled={!p.images?.[0]?.src}
+                className="w-11 h-11 rounded-lg bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center transition hover:ring-2 hover:ring-blue-300 disabled:cursor-default"
+                title={inventoryLabels.preview}
+              >
                 {p.images?.[0]?.src ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={p.images[0].src} alt="" className="w-full h-full object-cover" />
                 ) : (
                   <ImageIcon size={16} className="text-slate-300" />
                 )}
-              </div>
+              </button>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-slate-900 truncate">{p.title || copy.untitled}</p>
                 <p className="text-[9px] text-slate-400">{variantCount} {inventoryLabels.variants}</p>
@@ -1496,6 +1534,37 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
               {stockSaving ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle size={16} />}
               {inventoryLabels.save}
             </button>
+          </div>
+        </div>
+      )}
+
+      {imageModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setImageModal(null)}>
+          <div className="w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-black text-slate-900">{inventoryLabels.preview}</p>
+                <p className="truncate text-xs font-semibold text-slate-500">{imageModal.title}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={shareProductImage}
+                  disabled={imageSharing}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {imageSharing ? <Loader2 className="animate-spin" size={15} /> : <Share2 size={15} />}
+                  {inventoryLabels.share}
+                </button>
+                <button onClick={() => setImageModal(null)} className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[78vh] bg-slate-50 p-3">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={imageModal.src} alt={imageModal.title} className="mx-auto max-h-[74vh] w-auto max-w-full rounded-2xl object-contain bg-white" />
+            </div>
           </div>
         </div>
       )}
