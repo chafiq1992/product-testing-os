@@ -2757,6 +2757,8 @@ def create_product_only(
     quantity: int | None = None,
     variants: list[dict] | None = None,
     store: str | None = None,
+    configure_variants: bool = True,
+    publish: bool = True,
 ) -> dict:
     inp: dict = {
         "title": title or "Offer",
@@ -2773,17 +2775,19 @@ def create_product_only(
         inp["tags"] = tags
     data = _gql_store(store, PRODUCT_CREATE, {"input": inp})
     prod = data["productCreate"]["product"]
-    # Configure variants and inventory via REST
     config_report: dict | None = None
-    try:
-        config_report = _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants, store=store)
-    except Exception as e:
-        config_report = {"ok": False, "errors": [str(e)]}
-    # Publish to all sales channels (best-effort)
-    try:
-        publish_product_all_channels(prod["id"], store=store)
-    except Exception:
-        pass
+    if configure_variants:
+        try:
+            config_report = _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants, store=store)
+        except Exception as e:
+            config_report = {"ok": False, "errors": [str(e)]}
+    else:
+        config_report = {"ok": True, "deferred": True}
+    if publish:
+        try:
+            publish_product_all_channels(prod["id"], store=store)
+        except Exception:
+            pass
     return {"product": prod, "report": (config_report or {"ok": True})}
 
 

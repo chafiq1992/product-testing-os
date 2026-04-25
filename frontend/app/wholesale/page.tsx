@@ -48,6 +48,14 @@ function formatDh(value: number | string | null | undefined, locale = 'en-GB') {
   return `${amount.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH`
 }
 
+function getVariantAvailable(variant: any) {
+  return Math.max(0, parseInt(String(variant?.inventory_available ?? variant?.available_quantity ?? variant?.inventory_quantity ?? 0), 10) || 0)
+}
+
+function getVariantOnHand(variant: any) {
+  return Math.max(0, parseInt(String(variant?.inventory_on_hand ?? variant?.inventory_quantity ?? getVariantAvailable(variant)), 10) || 0)
+}
+
 function buildVariantTitle(group: Pick<StockVariantFormRow, 'from' | 'to' | 'pcsPerCrate'>) {
   const range = `${group.from}-${group.to}`
   return group.pcsPerCrate > 0 ? `${range}*${group.pcsPerCrate}pcs` : range
@@ -966,7 +974,7 @@ function Dashboard({
   const renderContent = () => {
     switch (activeTab) {
       case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
-      case 'inventory': return <InventoryTab products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} />
+      case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
       case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('overview') }} copy={copy} lang={lang} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} />
@@ -1292,10 +1300,24 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
 // ═══════════════════════════════════════════════════
 //  INVENTORY TAB
 // ═══════════════════════════════════════════════════
-function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrder }: { products: any[]; loading: boolean; copy: AppCopy; lang: Lang; onAddProduct?: () => void; onCreateOrder?: () => void }) {
+function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onCreateOrder, onInventoryChanged }: { vendor: any; products: any[]; loading: boolean; copy: AppCopy; lang: Lang; onAddProduct?: () => void; onCreateOrder?: () => void; onInventoryChanged?: () => void }) {
   const [search, setSearch] = useState('')
   const [segFilter, setSegFilter] = useState('All')
+  const [stockModal, setStockModal] = useState<{ product: any; variant: any } | null>(null)
+  const [stockQty, setStockQty] = useState('')
+  const [stockSaving, setStockSaving] = useState(false)
+  const [stockMessage, setStockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const locale = getLocale(lang)
+  const isArabic = lang === 'ar'
+  const inventoryLabels = {
+    available: isArabic ? 'المتاح' : 'Available',
+    onHand: isArabic ? 'على اليد' : 'On hand',
+    edit: isArabic ? 'تعديل المخزون' : 'Edit stock',
+    save: isArabic ? 'حفظ المخزون' : 'Save stock',
+    saved: isArabic ? 'تم تحديث المخزون' : 'Inventory updated',
+    failed: isArabic ? 'تعذر تحديث المخزون' : 'Could not update inventory',
+    variants: isArabic ? 'المتغيرات' : 'variants',
+  }
 
   const filtered = useMemo(() => {
     return products.filter(p => {
@@ -1305,6 +1327,33 @@ function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrd
       return matchSearch && tags.includes(`segment:${segFilter}`)
     })
   }, [products, search, segFilter])
+
+  function openStockModal(product: any, variant: any) {
+    setStockModal({ product, variant })
+    setStockQty(String(getVariantOnHand(variant)))
+    setStockMessage(null)
+  }
+
+  async function saveStock() {
+    if (!stockModal) return
+    const qty = Math.max(0, parseInt(stockQty, 10) || 0)
+    setStockSaving(true)
+    setStockMessage(null)
+    try {
+      const res = await apiPatch(`/api/wholesale/vendors/${vendor.id}/products/${stockModal.product.id}/variants/${stockModal.variant.id}/inventory`, { quantity: qty })
+      if (res?.error) {
+        setStockMessage({ type: 'error', text: `${inventoryLabels.failed}: ${res.error}` })
+        return
+      }
+      setStockMessage({ type: 'success', text: inventoryLabels.saved })
+      onInventoryChanged?.()
+      setTimeout(() => setStockModal(null), 650)
+    } catch (err: any) {
+      setStockMessage({ type: 'error', text: `${inventoryLabels.failed}: ${err?.message || err}` })
+    } finally {
+      setStockSaving(false)
+    }
+  }
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-10 animate-in">
@@ -1353,11 +1402,12 @@ function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrd
           </div>
         )}
         {!loading && filtered.map((p: any) => {
-          const qty = (p.variants || []).reduce((s: number, v: any) => s + (parseInt(v.inventory_quantity) || 0), 0)
+          const qty = (p.variants || []).reduce((s: number, v: any) => s + getVariantAvailable(v), 0)
           const price = p.variants?.[0]?.price || '0.00'
           const variantCount = (p.variants || []).length
           return (
-            <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-3 flex items-center gap-3 hover:border-blue-200 transition-all">
+            <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-3 hover:border-blue-200 transition-all">
+              <div className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-lg bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center">
                 {p.images?.[0]?.src ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -1368,17 +1418,43 @@ function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrd
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-slate-900 truncate">{p.title || copy.untitled}</p>
-                <p className="text-[9px] text-slate-400">{variantCount} variant{variantCount !== 1 ? 's' : ''}</p>
+                <p className="text-[9px] text-slate-400">{variantCount} {inventoryLabels.variants}</p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${p.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-slate-100 text-slate-500'}`}>
                   {p.status === 'active' ? copy.activeStatus : copy.inactiveStatus}
                 </span>
                 <div className="text-right">
-                  <p className="text-xs font-black text-slate-900">{qty} <span className="text-[9px] text-slate-400 font-bold">pcs</span></p>
+                  <p className="text-xs font-black text-slate-900">{qty} <span className="text-[9px] text-slate-400 font-bold">{inventoryLabels.available}</span></p>
                   <p className="text-[10px] font-bold text-slate-500">{formatDh(price, locale)}</p>
                 </div>
               </div>
+              </div>
+              {(p.variants || []).length > 0 && (
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {(p.variants || []).map((v: any) => {
+                    const available = getVariantAvailable(v)
+                    const onHand = getVariantOnHand(v)
+                    return (
+                      <div key={v.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-bold text-slate-700">{v.title || 'Default'}</p>
+                          <p className="truncate text-[10px] text-slate-400">{v.sku || '-'}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className={`${isArabic ? 'text-left' : 'text-right'}`}>
+                            <p className="text-[10px] font-bold text-emerald-700">{inventoryLabels.available}: {available}</p>
+                            <p className="text-[10px] font-semibold text-slate-500">{inventoryLabels.onHand}: {onHand}</p>
+                          </div>
+                          <button onClick={() => openStockModal(p, v)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[10px] font-bold text-slate-700 hover:border-blue-300 hover:text-blue-600">
+                            {inventoryLabels.edit}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )
         })}
@@ -1389,6 +1465,41 @@ function InventoryTab({ products, loading, copy, lang, onAddProduct, onCreateOrd
           </div>
         )}
       </div>
+
+      {stockModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={() => setStockModal(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-lg font-bold text-slate-900">{inventoryLabels.edit}</p>
+                <p className="mt-1 truncate text-sm text-slate-500">{stockModal.product.title}</p>
+                <p className="text-xs text-slate-400">{stockModal.variant.title} {stockModal.variant.sku ? `· ${stockModal.variant.sku}` : ''}</p>
+              </div>
+              <button onClick={() => setStockModal(null)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
+            </div>
+            <div className="mt-5">
+              <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">{inventoryLabels.onHand}</label>
+              <input
+                type="number"
+                min="0"
+                value={stockQty}
+                onChange={e => setStockQty(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-lg font-black outline-none focus:ring-2 focus:ring-blue-500/30"
+              />
+              <p className="mt-2 text-xs font-semibold text-slate-500">{inventoryLabels.available}: {getVariantAvailable(stockModal.variant)}</p>
+            </div>
+            {stockMessage && (
+              <div className={`mt-4 rounded-xl border px-4 py-3 text-xs font-bold ${stockMessage.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+                {stockMessage.text}
+              </div>
+            )}
+            <button onClick={saveStock} disabled={stockSaving} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
+              {stockSaving ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle size={16} />}
+              {inventoryLabels.save}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1412,6 +1523,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [aiStatus, setAiStatus] = useState<string | null>(null)
+  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const locale = getLocale(lang)
@@ -1527,18 +1639,19 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   }
 
   async function handleSubmit() {
-    if (!imageUrl) { alert(copy.uploadImageRequired); return }
+    if (!imageUrl) { setSaveMessage({ type: 'error', text: copy.uploadImageRequired }); return }
     if (isShoes || isClothes) {
-      if (form.colors.length === 0) { alert(copy.colorRequired); return }
+      if (form.colors.length === 0) { setSaveMessage({ type: 'error', text: copy.colorRequired }); return }
     }
-    if (unitSalePrice <= 0) { alert(copy.unitSalePriceRequired); return }
+    if (unitSalePrice <= 0) { setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired }); return }
     if (isShoes) {
-      if (form.sizeGroups.length === 0) { alert(copy.stockVariantRequired); return }
-      if (form.sizeGroups.some(group => !group.sku.trim())) { alert(copy.skuRequired); return }
-      if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { alert(copy.piecesPerCrateRequired); return }
-      if (form.sizeGroups.some(group => group.crateQty <= 0)) { alert(copy.crateQuantityRequired); return }
+      if (form.sizeGroups.length === 0) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
+      if (form.sizeGroups.some(group => !group.sku.trim())) { setSaveMessage({ type: 'error', text: copy.skuRequired }); return }
+      if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { setSaveMessage({ type: 'error', text: copy.piecesPerCrateRequired }); return }
+      if (form.sizeGroups.some(group => group.crateQty <= 0)) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
     }
     setSaving(true)
+    setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج بسرعة، وسيكتمل المخزون والصور في الخلفية...' : 'Creating product now. Variants, inventory, images, and catalog data will finish in the background...' })
     try {
       // Build request body based on store type
       const reqBody: any = {
@@ -1572,11 +1685,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         }]
       }
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, reqBody)
-      if (res?.error) { alert(`${copy.errorPrefix}: ${res.error}`); return }
-      alert(copy.productCreatedSuccess)
-      onDone()
+      if (res?.error) { setSaveMessage({ type: 'error', text: `${copy.errorPrefix}: ${res.error}` }); return }
+      setSaveMessage({ type: 'success', text: copy.productCreatedSuccess })
+      setTimeout(onDone, 650)
     } catch (e: any) {
-      alert(`${copy.saveProductError} ${e?.message || e}`)
+      setSaveMessage({ type: 'error', text: `${copy.saveProductError} ${e?.message || e}` })
     } finally { setSaving(false) }
   }
 
@@ -1924,6 +2037,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 
       {/* ── SAVE BUTTON AT BOTTOM ── */}
       <div className="pt-4">
+        {saveMessage && (
+          <div className={`mb-3 rounded-2xl border px-4 py-3 text-sm font-bold ${saveMessage.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+            {saveMessage.text}
+          </div>
+        )}
         <button
           onClick={handleSubmit}
           disabled={saving || uploading}
@@ -1942,13 +2060,14 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 // ═══════════════════════════════════════════════════
 function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any; products: any[]; onDone: () => void; copy: AppCopy; lang: Lang }) {
   const [search, setSearch] = useState('')
-  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string }[]>([])
+  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string; available: number }[]>([])
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [address, setAddress] = useState({ address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' })
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
+  const [orderMessage, setOrderMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const searchRef = useRef<HTMLDivElement>(null)
   const invoiceRef = useRef<HTMLDivElement>(null)
   const isArabic = lang === 'ar'
@@ -1965,7 +2084,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
           variant_title: v.title,
           sku: v.sku || '',
           price: v.price || '0.00',
-          inventory: v.inventory_quantity || 0,
+          inventory: getVariantAvailable(v),
           image: p.images?.[0]?.src || null,
         })
       })
@@ -1982,12 +2101,17 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
   }, [allVariants, search])
 
   function addItem(v: any) {
+    if (v.inventory <= 0) {
+      setOrderMessage({ type: 'error', text: lang === 'ar' ? 'هذا المنتج غير متوفر في المخزون.' : 'This item is out of stock.' })
+      return
+    }
     const existing = lineItems.find(li => li.variant_id === v.variant_id)
     if (existing) {
-      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: li.quantity + 1 } : li))
+      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: Math.min(li.available, li.quantity + 1) } : li))
     } else {
-      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title }])
+      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title, available: v.inventory }])
     }
+    setOrderMessage(null)
     setSearch('')
     setShowProducts(false)
   }
@@ -1995,7 +2119,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
   function updateQty(variantId: number, delta: number) {
     setLineItems(lineItems.map(li => {
       if (li.variant_id === variantId) {
-        const newQty = Math.max(1, li.quantity + delta)
+        const newQty = Math.max(1, Math.min(li.available, li.quantity + delta))
         return { ...li, quantity: newQty }
       }
       return li
@@ -2285,7 +2409,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
             <div className="absolute z-40 left-0 right-0 mt-2 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-64 overflow-y-auto">
               {filtered.length === 0 && <p className="p-4 text-sm text-slate-400 text-center">{copy.noProductsFound}</p>}
               {filtered.map(v => (
-                <button key={v.variant_id} onClick={() => addItem(v)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left border-b border-slate-50 last:border-0">
+                <button key={v.variant_id} onClick={() => addItem(v)} disabled={v.inventory <= 0} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left border-b border-slate-50 last:border-0 disabled:cursor-not-allowed disabled:opacity-45">
                   <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center flex-shrink-0">
                     {v.image ? <img src={v.image} alt="" className="w-full h-full object-cover" /> : <Package size={16} className="text-slate-300" />}
                   </div>
@@ -2388,7 +2512,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
 // ─── Orders Tab ──────────────────────────────────────────
 function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: { vendor: any; products: any[]; onDone: () => void; copy: AppCopy; lang: Lang }) {
   const [search, setSearch] = useState('')
-  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string }[]>([])
+  const [lineItems, setLineItems] = useState<{ variant_id: number; quantity: number; title: string; sku: string; price: string; image: string | null; variantTitle: string; available: number }[]>([])
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [address, setAddress] = useState<WholesaleAddressForm>(createDefaultWholesaleAddress)
@@ -2397,6 +2521,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState<any>(null)
   const [showProducts, setShowProducts] = useState(false)
+  const [orderMessage, setOrderMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [invoiceZoom, setInvoiceZoom] = useState(1)
   const [invoicePreviewUrl, setInvoicePreviewUrl] = useState<string | null>(null)
   const [invoicePreviewSize, setInvoicePreviewSize] = useState({ width: 960, height: 960 })
@@ -2418,7 +2543,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
           variant_title: v.title,
           sku: v.sku || '',
           price: v.price || '0.00',
-          inventory: v.inventory_quantity || 0,
+          inventory: getVariantAvailable(v),
           image: p.images?.[0]?.src || null,
         })
       })
@@ -2444,18 +2569,36 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   }, [knownCustomers, customerPhone])
 
   function addItem(v: any) {
+    if (v.inventory <= 0) {
+      setOrderMessage({ type: 'error', text: lang === 'ar' ? 'هذا المنتج غير متوفر في المخزون.' : 'This item is out of stock.' })
+      return
+    }
     const existing = lineItems.find(li => li.variant_id === v.variant_id)
     if (existing) {
-      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: li.quantity + 1 } : li))
+      if (existing.quantity >= existing.available) {
+        setOrderMessage({ type: 'error', text: lang === 'ar' ? `المتاح فقط: ${existing.available}` : `Only ${existing.available} available.` })
+        return
+      }
+      setLineItems(lineItems.map(li => li.variant_id === v.variant_id ? { ...li, quantity: Math.min(li.available, li.quantity + 1) } : li))
     } else {
-      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title }])
+      setLineItems([...lineItems, { variant_id: v.variant_id, quantity: 1, title: v.title, sku: v.sku, price: v.price, image: v.image, variantTitle: v.variant_title, available: v.inventory }])
     }
+    setOrderMessage(null)
     setSearch('')
     setShowProducts(false)
   }
 
   function updateQty(variantId: number, delta: number) {
-    setLineItems(lineItems.map(li => li.variant_id === variantId ? { ...li, quantity: Math.max(1, li.quantity + delta) } : li))
+    setLineItems(lineItems.map(li => {
+      if (li.variant_id !== variantId) return li
+      const nextQty = Math.max(1, Math.min(li.available, li.quantity + delta))
+      if (delta > 0 && li.quantity >= li.available) {
+        setOrderMessage({ type: 'error', text: lang === 'ar' ? `المتاح فقط: ${li.available}` : `Only ${li.available} available.` })
+      } else {
+        setOrderMessage(null)
+      }
+      return { ...li, quantity: nextQty }
+    }))
   }
 
   function removeItem(variantId: number) {
@@ -2467,7 +2610,13 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   async function handleSubmit() {
     if (!customerName.trim() || !customerPhone.trim()) { alert(copy.customerNamePhoneRequired); return }
     if (lineItems.length === 0) { alert(copy.addAtLeastOneProduct); return }
+    const overStock = lineItems.find(li => li.quantity > li.available)
+    if (overStock) {
+      setOrderMessage({ type: 'error', text: lang === 'ar' ? `المتاح من ${overStock.title}: ${overStock.available}` : `${overStock.title}: only ${overStock.available} available.` })
+      return
+    }
     setSaving(true)
+    setOrderMessage(null)
     try {
       const body = {
         customer_name: customerName.trim(),
@@ -2480,7 +2629,15 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
         line_items: lineItems.map(li => ({ variant_id: li.variant_id, quantity: li.quantity })),
       }
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/orders`, body)
-      if (res?.error) { alert(`${copy.errorPrefix}: ${res.error}`); setSaving(false); return }
+      if (res?.error) {
+        const detail = Array.isArray(res?.details) && res.details[0] ? res.details[0] : null
+        const msg = res.error === 'insufficient_inventory' && detail
+          ? (lang === 'ar' ? `المتاح فقط: ${detail.available}` : `${detail.title || 'Item'}: only ${detail.available} available.`)
+          : `${copy.errorPrefix}: ${res.error}`
+        setOrderMessage({ type: 'error', text: msg })
+        setSaving(false)
+        return
+      }
       setSuccess(res?.data)
     } catch (e: any) {
       alert(`${copy.failedPrefix}: ${e.message}`)
@@ -2642,12 +2799,13 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
     ? 'text-sm font-semibold text-slate-500 leading-6'
     : 'text-xs text-slate-500'
   const invoiceTableHeadClass = isArabic
-    ? 'px-3 py-4 text-sm font-extrabold text-white'
-    : 'px-3 py-3 text-xs font-bold uppercase tracking-[0.16em]'
+    ? 'px-3 py-4 text-base font-extrabold text-white'
+    : 'px-3 py-3 text-sm font-bold uppercase tracking-[0.12em]'
   const invoiceTableCellClass = isArabic
-    ? 'px-3 py-4 text-base font-bold text-slate-800'
-    : 'px-3 py-4 text-sm font-semibold text-slate-700'
+    ? 'px-3 py-4 text-lg font-bold text-slate-800'
+    : 'px-3 py-4 text-base font-semibold text-slate-700'
   const totalToPayLabel = isArabic ? 'المبلغ الواجب دفعه' : 'Total to pay'
+  const arabicThankYou = 'شكراً لتعاملكم معنا'
   const desktopInvoiceWidth = 960
   const invoicePreviewTitle = isArabic ? '\u0645\u0639\u0627\u064a\u0646\u0629 \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629' : 'Invoice preview'
   const zoomOutLabel = isArabic ? '\u062a\u0635\u063a\u064a\u0631' : 'Zoom out'
@@ -2820,15 +2978,17 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               <div className="h-full min-h-[430px] overflow-hidden rounded-[22px] border border-slate-200">
                 <table className="w-full border-collapse table-fixed">
                   <colgroup>
-                    <col className="w-[8%]" />
-                    <col className="w-[52%]" />
-                    <col className="w-[12%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[45%]" />
+                    <col className="w-[10%]" />
                     <col className="w-[14%]" />
                     <col className="w-[14%]" />
                   </colgroup>
                   <thead className="bg-slate-800 text-white">
                     <tr>
                       <th className={invoiceTableHeadClass}>#</th>
+                      <th className={invoiceTableHeadClass}></th>
                       <th className={invoiceTableHeadClass}>{copy.itemColumn}</th>
                       <th className={invoiceTableHeadClass}>{copy.qty}</th>
                       <th className={invoiceTableHeadClass}>{copy.unitPrice}</th>
@@ -2840,7 +3000,16 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                       <tr key={li.variant_id} className="align-top border-b border-slate-200 last:border-b-0">
                         <td className={`${invoiceTableCellClass} text-center ${isArabic ? 'text-base' : 'text-sm'} text-slate-500`}>{index + 1}</td>
                         <td className="px-3 py-4">
-                          <p className={`${isArabic ? 'text-base font-extrabold leading-8' : 'text-sm font-semibold leading-6'} text-slate-900 break-words`}>{li.title}</p>
+                          <div className="h-14 w-14 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                            {li.image ? (
+                              <img src={li.image} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-slate-300"><Package size={18} /></div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-4">
+                          <p className={`${isArabic ? 'text-lg font-extrabold leading-8' : 'text-base font-bold leading-6'} text-slate-900 break-words`}>{li.title}</p>
                           <p className={`mt-1 ${invoiceSmallMutedTextClass} break-words`}>
                             {li.variantTitle !== 'Default Title' ? li.variantTitle : li.sku || '-'}
                             {li.sku ? ` · ${copy.sku}: ${li.sku}` : ''}
@@ -2860,6 +3029,7 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
               <div className="min-h-[180px] rounded-[22px] border border-slate-200 px-5 py-4">
                 <p className={invoiceLabelClass}>{copy.paymentNote}</p>
                 <p className={`mt-4 ${invoiceMutedTextClass}`}>{copy.thankYou}</p>
+                <p className={`mt-2 ${isArabic ? 'text-base font-extrabold text-slate-700' : 'text-sm font-bold text-slate-700'}`}>{arabicThankYou}</p>
                 <p className={`mt-3 ${invoiceSmallMutedTextClass}`}>{totalItems} {copy.itemsLabel}</p>
               </div>
 
@@ -2875,14 +3045,14 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </div>
                 </div>
 
-                <div className="mt-5 rounded-[20px] border-2 border-slate-900 bg-white px-5 py-4">
-                  <p className={invoiceLabelClass}>{copy.total}</p>
+                <div className="mt-5 rounded-[20px] border-2 border-slate-950 bg-slate-950 px-5 py-4 text-white">
+                  <p className={isArabic ? 'text-sm font-extrabold text-white/80 leading-6' : 'text-xs font-semibold uppercase tracking-[0.18em] text-white/70'}>{copy.total}</p>
                   <div className="mt-2 flex items-end justify-between gap-4">
                     <div>
-                      <p className={`${isArabic ? 'text-lg font-extrabold leading-8' : 'text-sm font-semibold'} text-slate-900`}>{totalToPayLabel}</p>
-                      <p className={`mt-1 ${invoiceSmallMutedTextClass}`}>{invoiceDate}</p>
+                      <p className={`${isArabic ? 'text-lg font-extrabold leading-8' : 'text-sm font-semibold'} text-white`}>{totalToPayLabel}</p>
+                      <p className="mt-1 text-xs font-semibold text-white/65">{invoiceDate}</p>
                     </div>
-                    <p className={`${isArabic ? 'text-[2.4rem] font-extrabold leading-none' : 'text-3xl font-bold tracking-tight'} text-slate-950`}>{formatDh(invoiceTotal, locale)}</p>
+                    <p className={`${isArabic ? 'text-[2.4rem] font-extrabold leading-none' : 'text-3xl font-bold tracking-tight'} text-white`}>{formatDh(invoiceTotal, locale)}</p>
                   </div>
                 </div>
               </div>
@@ -2942,13 +3112,19 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                   </div>
                   <div className={`${isArabic ? 'text-left' : 'text-right'} flex-shrink-0`}>
                     <p className="text-sm font-bold text-emerald-600">{formatDh(v.price, locale)}</p>
-                    <p className="text-[10px] text-slate-400">{v.inventory} {copy.inStock}</p>
+                    <p className={`text-[10px] font-bold ${v.inventory > 0 ? 'text-slate-400' : 'text-red-500'}`}>{v.inventory} {copy.inStock}</p>
                   </div>
                 </button>
               ))}
             </div>
           )}
         </div>
+
+        {orderMessage && (
+          <div className={`mt-3 rounded-xl border px-4 py-3 text-xs font-bold ${orderMessage.type === 'error' ? 'border-red-200 bg-red-50 text-red-600' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+            {orderMessage.text}
+          </div>
+        )}
 
         {lineItems.length > 0 && (
           <div className="mt-4 space-y-2">
@@ -2961,9 +3137,10 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
                 <div className="flex items-center gap-1.5">
                   <button onClick={() => updateQty(li.variant_id, -1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Minus size={14}/></button>
                   <span className="w-8 text-center text-sm font-bold">{li.quantity}</span>
-                  <button onClick={() => updateQty(li.variant_id, 1)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100"><Plus size={14}/></button>
+                  <button onClick={() => updateQty(li.variant_id, 1)} disabled={li.quantity >= li.available} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"><Plus size={14}/></button>
                 </div>
                 <button onClick={() => removeItem(li.variant_id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button>
+                <p className="hidden">{li.available} available</p>
               </div>
             ))}
             <div className="flex justify-between items-center pt-3 border-t border-slate-100">
@@ -3053,8 +3230,17 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
   const [payAmount, setPayAmount] = useState('')
   const [payNote, setPayNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const [cancelingOrderId, setCancelingOrderId] = useState<string | null>(null)
+  const [ordersMessage, setOrdersMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const isArabic = lang === 'ar'
   const locale = getLocale(lang)
+  const cancelLabels = {
+    cancelOrder: isArabic ? 'إلغاء الطلب' : 'Cancel order',
+    cancelled: isArabic ? 'ملغي' : 'Cancelled',
+    confirm: isArabic ? 'هل تريد إلغاء هذا الطلب وإرجاع المخزون؟' : 'Cancel this order and restock inventory?',
+    success: isArabic ? 'تم إلغاء الطلب وإرجاع المخزون' : 'Order cancelled and inventory restocked',
+    failed: isArabic ? 'تعذر إلغاء الطلب' : 'Could not cancel order',
+  }
 
   async function fetchOrders() {
     setLoading(true)
@@ -3127,13 +3313,36 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
     finally { setSaving(false) }
   }
 
+  async function cancelOrder(order: any) {
+    if (order?.is_cancelled || order?.cancelled_at) return
+    if (!window.confirm(cancelLabels.confirm)) return
+    setCancelingOrderId(String(order.id))
+    setOrdersMessage(null)
+    try {
+      const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/orders/${order.id}/cancel`, { reason: 'customer' })
+      if (res?.error) {
+        setOrdersMessage({ type: 'error', text: `${cancelLabels.failed}: ${res.error}` })
+        return
+      }
+      const cancelledAt = res?.data?.cancelled_at || new Date().toISOString()
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, is_cancelled: true, cancelled_at: cancelledAt, cancel_reason: res?.data?.cancel_reason || 'customer', payment_status: 'cancelled' } : o))
+      setOrdersMessage({ type: 'success', text: cancelLabels.success })
+    } catch (err: any) {
+      setOrdersMessage({ type: 'error', text: `${cancelLabels.failed}: ${err?.message || err}` })
+    } finally {
+      setCancelingOrderId(null)
+    }
+  }
+
   const statusBadge = (status: string) => {
+    if (status === 'cancelled') return <span className="px-2.5 py-1 bg-slate-900 text-white text-[11px] font-bold rounded-full">{cancelLabels.cancelled}</span>
     if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ Paid</span>
     if (status === 'partially_paid') return <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">◐ Partial</span>
     return <span className="px-2.5 py-1 bg-red-100 text-red-600 text-[11px] font-bold rounded-full">● Unpaid</span>
   }
 
   const orderStatusBadge = (status: string) => {
+    if (status === 'cancelled') return <span className="px-2.5 py-1 bg-slate-900 text-white text-[11px] font-bold rounded-full">{cancelLabels.cancelled}</span>
     if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ {copy.paid}</span>
     if (status === 'partially_paid') return <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">◐ {copy.partial}</span>
     return <span className="px-2.5 py-1 bg-red-100 text-red-600 text-[11px] font-bold rounded-full">● {copy.unpaid}</span>
@@ -3197,6 +3406,12 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
         </div>
       </div>
 
+      {ordersMessage && (
+        <div className={`rounded-xl border px-4 py-3 text-sm font-bold ${ordersMessage.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-600'}`}>
+          {ordersMessage.text}
+        </div>
+      )}
+
       {/* Orders List */}
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-slate-400">
@@ -3210,15 +3425,16 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
             const isExpanded = expandedOrder === String(order.id)
             const total = parseFloat(order.total_price || '0')
             const remaining = total - (order.amount_paid || 0)
+            const orderCancelled = Boolean(order.is_cancelled || order.cancelled_at)
             return (
-              <div key={order.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+              <div key={order.id} className={`bg-white rounded-2xl border overflow-hidden hover:shadow-md transition-shadow ${orderCancelled ? 'border-slate-300 opacity-80' : 'border-slate-200'}`}>
                 {/* Order Header */}
                 <button onClick={() => setExpandedOrder(isExpanded ? null : String(order.id))}
                   className="w-full p-4 flex items-center gap-3 text-left">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-sm text-blue-600">{order.name}</span>
-                      {orderStatusBadge(order.payment_status)}
+                      {orderStatusBadge(orderCancelled ? 'cancelled' : order.payment_status)}
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
                       {order.customer_name} · {order.units} {copy.itemsLabel} · {new Date(order.created_at).toLocaleDateString(locale)}
@@ -3270,10 +3486,17 @@ function OrdersTab({ vendor, copy, lang }: { vendor: any; copy: AppCopy; lang: L
                     )}
 
                     {/* Actions */}
-                    <div className="flex gap-2">
+                    <div className="flex flex-col gap-2 sm:flex-row">
                       <button onClick={() => openPaymentModal(order)}
-                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-colors">
+                        disabled={orderCancelled}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-45">
                         <CreditCard size={16} /> {copy.updatePayment}
+                      </button>
+                      <button onClick={() => cancelOrder(order)}
+                        disabled={orderCancelled || cancelingOrderId === String(order.id)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-800 transition-colors disabled:cursor-not-allowed disabled:opacity-45">
+                        {cancelingOrderId === String(order.id) ? <Loader2 size={16} className="animate-spin" /> : <X size={16} />}
+                        {orderCancelled ? cancelLabels.cancelled : cancelLabels.cancelOrder}
                       </button>
                     </div>
                   </div>

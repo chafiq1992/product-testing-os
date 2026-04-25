@@ -5740,6 +5740,10 @@ class WholesaleProductCreate(BaseModel):
     variant_group_id: Optional[str] = None
 
 
+class WholesaleInventoryUpdate(BaseModel):
+    quantity: int
+
+
 class WholesaleLogin(BaseModel):
     username: str
     password: str
@@ -5986,6 +5990,138 @@ def _wholesale_finalize_product_background(
         pass
 
 
+def _wholesale_configure_product_background(
+    product_gid: str,
+    initial_title: str,
+    image_url: str | None,
+    title: str | None,
+    description: str | None,
+    segment: str | None,
+    season: str | None,
+    cog_price: float | None,
+    base_price: float | None,
+    explicit_variants: list[dict] | None,
+) -> None:
+    try:
+        from app.integrations.shopify_client import (
+            configure_variants_for_product,
+            publish_product_all_channels,
+        )
+
+        try:
+            configure_variants_for_product(
+                product_gid,
+                base_price,
+                sizes=None,
+                colors=None,
+                track_quantity=True,
+                quantity=None,
+                variants=explicit_variants if explicit_variants else None,
+                store=WHOLESALE_STORE,
+            )
+        except Exception:
+            pass
+
+        _wholesale_finalize_product_background(
+            product_gid,
+            initial_title,
+            image_url,
+            title,
+            description,
+            segment,
+            season,
+            cog_price,
+        )
+
+        try:
+            publish_product_all_channels(product_gid, store=WHOLESALE_STORE)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _wholesale_inventory_levels_for_items(inventory_item_ids: list[Any]) -> dict[str, dict[str, Any]]:
+    from app.integrations.shopify_client import _rest_get_store
+
+    ids = [str(i).strip() for i in (inventory_item_ids or []) if str(i).strip() and str(i).strip() != "None"]
+    levels_by_item: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(ids), 50):
+        batch = ",".join(ids[i:i + 50])
+        if not batch:
+            continue
+        try:
+            data = _rest_get_store(WHOLESALE_STORE, f"/inventory_levels.json?inventory_item_ids={batch}")
+            for level in (data or {}).get("inventory_levels", []) or []:
+                item_id = str(level.get("inventory_item_id") or "")
+                if not item_id:
+                    continue
+                current = levels_by_item.get(item_id) or {"available": 0, "locations": []}
+                available = int(level.get("available") or 0)
+                current["available"] = int(current.get("available") or 0) + available
+                current["locations"].append(level)
+                levels_by_item[item_id] = current
+        except Exception:
+            continue
+    return levels_by_item
+
+
+def _wholesale_enrich_products_inventory(products: list[dict]) -> list[dict]:
+    item_ids: list[Any] = []
+    for product in products or []:
+        for variant in (product.get("variants") or []) or []:
+            item_ids.append(variant.get("inventory_item_id"))
+
+    levels = _wholesale_inventory_levels_for_items(item_ids)
+    for product in products or []:
+        product_available = 0
+        product_on_hand = 0
+        for variant in (product.get("variants") or []) or []:
+            item_id = str(variant.get("inventory_item_id") or "")
+            level_info = levels.get(item_id) or {}
+            available = int(level_info.get("available") if level_info.get("available") is not None else (variant.get("inventory_quantity") or 0))
+            on_hand = int(variant.get("inventory_quantity") if variant.get("inventory_quantity") is not None else available)
+            variant["inventory_available"] = available
+            variant["available_quantity"] = available
+            variant["inventory_on_hand"] = on_hand
+            variant["inventory_locations"] = level_info.get("locations") or []
+            product_available += max(0, available)
+            product_on_hand += max(0, on_hand)
+        product["inventory_available"] = product_available
+        product["inventory_on_hand"] = product_on_hand
+    return products
+
+
+def _wholesale_variant_availability(variant_ids: list[int]) -> dict[int, dict[str, Any]]:
+    from app.integrations.shopify_client import _rest_get_store
+
+    variants_by_id: dict[int, dict[str, Any]] = {}
+    item_ids: list[Any] = []
+    for variant_id in variant_ids:
+        try:
+            data = _rest_get_store(WHOLESALE_STORE, f"/variants/{int(variant_id)}.json")
+            variant = (data or {}).get("variant") or {}
+            if variant.get("id"):
+                variants_by_id[int(variant["id"])] = variant
+                item_ids.append(variant.get("inventory_item_id"))
+        except Exception:
+            continue
+
+    levels = _wholesale_inventory_levels_for_items(item_ids)
+    availability: dict[int, dict[str, Any]] = {}
+    for variant_id, variant in variants_by_id.items():
+        item_id = str(variant.get("inventory_item_id") or "")
+        level_info = levels.get(item_id) or {}
+        available = int(level_info.get("available") if level_info.get("available") is not None else (variant.get("inventory_quantity") or 0))
+        availability[variant_id] = {
+            "variant": variant,
+            "inventory_item_id": item_id,
+            "available": max(0, available),
+            "locations": level_info.get("locations") or [],
+        }
+    return availability
+
+
 @app.get("/api/wholesale/vendors/{vendor_id}/products")
 async def api_wholesale_vendor_products(vendor_id: str):
     """List products for a specific vendor from the MMD Shopify store."""
@@ -6003,6 +6139,7 @@ async def api_wholesale_vendor_products(vendor_id: str):
         vendor_name = vendor.get("name", vid)
         from app.integrations.shopify_client import list_products_by_vendor
         products = list_products_by_vendor(vendor_name, store=WHOLESALE_STORE, limit=250)
+        products = await run_in_threadpool(_wholesale_enrich_products_inventory, products)
         return {"data": products}
     except Exception as e:
         return {"error": str(e)}
@@ -6098,8 +6235,10 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             tags=tags_list,
             track_quantity=True,
             quantity=None,  # per-variant quantities via explicit variants
-            variants=explicit_variants if explicit_variants else None,
+            variants=None,
             store=WHOLESALE_STORE,
+            configure_variants=False,
+            publish=False,
         )
 
         # ── Set COG price as cost per item on each variant ──
@@ -6107,7 +6246,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         product_gid = ((result or {}).get("product") or {}).get("id") if isinstance(result, dict) else None
         if product_gid:
             background_tasks.add_task(
-                _wholesale_finalize_product_background,
+                _wholesale_configure_product_background,
                 product_gid,
                 title,
                 image_url,
@@ -6116,6 +6255,8 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 req.segment,
                 req.season,
                 req.cog_price,
+                explicit_variants[0]["price"] if explicit_variants else req.sale_price,
+                explicit_variants if explicit_variants else None,
             )
 
         return {"data": result, "background_processing": bool(product_gid)}
@@ -6124,6 +6265,69 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
 
 
 # ─── Wholesale Order Models ────────────────────────────────────────────
+@app.patch("/api/wholesale/vendors/{vendor_id}/products/{product_id}/variants/{variant_id}/inventory")
+async def api_wholesale_update_variant_inventory(vendor_id: str, product_id: str, variant_id: str, req: WholesaleInventoryUpdate):
+    """Set a vendor product variant's available inventory quantity in Shopify."""
+    try:
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not isinstance(vendor, dict):
+            return {"error": "vendor_not_found"}
+        vendor_name = vendor.get("name", vendor_id_norm)
+
+        from app.integrations.shopify_client import (
+            _get_location_id_from_inventory_levels,
+            _get_primary_location_id,
+            _rest_get_store,
+            _set_inventory_level,
+            _set_inventory_tracked,
+        )
+
+        product_numeric_id = str(product_id).split("/")[-1]
+        product_data = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, f"/products/{product_numeric_id}.json")
+        product = (product_data or {}).get("product") or {}
+        if not product:
+            return {"error": "product_not_found"}
+
+        product_vendor = str(product.get("vendor") or "").strip()
+        tags = _wholesale_tags_set(product.get("tags"))
+        if product_vendor.lower() != str(vendor_name).strip().lower() and _wholesale_vendor_name_tag(vendor_name).lower() not in tags:
+            return {"error": "product_not_found"}
+
+        variant_numeric_id = int(str(variant_id).split("/")[-1])
+        variant = next((v for v in (product.get("variants") or []) if int(v.get("id") or 0) == variant_numeric_id), None)
+        if not variant:
+            return {"error": "variant_not_found"}
+
+        inventory_item_id = str(variant.get("inventory_item_id") or "")
+        if not inventory_item_id or inventory_item_id == "None":
+            return {"error": "inventory_item_not_found"}
+
+        quantity = max(0, int(req.quantity or 0))
+        await run_in_threadpool(_set_inventory_tracked, inventory_item_id, True, store=WHOLESALE_STORE)
+        location_id = await run_in_threadpool(_get_location_id_from_inventory_levels, [inventory_item_id], store=WHOLESALE_STORE)
+        if not location_id:
+            location_id = await run_in_threadpool(_get_primary_location_id, WHOLESALE_STORE)
+        if not location_id:
+            return {"error": "inventory_location_not_found"}
+
+        await run_in_threadpool(_set_inventory_level, str(location_id), inventory_item_id, quantity, store=WHOLESALE_STORE)
+        availability = await run_in_threadpool(_wholesale_variant_availability, [variant_numeric_id])
+        available = int((availability.get(variant_numeric_id) or {}).get("available") or quantity)
+        return {
+            "data": {
+                "product_id": product_numeric_id,
+                "variant_id": variant_numeric_id,
+                "inventory_item_id": inventory_item_id,
+                "available": available,
+                "on_hand": quantity,
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 class WholesaleOrderLineItem(BaseModel):
     variant_id: int
     quantity: int = 1
@@ -6140,6 +6344,10 @@ class WholesaleOrderCreate(BaseModel):
     note: Optional[str] = None
 
 # ─── Wholesale Create Order ────────────────────────────────────────────
+class WholesaleOrderCancelRequest(BaseModel):
+    reason: Optional[str] = "customer"
+
+
 @app.post("/api/wholesale/vendors/{vendor_id}/orders")
 async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
     import logging
@@ -6151,6 +6359,27 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         if not vendor:
             return {"error": "Vendor not found"}
         vendor_name = vendor.get("name", vendor_id_norm)
+
+        requested_by_variant: dict[int, int] = {}
+        for li in req.line_items or []:
+            requested_by_variant[int(li.variant_id)] = requested_by_variant.get(int(li.variant_id), 0) + max(0, int(li.quantity or 0))
+        if not requested_by_variant:
+            return {"error": "Add at least one product"}
+        variant_stock = await run_in_threadpool(_wholesale_variant_availability, list(requested_by_variant.keys()))
+        insufficient: list[dict[str, Any]] = []
+        for variant_id, requested_qty in requested_by_variant.items():
+            stock = variant_stock.get(variant_id)
+            available = int((stock or {}).get("available") or 0)
+            title = (((stock or {}).get("variant") or {}).get("title") or str(variant_id))
+            if requested_qty > available:
+                insufficient.append({
+                    "variant_id": variant_id,
+                    "title": title,
+                    "requested": requested_qty,
+                    "available": available,
+                })
+        if insufficient:
+            return {"error": "insufficient_inventory", "details": insufficient}
 
         # Split customer name into first/last
         name_parts = req.customer_name.strip().split(" ", 1)
@@ -6279,13 +6508,15 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         total_revenue = 0.0
         all_orders = []
         for o in orders:
+            is_cancelled = bool(o.get("cancelled_at"))
             line_items = o.get("line_items", [])
             order_units = sum(li.get("quantity", 0) for li in line_items)
-            total_units += order_units
-            try:
-                total_revenue += float(o.get("total_price", 0))
-            except (ValueError, TypeError):
-                pass
+            if not is_cancelled:
+                total_units += order_units
+                try:
+                    total_revenue += float(o.get("total_price", 0))
+                except (ValueError, TypeError):
+                    pass
 
             snapshot = _wholesale_extract_customer_snapshot(o)
 
@@ -6316,6 +6547,9 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "items_count": len(line_items),
                 "units": order_units,
                 "financial_status": o.get("financial_status"),
+                "cancelled_at": o.get("cancelled_at"),
+                "cancel_reason": o.get("cancel_reason"),
+                "is_cancelled": is_cancelled,
                 "customer_id": snapshot.get("customer_id"),
                 "customer_name": snapshot.get("customer_name"),
                 "customer_phone": snapshot.get("customer_phone", ""),
@@ -6346,6 +6580,58 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         return {"error": str(e)}
 
 
+@app.post("/api/wholesale/vendors/{vendor_id}/orders/{order_id}/cancel")
+async def api_wholesale_cancel_order(vendor_id: str, order_id: str, req: WholesaleOrderCancelRequest):
+    """Cancel a wholesale Shopify order and restock its inventory."""
+    try:
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not vendor:
+            return {"error": "Vendor not found"}
+        vendor_name = vendor.get("name", vendor_id_norm)
+
+        from app.integrations.shopify_client import _rest_get_store, _rest_post_store
+
+        order_numeric_id = str(order_id).split("/")[-1]
+        order_data = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, f"/orders/{order_numeric_id}.json")
+        order = (order_data or {}).get("order") or {}
+        if not order or not _wholesale_order_matches_vendor(order, vendor_name, vendor_id_norm):
+            return {"error": "order_not_found"}
+
+        if order.get("cancelled_at"):
+            return {"data": {"id": order.get("id"), "name": order.get("name"), "cancelled_at": order.get("cancelled_at"), "already_cancelled": True}}
+
+        reason = (req.reason or "customer").strip() or "customer"
+        if reason not in {"customer", "inventory", "fraud", "declined", "other"}:
+            reason = "other"
+        cancel_result = await run_in_threadpool(
+            _rest_post_store,
+            WHOLESALE_STORE,
+            f"/orders/{order_numeric_id}/cancel.json",
+            {"reason": reason, "restock": True},
+        )
+        cancelled_order = (cancel_result or {}).get("order") or {}
+
+        payment_key = f"wholesale_order_payment:{vendor_id_norm}:{order_numeric_id}"
+        payment_data = db.get_app_setting(WHOLESALE_STORE, payment_key)
+        if isinstance(payment_data, dict):
+            payment_data["payment_status"] = "cancelled"
+            payment_data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            db.set_app_setting(WHOLESALE_STORE, payment_key, payment_data)
+
+        return {
+            "data": {
+                "id": cancelled_order.get("id") or order.get("id"),
+                "name": cancelled_order.get("name") or order.get("name"),
+                "cancelled_at": cancelled_order.get("cancelled_at"),
+                "cancel_reason": cancelled_order.get("cancel_reason") or reason,
+            }
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/wholesale/vendors/{vendor_id}/customers")
 async def api_wholesale_vendor_customers(vendor_id: str):
     try:
@@ -6356,6 +6642,8 @@ async def api_wholesale_vendor_customers(vendor_id: str):
 
         customers_map: dict[str, dict] = {}
         for o in all_orders:
+            if o.get("is_cancelled") or o.get("cancelled_at"):
+                continue
             customer_name = (o.get("customer_name") or "N/A").strip() or "N/A"
             customer_phone = (o.get("customer_phone") or "").strip()
             customer_phone_normalized = (o.get("customer_phone_normalized") or "").strip()
