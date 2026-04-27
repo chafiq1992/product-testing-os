@@ -1134,10 +1134,10 @@ export async function campaignAnalyze(payload: {
   metrics?: Record<string, any>
   campaign_age_days?: number
   campaign_key?: string
-}): Promise<{ data?: CampaignAnalysisResult, error?: string }>{
+}, options?: { signal?: AbortSignal }): Promise<{ data?: CampaignAnalysisResult, error?: string }>{
   const body = { ...payload, store: payload.store ?? selectedStore() }
   // Step 1: Start the job (returns immediately with job_id)
-  const startRes = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 15000 })
+  const startRes = await axios.post(`${base}/api/campaign/analyze`, body, { timeout: 15000, signal: options?.signal })
   const jobId = startRes.data?.job_id
   if(!jobId){
     // Fallback: old-style response with data/error directly
@@ -1146,9 +1146,16 @@ export async function campaignAnalyze(payload: {
   // Step 2: Poll for result every 3 seconds (up to 5 minutes)
   const maxAttempts = 100  // 100 * 3s = 5 minutes
   for(let i = 0; i < maxAttempts; i++){
-    await new Promise(r => setTimeout(r, 3000))
+    if(options?.signal?.aborted) return { error: 'Analysis cancelled' }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 3000)
+      options?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(new DOMException('Analysis cancelled', 'AbortError'))
+      }, { once: true })
+    })
     try{
-      const statusRes = await axios.get(`${base}/api/campaign/analyze/status/${jobId}`, { timeout: 10000 })
+      const statusRes = await axios.get(`${base}/api/campaign/analyze/status/${jobId}`, { timeout: 10000, signal: options?.signal })
       const job = statusRes.data
       if(job.status === 'done'){
         return { data: job.result as CampaignAnalysisResult }

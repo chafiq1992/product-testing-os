@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, analyzeAllCampaigns, getAnalyzeAllStatus, getLatestBulkAnalysis, type BulkAnalysisJob } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -141,16 +141,14 @@ export default function AdsManagementPage(){
   const [multiAnalysisResults, setMultiAnalysisResults] = useState<Record<string, CampaignAnalysisResult>>({})
   const [multiAnalysisLoading, setMultiAnalysisLoading] = useState<boolean>(false)
   const [multiAnalysisProgress, setMultiAnalysisProgress] = useState<{ done: number, total: number }>({ done: 0, total: 0 })
+  const multiAnalysisAbortRef = useRef<AbortController|null>(null)
+  const multiAnalysisCancelledRef = useRef<boolean>(false)
   // Action Tasks state
   const [actionTasks, setActionTasks] = useState<ActionTask[]>([])
   const [actionTasksSummary, setActionTasksSummary] = useState<string>('')
   const [actionTasksOpen, setActionTasksOpen] = useState<boolean>(false)
   const [actionTasksLoading, setActionTasksLoading] = useState<boolean>(false)
   const [actionTasksLoaded, setActionTasksLoaded] = useState<boolean>(false)
-  // Bulk Analyze All state
-  const [bulkAnalysisJobId, setBulkAnalysisJobId] = useState<string|null>(null)
-  const [bulkAnalysisStatus, setBulkAnalysisStatus] = useState<BulkAnalysisJob|null>(null)
-  const bulkPollRef = useRef<ReturnType<typeof setInterval>|null>(null)
   // Selection + Grouping state
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
@@ -580,49 +578,8 @@ export default function AdsManagementPage(){
           }
         }catch{}
       }
-      // Restore active bulk analysis job (if browser was closed mid-job)
-      try{
-        const latestRes = await getLatestBulkAnalysis(store)
-        const latest = latestRes?.data
-        if(latest && latest.status && latest.status !== 'done' && latest.status !== 'error' && latest.job_id){
-          setBulkAnalysisJobId(latest.job_id)
-          setBulkAnalysisStatus(latest)
-          startBulkPoll(latest.job_id)
-        } else if(latest){
-          setBulkAnalysisStatus(latest)
-        }
-      }catch{}
     })()
   }, [])
-
-  // Bulk analysis polling helper
-  function startBulkPoll(jobId: string){
-    // Clear any existing poll
-    if(bulkPollRef.current) clearInterval(bulkPollRef.current)
-    bulkPollRef.current = setInterval(async()=>{
-      try{
-        const status = await getAnalyzeAllStatus(jobId, store)
-        setBulkAnalysisStatus(status)
-        if(status.status === 'done' || status.status === 'error'){
-          if(bulkPollRef.current) clearInterval(bulkPollRef.current)
-          bulkPollRef.current = null
-          // Refresh campaign meta to pick up new group timeline entries
-          try{
-            const metaRes = await campaignMetaList(store)
-            if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
-          }catch{}
-          // Refresh action tasks
-          try{
-            const tasksRes = await getActionTasks(store)
-            if(tasksRes?.data){
-              setActionTasks(tasksRes.data.tasks || [])
-              setActionTasksSummary(tasksRes.data.summary || '')
-            }
-          }catch{}
-        }
-      }catch{}
-    }, 5000)
-  }
 
   function getId(row: MetaCampaignRow){
     return (row.name||'').trim()
@@ -1101,65 +1058,22 @@ export default function AdsManagementPage(){
           <button onClick={()=>setPlSettingsOpen(true)} className="rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm" title="Product Life Settings">
             <Settings className="w-4 h-4"/>
           </button>
-          {/* ── Analyze All Active button ── */}
-          <button
-            disabled={!!(bulkAnalysisStatus && bulkAnalysisStatus.status !== 'done' && bulkAnalysisStatus.status !== 'error')}
-            onClick={async()=>{
-              try{
-                const { start, end } = effectiveYmdRange(datePreset)
-                const res = await analyzeAllCampaigns({
-                  store,
-                  ad_account: adAccount || undefined,
-                  ad_accounts: selectedAdAccounts.length > 0 ? selectedAdAccounts : undefined,
-                  date_range: { start, end },
-                })
-                if(res?.job_id){
-                  setBulkAnalysisJobId(res.job_id)
-                  setBulkAnalysisStatus({ status: 'pending', progress: { done: 0, total: 0, phase: 'starting' } })
-                  startBulkPoll(res.job_id)
-                }
-              }catch{}
-            }}
-            className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
-              bulkAnalysisStatus && bulkAnalysisStatus.status !== 'done' && bulkAnalysisStatus.status !== 'error'
-                ? 'bg-gradient-to-r from-emerald-300 to-teal-300 cursor-wait animate-pulse'
-                : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-sm hover:shadow-md'
-            }`}
-            title="Analyze all active campaigns"
-          >
-            <Zap className="w-4 h-4"/>
-            {(()=>{
-              const s = bulkAnalysisStatus
-              if(!s || s.status === 'done' || s.status === 'error') return 'Analyze All Active'
-              if(s.status === 'fetching_campaigns' || s.status === 'pending') return 'Starting…'
-              if(s.status === 'analyzing') return `Analyzing ${s.progress?.done||0}/${s.progress?.total||'?'}…`
-              if(s.status === 'generating_tasks') return 'Generating tasks…'
-              return 'Processing…'
-            })()}
-          </button>
-          {/* Bulk analysis done badge */}
-          {bulkAnalysisStatus?.status === 'done' && bulkAnalysisStatus.result && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-200">
-              ✓ {bulkAnalysisStatus.result.analyses_count || 0} analyzed · {bulkAnalysisStatus.result.task_count || 0} tasks
-            </span>
-          )}
-          {bulkAnalysisStatus?.status === 'error' && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-xl bg-rose-50 text-rose-600 text-xs font-medium border border-rose-200">
-              ✗ Analysis failed
-            </span>
-          )}
           {/* ── Analyze Selected button ── */}
-          {selectedCount > 0 && (
+          {(selectedCount > 0 || multiAnalysisLoading) && (
             <button
               disabled={multiAnalysisLoading}
               onClick={async()=>{
                 const keys = Object.keys(selectedKeys).filter(k => !!selectedKeys[k])
                 if(keys.length === 0) return
+                const controller = new AbortController()
+                multiAnalysisAbortRef.current = controller
+                multiAnalysisCancelledRef.current = false
                 setMultiAnalysisLoading(true)
                 setMultiAnalysisResults({})
                 setMultiAnalysisProgress({ done: 0, total: keys.length })
                 const results: Record<string, CampaignAnalysisResult> = {}
                 for(let i = 0; i < keys.length; i++){
+                  if(multiAnalysisCancelledRef.current) break
                   const rk = keys[i]
                   // Find the campaign row
                   const row = (items||[]).find(r => String(r.campaign_id||r.name||'') === rk)
@@ -1189,15 +1103,18 @@ export default function AdsManagementPage(){
                       },
                       campaign_age_days: ageDays,
                       campaign_key: cid || rk,
-                    })
+                    }, { signal: controller.signal })
                     if(res?.data){
                       results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
                     }
-                  }catch{}
+                  }catch(e:any){
+                    if(controller.signal.aborted || multiAnalysisCancelledRef.current) break
+                  }
                   setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 }))
                   setMultiAnalysisResults({ ...results })
                 }
                 setMultiAnalysisResults(results)
+                multiAnalysisAbortRef.current = null
                 setMultiAnalysisLoading(false)
               }}
               className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
@@ -1211,6 +1128,20 @@ export default function AdsManagementPage(){
                 ? `Analyzing ${multiAnalysisProgress.done}/${multiAnalysisProgress.total}…`
                 : `Analyze ${selectedCount} selected`
               }
+            </button>
+          )}
+          {multiAnalysisLoading && (
+            <button
+              onClick={()=>{
+                multiAnalysisCancelledRef.current = true
+                multiAnalysisAbortRef.current?.abort()
+                setMultiAnalysisLoading(false)
+              }}
+              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-sm shadow-sm hover:shadow-md transition-all"
+              title="Cancel selected campaign analysis"
+            >
+              <X className="w-4 h-4"/>
+              Cancel analysis
             </button>
           )}
           {/* ── Generate Actions button (after multi-analysis) ── */}
