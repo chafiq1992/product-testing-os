@@ -884,6 +884,42 @@ export default function AdsManagementPage(){
   }, [sortedParents, groupExpanded, searchActive])
 
   const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
+  function campaignKeysForRows(rows: MetaCampaignRow[]): string[]{
+    const keys: string[] = []
+    for(const r of (rows||[])){
+      const rk = rowKeyOf(r)
+      if(rk) keys.push(rk)
+    }
+    return keys
+  }
+  function getGroupSelectionState(rows: MetaCampaignRow[]){
+    const keys = campaignKeysForRows(rows)
+    const total = keys.length
+    if(total===0) return { checked: false, indeterminate: false, selected: 0, total: 0 }
+    let selected = 0
+    for(const k of keys){
+      if(!!selectedKeys[k]) selected += 1
+    }
+    return {
+      checked: selected>0 && selected===total,
+      indeterminate: selected>0 && selected<total,
+      selected,
+      total,
+    }
+  }
+  function toggleGroupSelect(rows: MetaCampaignRow[], v?: boolean){
+    const keys = campaignKeysForRows(rows)
+    if(keys.length===0) return
+    setSelectedKeys(prev=>{
+      const next = { ...prev }
+      const shouldSelect = v==null ? !keys.every(k=> !!prev[k]) : !!v
+      for(const k of keys){
+        next[k] = shouldSelect
+      }
+      try{ localStorage.setItem('ptos_ads_selected', JSON.stringify(next)) }catch{}
+      return next
+    })
+  }
   const productIdToCount = useMemo(()=>{
     const map: Record<string, number> = {}
     for(const r of (items||[])){
@@ -1508,10 +1544,19 @@ export default function AdsManagementPage(){
                   const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
                   const statusClass = active===0 ? 'bg-slate-200 text-slate-700' : (paused===0 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800')
                   const noteVal = groupNotes[pid] || ''
+                  const groupSelection = getGroupSelectionState(d.rows)
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
-                        <td className="px-1 py-0.5"></td>
+                        <td className="px-1.5 py-0.5">
+                          <input
+                            type="checkbox"
+                            checked={groupSelection.checked}
+                            ref={(el)=>{ if(el) el.indeterminate = groupSelection.indeterminate }}
+                            onChange={(e)=> toggleGroupSelect(d.rows, e.target.checked)}
+                            aria-label={`Select product group ${pid}`}
+                          />
+                        </td>
                         <td className="px-1 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
