@@ -1193,16 +1193,25 @@ export default function AdsManagementPage(){
                     setActionTasks(res.data.tasks || [])
                     setActionTasksSummary(res.data.summary || '')
                     setActionTasksOpen(true)
-                    // Auto-add each task to the per-campaign timeline(s)
+                    // Auto-add each task once to the product-group timeline, with campaign references inside the task.
                     const tasks = res.data.tasks || []
                     for(const task of tasks){
-                      const campaignKeys = (task.campaigns || []).map((cn: string) => {
-                        // Find campaign_id by name match
-                        const matchRow = (items||[]).find((r: any) => (r.name||'') === cn || String(r.campaign_id||'') === cn)
-                        return matchRow ? String(matchRow.campaign_id || matchRow.name || '') : cn
-                      }).filter(Boolean)
-                      const uniqueKeys = [...new Set(campaignKeys)]
-                      for(const ck of uniqueKeys){
+                      const campaignLabels = (task.campaigns || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+                      const matchedRows = campaignLabels.map((cn: string) => {
+                        const lc = cn.toLowerCase()
+                        return (items||[]).find((r: any) => {
+                          const name = String(r.name||'')
+                          const id = String(r.campaign_id||'')
+                          const nameLc = name.toLowerCase()
+                          const idLc = id.toLowerCase()
+                          return name === cn || id === cn || (!!id && idLc === lc) || (!!name && (nameLc.includes(lc) || lc.includes(nameLc)))
+                        })
+                      }).filter(Boolean) as MetaCampaignRow[]
+                      const groupIds = [...new Set(matchedRows.map(r => getProductIdForRow(r)).filter(Boolean) as string[])]
+                      for(const pid of groupIds){
+                        const refs = matchedRows
+                          .filter(r => getProductIdForRow(r) === pid)
+                          .map((r: any) => ({ id: String(r.campaign_id||''), name: String(r.name||'') }))
                         try{
                           const taskEntry = JSON.stringify({
                             type: 'task',
@@ -1212,10 +1221,13 @@ export default function AdsManagementPage(){
                             category: task.category,
                             title: task.title,
                             description: task.description,
+                            campaigns: task.campaigns || [],
+                            campaign_references: refs,
+                            group_product_id: pid,
                             expected_impact: task.expected_impact,
                             done: false,
                           })
-                          await campaignTimelineAdd({ campaign_key: ck, text: taskEntry, store })
+                          await campaignTimelineAdd({ campaign_key: `group:${pid}`, text: taskEntry, store })
                         }catch{}
                       }
                     }
@@ -2675,6 +2687,88 @@ export default function AdsManagementPage(){
   )
 }
 
+function hasRtlText(value: unknown): boolean{
+  return /[\u0590-\u08FF\uFB1D-\uFEFC]/.test(String(value||''))
+}
+
+function taskTextDirection(task: any): 'rtl'|'ltr'{
+  const campaigns = Array.isArray(task?.campaigns) ? task.campaigns.join(' ') : ''
+  const refs = Array.isArray(task?.campaign_references) ? task.campaign_references.map((r:any)=> `${r?.name||''} ${r?.id||''}`).join(' ') : ''
+  return hasRtlText(`${task?.title||''} ${task?.description||''} ${task?.expected_impact||''} ${campaigns} ${refs}`) ? 'rtl' : 'ltr'
+}
+
+function splitTaskDescription(description: unknown): string[]{
+  const raw = String(description||'').replace(/\r\n/g, '\n').trim()
+  if(!raw) return []
+  const normalized = raw.replace(/[•●]/g, '-')
+  const explicitLines = normalized.split(/\n+/).map(s => s.trim()).filter(Boolean)
+  if(explicitLines.length > 1) return explicitLines
+  const punctuated = normalized.replace(/([.!?؛؟;])\s+/g, '$1\n')
+  let lines = punctuated.split(/\n+/).map(s => s.trim()).filter(Boolean)
+  if(lines.length <= 1 && normalized.length > 150){
+    lines = normalized.split(/\s*[،,]\s+/).map(s => s.trim()).filter(Boolean)
+  }
+  return lines.length ? lines : [raw]
+}
+
+function taskLineParts(line: string, dir: 'rtl'|'ltr', index: number): { label: string, text: string }{
+  const clean = line.replace(/^[-\s]+/, '').trim()
+  const match = clean.match(/^([^:：-]{2,24})\s*[:：-]\s*(.+)$/)
+  const labelsRtl = ['الخطوة', 'التفاصيل', 'المتابعة', 'ملاحظة']
+  const labelsLtr = ['Action', 'Details', 'Check', 'Note']
+  const fallback = dir === 'rtl' ? labelsRtl[Math.min(index, labelsRtl.length-1)] : labelsLtr[Math.min(index, labelsLtr.length-1)]
+  if(!match) return { label: fallback, text: clean }
+  const rawLabel = match[1].trim().toLowerCase()
+  const labelMap: Record<string, string> = dir === 'rtl'
+    ? { action: 'الخطوة', step: 'الخطوة', campaigns: 'الحملات', campaign: 'الحملات', details: 'التفاصيل', detail: 'التفاصيل', check: 'المتابعة', impact: 'النتيجة', why: 'السبب' }
+    : { action: 'Action', step: 'Action', campaigns: 'Campaigns', campaign: 'Campaigns', details: 'Details', detail: 'Details', check: 'Check', impact: 'Impact', why: 'Why' }
+  return { label: labelMap[rawLabel] || match[1].trim(), text: match[2].trim() }
+}
+
+function TaskDetailsBlock({ task, isDone=false, includeCampaigns=true }: { task: any, isDone?: boolean, includeCampaigns?: boolean }){
+  const dir = taskTextDirection(task)
+  const lines = splitTaskDescription(task?.description)
+  const refs = Array.isArray(task?.campaign_references) && task.campaign_references.length
+    ? task.campaign_references
+    : (Array.isArray(task?.campaigns) ? task.campaigns.map((c:string)=> ({ name: c })) : [])
+  const align = dir === 'rtl' ? 'text-right' : 'text-left'
+  return (
+    <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`space-y-2 ${align}`}>
+      {lines.map((line, idx) => {
+        const part = taskLineParts(line, dir, idx)
+        return (
+          <div key={`${idx}-${line.slice(0,16)}`} className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100' : 'bg-white border-slate-100'}`}>
+            <div className="text-[10px] font-bold text-slate-400 mb-1">{part.label}</div>
+            <div className={`${isDone ? 'text-emerald-700/70 line-through' : 'text-slate-700'} leading-relaxed whitespace-pre-wrap`}>{part.text}</div>
+          </div>
+        )
+      })}
+      {includeCampaigns && refs.length > 0 && (
+        <div className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100' : 'bg-indigo-50/60 border-indigo-100'}`}>
+          <div className="text-[10px] font-bold text-slate-400 mb-1">{dir === 'rtl' ? 'الحملات المرتبطة' : 'Referenced campaigns'}</div>
+          <div className={`flex flex-wrap gap-1 ${dir === 'rtl' ? 'justify-end' : 'justify-start'}`}>
+            {refs.map((ref:any, i:number) => {
+              const label = String(ref?.name || ref || '').trim()
+              const id = String(ref?.id || '').trim()
+              return (
+                <span key={`${label}-${id}-${i}`} dir="ltr" className="text-[10px] bg-white text-slate-600 px-2 py-0.5 rounded-full border border-slate-200 max-w-[220px] truncate" title={id ? `${label} (${id})` : label}>
+                  {label || id}{id && label ? ` · ${id}` : ''}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {task?.expected_impact && (
+        <div className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100 text-emerald-700/70' : 'bg-violet-50/70 border-violet-100 text-violet-700'}`}>
+          <div className="text-[10px] font-bold opacity-70 mb-1">{dir === 'rtl' ? 'السبب' : 'Why'}</div>
+          <div className={`leading-relaxed ${isDone ? 'line-through' : ''}`}>{task.expected_impact}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Timeline Modal
 function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
   const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({ analysis: true, tasks: true, notes: false })
@@ -2835,6 +2929,7 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
                     const isDone = !!task.done
                     const taskKey = String(task.id || `${entry.at}-${idx}`)
                     const expanded = expandedTask === taskKey
+                    const dir = taskTextDirection(task)
                     return (
                       <div key={taskKey} className={`rounded-lg border p-3 ${isDone ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
                         <div className="flex items-start gap-2">
@@ -2845,15 +2940,14 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
                           >
                             {isDone ? <span className="text-xs font-bold">✓</span> : null}
                           </button>
-                          <button onClick={()=> setExpandedTask(expanded ? null : taskKey)} className="flex-1 text-left">
-                            <div className={`text-sm font-semibold ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>{task.title || 'Untitled task'}</div>
+                          <button onClick={()=> setExpandedTask(expanded ? null : taskKey)} className={`flex-1 ${dir === 'rtl' ? 'text-right' : 'text-left'}`} dir={dir}>
+                            <div className={`text-sm font-semibold ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`} style={{ unicodeBidi: 'plaintext' }}>{task.title || 'Untitled task'}</div>
                             <div className="text-[10px] text-slate-400 mt-0.5">P{task.priority || '-'} · {task.category || 'task'} · {String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
                           </button>
                         </div>
                         {expanded && (
-                          <div className="mt-2 ml-7 rounded-lg bg-slate-50 border border-slate-100 p-2 text-xs text-slate-700 leading-relaxed">
-                            {task.description && <div>{task.description}</div>}
-                            {task.expected_impact && <div className="mt-1 text-indigo-700 font-medium">Why: {task.expected_impact}</div>}
+                          <div className={`${dir === 'rtl' ? 'mr-7' : 'ml-7'} mt-2 rounded-lg bg-slate-50 border border-slate-100 p-2 text-xs text-slate-700 leading-relaxed`}>
+                            <TaskDetailsBlock task={task} isDone={isDone} />
                           </div>
                         )}
                       </div>
@@ -3479,6 +3573,7 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
           )}
           {filtered.map(task => {
             const isDone = task.done
+            const dir = taskTextDirection(task)
             return (
               <div
                 key={task.id}
@@ -3522,14 +3617,14 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
                     </div>
 
                     {/* Title */}
-                    <div className={`text-sm font-semibold leading-snug mb-1 ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>
+                    <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`text-sm font-semibold leading-snug mb-2 ${dir === 'rtl' ? 'text-right' : 'text-left'} ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>
                       {task.title}
                     </div>
 
                     {/* Description */}
-                    <p className={`text-xs leading-relaxed mb-2 ${isDone ? 'text-emerald-600/60 line-through' : 'text-slate-600'}`}>
-                      {task.description}
-                    </p>
+                    <div className="text-xs mb-2">
+                      <TaskDetailsBlock task={task} isDone={isDone} includeCampaigns={false} />
+                    </div>
 
                     {/* Campaigns tags + impact */}
                     <div className="flex items-center gap-2 flex-wrap">
