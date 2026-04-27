@@ -460,6 +460,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     except Exception:
         created_map = {}
     out: list[dict] = []
+    seen_ids: set[str] = set()
     for r in rows:
         name = (r or {}).get("campaign_name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
@@ -480,6 +481,8 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
         ])
         eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
         cid = (r or {}).get("campaign_id")
+        if cid:
+            seen_ids.add(str(cid))
         out.append({
             "campaign_id": cid,
             "name": name,
@@ -491,6 +494,30 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
             "status": (status_map.get(str(cid)) or "").upper() if cid else None,
             "created_time": created_map.get(str(cid)) if cid else None,
         })
+    # Meta's insights edge omits active campaigns that have no rows for the
+    # selected date range. Add those campaigns back with zeroed metrics so
+    # "analyze all active" really means all currently active campaigns.
+    try:
+        for c in (crows or []):
+            cid = str((c or {}).get("id") or "")
+            if not cid or cid in seen_ids:
+                continue
+            eff = str((c or {}).get("effective_status") or (c or {}).get("configured_status") or "").upper()
+            if eff not in ("ACTIVE", "PAUSED"):
+                continue
+            out.append({
+                "campaign_id": cid,
+                "name": (c or {}).get("name"),
+                "spend": 0.0,
+                "purchases": 0,
+                "cpp": None,
+                "ctr": None,
+                "add_to_cart": 0,
+                "status": eff,
+                "created_time": (c or {}).get("created_time"),
+            })
+    except Exception:
+        pass
     return out
 
 

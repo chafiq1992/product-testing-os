@@ -458,7 +458,7 @@ export async function campaignMetaList(store?: string){
   return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
 }
 
-export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, store?: string }){
+export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?: Array<{ text:string, at:string }>, product_life_checks?: Record<string, any>, store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/campaign_meta`, body)
   return data as { data?: { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }
@@ -1280,6 +1280,7 @@ export type BulkAnalysisJob = {
 export async function analyzeAllCampaigns(payload: {
   store?: string
   ad_account?: string
+  ad_accounts?: string[]
   date_range?: { start: string, end: string }
 }): Promise<{ job_id?: string, error?: string }> {
   const body = { ...payload, store: payload.store ?? selectedStore() }

@@ -721,6 +721,63 @@ def append_campaign_timeline(store: str | None, campaign_key: str, text: str) ->
         return {}
 
 
+def sync_campaign_timeline_task_states(store: str | None, task_states: Dict[str, bool]) -> int:
+    """Update saved task entries inside every campaign timeline for this store.
+
+    Returns the number of timeline entries changed.
+    """
+    if not isinstance(task_states, dict) or not task_states:
+        return 0
+    changed = 0
+    with SessionLocal() as session:
+        q = session.query(AppSetting).filter(AppSetting.key.like("campaign_meta:%"))
+        if isinstance(store, str):
+            q = q.filter(AppSetting.store == store)
+        rows = q.all()
+        for row in rows:
+            try:
+                data = json.loads(row.value) if row.value else {}
+                if not isinstance(data, dict):
+                    continue
+                timeline = data.get("timeline")
+                if not isinstance(timeline, list):
+                    continue
+                row_changed = False
+                next_timeline = []
+                for entry in timeline:
+                    if not isinstance(entry, dict):
+                        next_timeline.append(entry)
+                        continue
+                    text = entry.get("text")
+                    try:
+                        parsed = json.loads(text) if isinstance(text, str) else None
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict) and parsed.get("type") == "task":
+                        tid = str(parsed.get("id") or "")
+                        if tid and tid in task_states:
+                            done = bool(task_states[tid])
+                            if bool(parsed.get("done")) != done:
+                                parsed["done"] = done
+                                if done:
+                                    parsed["completed_at"] = _now().isoformat() + "Z"
+                                else:
+                                    parsed.pop("completed_at", None)
+                                entry = dict(entry)
+                                entry["text"] = json.dumps(parsed, ensure_ascii=False)
+                                row_changed = True
+                                changed += 1
+                    next_timeline.append(entry)
+                if row_changed:
+                    data["timeline"] = next_timeline
+                    row.value = json.dumps(data, ensure_ascii=False)
+                    row.updated_at = _now()
+            except Exception:
+                continue
+        session.commit()
+    return changed
+
+
 # ─────── Bulk Analysis Jobs (persisted in AppSetting) ───────
 
 def save_bulk_analysis_job(store: str | None, job_id: str, data: dict) -> dict:

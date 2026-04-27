@@ -1258,6 +1258,7 @@ class CampaignMetaUpsertRequest(BaseModel):
     supplier_name: Optional[str] = None
     supplier_alt_name: Optional[str] = None  # legacy
     supply_available: Optional[str] = None   # new
+    timeline: Optional[List[Dict[str, Any]]] = None
     product_life_checks: Optional[Dict[str, Any]] = None  # per-campaign phase checks
     store: Optional[str] = None
 
@@ -1275,6 +1276,8 @@ async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
             patch["supplier_alt_name"] = req.supplier_alt_name
         if isinstance(req.supply_available, str):
             patch["supply_available"] = req.supply_available
+        if isinstance(req.timeline, list):
+            patch["timeline"] = req.timeline
         if req.product_life_checks is not None:
             patch["product_life_checks"] = req.product_life_checks
         data = db.set_campaign_meta(req.store, key, patch)
@@ -1861,6 +1864,15 @@ async def api_save_action_tasks(req: SaveActionTasksRequest):
         if not isinstance(existing, dict):
             existing = {"summary": "", "urgent_count": 0, "tasks": []}
         existing["tasks"] = req.tasks or []
+        try:
+            task_states = {
+                str(t.get("id")): bool(t.get("done"))
+                for t in (req.tasks or [])
+                if isinstance(t, dict) and t.get("id")
+            }
+            db.sync_campaign_timeline_task_states(req.store, task_states)
+        except Exception as sync_err:
+            logger.warning("Failed to sync timeline task states: %s", sync_err)
         saved = db.set_app_setting(req.store, "action_tasks", existing)
         return {"data": saved if isinstance(saved, dict) else existing}
     except Exception as e:
@@ -1890,7 +1902,7 @@ def _extract_product_id_from_name(name: str | None) -> str | None:
         return None
 
 
-def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | None, s_date: str, e_date: str):
+def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str] | None, s_date: str, e_date: str):
     """Run the full analyze-all pipeline in a background thread.
     
     This thread is non-daemon and persists job state to DB, so it
@@ -1905,35 +1917,54 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | Non
         })
 
         # --- Step 2: Fetch all campaigns from Meta ---
-        acct = _normalize_ad_acct_id(ad_account)
-        if not acct:
+        accounts: list[str | None] = []
+        for raw in (ad_accounts or []):
+            acct = _normalize_ad_acct_id(raw)
+            if acct and acct not in accounts:
+                accounts.append(acct)
+        if not accounts:
             try:
                 conf = db.get_app_setting(store, "meta_ad_account")
                 acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
+                if acct:
+                    accounts.append(acct)
             except Exception:
-                acct = None
+                pass
+        if not accounts:
+            accounts = [None]
 
-        campaigns = list_active_campaigns_with_insights(
-            "last_7d",
-            ad_account_id=acct or None,
-            since=s_date,
-            until=e_date,
-        )
-        if not campaigns:
-            campaigns = []
+        campaigns: list[dict] = []
+        seen_campaigns: set[str] = set()
+        for acct in accounts:
+            try:
+                rows = list_active_campaigns_with_insights(
+                    "last_7d",
+                    ad_account_id=acct or None,
+                    since=s_date,
+                    until=e_date,
+                ) or []
+            except Exception as fetch_err:
+                logger.warning("Bulk analysis failed fetching campaigns for account %s: %s", acct, fetch_err)
+                rows = []
+            for c in rows:
+                cid = str((c or {}).get("campaign_id") or (c or {}).get("name") or "")
+                dedupe_key = f"{acct or ''}:{cid}"
+                if not cid or dedupe_key in seen_campaigns:
+                    continue
+                seen_campaigns.add(dedupe_key)
+                campaigns.append({**c, "_ad_account": acct})
 
-        # --- Step 3: Filter to ACTIVE + spend > $30 ---
+        # --- Step 3: Filter to ACTIVE campaigns ---
         active_campaigns = [
             c for c in campaigns
             if str(c.get("status", "")).upper() == "ACTIVE"
-            and float(c.get("spend", 0) or 0) > 30
         ]
 
         if not active_campaigns:
             db.save_bulk_analysis_job(store, job_id, {
                 "status": "done",
                 "progress": {"done": 0, "total": 0, "phase": "done"},
-                "result": {"message": "No active campaigns with spend > $30 found", "task_count": 0},
+                "result": {"message": "No active campaigns found", "task_count": 0},
             })
             return
 
@@ -2143,10 +2174,23 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | Non
             task_campaign_names = task.get("campaigns") or []
             target_pids: set = set()
             for cn in task_campaign_names:
+                cn_s = str(cn or "").strip()
+                if not cn_s:
+                    continue
+                # The task agent may reference the group/product name rather than
+                # an individual Meta campaign. Match against analysis metadata too.
+                for analysis in all_analyses:
+                    if (
+                        cn_s == str(analysis.get("campaign_name") or "").strip()
+                        or cn_s == str(analysis.get("campaign_key") or "").strip()
+                        or cn_s == str(analysis.get("product_id") or "").strip()
+                        or cn_s in [str(x) for x in (analysis.get("campaign_ids") or [])]
+                    ):
+                        target_pids.add(str(analysis.get("product_id") or analysis.get("campaign_key") or ""))
                 # Find which product group this campaign belongs to
                 for g in all_groups:
                     for c in g["campaigns"]:
-                        if c.get("name") == cn or str(c.get("campaign_id", "")) == cn:
+                        if c.get("name") == cn_s or str(c.get("campaign_id", "")) == cn_s:
                             target_pids.add(g["product_id"])
                             break
             if not target_pids:
@@ -2170,6 +2214,16 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | Non
                         "job_id": job_id,
                     }, ensure_ascii=False)
                     db.append_group_timeline(store, tpid, task_entry)
+                    # Also attach the same task to each concrete campaign in the
+                    # group so the campaign-row task icon and timeline are useful
+                    # even when the product group is collapsed or unavailable.
+                    for g in all_groups:
+                        if str(g.get("product_id") or "") != str(tpid):
+                            continue
+                        for c in (g.get("campaigns") or []):
+                            ck = str(c.get("campaign_id") or c.get("name") or "").strip()
+                            if ck:
+                                db.append_campaign_timeline(store, ck, task_entry)
                 except Exception:
                     pass
 
@@ -2213,12 +2267,13 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_account: str | Non
 class BulkAnalyzeRequest(BaseModel):
     store: Optional[str] = None
     ad_account: Optional[str] = None
+    ad_accounts: Optional[List[str]] = None
     date_range: Optional[Dict[str, str]] = None  # { start, end }
 
 
 @app.post("/api/campaign/analyze_all")
 async def api_analyze_all_campaigns(req: BulkAnalyzeRequest):
-    """Start bulk analysis of all active campaigns with spend > $30.
+    """Start bulk analysis of all active campaigns.
     
     Runs entirely in the background — survives browser close.
     Job state is persisted to DB for reliable polling.
@@ -2248,7 +2303,7 @@ async def api_analyze_all_campaigns(req: BulkAnalyzeRequest):
         # Launch background thread (daemon=False so it survives request lifecycle)
         thread = threading.Thread(
             target=_run_bulk_analysis_job,
-            args=(job_id, store, req.ad_account, s_date, e_date),
+            args=(job_id, store, (req.ad_accounts or ([req.ad_account] if req.ad_account else [])), s_date, e_date),
             daemon=False,
             name=f"bulk-analysis-{job_id[:8]}",
         )

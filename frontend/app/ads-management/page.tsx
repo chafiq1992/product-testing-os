@@ -1110,6 +1110,7 @@ export default function AdsManagementPage(){
                 const res = await analyzeAllCampaigns({
                   store,
                   ad_account: adAccount || undefined,
+                  ad_accounts: selectedAdAccounts.length > 0 ? selectedAdAccounts : undefined,
                   date_range: { start, end },
                 })
                 if(res?.job_id){
@@ -1124,7 +1125,7 @@ export default function AdsManagementPage(){
                 ? 'bg-gradient-to-r from-emerald-300 to-teal-300 cursor-wait animate-pulse'
                 : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-sm hover:shadow-md'
             }`}
-            title="Analyze all active campaigns with spend > $30"
+            title="Analyze all active campaigns"
           >
             <Zap className="w-4 h-4"/>
             {(()=>{
@@ -2500,7 +2501,11 @@ export default function AdsManagementPage(){
         onToggleTask={async(taskId: string)=>{
           const updated = actionTasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t)
           setActionTasks(updated)
-          try{ await saveActionTasks({ tasks: updated, store }) }catch{}
+          try{
+            await saveActionTasks({ tasks: updated, store })
+            const metaRes = await campaignMetaList(store)
+            if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+          }catch{}
         }}
         onClearAll={async()=>{
           setActionTasks([])
@@ -2545,7 +2550,9 @@ export default function AdsManagementPage(){
             const entry = timeline[entryIdx]
             const parsed = JSON.parse(entry.text || '{}')
             const nowDone = !parsed.done
-            const updated = { ...parsed, done: nowDone, completed_at: nowDone ? new Date().toISOString().slice(0,16).replace('T',' ') : undefined }
+            const updated = { ...parsed, done: nowDone }
+            if(nowDone) updated.completed_at = new Date().toISOString()
+            else delete updated.completed_at
             // Update the timeline entry text with new done state
             timeline[entryIdx] = { ...entry, text: JSON.stringify(updated) }
             // Optimistically update local state
@@ -2553,13 +2560,12 @@ export default function AdsManagementPage(){
               ...prev,
               [ck]: { ...prev[ck], timeline }
             }))
-            // Save all timeline entries back - we need to update the specific entry
-            // Use campaignTimelineAdd with the full timeline replacement
-            // Since the API only supports "add", we re-save via campaignMetaUpsert-style
-            // Actually, let's use a direct approach: add a new entry marking the task done,
-            // and update the original entry text in the meta
-            await campaignTimelineAdd({ campaign_key: ck, text: JSON.stringify({ type: 'task_update', task_id: parsed.id, done: nowDone, at: new Date().toISOString() }), store })
-            // Refresh to get server state
+            await campaignMetaUpsert({ campaign_key: ck, timeline, store })
+            if(parsed.id){
+              const updatedTasks = actionTasks.map(t => t.id === parsed.id ? { ...t, done: nowDone } : t)
+              setActionTasks(updatedTasks)
+              try{ await saveActionTasks({ tasks: updatedTasks, store }) }catch{}
+            }
             try{
               const res = await campaignMetaList(store)
               if((res as any)?.data) setCampaignMeta((res as any).data)
@@ -2695,6 +2701,9 @@ export default function AdsManagementPage(){
 
 // Timeline Modal
 function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
+  const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({ analysis: true, tasks: true, notes: false })
+  const [expandedTask, setExpandedTask] = useState<string|null>(null)
+  const togglePanel = (key:string) => setOpenPanels(prev => ({ ...prev, [key]: !prev[key] }))
   if(!open) return null
   const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(b.at||'').localeCompare(String(a.at||'')))
   function fmtDelta(prev:string|undefined, cur:string){
@@ -2738,16 +2747,18 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
     landing_page: '🌐', offer: '🎁', ad_copy: '✍️', product: '📦',
     scaling: '🚀', optimization: '⚡', kill: '🛑',
   }
-  // Count tasks
-  const taskEntries = entries.filter(e => { const d = parseStructured(e.text||''); return d?.type === 'task' })
-  const incompleteTasks = taskEntries.filter(e => { const d = parseStructured(e.text||''); return d && !d.done }).length
-  const completedTasks = taskEntries.length - incompleteTasks
-
   // Find original (unsorted) index for a sorted entry
   const originalTimeline = meta?.timeline || []
   function findOrigIndex(entry: {text:string, at:string}): number {
     return originalTimeline.findIndex(e => e.at === entry.at && e.text === entry.text)
   }
+  const structuredEntries = entries.map((entry, idx) => ({ entry, idx, data: parseStructured(entry.text||''), origIdx: findOrigIndex(entry) }))
+  const taskEntries = structuredEntries.filter(x => x.data?.type === 'task')
+  const analysisEntries = structuredEntries.filter(x => x.data?.type === 'analysis')
+  const noteEntries = structuredEntries.filter(x => !x.data)
+  const incompleteTasks = taskEntries.filter(x => !x.data?.done).length
+  const completedTasks = taskEntries.length - incompleteTasks
+  const progressPct = taskEntries.length ? Math.round((completedTasks / taskEntries.length) * 100) : 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{animation:'perfFadeIn 0.2s ease-out'}}>
@@ -2780,6 +2791,17 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
           </div>
         </div>
         <div className="p-5 space-y-4">
+          {taskEntries.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className="font-semibold text-slate-700">Task progress</span>
+                <span className="font-bold text-slate-800">{completedTasks}/{taskEntries.length} done</span>
+              </div>
+              <div className="h-2 rounded-full bg-white border border-slate-200 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <input
               value={draft}
@@ -2795,6 +2817,96 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
             >{adding? 'Adding…' : 'Add'}</button>
           </div>
           <div className="space-y-3">
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <button onClick={()=>togglePanel('analysis')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                <span className="font-semibold text-sm text-slate-800">Full analysis</span>
+                <span className="text-xs text-slate-500">{analysisEntries.length} saved {openPanels.analysis ? 'v' : '>'}</span>
+              </button>
+              {openPanels.analysis && (
+                <div className="p-3 space-y-2">
+                  {analysisEntries.length === 0 && <div className="text-sm text-slate-400">No analysis yet.</div>}
+                  {analysisEntries.map(({ entry, data }, idx) => {
+                    const vc = verdictColors[data?.verdict||''] || 'from-slate-400 to-slate-500'
+                    return (
+                      <div key={`${entry.at || ''}-analysis-${idx}`} className="border rounded-lg overflow-hidden">
+                        <div className={`bg-gradient-to-r ${vc} px-3 py-2 text-white flex items-center justify-between`}>
+                          <div className="font-semibold text-sm">{(data?.verdict||'Analysis').replace('_',' ')}</div>
+                          <div className="text-[10px] opacity-80">{String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                        </div>
+                        <div className="px-3 py-2 bg-white">
+                          {data?.summary && <p className="text-xs text-slate-700 leading-relaxed">{data.summary}</p>}
+                          {onViewAnalysis && data?.analysis && (
+                            <button onClick={()=> onViewAnalysis(data.analysis)} className="mt-2 px-3 py-1 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold">Open full analysis</button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <button onClick={()=>togglePanel('tasks')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                <span className="font-semibold text-sm text-slate-800">Tasks</span>
+                <span className="text-xs text-slate-500">{completedTasks}/{taskEntries.length} done {openPanels.tasks ? 'v' : '>'}</span>
+              </button>
+              {openPanels.tasks && (
+                <div className="p-3 space-y-2">
+                  {taskEntries.length === 0 && <div className="text-sm text-slate-400">No tasks yet.</div>}
+                  {taskEntries.map(({ entry, data, origIdx }, idx) => {
+                    const task: any = data || {}
+                    const isDone = !!task.done
+                    const taskKey = String(task.id || `${entry.at}-${idx}`)
+                    const expanded = expandedTask === taskKey
+                    return (
+                      <div key={taskKey} className={`rounded-lg border p-3 ${isDone ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+                        <div className="flex items-start gap-2">
+                          <button
+                            onClick={()=> onToggleTask && onToggleTask(origIdx, task)}
+                            className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${isDone ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 hover:border-emerald-500'}`}
+                            title={isDone ? 'Mark as not done' : 'Mark as done'}
+                          >
+                            {isDone ? <span className="text-xs font-bold">✓</span> : null}
+                          </button>
+                          <button onClick={()=> setExpandedTask(expanded ? null : taskKey)} className="flex-1 text-left">
+                            <div className={`text-sm font-semibold ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>{task.title || 'Untitled task'}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">P{task.priority || '-'} · {task.category || 'task'} · {String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                          </button>
+                        </div>
+                        {expanded && (
+                          <div className="mt-2 ml-7 rounded-lg bg-slate-50 border border-slate-100 p-2 text-xs text-slate-700 leading-relaxed">
+                            {task.description && <div>{task.description}</div>}
+                            {task.expected_impact && <div className="mt-1 text-indigo-700 font-medium">Why: {task.expected_impact}</div>}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {noteEntries.length > 0 && (
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <button onClick={()=>togglePanel('notes')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                  <span className="font-semibold text-sm text-slate-800">Notes</span>
+                  <span className="text-xs text-slate-500">{noteEntries.length} notes {openPanels.notes ? 'v' : '>'}</span>
+                </button>
+                {openPanels.notes && (
+                  <div className="p-3 space-y-2">
+                    {noteEntries.map(({ entry }, idx) => (
+                      <div key={`${entry.at || ''}-note-${idx}`} className="rounded-lg border border-slate-200 p-3 bg-white">
+                        <div className="text-xs text-slate-400 mb-1">{String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                        <div className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{entry.text||''}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="hidden">
             {entries.map((e, idx)=> {
               const next = idx<entries.length-1? entries[idx+1] : undefined
               const structured = parseStructured(e.text||'')
