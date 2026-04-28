@@ -56,11 +56,14 @@ CAMPAIGN_ANALYST_PROMPT = (
     "2) A direct-response marketing strategist who has scaled 500+ products\n"
     "3) A consumer behavior analyst who understands buying psychology\n\n"
     "Task: Analyze the provided CAMPAIGN DATA (metrics, ad creatives, product info, customer profile) "
-    "and produce actionable, prioritized recommendations.\n\n"
+    "and optional CLARITY BEHAVIOR DATA, then produce actionable, prioritized recommendations.\n\n"
     "ANALYSIS FRAMEWORK:\n"
     "- CTR benchmarks: <1% = poor, 1-2% = average, 2-4% = good, >4% = excellent\n"
     "- CPP benchmarks: depends on product price. True CPP should be < 30-40% of product price for profitability\n"
     "- Add-to-cart vs Purchase ratio: >3:1 = landing page or pricing issue, <2:1 = healthy\n"
+    "- Clarity landing-page diagnosis: high dead/rage/error clicks usually indicates technical or UX problems; "
+    "high quickbacks or very low engagement/scroll usually indicates offer/message/price mismatch; "
+    "good engagement with low purchase usually indicates trust, COD, delivery, exchange, or pricing objections.\n"
     "- If spend is low (<$20), note that data may not be statistically significant\n"
     "- CAMPAIGN AGE: Consider how many days the campaign has been running (campaign_age_days in metrics). "
     "Day 1-3 = testing phase (need patience, focus on creative testing). "
@@ -97,6 +100,12 @@ CAMPAIGN_ANALYST_PROMPT = (
     '    "suggested_headlines": string[] (3 improved headlines),\n'
     '    "suggested_ad_copy": string (improved primary text)\n'
     "  },\n"
+    '  "landing_page_diagnosis": {\n'
+    '    "primary_issue": string ("none"|"technical_problem"|"mobile_ux_problem"|"price_problem"|"offer_problem"|"trust_problem"|"message_mismatch"|"insufficient_data"),\n'
+    '    "confidence": string ("low"|"medium"|"high"),\n'
+    '    "evidence": string[] (specific Clarity + Meta/Shopify signals),\n'
+    '    "recommended_fixes": string[] (3-5 specific landing-page fixes)\n'
+    "  },\n"
     '  "customer_alignment": {\n'
     '    "score": number (1-10, how well the current ads align with the target customer),\n'
     '    "gaps": string[] (specific misalignments between ad creative and customer needs),\n'
@@ -105,6 +114,8 @@ CAMPAIGN_ANALYST_PROMPT = (
     "}\n\n"
     "Rules:\n"
     "- Every recommendation must reference specific numbers from the data.\n"
+    "- If CLARITY BEHAVIOR DATA is present, use it to separate landing-page problems into technical, mobile UX, price, offer, trust, or message-mismatch causes.\n"
+    "- If Clarity has no matched rows or an error, say insufficient data and do not invent heatmap findings.\n"
     "- Sort recommendations from MOST IMPACTFUL to least impactful.\n"
     "- Be brutally honest. If the product should be killed, say so.\n"
     "- For Morocco/MENA: factor in COD, WhatsApp, local shopping patterns.\n"
@@ -148,6 +159,7 @@ def analyze_campaign(
     campaign_metrics: dict,
     ad_creatives: list[dict],
     product_info: dict,
+    clarity_insights: dict | None = None,
     customer_profile_override: dict | None = None,
     model: str | None = None,
     previous_analysis_context: str | None = None,
@@ -158,6 +170,7 @@ def analyze_campaign(
         campaign_metrics: { spend, purchases, cpp, ctr, add_to_cart, true_cpp, shopify_orders, status }
         ad_creatives: [{ headline, primary_text, description, landing_url }]
         product_info: { title, price, description, image_url, handle, product_url }
+        clarity_insights: Microsoft Clarity behavior summary for the matched campaign/landing URL
         customer_profile_override: skip Phase 1 if already known
         model: OpenAI model override
         previous_analysis_context: formatted string describing previous analysis + implementation status
@@ -189,7 +202,8 @@ def analyze_campaign(
         f"CUSTOMER PROFILE:\n{json.dumps(customer_profile, ensure_ascii=False)}\n\n"
         f"CAMPAIGN METRICS:\n{json.dumps(campaign_metrics, ensure_ascii=False)}\n\n"
         f"AD CREATIVES:\n{json.dumps(ad_creatives[:5], ensure_ascii=False)}\n\n"
-        f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n"
+        f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n\n"
+        f"CLARITY BEHAVIOR DATA:\n{json.dumps(clarity_insights or {}, ensure_ascii=False)}\n"
     )
 
     # Inject previous analysis context for feedback loop
@@ -218,6 +232,8 @@ def analyze_campaign(
         analysis["creative_analysis"] = {}
     if not isinstance(analysis.get("customer_alignment"), dict):
         analysis["customer_alignment"] = {}
+    if not isinstance(analysis.get("landing_page_diagnosis"), dict):
+        analysis["landing_page_diagnosis"] = {}
 
     # Sort recommendations by priority
     try:
@@ -311,6 +327,7 @@ def generate_action_tasks(
         scaling_plan = analysis.get("scaling_plan") or {}
         creative_analysis = analysis.get("creative_analysis") or {}
         customer_alignment = analysis.get("customer_alignment") or {}
+        landing_page_diagnosis = analysis.get("landing_page_diagnosis") or {}
         product_info = analysis.get("product_info_input") or {}
 
         campaign_block = (
@@ -340,6 +357,18 @@ def generate_action_tasks(
                     f"  P{rec.get('priority', '?')} [{rec.get('category', '')}]: "
                     f"{rec.get('recommendation', '')}\n"
                 )
+
+        if landing_page_diagnosis:
+            evidence = landing_page_diagnosis.get("evidence") or []
+            fixes = landing_page_diagnosis.get("recommended_fixes") or []
+            campaign_block += (
+                f"Landing Page Diagnosis: issue={landing_page_diagnosis.get('primary_issue', 'N/A')}, "
+                f"confidence={landing_page_diagnosis.get('confidence', 'N/A')}\n"
+            )
+            if evidence:
+                campaign_block += f"  Evidence: {'; '.join([str(x) for x in evidence[:3]])}\n"
+            if fixes:
+                campaign_block += f"  Fixes: {'; '.join([str(x) for x in fixes[:3]])}\n"
 
         if customer_alignment and customer_alignment.get("score") is not None:
             campaign_block += f"Customer Alignment: {customer_alignment.get('score', 'N/A')}/10\n"

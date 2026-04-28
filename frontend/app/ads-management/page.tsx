@@ -1126,6 +1126,7 @@ export default function AdsManagementPage(){
                     const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
                     const res = await campaignAnalyze({
                       campaign_id: cid || undefined,
+                      campaign_name: row.name || undefined,
                       product_id: pidSelf || undefined,
                       metrics: {
                         spend: Number(row.spend||0),
@@ -1753,6 +1754,7 @@ export default function AdsManagementPage(){
                                 const campaignKey = ids[0] || pid
                                 const res = await campaignAnalyze({
                                   campaign_ids: ids,
+                                  campaign_name: d.primary.name || undefined,
                                   product_id: pid||undefined,
                                   metrics: {
                                     spend: Number(m.spend||0),
@@ -2193,6 +2195,7 @@ export default function AdsManagementPage(){
                             }
                             const res = await campaignAnalyze({
                               campaign_id: cid,
+                              campaign_name: c.name || undefined,
                               product_id: prodId,
                               metrics: {
                                 spend: Number(c.spend||0),
@@ -3709,6 +3712,7 @@ function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, o
   const sp = result.scaling_plan||{}
   const ca = result.creative_analysis||{}
   const cu = result.customer_alignment||{}
+  const lpd = result.landing_page_diagnosis||{}
 
   // Compute total checkable items and checked count
   const checkableKeys: string[] = []
@@ -3879,6 +3883,42 @@ function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, o
                     </div>
                   )}
                 </div>
+              </div>
+            </Section>
+          )}
+
+          {/* Landing Page Diagnosis */}
+          {lpd && (lpd.primary_issue || (lpd.evidence && lpd.evidence.length>0)) && (
+            <Section id="landing_diagnosis" icon="LP" title="Landing Page Diagnosis"
+              badge={lpd.primary_issue ? <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700 ml-2">{String(lpd.primary_issue).replace(/_/g,' ')}</span> : undefined}
+            >
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  {lpd.primary_issue && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Primary issue</div>
+                      <div className="text-xs text-slate-800 capitalize">{String(lpd.primary_issue).replace(/_/g,' ')}</div>
+                    </div>
+                  )}
+                  {lpd.confidence && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Confidence</div>
+                      <div className="text-xs text-slate-800 capitalize">{lpd.confidence}</div>
+                    </div>
+                  )}
+                </div>
+                {lpd.evidence && lpd.evidence.length>0 && (
+                  <div className="bg-white rounded-lg p-3 border border-slate-100">
+                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-2">Evidence</div>
+                    <div className="space-y-1.5">{lpd.evidence.map((e:string,i:number) => <div key={i} className="text-xs text-slate-700 leading-relaxed">- {e}</div>)}</div>
+                  </div>
+                )}
+                {lpd.recommended_fixes && lpd.recommended_fixes.length>0 && (
+                  <div className="bg-indigo-50/60 rounded-lg p-3 border border-indigo-100">
+                    <div className="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider mb-2">Recommended fixes</div>
+                    <div className="space-y-1.5">{lpd.recommended_fixes.map((f:string,i:number) => <div key={i} className="text-xs text-indigo-800 leading-relaxed">- {f}</div>)}</div>
+                  </div>
+                )}
               </div>
             </Section>
           )}
