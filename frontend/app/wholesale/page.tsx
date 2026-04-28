@@ -3586,13 +3586,12 @@ function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder,
     return map
   }, [products])
 
-  function getOrderImage(order: any) {
-    const first = (order.line_items || [])[0] || {}
-    const direct = first.image || first.image_url || first.product_image || first.variant_image
+  function getOrderLineImage(lineItem: any) {
+    const direct = lineItem?.image || lineItem?.image_url || lineItem?.product_image || lineItem?.variant_image
     if (direct) return direct
-    const sku = String(first.sku || '').trim()
+    const sku = String(lineItem?.sku || '').trim()
     if (sku && productImageBySku.get(sku)) return productImageBySku.get(sku) || ''
-    const variantId = String(first.variant_id || '').trim()
+    const variantId = String(lineItem?.variant_id || '').trim()
     return variantId ? (productImageBySku.get(variantId) || '') : ''
   }
 
@@ -3847,13 +3846,70 @@ function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder,
             const remaining = total - (order.amount_paid || 0)
             const orderCancelled = Boolean(order.is_cancelled || order.cancelled_at)
             const workflowStatus = orderCancelled ? 'cancelled' : (order.order_status || 'new')
-            const imageSrc = getOrderImage(order)
+            const imageSrc = getOrderLineImage((order.line_items || [])[0] || {})
             const skuSummary = getOrderSkuSummary(order)
+            const previewItems = (order.line_items || []).slice(0, 3)
             return (
               <div key={order.id} className={`overflow-hidden rounded-[24px] border bg-white shadow-sm transition-all hover:shadow-md ${orderCancelled ? 'border-slate-300 opacity-80' : isExpanded ? 'border-blue-200 shadow-blue-100/60' : 'border-slate-200'}`}>
                 <button onClick={() => setExpandedOrder(isExpanded ? null : String(order.id))}
-                  className="w-full text-left">
-                  <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-100">
+                  className="w-full p-4 text-left">
+                  <div className="flex items-start gap-3">
+                    <div className="flex flex-shrink-0 -space-x-3">
+                      {previewItems.length > 0 ? previewItems.map((li: any, i: number) => {
+                        const src = getOrderLineImage(li)
+                        return (
+                          <div key={`${order.id}-thumb-${i}`} className="h-14 w-14 overflow-hidden rounded-2xl border-2 border-white bg-slate-100 shadow-sm">
+                            {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : (
+                              <div className="flex h-full w-full items-center justify-center text-slate-300"><Package size={20} /></div>
+                            )}
+                          </div>
+                        )
+                      }) : (
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-300"><ClipboardList size={22} /></div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{order.name}</span>
+                        {orderStatusBadge(orderCancelled ? 'cancelled' : order.payment_status)}
+                        {!orderCancelled && workflowStatusBadge(workflowStatus)}
+                      </div>
+                      <p className="mt-2 truncate text-lg font-black text-slate-950">{order.customer_name || copy.customer}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {skuSummary.map((label: string, i: number) => (
+                          <span key={`${order.id}-${label}-${i}`} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-700">{label}</span>
+                        ))}
+                        {Number(order.units || 0) > 0 && (
+                          <span className="rounded-full bg-blue-600 px-2 py-1 text-[11px] font-black text-white">{order.units} {copy.itemsLabel}</span>
+                        )}
+                      </div>
+                      <p className="mt-2 text-[11px] font-bold text-slate-400">{new Date(order.created_at).toLocaleDateString(locale)}</p>
+                    </div>
+                    <div className={`${isArabic ? 'text-left' : 'text-right'} flex-shrink-0`}>
+                      <p className="text-lg font-black text-slate-950">{formatDh(total, locale)}</p>
+                      {order.payment_status === 'partially_paid' && (
+                        <p className="text-[10px] font-black text-amber-600">{copy.remaining}: {formatDh(remaining, locale)}</p>
+                      )}
+                      <ChevronRight size={18} className={`mt-3 inline-block text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {previewItems.map((li: any, i: number) => (
+                      <div key={`${order.id}-compact-${i}`} className="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black text-slate-950">{getDisplaySku(li.sku)}</p>
+                          <p className="truncate text-xs font-bold text-slate-500">{getDisplaySize(li.variant_title)}</p>
+                        </div>
+                        <div className={`${isArabic ? 'text-left' : 'text-right'} ml-3`}>
+                          <p className="text-[9px] font-black uppercase text-slate-400">{copy.qty}</p>
+                          <p className="text-2xl font-black text-blue-600">{li.quantity}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="hidden">
                     {imageSrc ? (
                       <img src={imageSrc} alt={order.name || copy.ordersTitle} className="h-full w-full object-cover" />
                     ) : (
