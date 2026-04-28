@@ -1554,7 +1554,28 @@ def _clarity_days_for_range(start: str | None, end: str | None) -> int:
     return 3
 
 
-def _analysis_landing_urls(ad_creatives: list, product_info: dict) -> list[str]:
+def _public_store_domains(store: str | None) -> list[str]:
+    domains: list[str] = []
+    suffix = ""
+    try:
+        suffix = str(store or "").strip().upper().replace("-", "_")
+    except Exception:
+        suffix = ""
+    keys = ["SHOPIFY_PUBLIC_DOMAIN"]
+    if suffix:
+        keys.insert(0, f"SHOPIFY_PUBLIC_DOMAIN_{suffix}")
+    for key in keys:
+        raw = str(os.getenv(key, "") or "").strip()
+        if not raw:
+            continue
+        for part in raw.split(","):
+            domain = part.strip().replace("https://", "").replace("http://", "").strip("/")
+            if domain and domain not in domains:
+                domains.append(domain)
+    return domains
+
+
+def _analysis_landing_urls(ad_creatives: list, product_info: dict, store: str | None = None) -> list[str]:
     urls: list[str] = []
     for cr in ad_creatives or []:
         if isinstance(cr, dict):
@@ -1564,6 +1585,13 @@ def _analysis_landing_urls(ad_creatives: list, product_info: dict) -> list[str]:
     product_url = str((product_info or {}).get("product_url") or "").strip()
     if product_url and product_url not in urls:
         urls.append(product_url)
+    handle = str((product_info or {}).get("handle") or "").strip().strip("/")
+    if handle:
+        for domain in _public_store_domains(store):
+            for prefix in ("", "ar/"):
+                public_url = f"https://{domain}/{prefix}products/{handle}"
+                if public_url not in urls:
+                    urls.append(public_url)
     return urls
 
 
@@ -1717,7 +1745,7 @@ def _run_analysis_job(job_id: str, req_data: dict):
             clarity_insights = summarize_clarity_for_campaign(
                 campaign_id=(cids[0] if cids else None),
                 campaign_name=campaign_name,
-                landing_urls=_analysis_landing_urls(ad_creatives, product_info),
+                landing_urls=_analysis_landing_urls(ad_creatives, product_info, store),
                 num_days=_clarity_days_for_range(s_date, e_date),
             )
             logger.info(
@@ -2185,7 +2213,7 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                     clarity_insights = summarize_clarity_for_campaign(
                         campaign_id=str(first_row.get("campaign_id") or ""),
                         campaign_name=str(first_row.get("name") or product_info.get("title") or ""),
-                        landing_urls=_analysis_landing_urls(ad_creatives, product_info),
+                        landing_urls=_analysis_landing_urls(ad_creatives, product_info, store),
                         num_days=_clarity_days_for_range(s_date, e_date),
                     )
                 except Exception as clarity_err:

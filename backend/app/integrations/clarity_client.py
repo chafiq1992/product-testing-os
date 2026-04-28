@@ -12,7 +12,7 @@ import os
 import time
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -38,11 +38,11 @@ def _bounded_days(num_days: int | None = None) -> int:
 
 
 def _norm_text(value: Any) -> str:
-    return str(value or "").strip().lower()
+    return unquote(str(value or "").strip()).lower()
 
 
 def _norm_url(value: Any) -> str:
-    raw = str(value or "").strip()
+    raw = unquote(str(value or "").strip())
     if not raw:
         return ""
     try:
@@ -54,21 +54,74 @@ def _norm_url(value: Any) -> str:
         return raw.split("?", 1)[0].rstrip("/").lower()
 
 
+def _path_variants(value: Any) -> set[str]:
+    """Return URL path variants that survive domain, locale, and encoding drift."""
+    raw = unquote(str(value or "").strip())
+    if not raw:
+        return set()
+    variants: set[str] = set()
+    try:
+        p = urlparse(raw)
+        path = (p.path or raw.split("?", 1)[0]).rstrip("/").lower()
+    except Exception:
+        path = raw.split("?", 1)[0].rstrip("/").lower()
+    if not path:
+        return variants
+    if not path.startswith("/"):
+        path = "/" + path
+    variants.add(path)
+
+    parts = [part for part in path.split("/") if part]
+    # Shopify Markets can prefix locale, e.g. /ar/products/handle.
+    if len(parts) >= 2 and len(parts[0]) in {2, 5}:
+        variants.add("/" + "/".join(parts[1:]))
+    if "products" in parts:
+        idx = parts.index("products")
+        if idx + 1 < len(parts):
+            handle = parts[idx + 1]
+            variants.add(handle)
+            variants.add(f"/products/{handle}")
+    return variants
+
+
+def _slug_signature(value: Any) -> str:
+    """A loose handle signature for matching encoded/unencoded Shopify handles."""
+    s = _norm_text(value)
+    if not s:
+        return ""
+    try:
+        p = urlparse(s)
+        s = p.path or s
+    except Exception:
+        pass
+    parts = [part for part in s.split("/") if part]
+    if "products" in parts:
+        idx = parts.index("products")
+        if idx + 1 < len(parts):
+            s = parts[idx + 1]
+    cleaned = []
+    prev_dash = False
+    for ch in s:
+        keep = ch.isalnum() or ch == "-"
+        if keep:
+            cleaned.append(ch)
+            prev_dash = ch == "-"
+        elif not prev_dash:
+            cleaned.append("-")
+            prev_dash = True
+    return "".join(cleaned).strip("-")
+
+
 def _url_candidates(urls: list[str] | None) -> set[str]:
     out: set[str] = set()
     for u in urls or []:
         n = _norm_url(u)
         if n:
             out.add(n)
-            # Also match only the path because Clarity rows can contain either
-            # canonical product URLs or landing URLs with tracking params.
-            try:
-                p = urlparse(str(u or ""))
-                path = (p.path or "").rstrip("/").lower()
-                if path:
-                    out.add(path)
-            except Exception:
-                pass
+            out.update(_path_variants(u))
+            sig = _slug_signature(u)
+            if sig:
+                out.add(f"slug:{sig}")
     return out
 
 
@@ -104,10 +157,25 @@ def _row_matches(
             reasons.append("campaign_name")
 
     row_url = _norm_url(_row_url(row))
+    row_variants = _path_variants(_row_url(row))
+    row_sig = _slug_signature(_row_url(row))
     candidates = _url_candidates(landing_urls)
     if row_url and candidates:
         for cand in candidates:
-            if cand and (row_url == cand or cand in row_url or row_url.endswith(cand)):
+            if not cand:
+                continue
+            if cand.startswith("slug:"):
+                sig = cand.split(":", 1)[1]
+                if sig and row_sig and (sig == row_sig or sig in row_sig or row_sig in sig):
+                    reasons.append("product_handle")
+                    break
+                continue
+            if (
+                row_url == cand
+                or cand in row_url
+                or row_url.endswith(cand)
+                or cand in row_variants
+            ):
                 reasons.append("url")
                 break
 
