@@ -15,10 +15,10 @@ const SEGMENTS = ['Men', 'Women', 'Kids']
 const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall']
 type Lang = 'en' | 'ar'
 type StockVariantFormRow = {
-  from: number
-  to: number
-  pcsPerCrate: number
-  crateQty: number
+  from: number | string
+  to: number | string
+  pcsPerCrate: number | string
+  crateQty: number | string
   sku: string
 }
 
@@ -31,7 +31,7 @@ type WholesaleAddressForm = {
 }
 
 function createStockVariantRow(): StockVariantFormRow {
-  return { from: 20, to: 25, pcsPerCrate: 24, crateQty: 10, sku: '' }
+  return { from: '', to: '', pcsPerCrate: '', crateQty: '', sku: '' }
 }
 
 function getLocale(lang: Lang) {
@@ -40,6 +40,11 @@ function getLocale(lang: Lang) {
 
 function toNumber(value: number | string | null | undefined) {
   const parsed = typeof value === 'number' ? value : parseFloat(String(value ?? '0'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function toInteger(value: number | string | null | undefined) {
+  const parsed = parseInt(String(value ?? ''), 10)
   return Number.isFinite(parsed) ? parsed : 0
 }
 
@@ -57,12 +62,15 @@ function getVariantOnHand(variant: any) {
 }
 
 function buildVariantTitle(group: Pick<StockVariantFormRow, 'from' | 'to' | 'pcsPerCrate'>) {
-  const range = `${group.from}-${group.to}`
-  return group.pcsPerCrate > 0 ? `${range}*${group.pcsPerCrate}pcs` : range
+  const from = String(group.from || '').trim() || '36'
+  const to = String(group.to || '').trim() || '40'
+  const pcs = toInteger(group.pcsPerCrate)
+  const range = `${from}-${to}`
+  return pcs > 0 ? `${range}*${pcs}pcs` : range
 }
 
 function getVariantCratePrice(unitSalePrice: number, group: Pick<StockVariantFormRow, 'pcsPerCrate'>) {
-  return unitSalePrice * Math.max(0, group.pcsPerCrate || 0)
+  return unitSalePrice * Math.max(0, toInteger(group.pcsPerCrate))
 }
 
 function getDisplaySize(value: string | null | undefined) {
@@ -1049,7 +1057,7 @@ function Dashboard({
       case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
       case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
-      case 'orders': return <OrdersTab vendor={vendor} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
+      case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
     }
@@ -1307,11 +1315,11 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
   }, [products, lang])
 
   const dateRanges = [
-    { value: 'today', label: 'Today' },
-    { value: '7d', label: '7 Days' },
-    { value: '30d', label: '30 Days' },
-    { value: '90d', label: '90 Days' },
-    { value: 'all', label: 'All Time' },
+    { value: 'today', label: lang === 'ar' ? 'اليوم' : 'Today' },
+    { value: '7d', label: lang === 'ar' ? '7 أيام' : '7 Days' },
+    { value: '30d', label: lang === 'ar' ? '30 يوم' : '30 Days' },
+    { value: '90d', label: lang === 'ar' ? '90 يوم' : '90 Days' },
+    { value: 'all', label: lang === 'ar' ? 'كل الوقت' : 'All Time' },
   ]
 
   return (
@@ -1396,6 +1404,7 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
 function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onCreateOrder, onInventoryChanged }: { vendor: any; products: any[]; loading: boolean; copy: AppCopy; lang: Lang; onAddProduct?: () => void; onCreateOrder?: () => void; onInventoryChanged?: () => void }) {
   const [search, setSearch] = useState('')
   const [segFilter, setSegFilter] = useState('All')
+  const [inventorySort, setInventorySort] = useState<'newest' | 'oldest' | 'quantity'>('newest')
   const [stockModal, setStockModal] = useState<{ product: any; variant: any } | null>(null)
   const [stockQty, setStockQty] = useState('')
   const [stockSaving, setStockSaving] = useState(false)
@@ -1416,9 +1425,14 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     preview: isArabic ? 'معاينة الصورة' : 'Image preview',
     share: isArabic ? 'مشاركة' : 'Share',
   }
+  const sortLabels = {
+    newest: isArabic ? 'الأحدث أولًا' : 'Newest first',
+    oldest: isArabic ? 'الأقدم أولًا' : 'Old to new',
+    quantity: isArabic ? 'الأكثر كمية' : 'Most quantity',
+  }
 
   const filtered = useMemo(() => {
-    return products.filter(p => {
+    const list = products.filter(p => {
       const q = search.toLowerCase()
       const productTitle = getLocalizedProductTitle(p, lang, p.title || copy.untitled).toLowerCase()
       const matchSearch = !search || productTitle.includes(q) || (p.variants || []).some((v: any) =>
@@ -1428,7 +1442,17 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       const tags = typeof p.tags === 'string' ? p.tags : ''
       return matchSearch && tags.includes(`segment:${segFilter}`)
     })
-  }, [products, search, segFilter, lang, copy.untitled])
+    return list.sort((a: any, b: any) => {
+      if (inventorySort === 'quantity') {
+        const qa = (a.variants || []).reduce((s: number, v: any) => s + getVariantAvailable(v), 0)
+        const qb = (b.variants || []).reduce((s: number, v: any) => s + getVariantAvailable(v), 0)
+        return qb - qa
+      }
+      const da = new Date(a.created_at || 0).getTime()
+      const db = new Date(b.created_at || 0).getTime()
+      return inventorySort === 'oldest' ? da - db : db - da
+    })
+  }, [products, search, segFilter, inventorySort, lang, copy.untitled])
 
   function openStockModal(product: any, variant: any) {
     setStockModal({ product, variant })
@@ -1457,11 +1481,19 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     }
   }
 
-  async function shareProductImage() {
+  async function shareProductImage(channel: 'native' | 'whatsapp' | 'telegram' = 'native') {
     if (!imageModal?.src) return
     setImageSharing(true)
     const shareText = `${imageModal.title}\n${imageModal.src}`
     try {
+      if (channel === 'whatsapp') {
+        window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer')
+        return
+      }
+      if (channel === 'telegram') {
+        window.open(`https://t.me/share/url?url=${encodeURIComponent(imageModal.src)}&text=${encodeURIComponent(imageModal.title)}`, '_blank', 'noopener,noreferrer')
+        return
+      }
       if (navigator.share) {
         try {
           const response = await fetch(imageModal.src, { mode: 'cors' })
@@ -1520,6 +1552,13 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
           <option value="All">{copy.allSegments}</option>
           {SEGMENTS.map(s => <option key={s} value={s}>{getSegmentLabel(s, lang)}</option>)}
         </select>
+        <select value={inventorySort} onChange={e => setInventorySort(e.target.value as any)}
+          className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none"
+        >
+          <option value="newest">{sortLabels.newest}</option>
+          <option value="oldest">{sortLabels.oldest}</option>
+          <option value="quantity">{sortLabels.quantity}</option>
+        </select>
       </div>
 
       {/* Inventory Cards */}
@@ -1553,7 +1592,25 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                       <Package size={42} />
                     </div>
                   )}
-                  <div className="absolute right-3 top-3 rounded-full bg-white/90 p-2 shadow-sm">
+                  {imageSrc && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={e => { e.stopPropagation(); setImageModal({ src: imageSrc, title: productTitle }) }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setImageModal({ src: imageSrc, title: productTitle })
+                        }
+                      }}
+                      className={`absolute top-3 ${isArabic ? 'left-3' : 'right-14'} inline-flex rounded-full bg-white/95 p-2 text-slate-700 shadow-sm transition hover:bg-white hover:text-blue-600`}
+                      aria-label={inventoryLabels.preview}
+                    >
+                      <Share2 size={18} />
+                    </span>
+                  )}
+                  <div className={`absolute top-3 ${isArabic ? 'right-3' : 'right-3'} rounded-full bg-white/90 p-2 shadow-sm`}>
                     <ChevronRight size={18} className={`text-slate-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                   </div>
                   <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 bg-gradient-to-t from-slate-950/70 to-transparent p-4">
@@ -1665,12 +1722,26 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={shareProductImage}
+                  onClick={() => shareProductImage('native')}
                   disabled={imageSharing}
                   className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
                 >
                   {imageSharing ? <Loader2 className="animate-spin" size={15} /> : <Share2 size={15} />}
                   {inventoryLabels.share}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => shareProductImage('whatsapp')}
+                  className="inline-flex items-center rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                >
+                  WhatsApp
+                </button>
+                <button
+                  type="button"
+                  onClick={() => shareProductImage('telegram')}
+                  className="inline-flex items-center rounded-xl bg-sky-500 px-3 py-2 text-xs font-bold text-white transition hover:bg-sky-600"
+                >
+                  Telegram
                 </button>
                 <button onClick={() => setImageModal(null)} className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900">
                   <X size={18} />
@@ -1728,9 +1799,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 
   // Clothes-specific state
   const CLOTHES_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL']
-  const [clothesSizes, setClothesSizes] = useState<Record<string, number>>({})
+  const [clothesSizes, setClothesSizes] = useState<Record<string, number | string>>({})
   // Electronics/General simple quantity
-  const [simpleQty, setSimpleQty] = useState(1)
+  const [simpleQty, setSimpleQty] = useState<number | string>('')
 
   function addColor() {
     const c = colorInput.trim()
@@ -1754,7 +1825,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       sizeGroups: f.sizeGroups.map((group, groupIdx) => {
         if (groupIdx !== idx) return group
         if (key === 'sku') return { ...group, sku: value }
-        return { ...group, [key]: parseInt(value, 10) || 0 }
+        return { ...group, [key]: value }
       }),
     }))
   }
@@ -1872,8 +1943,8 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     if (isShoes) {
       if (form.sizeGroups.length === 0) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
       if (form.sizeGroups.some(group => !group.sku.trim())) { setSaveMessage({ type: 'error', text: copy.skuRequired }); return }
-      if (form.sizeGroups.some(group => group.pcsPerCrate <= 0)) { setSaveMessage({ type: 'error', text: copy.piecesPerCrateRequired }); return }
-      if (form.sizeGroups.some(group => group.crateQty <= 0)) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
+      if (form.sizeGroups.some(group => toInteger(group.pcsPerCrate) <= 0)) { setSaveMessage({ type: 'error', text: copy.piecesPerCrateRequired }); return }
+      if (form.sizeGroups.some(group => toInteger(group.crateQty) <= 0)) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
     }
     setSaving(true)
     setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج...' : 'Creating product...' })
@@ -1891,24 +1962,24 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       }
       if (isShoes) {
         reqBody.size_groups = form.sizeGroups.map(group => ({
-          from: group.from,
-          to: group.to,
-          pcs_per_crate: group.pcsPerCrate,
-          crate_quantity: group.crateQty,
+          from: String(group.from || '').trim(),
+          to: String(group.to || '').trim(),
+          pcs_per_crate: toInteger(group.pcsPerCrate),
+          crate_quantity: toInteger(group.crateQty),
           sku: group.sku.trim(),
         }))
       }
       if (isClothes) {
-        const activeSizes = Object.entries(clothesSizes).filter(([, qty]) => qty > 0)
+        const activeSizes = Object.entries(clothesSizes).filter(([, qty]) => toInteger(qty) > 0)
         reqBody.size_groups = activeSizes.map(([size, qty]) => ({
-          from: size, to: size, pcs_per_crate: 1, crate_quantity: qty, sku: form.sizeGroups[0]?.sku?.trim() || '',
+          from: size, to: size, pcs_per_crate: 1, crate_quantity: toInteger(qty), sku: form.sizeGroups[0]?.sku?.trim() || '',
         }))
       }
       if (isElectronics) {
         reqBody.title = form.title || undefined
         reqBody.description = form.description || undefined
         reqBody.size_groups = [{
-          from: 'default', to: 'default', pcs_per_crate: 1, crate_quantity: simpleQty, sku: form.sizeGroups[0]?.sku?.trim() || '',
+          from: 'default', to: 'default', pcs_per_crate: 1, crate_quantity: toInteger(simpleQty), sku: form.sizeGroups[0]?.sku?.trim() || '',
         }]
       }
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, reqBody)
@@ -2064,7 +2135,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               </div>
               <div>
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Quantity</label>
-                <input type="number" value={simpleQty} onChange={e => setSimpleQty(parseInt(e.target.value) || 1)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" min="1" />
+                <input type="number" value={simpleQty} onChange={e => setSimpleQty(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="1" min="1" />
               </div>
             </div>
           </div>
@@ -2139,20 +2210,27 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   <div key={size} className="flex flex-col items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => setClothesSizes(prev => ({ ...prev, [size]: (prev[size] || 0) > 0 ? 0 : 1 }))}
+                      onClick={() => setClothesSizes(prev => {
+                        const isActive = Object.prototype.hasOwnProperty.call(prev, size) && prev[size] !== 0
+                        if (!isActive) return { ...prev, [size]: '' }
+                        const next = { ...prev }
+                        delete next[size]
+                        return next
+                      })}
                       className={`px-3 py-2 rounded-xl text-xs font-black uppercase border-2 transition-all ${
-                        (clothesSizes[size] || 0) > 0
+                        Object.prototype.hasOwnProperty.call(clothesSizes, size) && clothesSizes[size] !== 0
                           ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-200'
                           : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-blue-300'
                       }`}>
                       {size}
                     </button>
-                    {(clothesSizes[size] || 0) > 0 && (
+                    {Object.prototype.hasOwnProperty.call(clothesSizes, size) && clothesSizes[size] !== 0 && (
                       <input
                         type="number"
-                        value={clothesSizes[size] || 1}
-                        onChange={e => setClothesSizes(prev => ({ ...prev, [size]: parseInt(e.target.value) || 1 }))}
+                        value={clothesSizes[size] ?? ''}
+                        onChange={e => setClothesSizes(prev => ({ ...prev, [size]: e.target.value }))}
                         className="w-14 text-center bg-blue-50 border border-blue-200 rounded-lg px-1 py-1 text-xs font-bold outline-none"
+                        placeholder="1"
                         min="1"
                       />
                     )}
@@ -2208,16 +2286,16 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
                       <div className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-2">
                         <span className="mb-1 text-[9px] font-bold uppercase text-slate-400">{copy.from}</span>
-                        <input type="number" value={group.from}
-                          onChange={e => updateSizeGroup(idx, 'from', e.target.value)}
-                          className="w-full bg-transparent text-sm font-bold outline-none" />
+                      <input type="number" value={group.from}
+                        onChange={e => updateSizeGroup(idx, 'from', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none" placeholder="36" />
                       </div>
                       <div className="h-px w-5 bg-slate-300" />
                       <div className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-2">
                         <span className="mb-1 text-[9px] font-bold uppercase text-slate-400">{copy.to}</span>
-                        <input type="number" value={group.to}
-                          onChange={e => updateSizeGroup(idx, 'to', e.target.value)}
-                          className="w-full bg-transparent text-sm font-bold outline-none" />
+                      <input type="number" value={group.to}
+                        onChange={e => updateSizeGroup(idx, 'to', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none" placeholder="40" />
                       </div>
                     </div>
                   </div>
@@ -2226,13 +2304,13 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.piecesPerCrate}</span>
                       <input type="number" value={group.pcsPerCrate}
                         onChange={e => updateSizeGroup(idx, 'pcsPerCrate', e.target.value)}
-                        className="font-bold text-sm outline-none w-full" />
+                        className="font-bold text-sm outline-none w-full" placeholder="24" />
                     </div>
                     <div className="bg-blue-600 p-2 rounded-xl flex flex-col border border-blue-700">
                       <span className="text-[9px] text-blue-100 font-bold uppercase mb-1">{copy.qty}</span>
                       <input type="number" value={group.crateQty}
                         onChange={e => updateSizeGroup(idx, 'crateQty', e.target.value)}
-                        className="font-bold text-sm outline-none w-full text-white bg-transparent" />
+                        className="font-bold text-sm outline-none w-full text-white bg-transparent placeholder:text-blue-100/80" placeholder="10" />
                     </div>
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.sku}</span>
@@ -3464,9 +3542,9 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
   )
 }
 
-function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor: any; copy: AppCopy; lang: Lang; onCreateOrder?: () => void; onAddProduct?: () => void }) {
-  const [orders, setOrders] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder, onAddProduct }: { vendor: any; products: any[]; initialOrders: any[]; copy: AppCopy; lang: Lang; onCreateOrder?: () => void; onAddProduct?: () => void }) {
+  const [orders, setOrders] = useState<any[]>(initialOrders || [])
+  const [loading, setLoading] = useState(!(initialOrders || []).length)
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<'unpaid'|'newest'|'oldest'>('unpaid')
   const [customerFilter, setCustomerFilter] = useState('')
@@ -3494,8 +3572,40 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
     fulfilled: copy.fulfilledStatus,
   }
 
+  const productImageBySku = useMemo(() => {
+    const map = new Map<string, string>()
+    products.forEach((product: any) => {
+      const image = getProductImageSrc(product)
+      if (!image) return
+      ;(product.variants || []).forEach((variant: any) => {
+        const sku = String(variant.sku || '').trim()
+        if (sku && !map.has(sku)) map.set(sku, image)
+        if (variant.id && !map.has(String(variant.id))) map.set(String(variant.id), image)
+      })
+    })
+    return map
+  }, [products])
+
+  function getOrderImage(order: any) {
+    const first = (order.line_items || [])[0] || {}
+    const direct = first.image || first.image_url || first.product_image || first.variant_image
+    if (direct) return direct
+    const sku = String(first.sku || '').trim()
+    if (sku && productImageBySku.get(sku)) return productImageBySku.get(sku) || ''
+    const variantId = String(first.variant_id || '').trim()
+    return variantId ? (productImageBySku.get(variantId) || '') : ''
+  }
+
+  function getOrderSkuSummary(order: any) {
+    return (order.line_items || []).slice(0, 3).map((li: any) => {
+      const sku = getDisplaySku(li.sku)
+      const size = getDisplaySize(li.variant_title)
+      return size && size !== '-' ? `${sku} ${size}` : sku
+    })
+  }
+
   async function fetchOrders() {
-    setLoading(true)
+    if (!orders.length) setLoading(true)
     try {
       const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/orders`)
       setOrders(res?.data?.all_orders || [])
@@ -3503,6 +3613,12 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
     finally { setLoading(false) }
   }
   useEffect(() => { fetchOrders() }, [vendor.id])
+  useEffect(() => {
+    if (initialOrders?.length) {
+      setOrders(initialOrders)
+      setLoading(false)
+    }
+  }, [initialOrders])
 
   // Unique customer names for filter
   const customers = useMemo(() => {
@@ -3518,7 +3634,11 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
       list = list.filter((o: any) =>
         (o.name || '').toLowerCase().includes(q) ||
         (o.customer_name || '').toLowerCase().includes(q) ||
-        (o.line_items || []).some((li: any) => (li.title || '').toLowerCase().includes(q))
+        (o.line_items || []).some((li: any) =>
+          (li.title || '').toLowerCase().includes(q) ||
+          (li.sku || '').toLowerCase().includes(q) ||
+          (li.variant_title || '').toLowerCase().includes(q)
+        )
       )
     }
     if (customerFilter) {
@@ -3727,12 +3847,56 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
             const remaining = total - (order.amount_paid || 0)
             const orderCancelled = Boolean(order.is_cancelled || order.cancelled_at)
             const workflowStatus = orderCancelled ? 'cancelled' : (order.order_status || 'new')
+            const imageSrc = getOrderImage(order)
+            const skuSummary = getOrderSkuSummary(order)
             return (
-              <div key={order.id} className={`bg-white rounded-2xl border overflow-hidden hover:shadow-md transition-shadow ${orderCancelled ? 'border-slate-300 opacity-80' : 'border-slate-200'}`}>
-                {/* Order Header */}
+              <div key={order.id} className={`overflow-hidden rounded-[24px] border bg-white shadow-sm transition-all hover:shadow-md ${orderCancelled ? 'border-slate-300 opacity-80' : isExpanded ? 'border-blue-200 shadow-blue-100/60' : 'border-slate-200'}`}>
                 <button onClick={() => setExpandedOrder(isExpanded ? null : String(order.id))}
-                  className="w-full p-4 flex items-center gap-3 text-left">
-                  <div className="flex-1 min-w-0">
+                  className="w-full text-left">
+                  <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-100">
+                    {imageSrc ? (
+                      <img src={imageSrc} alt={order.name || copy.ordersTitle} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-slate-300">
+                        <ClipboardList size={42} />
+                      </div>
+                    )}
+                    <div className="absolute right-3 top-3 rounded-full bg-white/90 p-2 shadow-sm">
+                      <ChevronRight size={18} className={`text-slate-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/75 to-transparent p-4">
+                      <div className="flex items-end justify-between gap-3">
+                        <div className="min-w-0 text-white">
+                          <p className="truncate text-xl font-black leading-tight">{order.customer_name || copy.customer}</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {skuSummary.map((label: string, i: number) => (
+                              <span key={`${order.id}-${label}-${i}`} className="rounded-full bg-white/90 px-2 py-1 text-[11px] font-black text-slate-900">
+                                {label}
+                              </span>
+                            ))}
+                            {Number(order.units || 0) > 0 && (
+                              <span className="rounded-full bg-blue-600 px-2 py-1 text-[11px] font-black text-white">
+                                {order.units} {copy.itemsLabel}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className={`${isArabic ? 'text-left' : 'text-right'} rounded-2xl bg-white/95 px-3 py-2 text-slate-950 shadow-sm`}>
+                          <p className="text-xl font-black leading-tight">{formatDh(total, locale)}</p>
+                          {order.payment_status === 'partially_paid' && (
+                            <p className="text-[10px] font-black text-amber-600">{copy.remaining}: {formatDh(remaining, locale)}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-black text-blue-700">{order.name}</span>
+                        {orderStatusBadge(orderCancelled ? 'cancelled' : order.payment_status)}
+                        {!orderCancelled && workflowStatusBadge(workflowStatus)}
+                        <span className="rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-bold text-white/85">{new Date(order.created_at).toLocaleDateString(locale)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="hidden">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-sm text-blue-600">{order.name}</span>
                       {orderStatusBadge(orderCancelled ? 'cancelled' : order.payment_status)}
@@ -3745,13 +3909,13 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
                       {order.customer_name} · {order.units} items · {new Date(order.created_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <div className="text-right flex-shrink-0">
+                  <div className="hidden">
                     <p className="font-bold text-sm">{formatDh(total, locale)}</p>
                     {order.payment_status === 'partially_paid' && (
                       <p className="text-[10px] text-amber-600 font-medium">{copy.remaining}: {formatDh(remaining, locale)}</p>
                     )}
                   </div>
-                  <ChevronRight size={16} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                  <ChevronRight size={16} className={`hidden text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                 </button>
 
                 {/* Expanded Content */}
