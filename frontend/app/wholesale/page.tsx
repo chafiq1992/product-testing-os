@@ -76,6 +76,25 @@ function getDisplaySku(value: string | null | undefined) {
   return raw || '-'
 }
 
+function getLocalizedProductTitle(product: any, lang: Lang, fallback = '') {
+  const title = lang === 'ar'
+    ? (product?.translated_title || product?.title)
+    : (product?.title || product?.translated_title)
+  return String(title || fallback || '').trim()
+}
+
+function getLocalizedVariantTitle(variant: any, lang: Lang) {
+  const translatedOption = variant?.translated_option1 || variant?.translated_option2 || variant?.translated_option3
+  const title = lang === 'ar'
+    ? (variant?.translated_title || translatedOption || variant?.title)
+    : (variant?.title || variant?.translated_title || translatedOption)
+  return getDisplaySize(title)
+}
+
+function getProductImageSrc(product: any) {
+  return product?.images?.[0]?.src || product?.image?.src || ''
+}
+
 function createDefaultWholesaleAddress(): WholesaleAddressForm {
   return { address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' }
 }
@@ -127,7 +146,7 @@ const WHOLESALE_COPY = {
     unitsSold: 'Units Sold',
     unitsSoldSub: 'Total items ordered',
     inventoryTitle: 'Live Inventory',
-    inventorySub: 'Products assigned to you in your Shopify store.',
+    inventorySub: '',
     searchProducts: 'Search products...',
     allSegments: 'All Segments',
     noProducts: 'No products found.',
@@ -171,7 +190,7 @@ const WHOLESALE_COPY = {
     unitsSold: 'الوحدات المباعة',
     unitsSoldSub: 'مجموع القطع المطلوبة',
     inventoryTitle: 'الستوك المباشر',
-    inventorySub: 'المنتوجات الموجودة فـ Shopify والمرتبطة بيك.',
+    inventorySub: '',
     searchProducts: 'قلّب على منتوج...',
     allSegments: 'جميع الفئات',
     noProducts: 'ما كاين حتى منتوج.',
@@ -219,7 +238,7 @@ const WHOLESALE_TEXT = {
     unitsSold: 'Units Sold',
     unitsSoldSub: 'Total items ordered',
     inventoryTitle: 'Live Inventory',
-    inventorySub: 'Products assigned to you in your Shopify store.',
+    inventorySub: '',
     searchProducts: 'Search products...',
     allSegments: 'All Segments',
     noProducts: 'No products found.',
@@ -286,7 +305,7 @@ const WHOLESALE_TEXT = {
     unitPriceNote: 'The sale price is the unit price. Each variant price is calculated automatically from the pieces per crate.',
     stockVariantNote: 'Each stock variant uses its own SKU, crate count, and pieces per crate.',
     productsTaggedAs: 'Products will be tagged as',
-    vendorFieldNote: 'This name will appear as the vendor field on Shopify',
+    vendorFieldNote: '',
     createProductCta: 'Create Product',
     creatingProduct: 'Creating Product...',
     uploadImageRequired: 'Please upload a product image.',
@@ -423,7 +442,7 @@ const WHOLESALE_TEXT = {
     unitsSold: 'الوحدات المباعة',
     unitsSoldSub: 'إجمالي القطع المطلوبة',
     inventoryTitle: 'المخزون المباشر',
-    inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بك.',
+    inventorySub: '',
     searchProducts: 'ابحث عن المنتجات...',
     allSegments: 'جميع الفئات',
     noProducts: 'لم يتم العثور على منتجات.',
@@ -485,7 +504,7 @@ const WHOLESALE_TEXT = {
     qty: 'الكمية',
     stockVariantNote: 'يستخدم كل تنويع من المخزون رمز SKU وكمية خاصين به.',
     productsTaggedAs: 'سيتم وسم المنتجات باسم',
-    vendorFieldNote: 'سيظهر هذا الاسم كحقل المورّد في Shopify',
+    vendorFieldNote: '',
     createProductCta: 'إنشاء المنتج',
     creatingProduct: 'جارٍ إنشاء المنتج...',
     uploadImageRequired: 'يرجى رفع صورة للمنتج.',
@@ -614,7 +633,7 @@ const ARABIC_TEXT_OVERRIDES = {
   unitsSold: 'الوحدات المباعة',
   unitsSoldSub: 'إجمالي القطع المطلوبة',
   inventoryTitle: 'المخزون المباشر',
-  inventorySub: 'المنتجات المسندة إليك في متجر Shopify الخاص بك.',
+  inventorySub: '',
   searchProducts: 'ابحث عن المنتجات...',
   allSegments: 'جميع الفئات',
   noProducts: 'لم يتم العثور على منتجات.',
@@ -680,7 +699,7 @@ const ARABIC_TEXT_OVERRIDES = {
   unitPriceNote: 'سعر البيع الذي تدخله هو سعر الوحدة. يتم احتساب سعر كل تنويع تلقائيًا بحسب عدد القطع في الصندوق.',
   stockVariantNote: 'لكل تنويع رمز SKU مستقل، وعدد قطع في الصندوق، وعدد صناديق خاص به.',
   productsTaggedAs: 'سيتم وسم المنتجات باسم',
-  vendorFieldNote: 'سيظهر هذا الاسم كحقل المورّد في Shopify',
+  vendorFieldNote: '',
   createProductCta: 'إنشاء المنتج',
   creatingProduct: 'جارٍ إنشاء المنتج...',
   uploadImageRequired: 'يرجى رفع صورة للمنتج.',
@@ -1359,7 +1378,7 @@ function OverviewTab({ products, loading, orderStats, copy, lang }: { products: 
                   )}
                 </div>
                 <div className="overflow-hidden">
-                  <p className="text-xs font-bold truncate">{p.title}</p>
+                  <p className="text-xs font-bold truncate">{getLocalizedProductTitle(p, lang, copy.untitled)}</p>
                   <p className="text-[9px] text-slate-500">{formatDh(p.variants?.[0]?.price || '0.00', locale)}</p>
                 </div>
               </div>
@@ -1400,12 +1419,16 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
 
   const filtered = useMemo(() => {
     return products.filter(p => {
-      const matchSearch = !search || (p.title || '').toLowerCase().includes(search.toLowerCase())
+      const q = search.toLowerCase()
+      const productTitle = getLocalizedProductTitle(p, lang, p.title || copy.untitled).toLowerCase()
+      const matchSearch = !search || productTitle.includes(q) || (p.variants || []).some((v: any) =>
+        getDisplaySku(v.sku).toLowerCase().includes(q) || getLocalizedVariantTitle(v, lang).toLowerCase().includes(q)
+      )
       if (segFilter === 'All') return matchSearch
       const tags = typeof p.tags === 'string' ? p.tags : ''
       return matchSearch && tags.includes(`segment:${segFilter}`)
     })
-  }, [products, search, segFilter])
+  }, [products, search, segFilter, lang, copy.untitled])
 
   function openStockModal(product: any, variant: any) {
     setStockModal({ product, variant })
@@ -1467,7 +1490,6 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
         <div>
           <h2 className="text-2xl font-bold">{copy.inventoryTitle}</h2>
-          <p className="text-slate-500 text-sm">{copy.inventorySub}</p>
         </div>
         <div className="flex gap-2">
           {onAddProduct && (
@@ -1500,8 +1522,8 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
         </select>
       </div>
 
-      {/* Inventory Cards - Compact, no horizontal scroll */}
-      <div className="space-y-2">
+      {/* Inventory Cards */}
+      <div className="space-y-4">
         {loading && (
           <div className="py-12 text-center">
             <Loader2 className="animate-spin text-blue-500 mx-auto mb-2" size={24} />
@@ -1514,50 +1536,57 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
           const variantCount = variants.length
           const productKey = String(p.id)
           const isExpanded = expandedProductId === productKey
+          const productTitle = getLocalizedProductTitle(p, lang, copy.untitled)
+          const imageSrc = getProductImageSrc(p)
           return (
-            <div key={p.id} className="rounded-2xl">
+            <div key={p.id} className={`overflow-hidden rounded-[24px] border bg-white shadow-sm transition-all ${isExpanded ? 'border-blue-200 shadow-blue-100/60' : 'border-slate-200'}`}>
               <button
                 type="button"
                 onClick={() => setExpandedProductId(isExpanded ? null : productKey)}
-                className={`w-full rounded-2xl border bg-white p-4 text-left transition-all hover:border-blue-200 hover:shadow-sm ${isExpanded ? 'border-blue-200 shadow-sm' : 'border-slate-200'}`}
+                className="w-full text-left transition-all hover:bg-slate-50/50"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-base font-black text-slate-900">{p.title || copy.untitled}</p>
-                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      {variants.slice(0, isExpanded ? variants.length : 4).map((v: any) => (
-                        <div key={v.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-black text-slate-900">{getDisplaySku(v.sku)}</p>
-                              <p className="truncate text-xs font-bold text-slate-500">{getDisplaySize(v.title)}</p>
-                            </div>
-                            <p className="text-2xl font-black text-blue-600">{getVariantAvailable(v)}</p>
-                          </div>
-                        </div>
-                      ))}
+                <div className="relative aspect-[16/9] w-full overflow-hidden bg-slate-100">
+                  {imageSrc ? (
+                    <img src={imageSrc} alt={productTitle} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-slate-300">
+                      <Package size={42} />
                     </div>
-                    {!isExpanded && variantCount > 4 && (
-                      <p className="mt-2 text-xs font-bold text-slate-400">+{variantCount - 4} {inventoryLabels.variants}</p>
-                    )}
+                  )}
+                  <div className="absolute right-3 top-3 rounded-full bg-white/90 p-2 shadow-sm">
+                    <ChevronRight size={18} className={`text-slate-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                   </div>
-                  <div className={`${isArabic ? 'text-left' : 'text-right'} flex-shrink-0`}>
-                    <p className="text-3xl font-black text-slate-950">{qty}</p>
-                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{inventoryLabels.available}</p>
-                    <ChevronRight size={18} className={`mt-2 inline-block text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                  <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 bg-gradient-to-t from-slate-950/70 to-transparent p-4">
+                    <div className="min-w-0 text-white">
+                      <p className="truncate text-lg font-black leading-tight">{productTitle}</p>
+                      <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">
+                        {variants.slice(0, 6).map((v: any) => (
+                          <span key={v.id} className="text-[11px] font-black text-white/85">
+                            {getDisplaySku(v.sku)}={getVariantAvailable(v)}
+                          </span>
+                        ))}
+                        {variantCount > 6 && (
+                          <span className="text-[11px] font-black text-white/70">+{variantCount - 6}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className={`${isArabic ? 'text-left' : 'text-right'} rounded-2xl bg-white/95 px-3 py-2 text-slate-950 shadow-sm`}>
+                      <p className="text-3xl font-black leading-none">{qty}</p>
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{inventoryLabels.available}</p>
+                    </div>
                   </div>
                 </div>
               </button>
               {isExpanded && variants.length > 0 && (
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2 border-t border-slate-100 bg-slate-50/70 p-3 sm:grid-cols-2">
                   {variants.map((v: any) => {
                     const available = getVariantAvailable(v)
                     const onHand = getVariantOnHand(v)
                     return (
-                      <div key={v.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <div key={v.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                         <div className="min-w-0">
                           <p className="truncate text-lg font-black text-slate-900">{getDisplaySku(v.sku)}</p>
-                          <p className="truncate text-sm font-bold text-slate-500">{getDisplaySize(v.title)}</p>
+                          <p className="truncate text-sm font-bold text-slate-500">{getLocalizedVariantTitle(v, lang)}</p>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className={`grid grid-cols-2 gap-2 ${isArabic ? 'text-left' : 'text-right'}`}>
@@ -1597,7 +1626,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
               <div className="min-w-0">
                 <p className="text-lg font-bold text-slate-900">{inventoryLabels.edit}</p>
                 <p className="mt-1 truncate text-sm font-bold text-slate-600">{getDisplaySku(stockModal.variant.sku)}</p>
-                <p className="text-xs text-slate-400">{getDisplaySize(stockModal.variant.title)}</p>
+                <p className="text-xs text-slate-400">{getLocalizedVariantTitle(stockModal.variant, lang)}</p>
               </div>
               <button onClick={() => setStockModal(null)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
             </div>
@@ -1895,7 +1924,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     <div className="max-w-4xl mx-auto space-y-6 pb-24 animate-in">
       <div>
         <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">{copy.addProductTitle}</h2>
-        <p className="text-slate-500 text-sm">{copy.addProductSub}</p>
       </div>
 
       {/* ── CAMERA / IMAGE CAPTURE SECTION ── */}
@@ -2249,7 +2277,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             <div>
               <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Group ID</label>
               <input type="text" value={form.variantGroupId} onChange={e => setForm({...form, variantGroupId: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="e.g. SKU-0828-2" />
-              <p className="text-[10px] text-slate-400 mt-2">This ID will be set as the SKU on all variants in Shopify</p>
             </div>
           </section>
 
@@ -2301,8 +2328,8 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
       (p.variants || []).forEach((v: any) => {
         arr.push({
           variant_id: v.id,
-          title: p.title,
-          variant_title: v.title,
+          title: getLocalizedProductTitle(p, lang, p.title),
+          variant_title: getLocalizedVariantTitle(v, lang),
           sku: v.sku || '',
           price: v.price || '0.00',
           inventory: getVariantAvailable(v),
@@ -2311,13 +2338,13 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
       })
     })
     return arr
-  }, [products])
+  }, [products, lang])
 
   const filtered = useMemo(() => {
     if (!search) return allVariants.slice(0, 20)
     const q = search.toLowerCase()
     return allVariants.filter(v =>
-      v.title.toLowerCase().includes(q) || v.sku.toLowerCase().includes(q) || v.variant_title.toLowerCase().includes(q)
+      String(v.title || '').toLowerCase().includes(q) || String(v.sku || '').toLowerCase().includes(q) || String(v.variant_title || '').toLowerCase().includes(q)
     ).slice(0, 20)
   }, [allVariants, search])
 
@@ -2608,7 +2635,6 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
           <div className="p-2 bg-emerald-100 rounded-xl"><ShoppingCart size={22} className="text-emerald-600" /></div>
           {copy.createOrderTitle}
         </h2>
-        <p className="text-slate-500 text-sm mt-1">{copy.createOrderSub}</p>
       </div>
 
       {/* Product Search & Selection */}
@@ -2760,8 +2786,8 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
       ;(p.variants || []).forEach((v: any) => {
         arr.push({
           variant_id: v.id,
-          title: p.title,
-          variant_title: v.title,
+          title: getLocalizedProductTitle(p, lang, p.title),
+          variant_title: getLocalizedVariantTitle(v, lang),
           sku: v.sku || '',
           price: v.price || '0.00',
           inventory: getVariantAvailable(v),
@@ -2770,13 +2796,13 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
       })
     })
     return arr
-  }, [products])
+  }, [products, lang])
 
   const filtered = useMemo(() => {
     if (!search) return allVariants.slice(0, 20)
     const q = search.toLowerCase()
     return allVariants.filter(v =>
-      v.title.toLowerCase().includes(q) || v.sku.toLowerCase().includes(q) || v.variant_title.toLowerCase().includes(q)
+      String(v.title || '').toLowerCase().includes(q) || String(v.sku || '').toLowerCase().includes(q) || String(v.variant_title || '').toLowerCase().includes(q)
     ).slice(0, 20)
   }, [allVariants, search])
 
@@ -3309,7 +3335,6 @@ function CreateOrderTabSimpleInvoice({ vendor, products, onDone, copy, lang }: {
           <div className="p-2 bg-emerald-100 rounded-xl"><ShoppingCart size={22} className="text-emerald-600" /></div>
           {copy.createOrderTitle}
         </h2>
-        <p className="text-slate-500 text-sm mt-1">{copy.createOrderSub}</p>
       </div>
 
       <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
