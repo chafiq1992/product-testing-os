@@ -65,6 +65,17 @@ function getVariantCratePrice(unitSalePrice: number, group: Pick<StockVariantFor
   return unitSalePrice * Math.max(0, group.pcsPerCrate || 0)
 }
 
+function getDisplaySize(value: string | null | undefined) {
+  const raw = String(value || '').trim()
+  if (!raw || raw.toLowerCase() === 'default title') return '-'
+  return raw.split(' / ')[0]?.trim() || raw
+}
+
+function getDisplaySku(value: string | null | undefined) {
+  const raw = String(value || '').trim()
+  return raw || '-'
+}
+
 function createDefaultWholesaleAddress(): WholesaleAddressForm {
   return { address1: 'NA', city: 'Casablanca', province: 'Casablanca-Settat', zip: '20000', country: 'MA' }
 }
@@ -535,9 +546,9 @@ const WHOLESALE_TEXT = {
     orderWorkflowStatus: 'حالة الطلب',
     newStatus: 'جديد',
     processingStatus: 'قيد المعالجة',
-    fulfilledStatus: 'تم التجهيز',
+    fulfilledStatus: 'تم الارسال',
     markProcessing: 'قيد المعالجة',
-    markFulfilled: 'تم التجهيز',
+    markFulfilled: 'تم الارسال',
     orderStatusUpdated: 'تم تحديث حالة الطلب',
     orderStatusUpdateFailed: 'تعذر تحديث حالة الطلب',
     remaining: 'المتبقي',
@@ -738,9 +749,9 @@ const ARABIC_TEXT_OVERRIDES = {
   orderWorkflowStatus: 'حالة الطلب',
   newStatus: 'جديد',
   processingStatus: 'قيد المعالجة',
-  fulfilledStatus: 'تم التجهيز',
+    fulfilledStatus: 'تم الارسال',
   markProcessing: 'قيد المعالجة',
-  markFulfilled: 'تم التجهيز',
+    markFulfilled: 'تم الارسال',
   orderStatusUpdated: 'تم تحديث حالة الطلب',
   orderStatusUpdateFailed: 'تعذر تحديث حالة الطلب',
   remaining: 'المتبقي',
@@ -1372,11 +1383,12 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
   const [stockMessage, setStockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [imageModal, setImageModal] = useState<{ src: string; title: string } | null>(null)
   const [imageSharing, setImageSharing] = useState(false)
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null)
   const locale = getLocale(lang)
   const isArabic = lang === 'ar'
   const inventoryLabels = {
     available: isArabic ? 'المتاح' : 'Available',
-    onHand: isArabic ? 'على اليد' : 'On hand',
+    onHand: isArabic ? 'في اليد' : 'On hand',
     edit: isArabic ? 'تعديل المخزون' : 'Edit stock',
     save: isArabic ? 'حفظ المخزون' : 'Save stock',
     saved: isArabic ? 'تم تحديث المخزون' : 'Inventory updated',
@@ -1497,57 +1509,68 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
           </div>
         )}
         {!loading && filtered.map((p: any) => {
-          const qty = (p.variants || []).reduce((s: number, v: any) => s + getVariantAvailable(v), 0)
-          const price = p.variants?.[0]?.price || '0.00'
-          const variantCount = (p.variants || []).length
+          const variants = p.variants || []
+          const qty = variants.reduce((s: number, v: any) => s + getVariantAvailable(v), 0)
+          const variantCount = variants.length
+          const productKey = String(p.id)
+          const isExpanded = expandedProductId === productKey
           return (
-            <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-3 hover:border-blue-200 transition-all">
-              <div className="flex items-center gap-3">
+            <div key={p.id} className="rounded-2xl">
               <button
                 type="button"
-                onClick={() => p.images?.[0]?.src && setImageModal({ src: p.images[0].src, title: p.title || copy.untitled })}
-                disabled={!p.images?.[0]?.src}
-                className="w-11 h-11 rounded-lg bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0 flex items-center justify-center transition hover:ring-2 hover:ring-blue-300 disabled:cursor-default"
-                title={inventoryLabels.preview}
+                onClick={() => setExpandedProductId(isExpanded ? null : productKey)}
+                className={`w-full rounded-2xl border bg-white p-4 text-left transition-all hover:border-blue-200 hover:shadow-sm ${isExpanded ? 'border-blue-200 shadow-sm' : 'border-slate-200'}`}
               >
-                {p.images?.[0]?.src ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={p.images[0].src} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <ImageIcon size={16} className="text-slate-300" />
-                )}
-              </button>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-bold text-slate-900 truncate">{p.title || copy.untitled}</p>
-                <p className="text-[9px] text-slate-400">{variantCount} {inventoryLabels.variants}</p>
-              </div>
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${p.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-slate-100 text-slate-500'}`}>
-                  {p.status === 'active' ? copy.activeStatus : copy.inactiveStatus}
-                </span>
-                <div className="text-right">
-                  <p className="text-xs font-black text-slate-900">{qty} <span className="text-[9px] text-slate-400 font-bold">{inventoryLabels.available}</span></p>
-                  <p className="text-[10px] font-bold text-slate-500">{formatDh(price, locale)}</p>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-base font-black text-slate-900">{p.title || copy.untitled}</p>
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {variants.slice(0, isExpanded ? variants.length : 4).map((v: any) => (
+                        <div key={v.id} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-900">{getDisplaySku(v.sku)}</p>
+                              <p className="truncate text-xs font-bold text-slate-500">{getDisplaySize(v.title)}</p>
+                            </div>
+                            <p className="text-2xl font-black text-blue-600">{getVariantAvailable(v)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {!isExpanded && variantCount > 4 && (
+                      <p className="mt-2 text-xs font-bold text-slate-400">+{variantCount - 4} {inventoryLabels.variants}</p>
+                    )}
+                  </div>
+                  <div className={`${isArabic ? 'text-left' : 'text-right'} flex-shrink-0`}>
+                    <p className="text-3xl font-black text-slate-950">{qty}</p>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{inventoryLabels.available}</p>
+                    <ChevronRight size={18} className={`mt-2 inline-block text-slate-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                  </div>
                 </div>
-              </div>
-              </div>
-              {(p.variants || []).length > 0 && (
-                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {(p.variants || []).map((v: any) => {
+              </button>
+              {isExpanded && variants.length > 0 && (
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {variants.map((v: any) => {
                     const available = getVariantAvailable(v)
                     const onHand = getVariantOnHand(v)
                     return (
-                      <div key={v.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                      <div key={v.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
                         <div className="min-w-0">
-                          <p className="truncate text-[11px] font-bold text-slate-700">{v.title || 'Default'}</p>
-                          <p className="truncate text-[10px] text-slate-400">{v.sku || '-'}</p>
+                          <p className="truncate text-lg font-black text-slate-900">{getDisplaySku(v.sku)}</p>
+                          <p className="truncate text-sm font-bold text-slate-500">{getDisplaySize(v.title)}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <div className={`${isArabic ? 'text-left' : 'text-right'}`}>
-                            <p className="text-[10px] font-bold text-emerald-700">{inventoryLabels.available}: {available}</p>
-                            <p className="text-[10px] font-semibold text-slate-500">{inventoryLabels.onHand}: {onHand}</p>
+                          <div className={`grid grid-cols-2 gap-2 ${isArabic ? 'text-left' : 'text-right'}`}>
+                            <div>
+                              <p className="text-[10px] font-black uppercase text-slate-400">{inventoryLabels.onHand}</p>
+                              <p className="text-xl font-black text-slate-900">{onHand}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black uppercase text-emerald-600">{inventoryLabels.available}</p>
+                              <p className="text-xl font-black text-emerald-700">{available}</p>
+                            </div>
                           </div>
-                          <button onClick={() => openStockModal(p, v)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[10px] font-bold text-slate-700 hover:border-blue-300 hover:text-blue-600">
+                          <button onClick={() => openStockModal(p, v)} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-300 hover:text-blue-600">
                             {inventoryLabels.edit}
                           </button>
                         </div>
@@ -1573,8 +1596,8 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-lg font-bold text-slate-900">{inventoryLabels.edit}</p>
-                <p className="mt-1 truncate text-sm text-slate-500">{stockModal.product.title}</p>
-                <p className="text-xs text-slate-400">{stockModal.variant.title} {stockModal.variant.sku ? `· ${stockModal.variant.sku}` : ''}</p>
+                <p className="mt-1 truncate text-sm font-bold text-slate-600">{getDisplaySku(stockModal.variant.sku)}</p>
+                <p className="text-xs text-slate-400">{getDisplaySize(stockModal.variant.title)}</p>
               </div>
               <button onClick={() => setStockModal(null)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X size={18} /></button>
             </div>
@@ -3555,7 +3578,7 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
         ...o,
         order_status: data.order_status || nextStatus,
         order_status_updated_at: data.updated_at || new Date().toISOString(),
-        fulfillment_warning: data.fulfillment_warning || '',
+        fulfillment_warning: '',
       } : o))
       setOrdersMessage({ type: 'success', text: copy.orderStatusUpdated })
     } catch (err: any) {
@@ -3714,19 +3737,13 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
                       {(order.line_items || []).map((li: any, i: number) => (
                         <div key={i} className="flex items-center justify-between bg-white rounded-xl p-3 border border-slate-100">
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold truncate">{li.title}</p>
-                            <p className="text-[11px] text-slate-500">
-                              {li.variant_title && <span>{li.variant_title} · </span>}
-                              {li.sku && <span>{copy.sku}: {li.sku} · </span>}
-                              {copy.qty}: {li.quantity}
-                            </p>
-                            <p className="hidden text-[11px] text-slate-500">
-                              {li.variant_title && <span>{li.variant_title} · </span>}
-                              {li.sku && <span>SKU: {li.sku} · </span>}
-                              Qty: {li.quantity}
-                            </p>
+                            <p className="truncate text-lg font-black text-slate-950">{getDisplaySku(li.sku)}</p>
+                            <p className="truncate text-sm font-bold text-slate-500">{getDisplaySize(li.variant_title)}</p>
                           </div>
-                          <p className="text-sm font-bold text-slate-700 ml-3">{formatDh(parseFloat(li.price) * li.quantity, locale)}</p>
+                          <div className={`${isArabic ? 'text-left' : 'text-right'} ml-3`}>
+                            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{copy.qty}</p>
+                            <p className="text-3xl font-black text-blue-600">{li.quantity}</p>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -3746,9 +3763,6 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
                           <span className="text-[11px] font-semibold text-slate-400">{new Date(order.order_status_updated_at).toLocaleString(locale)}</span>
                         )}
                       </div>
-                      {order.fulfillment_warning && workflowStatus === 'fulfilled' && (
-                        <p className="mt-2 text-[11px] font-semibold text-amber-600">{order.fulfillment_warning}</p>
-                      )}
                     </div>
 
                     {/* Actions */}

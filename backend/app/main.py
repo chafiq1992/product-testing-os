@@ -6674,7 +6674,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "order_status": workflow_status,
                 "order_status_updated_at": status_data.get("updated_at"),
                 "order_status_note": status_data.get("note", ""),
-                "fulfillment_warning": status_data.get("fulfillment_warning", ""),
+                "fulfillment_warning": "",
             })
 
         return {
@@ -6810,7 +6810,7 @@ async def api_wholesale_update_order_status(vendor_id: str, order_id: str, req: 
             "note": (req.note or "").strip(),
             "updated_at": now,
             "fulfilled_on_shopify": fulfilled_on_shopify,
-            "fulfillment_warning": fulfillment_warning or "",
+            "fulfillment_warning": "",
         }
         status_key = f"wholesale_order_status:{vendor_id_norm}:{order_numeric_id}"
         db.set_app_setting(WHOLESALE_STORE, status_key, status_data)
