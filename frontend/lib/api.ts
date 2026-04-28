@@ -1134,6 +1134,7 @@ export type CampaignAnalysisResult = {
 export async function campaignAnalyze(payload: {
   campaign_id?: string
   campaign_ids?: string[]
+  campaign_name?: string
   product_id?: string
   store?: string
   ad_account?: string

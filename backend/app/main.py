@@ -1532,6 +1532,7 @@ _analysis_jobs: Dict[str, Dict[str, Any]] = {}
 class CampaignAnalyzeRequest(BaseModel):
     campaign_id: Optional[str] = None
     campaign_ids: Optional[List[str]] = None  # for group analysis
+    campaign_name: Optional[str] = None
     product_id: Optional[str] = None
     store: Optional[str] = None
     ad_account: Optional[str] = None
@@ -1576,6 +1577,7 @@ def _run_analysis_job(job_id: str, req_data: dict):
         e_date = req_data.get("e_date", "")
         campaign_age_days = req_data.get("campaign_age_days")
         campaign_key = req_data.get("campaign_key", "")
+        campaign_name = req_data.get("campaign_name", "")
 
         # 1) Campaign metrics
         campaign_metrics = req_data.get("metrics") or {}
@@ -1714,9 +1716,17 @@ def _run_analysis_job(job_id: str, req_data: dict):
         try:
             clarity_insights = summarize_clarity_for_campaign(
                 campaign_id=(cids[0] if cids else None),
-                campaign_name=None,
+                campaign_name=campaign_name,
                 landing_urls=_analysis_landing_urls(ad_creatives, product_info),
                 num_days=_clarity_days_for_range(s_date, e_date),
+            )
+            logger.info(
+                "Campaign Analyzer: Clarity summary enabled=%s matched_rows=%s matched_by=%s error=%s urls=%s",
+                clarity_insights.get("enabled"),
+                clarity_insights.get("matched_rows"),
+                clarity_insights.get("matched_by"),
+                clarity_insights.get("error"),
+                len(clarity_insights.get("landing_urls") or []),
             )
         except Exception as clarity_err:
             logger.warning("Failed to summarize Clarity data: %s", clarity_err)
@@ -1796,6 +1806,7 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
             "metrics": req.metrics if isinstance(req.metrics, dict) else None,
             "campaign_age_days": req.campaign_age_days,
             "campaign_key": (req.campaign_key or "").strip(),
+            "campaign_name": (req.campaign_name or "").strip(),
         }
 
         thread = threading.Thread(target=_run_analysis_job, args=(job_id, req_data), daemon=True)
@@ -1813,6 +1824,28 @@ async def api_campaign_analyze_status(job_id: str):
     if not job:
         return {"status": "not_found", "error": "Job not found"}
     return job
+
+
+class ClarityCampaignDebugRequest(BaseModel):
+    campaign_id: Optional[str] = None
+    campaign_name: Optional[str] = None
+    landing_urls: Optional[List[str]] = None
+    num_days: Optional[int] = None
+
+
+@app.post("/api/clarity/campaign_debug")
+async def api_clarity_campaign_debug(req: ClarityCampaignDebugRequest):
+    """Debug Clarity matching without calling OpenAI. Does not expose the token."""
+    try:
+        result = summarize_clarity_for_campaign(
+            campaign_id=(req.campaign_id or "").strip() or None,
+            campaign_name=(req.campaign_name or "").strip() or None,
+            landing_urls=req.landing_urls or [],
+            num_days=req.num_days,
+        )
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {"enabled": False, "error": str(e)}}
 
 
 # -------- Action Task Agent (generate tasks from multiple analyses) --------

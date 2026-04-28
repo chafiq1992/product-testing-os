@@ -1126,6 +1126,7 @@ export default function AdsManagementPage(){
                     const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
                     const res = await campaignAnalyze({
                       campaign_id: cid || undefined,
+                      campaign_name: row.name || undefined,
                       product_id: pidSelf || undefined,
                       metrics: {
                         spend: Number(row.spend||0),
@@ -1753,6 +1754,7 @@ export default function AdsManagementPage(){
                                 const campaignKey = ids[0] || pid
                                 const res = await campaignAnalyze({
                                   campaign_ids: ids,
+                                  campaign_name: d.primary.name || undefined,
                                   product_id: pid||undefined,
                                   metrics: {
                                     spend: Number(m.spend||0),
@@ -2193,6 +2195,7 @@ export default function AdsManagementPage(){
                             }
                             const res = await campaignAnalyze({
                               campaign_id: cid,
+                              campaign_name: c.name || undefined,
                               product_id: prodId,
                               metrics: {
                                 spend: Number(c.spend||0),
