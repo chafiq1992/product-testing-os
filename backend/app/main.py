@@ -5785,6 +5785,7 @@ class WholesaleProductCreate(BaseModel):
     description: Optional[str] = None
     cog_price: Optional[float] = None
     sale_price: Optional[float] = None
+    compare_at_price: Optional[float] = None
     segment: Optional[str] = None
     season: Optional[str] = None
     colors: Optional[List[str]] = None
@@ -5792,6 +5793,7 @@ class WholesaleProductCreate(BaseModel):
     product_type: Optional[str] = None
     size_groups: Optional[List[dict]] = None
     image_url: Optional[str] = None
+    catalog_image_url: Optional[str] = None
     variant_group_id: Optional[str] = None
 
 
@@ -5979,6 +5981,7 @@ def _wholesale_finalize_product_background(
     product_gid: str,
     initial_title: str,
     image_url: str | None,
+    catalog_image_url: str | None,
     title: str | None,
     description: str | None,
     segment: str | None,
@@ -5997,6 +6000,8 @@ def _wholesale_finalize_product_background(
 
         final_title = (title or "").strip() or initial_title
         final_description = (description or "").strip()
+
+        image_urls = [url for url in [image_url, catalog_image_url] if url]
 
         if image_url:
             try:
@@ -6024,9 +6029,12 @@ def _wholesale_finalize_product_background(
             except Exception:
                 pass
 
-        if image_url:
+        if image_urls:
             try:
-                upload_images_to_product(product_gid, [image_url], [final_title], store=WHOLESALE_STORE)
+                alt_texts = [final_title]
+                if len(image_urls) > 1:
+                    alt_texts.append(f"{final_title} catalog image")
+                upload_images_to_product(product_gid, image_urls, alt_texts, store=WHOLESALE_STORE)
             except Exception:
                 pass
 
@@ -6049,6 +6057,7 @@ def _wholesale_configure_product_background(
     product_gid: str,
     initial_title: str,
     image_url: str | None,
+    catalog_image_url: str | None,
     title: str | None,
     description: str | None,
     segment: str | None,
@@ -6081,6 +6090,7 @@ def _wholesale_configure_product_background(
             product_gid,
             initial_title,
             image_url,
+            catalog_image_url,
             title,
             description,
             segment,
@@ -6229,6 +6239,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         # Each group {from, to, qty} becomes a size like "20-25" with its own qty
         variant_specs: list[dict[str, Any]] = []
         base_sale_price = float(req.sale_price or 0)
+        base_compare_at_price = float(req.compare_at_price or 0)
         if req.size_groups:
             for sg in req.size_groups:
                 fr = sg.get("from", 0)
@@ -6236,12 +6247,16 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 pcs_per_crate = int(sg.get("pcs_per_crate") or sg.get("pcs") or 0)
                 crate_quantity = int(sg.get("crate_quantity") or sg.get("qty") or 0)
                 variant_price = round(base_sale_price * pcs_per_crate, 2) if pcs_per_crate > 0 else base_sale_price
-                variant_specs.append({
+                variant_spec = {
                     "size": _wholesale_variant_title(fr, to, pcs_per_crate),
                     "quantity": crate_quantity,
                     "price": variant_price,
                     "sku": str(sg.get("sku") or req.variant_group_id or "").strip(),
-                })
+                    "pcs_per_crate": pcs_per_crate,
+                }
+                if base_compare_at_price > 0:
+                    variant_spec["compare_at_price"] = round(base_compare_at_price * pcs_per_crate, 2) if pcs_per_crate > 0 else base_compare_at_price
+                variant_specs.append(variant_spec)
 
         # ── Combine colors into a single value ──
         # e.g., ["black", "green", "blue"] → "black/green/blue"
@@ -6259,7 +6274,18 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                     "price": spec["price"],
                     "quantity": spec["quantity"],
                     "track_quantity": True,
+                    "requires_shipping": True,
                 }
+                if spec.get("compare_at_price"):
+                    v["compare_at_price"] = spec["compare_at_price"]
+                if int(spec.get("pcs_per_crate") or 0) > 0:
+                    v["unit_price_measurement"] = {
+                        "quantityValue": float(spec["pcs_per_crate"]),
+                        "quantityUnit": "ITEM",
+                        "referenceValue": 1,
+                        "referenceUnit": "ITEM",
+                    }
+                    v["show_unit_price"] = True
                 if combined_color:
                     v["color"] = combined_color
                 if spec["sku"]:
@@ -6270,7 +6296,17 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 "color": combined_color,
                 "price": req.sale_price,
                 "track_quantity": True,
+                "requires_shipping": True,
             }
+            if req.compare_at_price:
+                v_color["compare_at_price"] = req.compare_at_price
+            v_color["unit_price_measurement"] = {
+                "quantityValue": 1.0,
+                "quantityUnit": "ITEM",
+                "referenceValue": 1,
+                "referenceUnit": "ITEM",
+            }
+            v_color["show_unit_price"] = True
             if req.variant_group_id:
                 v_color["sku"] = req.variant_group_id.strip()
             explicit_variants.append(v_color)
@@ -6298,6 +6334,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
 
         # ── Set COG price as cost per item on each variant ──
         image_url = (req.image_url or "").strip() if req.image_url else None
+        catalog_image_url = (req.catalog_image_url or "").strip() if req.catalog_image_url else None
         product_gid = ((result or {}).get("product") or {}).get("id") if isinstance(result, dict) else None
         if product_gid:
             background_tasks.add_task(
@@ -6305,6 +6342,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 product_gid,
                 title,
                 image_url,
+                catalog_image_url,
                 req.title,
                 req.description,
                 req.segment,
@@ -6401,6 +6439,11 @@ class WholesaleOrderCreate(BaseModel):
 # ─── Wholesale Create Order ────────────────────────────────────────────
 class WholesaleOrderCancelRequest(BaseModel):
     reason: Optional[str] = "customer"
+
+
+class WholesaleOrderStatusUpdate(BaseModel):
+    order_status: str
+    note: Optional[str] = None
 
 
 @app.post("/api/wholesale/vendors/{vendor_id}/orders")
@@ -6592,6 +6635,13 @@ async def api_wholesale_vendor_orders(vendor_id: str):
             payment_data = db.get_app_setting(WHOLESALE_STORE, payment_key)
             if not isinstance(payment_data, dict):
                 payment_data = {}
+            status_key = f"wholesale_order_status:{vendor_id_norm}:{order_id}"
+            status_data = db.get_app_setting(WHOLESALE_STORE, status_key)
+            if not isinstance(status_data, dict):
+                status_data = {}
+            workflow_status = str(status_data.get("order_status") or "").strip().lower()
+            if not workflow_status:
+                workflow_status = "fulfilled" if str(o.get("fulfillment_status") or "").lower() == "fulfilled" else "new"
 
             all_orders.append({
                 "id": o.get("id"),
@@ -6602,6 +6652,7 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "items_count": len(line_items),
                 "units": order_units,
                 "financial_status": o.get("financial_status"),
+                "fulfillment_status": o.get("fulfillment_status"),
                 "cancelled_at": o.get("cancelled_at"),
                 "cancel_reason": o.get("cancel_reason"),
                 "is_cancelled": is_cancelled,
@@ -6620,6 +6671,10 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "payment_status": payment_data.get("payment_status", "unpaid"),
                 "amount_paid": payment_data.get("amount_paid", 0),
                 "payment_note": payment_data.get("payment_note", ""),
+                "order_status": workflow_status,
+                "order_status_updated_at": status_data.get("updated_at"),
+                "order_status_note": status_data.get("note", ""),
+                "fulfillment_warning": status_data.get("fulfillment_warning", ""),
             })
 
         return {
@@ -6683,6 +6738,97 @@ async def api_wholesale_cancel_order(vendor_id: str, order_id: str, req: Wholesa
                 "cancel_reason": cancelled_order.get("cancel_reason") or reason,
             }
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _wholesale_try_fulfill_order(order_numeric_id: str) -> tuple[bool, str | None]:
+    """Best-effort Shopify fulfillment. Some stores may not grant fulfillment scopes."""
+    try:
+        from app.integrations.shopify_client import _rest_get_store, _rest_post_store
+
+        fulfillment_orders_data = _rest_get_store(WHOLESALE_STORE, f"/orders/{order_numeric_id}/fulfillment_orders.json")
+        fulfillment_orders = (fulfillment_orders_data or {}).get("fulfillment_orders") or []
+        line_items_by_fulfillment_order: list[dict[str, Any]] = []
+        for fo in fulfillment_orders:
+            if str(fo.get("status") or "").lower() in {"closed", "cancelled"}:
+                continue
+            fo_id = fo.get("id")
+            if fo_id:
+                line_items_by_fulfillment_order.append({"fulfillment_order_id": int(fo_id)})
+        if not line_items_by_fulfillment_order:
+            return False, "no_open_fulfillment_orders"
+
+        _rest_post_store(
+            WHOLESALE_STORE,
+            "/fulfillments.json",
+            {
+                "fulfillment": {
+                    "line_items_by_fulfillment_order": line_items_by_fulfillment_order,
+                    "notify_customer": False,
+                }
+            },
+        )
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+@app.patch("/api/wholesale/vendors/{vendor_id}/orders/{order_id}/status")
+async def api_wholesale_update_order_status(vendor_id: str, order_id: str, req: WholesaleOrderStatusUpdate):
+    """Update the vendor-facing wholesale order workflow status."""
+    try:
+        vendor_id_norm = (vendor_id or "").strip().lower()
+        key = _wholesale_vendor_key(vendor_id_norm)
+        vendor = db.get_app_setting(WHOLESALE_STORE, key)
+        if not vendor:
+            return {"error": "Vendor not found"}
+        vendor_name = vendor.get("name", vendor_id_norm)
+
+        from app.integrations.shopify_client import _rest_get_store, _rest_put_store
+
+        order_numeric_id = str(order_id).split("/")[-1]
+        order_data = await run_in_threadpool(_rest_get_store, WHOLESALE_STORE, f"/orders/{order_numeric_id}.json")
+        order = (order_data or {}).get("order") or {}
+        if not order or not _wholesale_order_matches_vendor(order, vendor_name, vendor_id_norm):
+            return {"error": "order_not_found"}
+        if order.get("cancelled_at"):
+            return {"error": "order_cancelled"}
+
+        order_status = (req.order_status or "").strip().lower()
+        if order_status not in {"new", "processing", "fulfilled"}:
+            return {"error": "invalid_status"}
+
+        fulfillment_warning: str | None = None
+        fulfilled_on_shopify = False
+        if order_status == "fulfilled" and str(order.get("fulfillment_status") or "").lower() != "fulfilled":
+            fulfilled_on_shopify, fulfillment_warning = await run_in_threadpool(_wholesale_try_fulfill_order, order_numeric_id)
+
+        now = datetime.utcnow().isoformat() + "Z"
+        status_data = {
+            "order_status": order_status,
+            "note": (req.note or "").strip(),
+            "updated_at": now,
+            "fulfilled_on_shopify": fulfilled_on_shopify,
+            "fulfillment_warning": fulfillment_warning or "",
+        }
+        status_key = f"wholesale_order_status:{vendor_id_norm}:{order_numeric_id}"
+        db.set_app_setting(WHOLESALE_STORE, status_key, status_data)
+
+        try:
+            current_tags = [str(t).strip() for t in str(order.get("tags") or "").split(",") if str(t).strip()]
+            current_tags = [t for t in current_tags if not t.lower().startswith("vendor_status:")]
+            current_tags.append(f"vendor_status:{order_status}")
+            await run_in_threadpool(
+                _rest_put_store,
+                WHOLESALE_STORE,
+                f"/orders/{order_numeric_id}.json",
+                {"order": {"id": int(order_numeric_id), "tags": ", ".join(current_tags)}},
+            )
+        except Exception:
+            pass
+
+        return {"data": status_data}
     except Exception as e:
         return {"error": str(e)}
 

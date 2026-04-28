@@ -2424,6 +2424,49 @@ def _update_variant_price(variant_id: str, price: float, *, store: str | None = 
         pass
 
 
+PRODUCT_VARIANTS_BULK_UPDATE = """
+mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants, allowPartialUpdates: true) {
+    product { id }
+    productVariants { id }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _variant_gid_from_rest(variant: dict) -> str | None:
+    try:
+        gql_id = str((variant or {}).get("admin_graphql_api_id") or "").strip()
+        if gql_id:
+            return gql_id
+        numeric_id = str((variant or {}).get("id") or "").strip()
+        if numeric_id:
+            return f"gid://shopify/ProductVariant/{numeric_id}"
+    except Exception:
+        return None
+    return None
+
+
+def _bulk_update_variant_shopify_fields(
+    product_gid: str,
+    variants: list[dict],
+    *,
+    store: str | None = None,
+) -> dict:
+    """Set GraphQL-only variant fields such as unit price and physical inventory flags."""
+    cleaned = [v for v in (variants or []) if isinstance(v, dict) and v.get("id")]
+    if not cleaned:
+        return {"ok": True, "updated": 0}
+    try:
+        data = _gql_store(store, PRODUCT_VARIANTS_BULK_UPDATE, {"productId": product_gid, "variants": cleaned})
+        payload = (data or {}).get("productVariantsBulkUpdate") or {}
+        errors = payload.get("userErrors") or []
+        return {"ok": not bool(errors), "updated": len(payload.get("productVariants") or []), "errors": errors}
+    except Exception as e:
+        return {"ok": False, "updated": 0, "errors": [str(e)]}
+
+
 def _configure_variants_for_product(
     product_gid: str,
     base_price: float | None,
@@ -2507,6 +2550,13 @@ def _configure_variants_for_product(
             price_val = v.get("price", base_price)
             if price_val is not None:
                 vp["price"] = str(price_val)
+            compare_at_val = v.get("compare_at_price")
+            if compare_at_val is not None:
+                try:
+                    if float(compare_at_val) > 0:
+                        vp["compare_at_price"] = str(compare_at_val)
+                except Exception:
+                    pass
             sku_val = (v.get("sku") or "")
             if isinstance(sku_val, str) and sku_val.strip():
                 vp["sku"] = sku_val.strip()
@@ -2543,6 +2593,7 @@ def _configure_variants_for_product(
                 map_key = f"{ev_size}|{ev_color}"
                 _ev_qty_map[map_key] = ev
             missing_location = False
+            bulk_variant_updates: list[dict] = []
             for idx, cv_data in enumerate(created_variants):
                 try:
                     inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
@@ -2564,6 +2615,30 @@ def _configure_variants_for_product(
                     eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
                     _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
                     _set_inventory_tracked(inv_item_id, eff_tq, store=store)
+                    variant_gid = _variant_gid_from_rest(cv_data)
+                    if variant_gid:
+                        gql_variant: dict = {
+                            "id": variant_gid,
+                            "inventoryItem": {
+                                "tracked": eff_tq,
+                                "requiresShipping": bool(v_cfg.get("requires_shipping", True)),
+                            },
+                        }
+                        sku_val = str(v_cfg.get("sku") or "").strip()
+                        if sku_val:
+                            gql_variant["inventoryItem"]["sku"] = sku_val
+                        compare_at_val = v_cfg.get("compare_at_price")
+                        if compare_at_val is not None:
+                            try:
+                                if float(compare_at_val) > 0:
+                                    gql_variant["compareAtPrice"] = str(compare_at_val)
+                            except Exception:
+                                pass
+                        unit_measurement = v_cfg.get("unit_price_measurement")
+                        if isinstance(unit_measurement, dict):
+                            gql_variant["unitPriceMeasurement"] = unit_measurement
+                            gql_variant["showUnitPrice"] = bool(v_cfg.get("show_unit_price", True))
+                        bulk_variant_updates.append(gql_variant)
                     # Brief pause to let Shopify propagate tracking state
                     time.sleep(1.5)
                     eff_loc_id = _resolve_location_for_item(inv_item_id)
@@ -2586,6 +2661,11 @@ def _configure_variants_for_product(
                     continue
             if missing_location and not loc_id:
                 report["errors"].append(f"loc_id is None - could not determine Shopify location for store={store}")
+            if bulk_variant_updates:
+                bulk_report = _bulk_update_variant_shopify_fields(product_gid, bulk_variant_updates, store=store)
+                report["variant_fields_updated"] = bulk_report
+                if not bulk_report.get("ok"):
+                    report["errors"].append(f"variant_fields: {bulk_report.get('errors')}")
         except Exception as list_err:
             _inv_log.error(f"Failed to list variants for inventory: {list_err}")
             report["errors"].append(f"list_variants: {list_err}")

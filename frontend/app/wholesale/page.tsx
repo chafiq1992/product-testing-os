@@ -236,6 +236,11 @@ const WHOLESALE_TEXT = {
     addProductSub: 'Upload the image, choose colors, enter financials, and add stock variants. Analysis and catalog data will run in the background.',
     productPhoto: 'Product Photo',
     productPreview: 'Product preview',
+    catalogImage: 'Catalog Image',
+    addCatalogImage: 'Add Catalog Image',
+    catalogImageOptional: 'Optional image for catalog/listing display.',
+    catalogImageUploaded: 'Catalog image uploaded.',
+    removeCatalogImage: 'Remove catalog image',
     takePhotoOrUpload: 'Take a photo or upload an image of your product',
     generatedAfterCreate: 'Title, description, and analysis will be generated after the product is created.',
     takePhoto: 'Take Photo',
@@ -253,8 +258,9 @@ const WHOLESALE_TEXT = {
     noColorsYet: 'No colors added yet.',
     hiddenCatalogNote: 'Catalog data, title, and description are hidden here and will be generated after the product is submitted.',
     financialsTitle: 'Financials',
-    cogPrice: 'Unit Cost Price',
+    cogPrice: 'Unit Cost Price (optional)',
     salePrice: 'Unit Sale Price',
+    compareAtPrice: 'Compare at Price (optional)',
     estimatedProfit: 'Est. Unit Profit',
     stockVariants: 'Stock Variants',
     addRange: 'Add Range',
@@ -336,6 +342,14 @@ const WHOLESALE_TEXT = {
     oldest: 'Oldest',
     noOrdersFound: 'No orders found',
     adjustSearchOrFilters: 'Try adjusting your search or filters',
+    orderWorkflowStatus: 'Order Status',
+    newStatus: 'New',
+    processingStatus: 'Processing',
+    fulfilledStatus: 'Fulfilled',
+    markProcessing: 'Mark Processing',
+    markFulfilled: 'Mark Fulfilled',
+    orderStatusUpdated: 'Order status updated',
+    orderStatusUpdateFailed: 'Could not update order status',
     remaining: 'Remaining',
     paymentNote: 'Payment Note',
     updatePayment: 'Update Payment',
@@ -426,6 +440,11 @@ const WHOLESALE_TEXT = {
     addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل البيانات المالية، ثم أضف تنويعات المخزون. سيعمل التحليل وبيانات الكتالوج في الخلفية.',
     productPhoto: 'صورة المنتج',
     productPreview: 'معاينة المنتج',
+    catalogImage: 'صورة الكتالوج',
+    addCatalogImage: 'إضافة صورة الكتالوج',
+    catalogImageOptional: 'صورة اختيارية للكتالوج وقائمة المنتجات.',
+    catalogImageUploaded: 'تم رفع صورة الكتالوج.',
+    removeCatalogImage: 'إزالة صورة الكتالوج',
     takePhotoOrUpload: 'التقط صورة أو ارفع صورة للمنتج',
     generatedAfterCreate: 'سيتم إنشاء العنوان والوصف والتحليل بعد إنشاء المنتج.',
     takePhoto: 'التقاط صورة',
@@ -445,6 +464,7 @@ const WHOLESALE_TEXT = {
     financialsTitle: 'البيانات المالية',
     cogPrice: 'سعر التكلفة',
     salePrice: 'سعر البيع',
+    compareAtPrice: 'سعر المقارنة (اختياري)',
     estimatedProfit: 'صافي الربح المتوقع',
     stockVariants: 'تنويعات المخزون',
     addRange: 'إضافة نطاق',
@@ -512,6 +532,14 @@ const WHOLESALE_TEXT = {
     oldest: 'الأقدم',
     noOrdersFound: 'لم يتم العثور على طلبات',
     adjustSearchOrFilters: 'جرّب تعديل البحث أو عوامل التصفية',
+    orderWorkflowStatus: 'حالة الطلب',
+    newStatus: 'جديد',
+    processingStatus: 'قيد المعالجة',
+    fulfilledStatus: 'تم التجهيز',
+    markProcessing: 'قيد المعالجة',
+    markFulfilled: 'تم التجهيز',
+    orderStatusUpdated: 'تم تحديث حالة الطلب',
+    orderStatusUpdateFailed: 'تعذر تحديث حالة الطلب',
     remaining: 'المتبقي',
     paymentNote: 'ملاحظة الدفع',
     updatePayment: 'تحديث الدفع',
@@ -602,6 +630,11 @@ const ARABIC_TEXT_OVERRIDES = {
   addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل البيانات المالية، ثم أضف تنويعات المخزون. سيعمل التحليل وبيانات الكتالوج في الخلفية.',
   productPhoto: 'صورة المنتج',
   productPreview: 'معاينة المنتج',
+  catalogImage: 'صورة الكتالوج',
+  addCatalogImage: 'إضافة صورة الكتالوج',
+  catalogImageOptional: 'صورة اختيارية للكتالوج وقائمة المنتجات.',
+  catalogImageUploaded: 'تم رفع صورة الكتالوج.',
+  removeCatalogImage: 'إزالة صورة الكتالوج',
   takePhotoOrUpload: 'التقط صورة أو ارفع صورة للمنتج',
   generatedAfterCreate: 'سيتم إنشاء العنوان والوصف والتحليل بعد إنشاء المنتج.',
   takePhoto: 'التقاط صورة',
@@ -621,6 +654,7 @@ const ARABIC_TEXT_OVERRIDES = {
   financialsTitle: 'البيانات المالية',
   cogPrice: 'سعر تكلفة الوحدة',
   salePrice: 'سعر بيع الوحدة',
+  compareAtPrice: 'سعر مقارنة الوحدة (اختياري)',
   estimatedProfit: 'الربح المتوقع للوحدة',
   stockVariants: 'تنويعات المخزون',
   addRange: 'إضافة نطاق',
@@ -701,6 +735,14 @@ const ARABIC_TEXT_OVERRIDES = {
   oldest: 'الأقدم',
   noOrdersFound: 'لم يتم العثور على طلبات',
   adjustSearchOrFilters: 'جرّب تعديل البحث أو عوامل التصفية',
+  orderWorkflowStatus: 'حالة الطلب',
+  newStatus: 'جديد',
+  processingStatus: 'قيد المعالجة',
+  fulfilledStatus: 'تم التجهيز',
+  markProcessing: 'قيد المعالجة',
+  markFulfilled: 'تم التجهيز',
+  orderStatusUpdated: 'تم تحديث حالة الطلب',
+  orderStatusUpdateFailed: 'تعذر تحديث حالة الطلب',
   remaining: 'المتبقي',
   paymentNote: 'ملاحظة الدفع',
   updatePayment: 'تحديث الدفع',
@@ -1089,7 +1131,29 @@ function Dashboard({
             </div>
             </div>
           </div>
-        <div className="p-4 md:p-8 pt-5">{renderContent()}</div>
+        <div className="p-4 md:p-8 pt-5">
+          {activeTab === 'overview' && (
+            <div className="mx-auto mb-5 grid max-w-6xl grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('create-order')}
+                className="flex min-h-[78px] items-center justify-center gap-3 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-500 to-teal-600 px-3 py-4 text-sm font-black text-white shadow-lg shadow-emerald-200/60 transition active:scale-[0.98]"
+              >
+                <ClipboardList size={22} />
+                <span>{copy.createOrder}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('add-new')}
+                className="flex min-h-[78px] items-center justify-center gap-3 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-600 to-indigo-600 px-3 py-4 text-sm font-black text-white shadow-lg shadow-blue-200/60 transition active:scale-[0.98]"
+              >
+                <PlusCircle size={22} />
+                <span>{copy.addProduct}</span>
+              </button>
+            </div>
+          )}
+          {renderContent()}
+        </div>
       </main>
 
       {/* Mobile Bottom Nav */}
@@ -1577,7 +1641,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   const [form, setForm] = useState({
     title: '',
     description: '',
-    cogPrice: '', salePrice: '',
+    cogPrice: '', salePrice: '', compareAtPrice: '',
     segment: SEGMENTS[0],
     season: SEASONS[0],
     colors: [] as string[],
@@ -1586,13 +1650,17 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   })
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [catalogImagePreview, setCatalogImagePreview] = useState<string | null>(null)
+  const [catalogImageUrl, setCatalogImageUrl] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [catalogUploading, setCatalogUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<string | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [aiStatus, setAiStatus] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const catalogFileInputRef = useRef<HTMLInputElement>(null)
 
   const locale = getLocale(lang)
   const unitSalePrice = toNumber(form.salePrice)
@@ -1639,6 +1707,14 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     }))
   }
 
+  async function uploadWholesaleImage(file: File) {
+    const fd = new FormData()
+    fd.append('image', file)
+    const res = await fetch(`${API}/api/wholesale/upload-image`, { method: 'POST', body: fd })
+    const data = await res.json()
+    return data?.data?.url ? String(data.data.url) : ''
+  }
+
   // Handle image selection (camera or file)
   async function handleImageCapture(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1651,12 +1727,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     setUploadStatus(copy.uploadingImage)
     setAiStatus(copy.uploadingImage)
     try {
-      const fd = new FormData()
-      fd.append('image', file)
-      const res = await fetch(`${API}/api/wholesale/upload-image`, { method: 'POST', body: fd })
-      const data = await res.json()
-      if (data?.data?.url) {
-        setImageUrl(data.data.url)
+      const uploadedUrl = await uploadWholesaleImage(file)
+      if (uploadedUrl) {
+        setImageUrl(uploadedUrl)
         setUploadStatus(copy.imageUploaded)
         setAiStatus(copy.imageUploaded)
       } else {
@@ -1668,6 +1741,29 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       setAiStatus(copy.uploadError)
     } finally {
       setUploading(false)
+    }
+  }
+
+  async function handleCatalogImageCapture(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => setCatalogImagePreview(ev.target?.result as string)
+    reader.readAsDataURL(file)
+    setCatalogUploading(true)
+    setUploadStatus(copy.uploadingImage)
+    try {
+      const uploadedUrl = await uploadWholesaleImage(file)
+      if (uploadedUrl) {
+        setCatalogImageUrl(uploadedUrl)
+        setUploadStatus(copy.catalogImageUploaded)
+      } else {
+        setUploadStatus(copy.uploadFailed)
+      }
+    } catch {
+      setUploadStatus(copy.uploadError)
+    } finally {
+      setCatalogUploading(false)
     }
   }
 
@@ -1701,9 +1797,18 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     setImageFile(null)
     setImagePreview(null)
     setImageUrl(null)
+    setCatalogImagePreview(null)
+    setCatalogImageUrl(null)
     setAiStatus(null)
     setUploadStatus(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
+    if (catalogFileInputRef.current) catalogFileInputRef.current.value = ''
+  }
+
+  function removeCatalogImage() {
+    setCatalogImagePreview(null)
+    setCatalogImageUrl(null)
+    if (catalogFileInputRef.current) catalogFileInputRef.current.value = ''
   }
 
   async function handleSubmit() {
@@ -1725,7 +1830,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       const reqBody: any = {
         cog_price: parseFloat(form.cogPrice) || undefined,
         sale_price: unitSalePrice || undefined,
+        compare_at_price: parseFloat(form.compareAtPrice) || undefined,
         image_url: imageUrl || undefined,
+        catalog_image_url: catalogImageUrl || undefined,
       }
       if (isShoes || isClothes) {
         reqBody.colors = form.colors.length > 0 ? form.colors : undefined
@@ -1848,6 +1955,42 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                 {aiStatus}
               </div>
             )}
+            <div className="rounded-2xl border border-dashed border-blue-200 bg-white/80 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">{copy.catalogImage}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{copy.catalogImageOptional}</p>
+                </div>
+                <label className="cursor-pointer rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 transition hover:bg-blue-100">
+                  {catalogUploading ? copy.uploadingImage : copy.addCatalogImage}
+                  <input
+                    ref={catalogFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleCatalogImageCapture}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+              {catalogImagePreview && (
+                <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={catalogImagePreview} alt={copy.catalogImage} className="h-16 w-16 rounded-lg border border-white object-cover" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-slate-700">{copy.catalogImageUploaded}</p>
+                    <p className="truncate text-[10px] text-slate-400">{catalogImageUrl}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={removeCatalogImage}
+                    className="rounded-lg p-2 text-slate-400 hover:bg-white hover:text-red-500"
+                    title={copy.removeCatalogImage}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {uploading && (
@@ -1992,7 +2135,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               <DollarSign size={14} /> {copy.financialsTitle}
             </h3>
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.cogPrice}</label>
                   <input type="number" value={form.cogPrice} onChange={e => setForm({...form, cogPrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
@@ -2000,6 +2143,10 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.salePrice}</label>
                   <input type="number" value={form.salePrice} onChange={e => setForm({...form, salePrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.compareAtPrice}</label>
+                  <input type="number" value={form.compareAtPrice} onChange={e => setForm({...form, compareAtPrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
                 </div>
               </div>
               <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
@@ -2015,34 +2162,33 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           {/* Size Groups / Quantities */}
           {isShoes && (
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
-            <div className="flex justify-between items-center mb-4">
+            <div className="mb-4">
               <h3 className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-2 tracking-widest">
                 <Layers size={14} /> {copy.stockVariants}
               </h3>
-              <button onClick={addSizeGroup} className="text-blue-600 text-[10px] font-black flex items-center gap-1"><Plus size={12} /> {copy.addRange}</button>
             </div>
             <div className="space-y-3">
               {form.sizeGroups.map((group, idx) => (
                 <div key={idx} className="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 relative">
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
-                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.sku}</span>
-                      <input type="text" value={group.sku}
-                        onChange={e => updateSizeGroup(idx, 'sku', e.target.value)}
-                        className="font-bold text-sm outline-none w-full" placeholder="SKU-001" />
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <p className="mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">{copy.from} / {copy.to}</p>
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                      <div className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-2">
+                        <span className="mb-1 text-[9px] font-bold uppercase text-slate-400">{copy.from}</span>
+                        <input type="number" value={group.from}
+                          onChange={e => updateSizeGroup(idx, 'from', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none" />
+                      </div>
+                      <div className="h-px w-5 bg-slate-300" />
+                      <div className="flex flex-col rounded-xl border border-slate-200 bg-slate-50 p-2">
+                        <span className="mb-1 text-[9px] font-bold uppercase text-slate-400">{copy.to}</span>
+                        <input type="number" value={group.to}
+                          onChange={e => updateSizeGroup(idx, 'to', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none" />
+                      </div>
                     </div>
-                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
-                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.from}</span>
-                      <input type="number" value={group.from}
-                        onChange={e => updateSizeGroup(idx, 'from', e.target.value)}
-                        className="font-bold text-sm outline-none w-full" />
-                    </div>
-                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
-                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.to}</span>
-                      <input type="number" value={group.to}
-                        onChange={e => updateSizeGroup(idx, 'to', e.target.value)}
-                        className="font-bold text-sm outline-none w-full" />
-                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
                       <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.piecesPerCrate}</span>
                       <input type="number" value={group.pcsPerCrate}
@@ -2054,6 +2200,12 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                       <input type="number" value={group.crateQty}
                         onChange={e => updateSizeGroup(idx, 'crateQty', e.target.value)}
                         className="font-bold text-sm outline-none w-full text-white bg-transparent" />
+                    </div>
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">{copy.sku}</span>
+                      <input type="text" value={group.sku}
+                        onChange={e => updateSizeGroup(idx, 'sku', e.target.value)}
+                        className="font-bold text-sm outline-none w-full" placeholder="SKU-001" />
                     </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
@@ -2078,6 +2230,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   )}
                 </div>
               ))}
+              <button onClick={addSizeGroup} className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-blue-200 bg-blue-50 px-4 py-3 text-sm font-black text-blue-600 transition hover:bg-blue-100">
+                <Plus size={16} /> {copy.addRange}
+              </button>
             </div>
             <p className="text-[10px] text-slate-400 mt-3">{copy.stockVariantNote}</p>
           </section>
@@ -2112,7 +2267,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         )}
         <button
           onClick={handleSubmit}
-          disabled={saving || uploading}
+          disabled={saving || uploading || catalogUploading}
           className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-blue-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider"
         >
           {saving && <Loader2 className="animate-spin" size={20} />}
@@ -3299,6 +3454,7 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
   const [payNote, setPayNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [cancelingOrderId, setCancelingOrderId] = useState<string | null>(null)
+  const [updatingStatusOrderId, setUpdatingStatusOrderId] = useState<string | null>(null)
   const [ordersMessage, setOrdersMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const isArabic = lang === 'ar'
   const locale = getLocale(lang)
@@ -3308,6 +3464,11 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
     confirm: isArabic ? 'هل تريد إلغاء هذا الطلب وإرجاع المخزون؟' : 'Cancel this order and restock inventory?',
     success: isArabic ? 'تم إلغاء الطلب وإرجاع المخزون' : 'Order cancelled and inventory restocked',
     failed: isArabic ? 'تعذر إلغاء الطلب' : 'Could not cancel order',
+  }
+  const workflowLabels: Record<string, string> = {
+    new: copy.newStatus,
+    processing: copy.processingStatus,
+    fulfilled: copy.fulfilledStatus,
   }
 
   async function fetchOrders() {
@@ -3402,6 +3563,33 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
     }
   }
 
+  async function updateOrderWorkflowStatus(order: any, nextStatus: 'processing' | 'fulfilled') {
+    if (order?.is_cancelled || order?.cancelled_at) return
+    setUpdatingStatusOrderId(String(order.id))
+    setOrdersMessage(null)
+    try {
+      const res = await apiPatch(`/api/wholesale/vendors/${vendor.id}/orders/${order.id}/status`, {
+        order_status: nextStatus,
+      })
+      if (res?.error) {
+        setOrdersMessage({ type: 'error', text: `${copy.orderStatusUpdateFailed}: ${res.error}` })
+        return
+      }
+      const data = res?.data || {}
+      setOrders(prev => prev.map(o => o.id === order.id ? {
+        ...o,
+        order_status: data.order_status || nextStatus,
+        order_status_updated_at: data.updated_at || new Date().toISOString(),
+        fulfillment_warning: data.fulfillment_warning || '',
+      } : o))
+      setOrdersMessage({ type: 'success', text: copy.orderStatusUpdated })
+    } catch (err: any) {
+      setOrdersMessage({ type: 'error', text: `${copy.orderStatusUpdateFailed}: ${err?.message || err}` })
+    } finally {
+      setUpdatingStatusOrderId(null)
+    }
+  }
+
   const statusBadge = (status: string) => {
     if (status === 'cancelled') return <span className="px-2.5 py-1 bg-slate-900 text-white text-[11px] font-bold rounded-full">{cancelLabels.cancelled}</span>
     if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ Paid</span>
@@ -3414,6 +3602,13 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
     if (status === 'paid') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ {copy.paid}</span>
     if (status === 'partially_paid') return <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">◐ {copy.partial}</span>
     return <span className="px-2.5 py-1 bg-red-100 text-red-600 text-[11px] font-bold rounded-full">● {copy.unpaid}</span>
+  }
+
+  const workflowStatusBadge = (status: string) => {
+    if (status === 'cancelled') return <span className="px-2.5 py-1 bg-slate-900 text-white text-[11px] font-bold rounded-full">{cancelLabels.cancelled}</span>
+    if (status === 'fulfilled') return <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">✓ {copy.fulfilledStatus}</span>
+    if (status === 'processing') return <span className="px-2.5 py-1 bg-yellow-100 text-yellow-700 text-[11px] font-bold rounded-full">● {copy.processingStatus}</span>
+    return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 text-[11px] font-bold rounded-full">● {copy.newStatus}</span>
   }
 
   const _unusedOrderStatusBadgeA = (status: string) => {
@@ -3508,6 +3703,7 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
             const total = parseFloat(order.total_price || '0')
             const remaining = total - (order.amount_paid || 0)
             const orderCancelled = Boolean(order.is_cancelled || order.cancelled_at)
+            const workflowStatus = orderCancelled ? 'cancelled' : (order.order_status || 'new')
             return (
               <div key={order.id} className={`bg-white rounded-2xl border overflow-hidden hover:shadow-md transition-shadow ${orderCancelled ? 'border-slate-300 opacity-80' : 'border-slate-200'}`}>
                 {/* Order Header */}
@@ -3517,6 +3713,7 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-sm text-blue-600">{order.name}</span>
                       {orderStatusBadge(orderCancelled ? 'cancelled' : order.payment_status)}
+                      {!orderCancelled && workflowStatusBadge(workflowStatus)}
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
                       {order.customer_name} · {order.units} {copy.itemsLabel} · {new Date(order.created_at).toLocaleDateString(locale)}
@@ -3566,9 +3763,33 @@ function OrdersTab({ vendor, copy, lang, onCreateOrder, onAddProduct }: { vendor
                         <p className="text-sm text-amber-800 mt-0.5">{order.payment_note}</p>
                       </div>
                     )}
+                    <div className="bg-white rounded-xl p-3 border border-slate-100">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{copy.orderWorkflowStatus}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {workflowStatusBadge(workflowStatus)}
+                        {order.order_status_updated_at && (
+                          <span className="text-[11px] font-semibold text-slate-400">{new Date(order.order_status_updated_at).toLocaleString(locale)}</span>
+                        )}
+                      </div>
+                      {order.fulfillment_warning && workflowStatus === 'fulfilled' && (
+                        <p className="mt-2 text-[11px] font-semibold text-amber-600">{order.fulfillment_warning}</p>
+                      )}
+                    </div>
 
                     {/* Actions */}
                     <div className="flex flex-col gap-2 sm:flex-row">
+                      <button onClick={() => updateOrderWorkflowStatus(order, 'processing')}
+                        disabled={orderCancelled || workflowStatus === 'processing' || workflowStatus === 'fulfilled' || updatingStatusOrderId === String(order.id)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-yellow-500 text-white text-sm font-bold rounded-xl hover:bg-yellow-600 transition-colors disabled:cursor-not-allowed disabled:opacity-45">
+                        {updatingStatusOrderId === String(order.id) ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}
+                        {workflowStatus === 'processing' ? workflowLabels.processing : copy.markProcessing}
+                      </button>
+                      <button onClick={() => updateOrderWorkflowStatus(order, 'fulfilled')}
+                        disabled={orderCancelled || workflowStatus === 'fulfilled' || updatingStatusOrderId === String(order.id)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-emerald-600 text-white text-sm font-bold rounded-xl hover:bg-emerald-700 transition-colors disabled:cursor-not-allowed disabled:opacity-45">
+                        {updatingStatusOrderId === String(order.id) ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                        {workflowStatus === 'fulfilled' ? workflowLabels.fulfilled : copy.markFulfilled}
+                      </button>
                       <button onClick={() => openPaymentModal(order)}
                         disabled={orderCancelled}
                         className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-xl hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-45">
