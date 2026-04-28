@@ -23,6 +23,9 @@ META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "")  # numeric only
 META_PAGE_ID = os.getenv("META_PAGE_ID", "")
 META_API_VERSION = os.getenv("META_API_VERSION", "v23.0")
 
+CLARITY_API_TOKEN = os.getenv("CLARITY_API_TOKEN", "")
+CLARITY_EXPORT_MAX_DAYS = int(os.getenv("CLARITY_EXPORT_MAX_DAYS", "3") or "3")
+
 # Celery requires an explicit ssl_cert_reqs query param when using `rediss://`.
 def _fix_rediss(url: str) -> str:
     if url.startswith("rediss://") and "ssl_cert_reqs=" not in url:

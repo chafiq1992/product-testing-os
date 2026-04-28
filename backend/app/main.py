@@ -47,6 +47,7 @@ from app.integrations.meta_client import list_ads_for_adsets
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
+from app.integrations.clarity_client import summarize_for_campaign as summarize_clarity_for_campaign
 from app.campaign_analyzer import analyze_campaign as run_campaign_analysis, generate_action_tasks as run_action_task_generation
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
@@ -1540,6 +1541,31 @@ class CampaignAnalyzeRequest(BaseModel):
     campaign_key: Optional[str] = None  # campaign_key for timeline saving
 
 
+def _clarity_days_for_range(start: str | None, end: str | None) -> int:
+    """Map the selected dashboard range to Clarity's 1-3 day export window."""
+    try:
+        if start and end:
+            ds = datetime.fromisoformat(str(start).split("T")[0])
+            de = datetime.fromisoformat(str(end).split("T")[0])
+            return max(1, min(3, (de.date() - ds.date()).days + 1))
+    except Exception:
+        pass
+    return 3
+
+
+def _analysis_landing_urls(ad_creatives: list, product_info: dict) -> list[str]:
+    urls: list[str] = []
+    for cr in ad_creatives or []:
+        if isinstance(cr, dict):
+            u = str(cr.get("landing_url") or "").strip()
+            if u and u not in urls:
+                urls.append(u)
+    product_url = str((product_info or {}).get("product_url") or "").strip()
+    if product_url and product_url not in urls:
+        urls.append(product_url)
+    return urls
+
+
 def _run_analysis_job(job_id: str, req_data: dict):
     """Run the full analysis pipeline in a background thread."""
     try:
@@ -1684,10 +1710,22 @@ def _run_analysis_job(job_id: str, req_data: dict):
         # 4) Run AI analysis
         if campaign_age_days is not None:
             campaign_metrics["campaign_age_days"] = campaign_age_days
+        clarity_insights: Dict[str, Any] = {}
+        try:
+            clarity_insights = summarize_clarity_for_campaign(
+                campaign_id=(cids[0] if cids else None),
+                campaign_name=None,
+                landing_urls=_analysis_landing_urls(ad_creatives, product_info),
+                num_days=_clarity_days_for_range(s_date, e_date),
+            )
+        except Exception as clarity_err:
+            logger.warning("Failed to summarize Clarity data: %s", clarity_err)
+            clarity_insights = {"enabled": False, "error": str(clarity_err)}
         result = run_campaign_analysis(
             campaign_metrics=campaign_metrics,
             ad_creatives=ad_creatives,
             product_info=product_info,
+            clarity_insights=clarity_insights,
             previous_analysis_context=previous_analysis_context,
         )
 
@@ -1695,6 +1733,7 @@ def _run_analysis_job(job_id: str, req_data: dict):
         result["meta_inputs"] = campaign_metrics
         result["ad_creatives_input"] = ad_creatives[:10]
         result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
+        result["clarity_insights_input"] = clarity_insights
 
         # 5) Auto-save analysis to timeline + reset checks for new analysis
         try:
@@ -2071,6 +2110,14 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                         product_info["title"] = prod.get("title") or ""
                         product_info["description"] = prod.get("body_html") or ""
                         product_info["handle"] = prod.get("handle") or ""
+                        try:
+                            from app.integrations.shopify_client import _get_store_config
+                            cfg = _get_store_config(store)
+                            shop_domain = cfg.get("SHOP", "")
+                            if shop_domain and product_info.get("handle"):
+                                product_info["product_url"] = f"https://{shop_domain}/products/{product_info['handle']}"
+                        except Exception:
+                            pass
                     except Exception:
                         pass
 
@@ -2099,14 +2146,29 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                 if age_days is not None:
                     campaign_metrics["campaign_age_days"] = age_days
 
+                clarity_insights: dict = {}
+                try:
+                    first_row = rows[0] if rows else {}
+                    clarity_insights = summarize_clarity_for_campaign(
+                        campaign_id=str(first_row.get("campaign_id") or ""),
+                        campaign_name=str(first_row.get("name") or product_info.get("title") or ""),
+                        landing_urls=_analysis_landing_urls(ad_creatives, product_info),
+                        num_days=_clarity_days_for_range(s_date, e_date),
+                    )
+                except Exception as clarity_err:
+                    logger.warning("Failed to summarize Clarity data for bulk group %s: %s", pid, clarity_err)
+                    clarity_insights = {"enabled": False, "error": str(clarity_err)}
+
                 # Run AI analysis
                 result = run_campaign_analysis(
                     campaign_metrics=campaign_metrics,
                     ad_creatives=ad_creatives,
                     product_info=product_info,
+                    clarity_insights=clarity_insights,
                 )
                 result["meta_inputs"] = campaign_metrics
                 result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
+                result["clarity_insights_input"] = clarity_insights
                 result["campaign_name"] = product_info.get("title") or rows[0].get("name") or pid
                 result["campaign_key"] = pid
                 result["product_id"] = pid

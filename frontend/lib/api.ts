@@ -1119,9 +1119,16 @@ export type CampaignAnalysisResult = {
     gaps?: string[]
     opportunities?: string[]
   }
+  landing_page_diagnosis?: {
+    primary_issue?: string
+    confidence?: string
+    evidence?: string[]
+    recommended_fixes?: string[]
+  }
   meta_inputs?: Record<string, any>
   ad_creatives_input?: Array<Record<string, string>>
   product_info_input?: Record<string, any>
+  clarity_insights_input?: Record<string, any>
 }
 
 export async function campaignAnalyze(payload: {
@@ -1312,4 +1319,4 @@ export async function getLatestBulkAnalysis(store?: string): Promise<{ data?: Bu
   const { data } = await axios.get(`${base}/api/campaign/analyze_all/latest${qp}`)
   return data as { data?: BulkAnalysisJob | null, error?: string }
 }
-
+

@@ -47,13 +47,13 @@ YAML
 # Frontend image will be built after API is deployed so we can inject NEXT_PUBLIC_API_BASE_URL
 
 # Secrets must exist with latest versions:
-# OPENAI_API_KEY, SHOPIFY_ACCESS_TOKEN, META_ACCESS_TOKEN
+# OPENAI_API_KEY, SHOPIFY_ACCESS_TOKEN, META_ACCESS_TOKEN, CLARITY_API_TOKEN
 
 API_FLAGS=(
   --project "$PROJECT_ID" --region "$REGION" --image "$API_IMG" --platform managed
   --allow-unauthenticated --port 8000
   --set-env-vars SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",CHATKIT_WORKFLOW_ID="$CHATKIT_WORKFLOW_ID",CHATKIT_WORKFLOW_VERSION="$CHATKIT_WORKFLOW_VERSION"
-  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
+  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,CLARITY_API_TOKEN=CLARITY_API_TOKEN:latest
   --concurrency=80 --cpu=1 --memory=512Mi
   --min-instances=0 --max-instances=3
   --cpu-boost --cpu-throttling
@@ -74,7 +74,7 @@ gcloud run deploy "$API_SVC" "${API_FLAGS[@]}"
 API_URL=$(gcloud run services describe "$API_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "API deployed at: $API_URL"
 
-gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$WORKER_IMG" --platform managed --no-allow-unauthenticated --port 8080  --cpu 1 --memory 512Mi --min-instances=0 --max-instances=2 --cpu-boost --cpu-throttling  --set-env-vars CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest
+gcloud run deploy "$WORKER_SVC" --project "$PROJECT_ID" --region "$REGION" --image "$WORKER_IMG" --platform managed --no-allow-unauthenticated --port 8080  --cpu 1 --memory 512Mi --min-instances=0 --max-instances=2 --cpu-boost --cpu-throttling  --set-env-vars CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND",SHOPIFY_SHOP_DOMAIN="$SHOPIFY_SHOP_DOMAIN",SHOPIFY_API_VERSION="$SHOPIFY_API_VERSION",META_AD_ACCOUNT_ID="$META_AD_ACCOUNT_ID",META_PAGE_ID="$META_PAGE_ID",META_API_VERSION="$META_API_VERSION"  --set-secrets OPENAI_API_KEY=OPENAI_API_KEY:latest,SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest,META_ACCESS_TOKEN=META_ACCESS_TOKEN:latest,CLARITY_API_TOKEN=CLARITY_API_TOKEN:latest
 
 WORKER_URL=$(gcloud run services describe "$WORKER_SVC" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')
 echo "Worker deployed at: $WORKER_URL (private)"
