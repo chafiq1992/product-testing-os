@@ -233,7 +233,7 @@ const WHOLESALE_TEXT = {
     inactiveStatus: 'Inactive',
     untitled: 'Untitled',
     addProductTitle: 'Add Product',
-    addProductSub: 'Upload the image, choose colors, enter financials, and add stock variants. Analysis and catalog data will run in the background.',
+    addProductSub: 'Upload the image, choose colors, enter pricing, and add inventory.',
     productPhoto: 'Product Photo',
     productPreview: 'Product preview',
     catalogImage: 'Catalog Image',
@@ -242,12 +242,12 @@ const WHOLESALE_TEXT = {
     catalogImageUploaded: 'Catalog image uploaded.',
     removeCatalogImage: 'Remove catalog image',
     takePhotoOrUpload: 'Take a photo or upload an image of your product',
-    generatedAfterCreate: 'Title, description, and analysis will be generated after the product is created.',
+    generatedAfterCreate: '',
     takePhoto: 'Take Photo',
     upload: 'Upload',
     retake: 'Retake',
     uploadingImage: 'Uploading image...',
-    imageUploaded: 'Image uploaded. Catalog data will finish in the background after save.',
+    imageUploaded: 'Image uploaded.',
     uploadFailed: 'Upload failed. Please try again.',
     uploadError: 'Upload error. Please try again.',
     backgroundAnalysisStarts: 'Background analysis starts after save',
@@ -257,14 +257,14 @@ const WHOLESALE_TEXT = {
     addColor: 'Add',
     noColorsYet: 'No colors added yet.',
     hiddenCatalogNote: 'Catalog data, title, and description are hidden here and will be generated after the product is submitted.',
-    financialsTitle: 'Financials',
+    financialsTitle: 'Pricing',
     cogPrice: 'Unit Cost Price (optional)',
     salePrice: 'Unit Sale Price',
     compareAtPrice: 'Compare at Price (optional)',
     estimatedProfit: 'Est. Unit Profit',
-    stockVariants: 'Stock Variants',
-    addRange: 'Add Range',
-    sku: 'SKU',
+    stockVariants: 'Inventory',
+    addRange: 'Add Size',
+    sku: 'Product Code',
     from: 'From',
     to: 'To',
     qty: 'Crates',
@@ -287,7 +287,7 @@ const WHOLESALE_TEXT = {
     crateQuantityRequired: 'Please enter the number of crates for each stock variant.',
     errorPrefix: 'Error',
     saveProductError: 'Error saving product:',
-    productCreatedSuccess: 'Product created successfully. Catalog data and analysis will finish in the background.',
+    productCreatedSuccess: 'Product created successfully.',
     createOrderTitle: 'Create Order',
     createOrderSub: 'Select products by SKU and enter customer details.',
     addProducts: 'Add Products',
@@ -437,7 +437,7 @@ const WHOLESALE_TEXT = {
     inactiveStatus: 'غير نشط',
     untitled: 'بدون عنوان',
     addProductTitle: 'إضافة منتج',
-    addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل البيانات المالية، ثم أضف تنويعات المخزون. سيعمل التحليل وبيانات الكتالوج في الخلفية.',
+    addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل ثمن المنتج، ثم أضف الكمية والمخزون.',
     productPhoto: 'صورة المنتج',
     productPreview: 'معاينة المنتج',
     catalogImage: 'صورة الكتالوج',
@@ -446,12 +446,12 @@ const WHOLESALE_TEXT = {
     catalogImageUploaded: 'تم رفع صورة الكتالوج.',
     removeCatalogImage: 'إزالة صورة الكتالوج',
     takePhotoOrUpload: 'التقط صورة أو ارفع صورة للمنتج',
-    generatedAfterCreate: 'سيتم إنشاء العنوان والوصف والتحليل بعد إنشاء المنتج.',
+    generatedAfterCreate: '',
     takePhoto: 'التقاط صورة',
     upload: 'رفع صورة',
     retake: 'إعادة الالتقاط',
     uploadingImage: 'جارٍ رفع الصورة...',
-    imageUploaded: 'تم رفع الصورة. ستكتمل بيانات الكتالوج في الخلفية بعد الحفظ.',
+    imageUploaded: 'تم رفع الصورة.',
     uploadFailed: 'فشل رفع الصورة. يرجى المحاولة مرة أخرى.',
     uploadError: 'حدث خطأ أثناء رفع الصورة. يرجى المحاولة مرة أخرى.',
     backgroundAnalysisStarts: 'سيبدأ التحليل في الخلفية بعد الحفظ',
@@ -461,14 +461,14 @@ const WHOLESALE_TEXT = {
     addColor: 'إضافة',
     noColorsYet: 'لم تتم إضافة أي ألوان بعد.',
     hiddenCatalogNote: 'بيانات الكتالوج والعنوان والوصف مخفية هنا، وسيتم إنشاؤها بعد إرسال المنتج.',
-    financialsTitle: 'البيانات المالية',
+    financialsTitle: 'ثمن المنتج',
     cogPrice: 'سعر التكلفة',
     salePrice: 'سعر البيع',
     compareAtPrice: 'سعر المقارنة (اختياري)',
     estimatedProfit: 'صافي الربح المتوقع',
-    stockVariants: 'تنويعات المخزون',
-    addRange: 'إضافة نطاق',
-    sku: 'رمز SKU',
+    stockVariants: 'الكمية والمخزون',
+    addRange: 'اضف قياس',
+    sku: 'رمز المنتج',
     from: 'من',
     to: 'إلى',
     qty: 'الكمية',
@@ -483,7 +483,7 @@ const WHOLESALE_TEXT = {
     skuRequired: 'يرجى إدخال رمز SKU لكل تنويع مخزون.',
     errorPrefix: 'خطأ',
     saveProductError: 'حدث خطأ أثناء حفظ المنتج:',
-    productCreatedSuccess: 'تم إنشاء المنتج بنجاح. سيكتمل إنشاء بيانات الكتالوج والتحليل في الخلفية.',
+    productCreatedSuccess: 'تم إنشاء المنتج بنجاح.',
     createOrderTitle: 'إنشاء طلب',
     createOrderSub: 'اختر المنتجات حسب SKU ثم أدخل بيانات العميل.',
     addProducts: 'إضافة منتجات',
@@ -627,7 +627,7 @@ const ARABIC_TEXT_OVERRIDES = {
   inactiveStatus: 'غير نشط',
   untitled: 'بدون عنوان',
   addProductTitle: 'إضافة منتج',
-  addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل البيانات المالية، ثم أضف تنويعات المخزون. سيعمل التحليل وبيانات الكتالوج في الخلفية.',
+  addProductSub: 'ارفع الصورة، واختر الألوان، وأدخل ثمن المنتج، ثم أضف الكمية والمخزون.',
   productPhoto: 'صورة المنتج',
   productPreview: 'معاينة المنتج',
   catalogImage: 'صورة الكتالوج',
@@ -636,12 +636,12 @@ const ARABIC_TEXT_OVERRIDES = {
   catalogImageUploaded: 'تم رفع صورة الكتالوج.',
   removeCatalogImage: 'إزالة صورة الكتالوج',
   takePhotoOrUpload: 'التقط صورة أو ارفع صورة للمنتج',
-  generatedAfterCreate: 'سيتم إنشاء العنوان والوصف والتحليل بعد إنشاء المنتج.',
+  generatedAfterCreate: '',
   takePhoto: 'التقاط صورة',
   upload: 'رفع صورة',
   retake: 'إعادة الالتقاط',
   uploadingImage: 'جارٍ رفع الصورة...',
-  imageUploaded: 'تم رفع الصورة. ستكتمل بيانات الكتالوج في الخلفية بعد الحفظ.',
+  imageUploaded: 'تم رفع الصورة.',
   uploadFailed: 'فشل رفع الصورة. يُرجى المحاولة مرة أخرى.',
   uploadError: 'حدث خطأ أثناء رفع الصورة. يُرجى المحاولة مرة أخرى.',
   backgroundAnalysisStarts: 'سيبدأ التحليل في الخلفية بعد الحفظ',
@@ -651,14 +651,14 @@ const ARABIC_TEXT_OVERRIDES = {
   addColor: 'إضافة',
   noColorsYet: 'لم تتم إضافة أي ألوان بعد.',
   hiddenCatalogNote: 'بيانات الكتالوج والعنوان والوصف مخفية هنا، وسيتم إنشاؤها بعد إرسال المنتج.',
-  financialsTitle: 'البيانات المالية',
+  financialsTitle: 'ثمن المنتج',
   cogPrice: 'سعر تكلفة الوحدة',
   salePrice: 'سعر بيع الوحدة',
   compareAtPrice: 'سعر مقارنة الوحدة (اختياري)',
   estimatedProfit: 'الربح المتوقع للوحدة',
-  stockVariants: 'تنويعات المخزون',
-  addRange: 'إضافة نطاق',
-  sku: 'رمز SKU',
+  stockVariants: 'الكمية والمخزون',
+  addRange: 'اضف قياس',
+  sku: 'رمز المنتج',
   from: 'من',
   to: 'إلى',
   qty: 'عدد الصناديق',
@@ -681,7 +681,7 @@ const ARABIC_TEXT_OVERRIDES = {
   crateQuantityRequired: 'يرجى إدخال عدد الصناديق لكل تنويع.',
   errorPrefix: 'خطأ',
   saveProductError: 'حدث خطأ أثناء حفظ المنتج:',
-  productCreatedSuccess: 'تم إنشاء المنتج بنجاح. سيكتمل إنشاء بيانات الكتالوج والتحليل في الخلفية.',
+  productCreatedSuccess: 'تم إنشاء المنتج بنجاح.',
   createOrderTitle: 'إنشاء طلب',
   createOrderSub: 'اختر المنتجات حسب SKU ثم أدخل بيانات العميل.',
   addProducts: 'إضافة منتجات',
@@ -1824,7 +1824,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       if (form.sizeGroups.some(group => group.crateQty <= 0)) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
     }
     setSaving(true)
-    setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج بسرعة، وسيكتمل المخزون والصور في الخلفية...' : 'Creating product now. Variants, inventory, images, and catalog data will finish in the background...' })
+    setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج...' : 'Creating product...' })
     try {
       // Build request body based on store type
       const reqBody: any = {
@@ -1886,7 +1886,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               <Camera size={36} className="text-blue-400" />
             </div>
             <p className="text-sm text-blue-600 font-medium text-center">{copy.takePhotoOrUpload}</p>
-            <p className="text-[10px] text-blue-400 text-center">{copy.generatedAfterCreate}</p>
             <div className="flex gap-3">
               <label className="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 text-sm">
                 <Camera size={18} />
@@ -1926,9 +1925,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             </div>
             {/* AI Analyze Button */}
             <div className="flex flex-col sm:flex-row gap-3">
-              <div className="flex-1 bg-white/80 text-slate-500 px-6 py-3.5 rounded-2xl font-bold border border-blue-100 text-sm text-center">
-                {copy.backgroundAnalysisStarts}
-              </div>
               <button
                 onClick={handleAnalyzeImage}
                 disabled={analyzing || !imageUrl}
@@ -1949,17 +1945,10 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                 />
               </label>
             </div>
-            {/* Status */}
-            {aiStatus && (
-              <div className={`px-4 py-3 rounded-xl text-xs font-bold ${aiStatus.startsWith('✅') ? 'bg-green-50 text-green-700 border border-green-200' : aiStatus.startsWith('🤖') ? 'bg-violet-50 text-violet-700 border border-violet-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
-                {aiStatus}
-              </div>
-            )}
             <div className="rounded-2xl border border-dashed border-blue-200 bg-white/80 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">{copy.catalogImage}</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">{copy.catalogImageOptional}</p>
                 </div>
                 <label className="cursor-pointer rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-black text-blue-600 transition hover:bg-blue-100">
                   {catalogUploading ? copy.uploadingImage : copy.addCatalogImage}
@@ -1967,6 +1956,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                     ref={catalogFileInputRef}
                     type="file"
                     accept="image/*"
+                    capture="environment"
                     onChange={handleCatalogImageCapture}
                     className="hidden"
                   />
@@ -1978,7 +1968,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   <img src={catalogImagePreview} alt={copy.catalogImage} className="h-16 w-16 rounded-lg border border-white object-cover" />
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-bold text-slate-700">{copy.catalogImageUploaded}</p>
-                    <p className="truncate text-[10px] text-slate-400">{catalogImageUrl}</p>
                   </div>
                   <button
                     type="button"
@@ -2019,7 +2008,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">SKU</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.sku}</label>
                 <input type="text" value={form.sizeGroups[0]?.sku || ''} onChange={e => updateSizeGroup(0, 'sku', e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="SKU-001" />
               </div>
               <div>
@@ -2080,9 +2069,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   {form.colors.length === 0 && <p className="text-[10px] text-slate-400 italic">{copy.noColorsYet}</p>}
                 </div>
               </div>
-              <div className="rounded-2xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs text-amber-700">
-                {copy.hiddenCatalogNote}
-              </div>
             </div>
           </section>
           )}
@@ -2091,10 +2077,10 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           {isClothes && (
             <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
               <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
-                <Layers size={14} /> Sizes & Quantities
+                <Layers size={14} /> {copy.stockVariants}
               </h3>
               <div className="mb-3">
-                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">SKU</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.sku}</label>
                 <input type="text" value={form.sizeGroups[0]?.sku || ''} onChange={e => updateSizeGroup(0, 'sku', e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="SKU-001" />
               </div>
               <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
@@ -2122,7 +2108,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   </div>
                 ))}
               </div>
-              <p className="text-[10px] text-slate-400 mt-3">Tap a size to activate it, then set the quantity below.</p>
             </section>
           )}
         </div>
@@ -2141,16 +2126,13 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                   <input type="number" value={form.cogPrice} onChange={e => setForm({...form, cogPrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.salePrice}</label>
-                  <input type="number" value={form.salePrice} onChange={e => setForm({...form, salePrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
+                  <label className="text-[10px] font-black text-blue-600 uppercase block mb-1.5">{copy.salePrice}</label>
+                  <input type="number" value={form.salePrice} onChange={e => setForm({...form, salePrice: e.target.value})} className="w-full bg-blue-50 border-2 border-blue-300 rounded-xl px-4 py-3 text-sm font-black text-blue-900 shadow-sm outline-none focus:ring-2 focus:ring-blue-500/30" placeholder="0.00" />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.compareAtPrice}</label>
                   <input type="number" value={form.compareAtPrice} onChange={e => setForm({...form, compareAtPrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
                 </div>
-              </div>
-              <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700">
-                {copy.unitPriceNote}
               </div>
               <div className="flex items-center justify-between p-4 bg-green-50 rounded-2xl border border-green-100 font-bold text-green-700">
                 <span className="text-xs uppercase">{copy.estimatedProfit}</span>
@@ -2234,7 +2216,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                 <Plus size={16} /> {copy.addRange}
               </button>
             </div>
-            <p className="text-[10px] text-slate-400 mt-3">{copy.stockVariantNote}</p>
           </section>
           )}
 
@@ -2249,12 +2230,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             </div>
           </section>
 
-          {/* Vendor Tag Info */}
-          <div className="bg-blue-50 p-4 rounded-2xl border border-blue-100">
-            <p className="text-[10px] text-blue-600 font-bold uppercase tracking-tight mb-1">{copy.productsTaggedAs}</p>
-            <p className="text-sm font-mono font-bold text-blue-900">Vendor: {vendor.name}</p>
-            <p className="text-[10px] text-blue-500 mt-1">{copy.vendorFieldNote}</p>
-          </div>
         </div>
       </div>
 
