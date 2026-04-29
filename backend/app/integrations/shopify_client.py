@@ -210,6 +210,22 @@ mutation MetafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
 }
 """
 
+TRANSLATABLE_RESOURCES_BY_IDS = """
+query TranslatableResourcesByIds($resourceIds: [ID!]!, $first: Int!, $locale: String!) {
+  translatableResourcesByIds(first: $first, resourceIds: $resourceIds) {
+    nodes {
+      resourceId
+      translations(locale: $locale) {
+        key
+        value
+        locale
+        outdated
+      }
+    }
+  }
+}
+"""
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _gql(query: str, variables: dict):
     if not SHOP:
@@ -2803,6 +2819,113 @@ def configure_variants_for_product(
         return {"ok": False, "errors": [str(e)]}
 
 
+def _shopify_gid(resource_type: str, item: dict) -> str | None:
+    try:
+        gql_id = str((item or {}).get("admin_graphql_api_id") or "").strip()
+        if gql_id:
+            return gql_id
+        numeric_id = str((item or {}).get("id") or "").strip()
+        if numeric_id:
+            return f"gid://shopify/{resource_type}/{numeric_id}"
+    except Exception:
+        return None
+    return None
+
+
+def _translation_values(translations: list[dict] | None) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for row in translations or []:
+        try:
+            key = str(row.get("key") or "").strip()
+            value = str(row.get("value") or "").strip()
+            if key and value:
+                values[key] = value
+        except Exception:
+            continue
+    return values
+
+
+def _fetch_shopify_translations(resource_ids: list[str], *, store: str | None = None, locale: str = "ar") -> dict[str, dict[str, str]]:
+    if not resource_ids:
+        return {}
+
+    translations_by_resource: dict[str, dict[str, str]] = {}
+    for start in range(0, len(resource_ids), 100):
+        chunk = resource_ids[start:start + 100]
+        data = _gql_store(store, TRANSLATABLE_RESOURCES_BY_IDS, {
+            "resourceIds": chunk,
+            "first": len(chunk),
+            "locale": locale,
+        })
+        connection = (data or {}).get("translatableResourcesByIds") or {}
+        nodes = connection.get("nodes") or []
+        if not nodes and connection.get("edges"):
+            nodes = [edge.get("node") for edge in connection.get("edges") or [] if edge.get("node")]
+        for node in nodes:
+            resource_id = str((node or {}).get("resourceId") or "").strip()
+            if resource_id:
+                translations_by_resource[resource_id] = _translation_values((node or {}).get("translations"))
+    return translations_by_resource
+
+
+def _apply_shopify_translations(products: list[dict], *, store: str | None = None, locale: str = "ar") -> list[dict]:
+    """Attach translated product and variant fields when Shopify translations exist."""
+    if not products or not locale:
+        return products
+
+    product_ids: list[str] = []
+    variant_ids: list[str] = []
+    for product in products:
+        product_gid = _shopify_gid("Product", product)
+        if product_gid:
+            product_ids.append(product_gid)
+        for variant in product.get("variants") or []:
+            variant_gid = _shopify_gid("ProductVariant", variant)
+            if variant_gid:
+                variant_ids.append(variant_gid)
+
+    try:
+        translations_by_resource = _fetch_shopify_translations(product_ids, store=store, locale=locale)
+    except Exception:
+        translations_by_resource = {}
+    try:
+        translations_by_resource.update(_fetch_shopify_translations(variant_ids, store=store, locale=locale))
+    except Exception:
+        pass
+
+    for product in products:
+        product_gid = _shopify_gid("Product", product)
+        product_translations = translations_by_resource.get(product_gid or "", {})
+        if product_translations:
+            product["translations"] = product_translations
+            product["translated_title"] = product_translations.get("title") or product_translations.get("name") or ""
+            product["translated_description"] = (
+                product_translations.get("body_html")
+                or product_translations.get("description")
+                or product_translations.get("descriptionHtml")
+                or ""
+            )
+        for variant in product.get("variants") or []:
+            variant_gid = _shopify_gid("ProductVariant", variant)
+            variant_translations = translations_by_resource.get(variant_gid or "", {})
+            if not variant_translations:
+                continue
+            variant["translations"] = variant_translations
+            for key in ("title", "option1", "option2", "option3"):
+                value = variant_translations.get(key)
+                if value:
+                    variant[f"translated_{key}"] = value
+            option_title = " / ".join(
+                value for value in (
+                    variant_translations.get("option1"),
+                    variant_translations.get("option2"),
+                    variant_translations.get("option3"),
+                ) if value
+            )
+            variant["translated_title"] = variant_translations.get("title") or option_title or ""
+    return products
+
+
 def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit: int = 50) -> list[dict]:
     """List products from a Shopify store filtered by vendor name."""
     from urllib.parse import urlencode
@@ -2812,14 +2935,14 @@ def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit
         params = {
             "vendor": vendor_name,
             "limit": lim,
-            "fields": "id,title,vendor,product_type,status,tags,variants,images,created_at,updated_at",
+            "fields": "id,admin_graphql_api_id,title,body_html,vendor,product_type,status,tags,variants,images,created_at,updated_at",
         }
         path = "/products.json?" + urlencode(params)
         data = _rest_get_store(store, path)
         products = (data or {}).get("products") or []
     except Exception:
         products = []
-    return products
+    return _apply_shopify_translations(products, store=store, locale="ar")
 
 
 def create_product_only(
