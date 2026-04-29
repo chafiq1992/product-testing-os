@@ -7272,122 +7272,17 @@ async def api_page_builder_preview_proxy(url: str):
         return Response(content=f"Proxy error: {e}", status_code=502)
 
 
-# ---- Widget JS serving ----
-
-_WIDGET_ALLOWED_HOSTS = {"admin.shopify.com"}
-_WIDGET_ALLOWED_HOST_SUFFIXES = (".myshopify.com", ".shopifypreview.com")
-_WIDGET_BLOCKED_UA_HINTS = (
-    "bot",
-    "crawler",
-    "spider",
-    "meta-externalads",
-    "facebookexternalhit",
-    "curl/",
-    "wget/",
-    "python-requests",
-)
-
-
-def _header_url_host(value: str | None) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    try:
-        parsed = urlparse(raw)
-        host = parsed.netloc or parsed.path
-    except Exception:
-        return ""
-    host = host.split("@")[-1].split(":")[0].strip().lower()
-    return host
-
-
-def _is_shopify_widget_request_host(host: str) -> bool:
-    if not host:
-        return False
-    return host in _WIDGET_ALLOWED_HOSTS or host.endswith(_WIDGET_ALLOWED_HOST_SUFFIXES)
-
-
-def _looks_like_shopify_theme_editor_widget_request(request: Request) -> bool:
-    """Best-effort gate for the widget asset.
-
-    Shopify's editor signals (`request.design_mode` / `Shopify.designMode`) are only
-    available after the theme HTML has already decided to load this script, so we use
-    request metadata to reject obvious direct/crawler fetches before serving the asset.
-    """
-    headers = request.headers
-    user_agent = (headers.get("user-agent") or "").lower()
-    if any(token in user_agent for token in _WIDGET_BLOCKED_UA_HINTS):
-        return False
-
-    referer_host = _header_url_host(headers.get("referer"))
-    origin_host = _header_url_host(headers.get("origin"))
-    if not (
-        _is_shopify_widget_request_host(referer_host)
-        or _is_shopify_widget_request_host(origin_host)
-    ):
-        return False
-
-    # Real browser script loads generally send Fetch Metadata headers. Keep these
-    # checks permissive enough to avoid breaking Shopify editor previews.
-    sec_fetch_dest = (headers.get("sec-fetch-dest") or "").strip().lower()
-    if sec_fetch_dest and sec_fetch_dest != "script":
-        return False
-
-    sec_fetch_mode = (headers.get("sec-fetch-mode") or "").strip().lower()
-    if sec_fetch_mode and sec_fetch_mode not in {"cors", "no-cors"}:
-        return False
-
-    sec_fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
-    if sec_fetch_site and sec_fetch_site not in {"cross-site", "same-site", "same-origin"}:
-        return False
-
-    # Direct top-level navigations to the JS URL are not valid widget loads.
-    if (headers.get("sec-fetch-user") or "").strip().lower() == "?1":
-        return False
-
-    return True
-
+# ---- Removed widget JS serving ----
 
 @app.get("/api/page-builder/widget.js")
-async def api_page_builder_widget_js(request: Request):
-    """Serve the AI page builder widget JS for theme injection."""
-    if not _looks_like_shopify_theme_editor_widget_request(request):
-        logger.warning(
-            "Blocked widget.js request host=%s referer=%s origin=%s ua=%s dest=%s site=%s mode=%s",
-            request.headers.get("host", ""),
-            request.headers.get("referer", ""),
-            request.headers.get("origin", ""),
-            request.headers.get("user-agent", ""),
-            request.headers.get("sec-fetch-dest", ""),
-            request.headers.get("sec-fetch-site", ""),
-            request.headers.get("sec-fetch-mode", ""),
-        )
-        return Response(
-            "// widget request blocked",
-            status_code=403,
-            media_type="application/javascript",
-            headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
-        )
-
-    # Check container path first (backend_static/), then local dev path (backend/static/)
-    candidates = [
-        Path("/app/backend_static/page-builder-widget.js"),
-        Path(__file__).resolve().parent.parent / "static" / "page-builder-widget.js",
-    ]
-    widget_path = None
-    for p in candidates:
-        if p.exists():
-            widget_path = p
-            break
-    if not widget_path:
-        return Response("// widget not found", media_type="application/javascript")
-    content = widget_path.read_text(encoding="utf-8")
+async def api_page_builder_widget_js():
+    """Return an inert response for stale Shopify themes that still request the old widget."""
     return Response(
-        content,
+        "",
         media_type="application/javascript",
         headers={
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "X-Robots-Tag": "noindex, nofollow",
         },
     )
@@ -7399,31 +7294,29 @@ WIDGET_SNIPPET_KEY = "snippets/ai-page-builder-widget.liquid"
 WIDGET_LAYOUT_MARKER = "<!-- AI_PAGE_BUILDER_WIDGET -->"
 
 
-def _widget_snippet_liquid(api_base: str, store: str = "") -> str:
-    """Generate the Liquid snippet content that loads the widget.
+def _strip_page_builder_widget_markup(content: str) -> tuple[str, bool]:
+    """Remove every known widget injection shape from a Shopify layout."""
+    updated = content or ""
+    original = updated
+    marker = re.escape(WIDGET_LAYOUT_MARKER)
+    updated = re.sub(marker + r".*?" + marker, "", updated, flags=re.DOTALL)
+    updated = re.sub(r"\n?\s*" + marker + r"\s*\n?", "\n", updated)
+    updated = re.sub(
+        r"\{%\s*(?:render|include)\s+['\"]ai-page-builder-widget['\"]\s*%\}",
+        "",
+        updated,
+        flags=re.IGNORECASE,
+    )
+    updated = re.sub(
+        r"<script\b(?=[^>]*\bsrc\s*=\s*['\"][^'\"]*/api/page-builder/widget\.js(?:\?[^'\"]*)?['\"])[\s\S]*?</script\s*>",
+        "",
+        updated,
+        flags=re.IGNORECASE,
+    )
+    updated = re.sub(r"\n{3,}", "\n\n", updated)
+    return updated, updated != original
 
-    IMPORTANT: The widget is only rendered when the Shopify Theme Editor is open
-    (request.design_mode). Regular customers will never see it.
-    """
-    return f"""{{% comment %}}
-  AI Page Builder Widget — injected by Product Testing OS.
-  ONLY visible inside the Shopify Theme Editor (design mode).
-  Regular customers will never see this widget.
-{{% endcomment %}}
-{{% if request.design_mode %}}
-<script
-  src="{api_base}/api/page-builder/widget.js"
-  data-api-base="{api_base}"
-  data-store="{store}"
-  defer
-></script>
-{{% endif %}}
-"""
 
-
-def _layout_include_tag() -> str:
-    """Return the Liquid include tag wrapped with a marker comment."""
-    return f"\n{WIDGET_LAYOUT_MARKER}\n{{% render 'ai-page-builder-widget' %}}\n{WIDGET_LAYOUT_MARKER}\n"
 
 
 class WidgetInstallRequest(BaseModel):
@@ -7431,101 +7324,14 @@ class WidgetInstallRequest(BaseModel):
 
 
 @app.post("/api/page-builder/widget/install")
-async def api_page_builder_widget_install(req: WidgetInstallRequest, request: Request):
-    """Install the AI page builder widget into the active theme.
-
-    This does two things:
-    1. Creates snippets/ai-page-builder-widget.liquid with the widget loader.
-    2. Injects a {% render %} tag into layout/theme.liquid.
-    """
-    try:
-        from app.integrations.shopify_client import (
-            get_active_theme_gid,
-            _gql_store,
-        )
-        store = (req.store or "").strip() or None
-
-        # Determine API base URL
-        abs_base = ""
-        if BASE_URL and ("localhost" not in BASE_URL and "127.0.0.1" not in BASE_URL):
-            abs_base = BASE_URL.rstrip("/")
-        else:
-            scheme = request.headers.get("x-forwarded-proto", "https")
-            host = request.headers.get("host", "")
-            abs_base = f"{scheme}://{host}"
-
-        theme_gid = await run_in_threadpool(get_active_theme_gid, store=store)
-
-        # Step 1: Create the snippet file
-        snippet_body = _widget_snippet_liquid(abs_base, store or "")
-
-        UPSERT = """
-mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
-  themeFilesUpsert(themeId: $themeId, files: $files) {
-    upsertedThemeFiles { filename }
-    userErrors { field message }
-  }
-}
-"""
-        READ = """
-query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
-  theme(id: $themeId) {
-    files(filenames: $filenames, first: 5) {
-      nodes {
-        filename
-        body { ... on OnlineStoreThemeFileBodyText { content } }
-      }
-    }
-  }
-}
-"""
-        # Upsert snippet
-        await run_in_threadpool(
-            _gql_store, store, UPSERT,
-            {
-                "themeId": theme_gid,
-                "files": [{
-                    "filename": WIDGET_SNIPPET_KEY,
-                    "body": {"type": "TEXT", "value": snippet_body},
-                }],
-            },
-        )
-
-        # Step 2: Read layout/theme.liquid and inject render tag if missing
-        layout_file = "layout/theme.liquid"
-        layout_data = await run_in_threadpool(
-            _gql_store, store, READ,
-            {"themeId": theme_gid, "filenames": [layout_file]},
-        )
-        layout_nodes = ((layout_data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
-        layout_content = ""
-        for n in layout_nodes:
-            if n.get("filename") == layout_file:
-                layout_content = (n.get("body") or {}).get("content") or ""
-                break
-
-        if WIDGET_LAYOUT_MARKER not in layout_content:
-            # Inject before </body> (or at end)
-            include_tag = _layout_include_tag()
-            if "</body>" in layout_content:
-                layout_content = layout_content.replace("</body>", include_tag + "</body>")
-            else:
-                layout_content += include_tag
-
-            await run_in_threadpool(
-                _gql_store, store, UPSERT,
-                {
-                    "themeId": theme_gid,
-                    "files": [{
-                        "filename": layout_file,
-                        "body": {"type": "TEXT", "value": layout_content},
-                    }],
-                },
-            )
-
-        return {"data": {"installed": True, "snippet": WIDGET_SNIPPET_KEY, "api_base": abs_base}}
-    except Exception as e:
-        return {"error": str(e)}
+async def api_page_builder_widget_install(req: WidgetInstallRequest):
+    """The theme editor widget is disabled; remove stale installs instead."""
+    result = await api_page_builder_widget_uninstall(req)
+    if result.get("error"):
+        return result
+    data = result.get("data") or {}
+    data.update({"installed": False, "disabled": True})
+    return {"data": data}
 
 
 @app.post("/api/page-builder/widget/uninstall")
@@ -7586,10 +7392,8 @@ mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFil
                 layout_content = (n.get("body") or {}).get("content") or ""
                 break
 
-        if WIDGET_LAYOUT_MARKER in layout_content:
-            import re as _re
-            pattern = _re.escape(WIDGET_LAYOUT_MARKER) + r".*?" + _re.escape(WIDGET_LAYOUT_MARKER)
-            layout_content = _re.sub(pattern, "", layout_content, flags=_re.DOTALL)
+        layout_content, changed = _strip_page_builder_widget_markup(layout_content)
+        if changed:
             await run_in_threadpool(
                 _gql_store, store, UPSERT,
                 {
@@ -7601,7 +7405,7 @@ mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFil
                 },
             )
 
-        return {"data": {"uninstalled": True}}
+        return {"data": {"uninstalled": True, "layout_updated": changed, "snippet": WIDGET_SNIPPET_KEY}}
     except Exception as e:
         return {"error": str(e)}
 
