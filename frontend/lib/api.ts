@@ -1097,6 +1097,16 @@ export type CampaignAnalysisResult = {
     ad_copy_feedback?: string
     suggested_headlines?: string[]
     suggested_ad_copy?: string
+    new_creative_examples?: Array<{
+      concept_name?: string
+      angle?: string
+      format?: string
+      hook?: string
+      visual_direction?: string
+      primary_text?: string
+      headline?: string
+      why_it_should_work?: string
+    }>
   }
   customer_alignment?: {
     score?: number
@@ -1190,9 +1200,14 @@ export type ActionTask = {
   urgency: string
   category: string
   title: string
+  title_ar?: string
   description: string
+  description_ar?: string
   campaigns: string[]
+  campaign_keys?: string[]
   expected_impact: string
+  expected_impact_ar?: string
+  source_recommendation?: Record<string, any>
   done: boolean
 }
 

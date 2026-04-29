@@ -1194,11 +1194,13 @@ export default function AdsManagementPage(){
                     setActionTasks(res.data.tasks || [])
                     setActionTasksSummary(res.data.summary || '')
                     setActionTasksOpen(true)
-                    // Auto-add each task once to the product-group timeline, with campaign references inside the task.
+                    // Auto-add tasks to the exact campaign timelines they came from.
                     const tasks = res.data.tasks || []
                     for(const task of tasks){
                       const campaignLabels = (task.campaigns || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
-                      const matchedRows = campaignLabels.map((cn: string) => {
+                      const campaignKeys = ((task as any).campaign_keys || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+                      const lookupLabels = [...campaignKeys, ...campaignLabels]
+                      const matchedRows = lookupLabels.map((cn: string) => {
                         const lc = cn.toLowerCase()
                         return (items||[]).find((r: any) => {
                           const name = String(r.name||'')
@@ -1208,11 +1210,11 @@ export default function AdsManagementPage(){
                           return name === cn || id === cn || (!!id && idLc === lc) || (!!name && (nameLc.includes(lc) || lc.includes(nameLc)))
                         })
                       }).filter(Boolean) as MetaCampaignRow[]
-                      const groupIds = [...new Set(matchedRows.map(r => getProductIdForRow(r)).filter(Boolean) as string[])]
-                      for(const pid of groupIds){
-                        const refs = matchedRows
-                          .filter(r => getProductIdForRow(r) === pid)
-                          .map((r: any) => ({ id: String(r.campaign_id||''), name: String(r.name||'') }))
+                      const uniqueRows = [...new Map(matchedRows.map((r: any) => [String(r.campaign_id || r.name || ''), r])).values()] as MetaCampaignRow[]
+                      for(const row of uniqueRows){
+                        const campaignKey = String((row as any).campaign_id || (row as any).name || '').trim()
+                        if(!campaignKey) continue
+                        const refs = [{ id: String((row as any).campaign_id||''), name: String((row as any).name||'') }]
                         try{
                           const taskEntry = JSON.stringify({
                             type: 'task',
@@ -1221,14 +1223,19 @@ export default function AdsManagementPage(){
                             urgency: task.urgency,
                             category: task.category,
                             title: task.title,
+                            title_ar: (task as any).title_ar,
                             description: task.description,
+                            description_ar: (task as any).description_ar,
                             campaigns: task.campaigns || [],
+                            campaign_keys: (task as any).campaign_keys || [],
                             campaign_references: refs,
-                            group_product_id: pid,
+                            campaign_key: campaignKey,
                             expected_impact: task.expected_impact,
+                            expected_impact_ar: (task as any).expected_impact_ar,
+                            source_recommendation: (task as any).source_recommendation,
                             done: false,
                           })
-                          await campaignTimelineAdd({ campaign_key: `group:${pid}`, text: taskEntry, store })
+                          await campaignTimelineAdd({ campaign_key: campaignKey, text: taskEntry, store })
                         }catch{}
                       }
                     }
@@ -2266,12 +2273,14 @@ export default function AdsManagementPage(){
                             ) : (
                               <div className="text-xs">
                                 <div className="border rounded bg-white">
-                                  <div className="grid grid-cols-8 gap-2 px-2 py-1 text-slate-500">
+                                  <div className="grid grid-cols-10 gap-2 px-2 py-1 text-slate-500">
                                     <div className="col-span-3">Ad set</div>
                                     <div className="text-right">Spend</div>
-                                    <div className="text-right">Purchases</div>
-                                    <div className="text-right">CPP</div>
+                                    <div className="text-right">Meta Purch.</div>
+                                    <div className="text-right">Meta CPP</div>
                                     <div className="text-right">CTR</div>
+                                    <div className="text-right">UTM Orders</div>
+                                    <div className="text-right">UTM tCPP</div>
                                     <div className="text-right">Status</div>
                                   </div>
                                   {adsets.map(a=>{
@@ -2280,10 +2289,12 @@ export default function AdsManagementPage(){
                                     const acolor = aactive? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
                                     const aid = String(a.adset_id||'')
                                     const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
+                                    const utmOrders = Number(ordersInfo?.count || 0)
+                                    const utmTrueCpp = utmOrders > 0 ? Number(a.spend || 0) / utmOrders : null
                                     const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
                                     return (
                                       <Fragment key={aid||a.name}>
-                                      <div className="grid grid-cols-8 gap-2 px-2 py-1 border-t items-center">
+                                      <div className="grid grid-cols-10 gap-2 px-2 py-1 border-t items-center">
                                         <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-2">
                                           <span>{a.name||'-'}</span>
                                           {adsetOrdersLoading[cid]? (
@@ -2303,6 +2314,10 @@ export default function AdsManagementPage(){
                                         <div className="text-right">{a.purchases||0}</div>
                                         <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
                                         <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
+                                        <div className="text-right">{utmOrders}</div>
+                                        <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                          {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
+                                        </div>
                                         <div className="flex items-center justify-end gap-2">
                                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${acolor}`}>{aactive? 'Active' : 'Paused'}</span>
                                           {aid && (
@@ -2770,6 +2785,16 @@ function TaskDetailsBlock({ task, isDone=false, includeCampaigns=true }: { task:
       )}
     </div>
   )
+}
+
+function localizedActionTask(task: ActionTask, language: 'original'|'ar'): ActionTask{
+  if(language !== 'ar') return task
+  return {
+    ...task,
+    title: task.title_ar || task.title,
+    description: task.description_ar || task.description,
+    expected_impact: task.expected_impact_ar || task.expected_impact,
+  }
 }
 
 // Timeline Modal
@@ -3446,6 +3471,7 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
   onClearAll: ()=>void,
 }){
   const [filter, setFilter] = useState<'all'|'urgent'|'done'>('all')
+  const [taskLanguage, setTaskLanguage] = useState<'original'|'ar'>('original')
 
   if(!open) return null
 
@@ -3476,11 +3502,19 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
     targeting: '🎯', inventory: '📦', pricing: '💵',
     optimization: '⚡', testing: '🧪',
   }
+  catIcons.landing_page = 'LP'
+  catIcons.offer = 'Offer'
+  catIcons.ad_copy = 'Copy'
+  catIcons.product = 'Product'
   const catColors: Record<string,string> = {
     kill: 'bg-rose-500', scale: 'bg-emerald-500', creative: 'bg-pink-500',
     budget: 'bg-amber-500', targeting: 'bg-blue-500', inventory: 'bg-indigo-500',
     pricing: 'bg-teal-500', optimization: 'bg-violet-500', testing: 'bg-cyan-500',
   }
+  catColors.landing_page = 'bg-indigo-500'
+  catColors.offer = 'bg-violet-500'
+  catColors.ad_copy = 'bg-cyan-500'
+  catColors.product = 'bg-orange-500'
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-start justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
@@ -3556,6 +3590,22 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
             </button>
           ))}
           <div className="flex-1"/>
+          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+            {([
+              { key: 'original' as const, label: 'Original' },
+              { key: 'ar' as const, label: 'Arabic' },
+            ]).map(option => (
+              <button
+                key={option.key}
+                onClick={() => setTaskLanguage(option.key)}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+                  taskLanguage === option.key ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           {totalCount > 0 && (
             <button
               onClick={onClearAll}
@@ -3576,7 +3626,8 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
           )}
           {filtered.map(task => {
             const isDone = task.done
-            const dir = taskTextDirection(task)
+            const displayTask = localizedActionTask(task, taskLanguage)
+            const dir = taskTextDirection(displayTask)
             return (
               <div
                 key={task.id}
@@ -3621,12 +3672,12 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
 
                     {/* Title */}
                     <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`text-sm font-semibold leading-snug mb-2 ${dir === 'rtl' ? 'text-right' : 'text-left'} ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>
-                      {task.title}
+                      {displayTask.title}
                     </div>
 
                     {/* Description */}
                     <div className="text-xs mb-2">
-                      <TaskDetailsBlock task={task} isDone={isDone} includeCampaigns={false} />
+                      <TaskDetailsBlock task={displayTask} isDone={isDone} includeCampaigns={false} />
                     </div>
 
                     {/* Campaigns tags + impact */}
@@ -3638,9 +3689,9 @@ function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:
                         <span className="text-[10px] text-slate-400">+{task.campaigns.length - 3} more</span>
                       )}
                     </div>
-                    {task.expected_impact && (
-                      <div className={`mt-1.5 text-[11px] italic ${isDone ? 'text-emerald-500/60' : 'text-violet-600'}`}>
-                        📈 {task.expected_impact}
+                    {displayTask.expected_impact && (
+                      <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`mt-1.5 text-[11px] italic ${dir === 'rtl' ? 'text-right' : 'text-left'} ${isDone ? 'text-emerald-500/60' : 'text-violet-600'}`}>
+                        📈 {displayTask.expected_impact}
                       </div>
                     )}
                   </div>
@@ -3719,6 +3770,7 @@ function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, o
   ;(result.recommendations||[]).forEach((_: any,i: number) => checkableKeys.push(`rec_${i}`))
   ;(sp.next_steps||[]).forEach((_: any,i: number) => checkableKeys.push(`step_${i}`))
   ;(ca.suggested_headlines||[]).forEach((_: any,i: number) => checkableKeys.push(`headline_${i}`))
+  ;(ca.new_creative_examples||[]).forEach((_: any,i: number) => checkableKeys.push(`creative_${i}`))
   ;(cu.gaps||[]).forEach((_: any,i: number) => checkableKeys.push(`gap_${i}`))
   ;(cu.opportunities||[]).forEach((_: any,i: number) => checkableKeys.push(`opp_${i}`))
   const checkedCount = checkableKeys.filter(k => !!checks[k]).length
@@ -4025,6 +4077,37 @@ function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, o
                   <div>
                     <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Ad Copy</div>
                     <div className="text-xs bg-gradient-to-r from-cyan-50 to-white rounded-lg px-3 py-2.5 border border-cyan-100 whitespace-pre-wrap text-slate-700 leading-relaxed">{ca.suggested_ad_copy}</div>
+                  </div>
+                )}
+                {ca.new_creative_examples && ca.new_creative_examples.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">New Creative Examples</div>
+                    <div className="space-y-2">
+                      {ca.new_creative_examples.slice(0,5).map((ex:any,i:number) => {
+                        const ck = `creative_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`rounded-lg border p-3 ${done ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-cyan-100'}`}>
+                            <div className="flex items-start gap-2.5">
+                              <CheckBox checkKey={ck} />
+                              <div className="flex-1 min-w-0 space-y-1.5">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[10px] font-bold text-cyan-600">C{i+1}</span>
+                                  {ex.concept_name && <span className="text-xs font-semibold text-slate-800">{ex.concept_name}</span>}
+                                  {ex.format && <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-semibold text-slate-600">{ex.format}</span>}
+                                </div>
+                                {ex.angle && <div className="text-[11px] text-slate-600"><b>Angle:</b> {ex.angle}</div>}
+                                {ex.hook && <div className="text-[11px] text-slate-600"><b>Hook:</b> {ex.hook}</div>}
+                                {ex.visual_direction && <div className="text-[11px] text-slate-600"><b>Visual:</b> {ex.visual_direction}</div>}
+                                {ex.primary_text && <div className="text-[11px] text-slate-700 whitespace-pre-wrap rounded bg-slate-50 border border-slate-100 px-2 py-1.5">{ex.primary_text}</div>}
+                                {ex.headline && <div className="text-[11px] text-slate-700"><b>Headline:</b> {ex.headline}</div>}
+                                {ex.why_it_should_work && <div className="text-[11px] italic text-violet-700">{ex.why_it_should_work}</div>}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </div>

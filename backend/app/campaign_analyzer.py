@@ -98,7 +98,19 @@ CAMPAIGN_ANALYST_PROMPT = (
     '    "ad_copy_score": number (1-10),\n'
     '    "ad_copy_feedback": string,\n'
     '    "suggested_headlines": string[] (3 improved headlines),\n'
-    '    "suggested_ad_copy": string (improved primary text)\n'
+    '    "suggested_ad_copy": string (improved primary text),\n'
+    '    "new_creative_examples": [\n'
+    "      {\n"
+    '        "concept_name": string (short name for the creative concept),\n'
+    '        "angle": string (core buyer angle or objection),\n'
+    '        "format": string ("image"|"video"|"carousel"),\n'
+    '        "hook": string (first line or first 3 seconds),\n'
+    '        "visual_direction": string (exact visual brief for designer/video editor),\n'
+    '        "primary_text": string (ready-to-use ad copy),\n'
+    '        "headline": string (ready-to-use headline),\n'
+    '        "why_it_should_work": string (why this creative should improve performance)\n'
+    "      }\n"
+    "    ] (3-5 ready-to-brief new creative examples)\n"
     "  },\n"
     '  "landing_page_diagnosis": {\n'
     '    "primary_issue": string ("none"|"technical_problem"|"mobile_ux_problem"|"price_problem"|"offer_problem"|"trust_problem"|"message_mismatch"|"insufficient_data"),\n'
@@ -120,6 +132,9 @@ CAMPAIGN_ANALYST_PROMPT = (
     "- Be brutally honest. If the product should be killed, say so.\n"
     "- For Morocco/MENA: factor in COD, WhatsApp, local shopping patterns.\n"
     "- Suggested headlines: keep emojis, start with a HOOK, ≤12 words.\n"
+    "- New creative examples must be specific enough for a designer or media buyer to build immediately: "
+    "include the exact angle, format, first hook, visual direction, primary text, headline, and why it should work.\n"
+    "- Provide 3-5 distinct new creative examples, not generic advice.\n"
     "- Match language of the ad copy (if Arabic/French, write suggestions in same language).\n"
     "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
 )
@@ -230,6 +245,8 @@ def analyze_campaign(
         analysis["scaling_plan"] = {}
     if not isinstance(analysis.get("creative_analysis"), dict):
         analysis["creative_analysis"] = {}
+    if not isinstance(analysis["creative_analysis"].get("new_creative_examples"), list):
+        analysis["creative_analysis"]["new_creative_examples"] = []
     if not isinstance(analysis.get("customer_alignment"), dict):
         analysis["customer_alignment"] = {}
     if not isinstance(analysis.get("landing_page_diagnosis"), dict):
@@ -299,12 +316,106 @@ ACTION_TASK_AGENT_PROMPT = (
 )
 
 
+ARABIC_TASK_TRANSLATION_PROMPT = (
+    "Translate campaign action tasks to clear Arabic for ad operations employees.\n"
+    "Keep English ad terms unchanged when useful: CTR, CPP, CBO, COD, CPA, ROAS, bundle, offer, upsell, downsell, "
+    "creative, ad copy, landing page, budget, campaign, ad set.\n"
+    "Do not change task ids. Do not rewrite the original task meaning. Return only translations.\n\n"
+    "Output Contract - return ONE valid JSON object:\n"
+    "{\n"
+    '  "translations": [\n'
+    "    {\n"
+    '      "id": string,\n'
+    '      "title_ar": string,\n'
+    '      "description_ar": string,\n'
+    '      "expected_impact_ar": string\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+)
+
+
+def _coerce_priority(value: object) -> int:
+    try:
+        return max(1, min(5, int(value)))
+    except Exception:
+        return 3
+
+
+def _task_urgency(priority: int, category: str) -> str:
+    cat = (category or "").lower()
+    if cat == "kill" or priority <= 1:
+        return "immediate"
+    if priority <= 2 or cat in {"budget", "scale", "pricing"}:
+        return "today"
+    if priority <= 4:
+        return "this_week"
+    return "when_possible"
+
+
+def _task_category(analysis: dict, rec: dict) -> str:
+    verdict = str(analysis.get("overall_verdict") or "").lower()
+    raw = str(rec.get("category") or "optimization").lower()
+    text = " ".join(str(rec.get(k) or "") for k in ("finding", "recommendation", "expected_impact")).lower()
+    if verdict == "kill" or "kill" in text or "pause" in text:
+        return "kill"
+    if "inventory" in text or "stock" in text:
+        return "inventory"
+    return raw or "optimization"
+
+
+def _task_title(rec: dict) -> str:
+    category = str(rec.get("category") or "optimization").replace("_", " ").title()
+    priority = _coerce_priority(rec.get("priority", 3))
+    return f"P{priority} {category} Recommendation"
+
+
+def _campaign_labels(analysis: dict, index: int) -> tuple[str, str]:
+    campaign_key = str(analysis.get("campaign_key") or analysis.get("campaign_id") or "").strip()
+    campaign_name = str(analysis.get("campaign_name") or campaign_key or f"Campaign {index + 1}").strip()
+    return campaign_name, campaign_key or campaign_name
+
+
+def _apply_arabic_task_translations(tasks: list[dict], model: str | None = None) -> None:
+    if not tasks:
+        return
+    translation_input = {
+        "tasks": [
+            {
+                "id": task.get("id"),
+                "title": task.get("title", ""),
+                "description": task.get("description", ""),
+                "expected_impact": task.get("expected_impact", ""),
+                "campaigns": task.get("campaigns", []),
+            }
+            for task in tasks
+        ]
+    }
+    try:
+        translated = _call_llm(
+            ARABIC_TASK_TRANSLATION_PROMPT,
+            json.dumps(translation_input, ensure_ascii=False),
+            model=model,
+        )
+        translations = translated.get("translations") if isinstance(translated, dict) else []
+        by_id = {str(t.get("id")): t for t in translations if isinstance(t, dict)}
+        for task in tasks:
+            match = by_id.get(str(task.get("id")))
+            if not match:
+                continue
+            task["title_ar"] = str(match.get("title_ar") or task.get("title") or "")
+            task["description_ar"] = str(match.get("description_ar") or task.get("description") or "")
+            task["expected_impact_ar"] = str(match.get("expected_impact_ar") or task.get("expected_impact") or "")
+    except Exception as exc:
+        logger.warning("Action Task Agent: Arabic translation failed: %s", exc)
+
+
 def generate_action_tasks(
     *,
     analyses: list[dict],
     model: str | None = None,
 ) -> dict:
-    """Generate actionable management tasks from multiple campaign analyses.
+    """Create one campaign-level task for each analysis recommendation.
 
     Args:
         analyses: list of campaign analysis results (each contains verdict, recommendations, etc.)
@@ -315,93 +426,52 @@ def generate_action_tasks(
     """
     use_model = model or ANALYZER_MODEL
 
-    # Build input context from all analyses
-    campaigns_context = []
-    for i, analysis in enumerate(analyses):
-        campaign_name = analysis.get("campaign_name") or analysis.get("campaign_key") or f"Campaign {i+1}"
-        verdict = analysis.get("overall_verdict", "unknown")
-        summary = analysis.get("summary", "")
-        confidence = analysis.get("confidence_level", "")
-        meta_inputs = analysis.get("meta_inputs") or {}
+    tasks: list[dict] = []
+    for analysis_index, analysis in enumerate(analyses):
+        if not isinstance(analysis, dict):
+            continue
+        campaign_name, campaign_key = _campaign_labels(analysis, analysis_index)
         recommendations = analysis.get("recommendations") or []
-        scaling_plan = analysis.get("scaling_plan") or {}
-        creative_analysis = analysis.get("creative_analysis") or {}
-        customer_alignment = analysis.get("customer_alignment") or {}
-        landing_page_diagnosis = analysis.get("landing_page_diagnosis") or {}
-        product_info = analysis.get("product_info_input") or {}
-
-        campaign_block = (
-            f"\n--- CAMPAIGN {i+1}: {campaign_name} ---\n"
-            f"Verdict: {verdict} | Confidence: {confidence}\n"
-            f"Summary: {summary}\n"
-            f"Metrics: spend=${meta_inputs.get('spend', 0)}, "
-            f"purchases={meta_inputs.get('purchases', 0)}, "
-            f"CPP=${meta_inputs.get('cpp', 'N/A')}, "
-            f"CTR={meta_inputs.get('ctr', 'N/A')}%, "
-            f"orders={meta_inputs.get('shopify_orders', 'N/A')}, "
-            f"true_cpp=${meta_inputs.get('true_cpp', 'N/A')}, "
-            f"age={meta_inputs.get('campaign_age_days', 'N/A')} days\n"
-            f"Product: {product_info.get('title', 'Unknown')} (inventory: {product_info.get('inventory', 'N/A')})\n"
-        )
-
-        if scaling_plan:
-            campaign_block += (
-                f"Scaling: phase={scaling_plan.get('current_phase', 'N/A')}, "
-                f"budget_rec={scaling_plan.get('budget_recommendation', 'N/A')}\n"
+        if not isinstance(recommendations, list):
+            continue
+        for rec_index, rec in enumerate(recommendations):
+            if not isinstance(rec, dict):
+                continue
+            priority = _coerce_priority(rec.get("priority", rec_index + 1))
+            category = _task_category(analysis, rec)
+            finding = str(rec.get("finding") or "").strip()
+            recommendation = str(rec.get("recommendation") or "").strip()
+            expected_impact = str(rec.get("expected_impact") or "").strip()
+            description = (
+                f"- Action: {recommendation}\n"
+                f"- Campaign: {campaign_name}\n"
+                f"- Finding: {finding}\n"
+                f"- Check: {expected_impact}"
             )
+            tasks.append({
+                "id": f"task_{analysis_index + 1}_{rec_index + 1}",
+                "priority": priority,
+                "urgency": _task_urgency(priority, category),
+                "category": category,
+                "title": _task_title(rec),
+                "description": description,
+                "campaigns": [campaign_name],
+                "campaign_keys": [campaign_key],
+                "expected_impact": expected_impact,
+                "source_recommendation": rec,
+                "done": False,
+            })
 
-        if recommendations:
-            campaign_block += "Recommendations:\n"
-            for rec in recommendations[:5]:
-                campaign_block += (
-                    f"  P{rec.get('priority', '?')} [{rec.get('category', '')}]: "
-                    f"{rec.get('recommendation', '')}\n"
-                )
+    _apply_arabic_task_translations(tasks, model=use_model)
 
-        if landing_page_diagnosis:
-            evidence = landing_page_diagnosis.get("evidence") or []
-            fixes = landing_page_diagnosis.get("recommended_fixes") or []
-            campaign_block += (
-                f"Landing Page Diagnosis: issue={landing_page_diagnosis.get('primary_issue', 'N/A')}, "
-                f"confidence={landing_page_diagnosis.get('confidence', 'N/A')}\n"
-            )
-            if evidence:
-                campaign_block += f"  Evidence: {'; '.join([str(x) for x in evidence[:3]])}\n"
-            if fixes:
-                campaign_block += f"  Fixes: {'; '.join([str(x) for x in fixes[:3]])}\n"
-
-        if customer_alignment and customer_alignment.get("score") is not None:
-            campaign_block += f"Customer Alignment: {customer_alignment.get('score', 'N/A')}/10\n"
-            gaps = customer_alignment.get("gaps") or []
-            if gaps:
-                campaign_block += f"  Gaps: {'; '.join(gaps[:3])}\n"
-
-        campaigns_context.append(campaign_block)
-
-    user_content = (
-        f"PORTFOLIO OF {len(analyses)} CAMPAIGNS TO CREATE TASKS FOR:\n"
-        + "\n".join(campaigns_context)
-    )
-
-    logger.info("Action Task Agent: generating tasks from %d analyses with %s", len(analyses), use_model)
-    result = _call_llm(ACTION_TASK_AGENT_PROMPT, user_content, model=use_model)
-
-    # Normalize output
-    if not isinstance(result.get("tasks"), list):
-        result["tasks"] = []
-    if not isinstance(result.get("summary"), str):
-        result["summary"] = ""
-    if not isinstance(result.get("urgent_count"), int):
-        result["urgent_count"] = len([t for t in result.get("tasks", []) if t.get("priority") == 1])
-
-    # Ensure all tasks have required fields
-    for i, task in enumerate(result["tasks"]):
-        if not task.get("id"):
-            task["id"] = f"task_{i}"
-        if "done" not in task:
-            task["done"] = False
-        if not isinstance(task.get("campaigns"), list):
-            task["campaigns"] = []
+    result = {
+        "summary": (
+            f"Created {len(tasks)} campaign-level tasks directly from {len(analyses)} analysis report"
+            f"{'' if len(analyses) == 1 else 's'}. Recommendations are preserved per campaign; Arabic is available as an alternate view."
+        ),
+        "urgent_count": len([t for t in tasks if t.get("priority") == 1 or t.get("urgency") == "immediate"]),
+        "tasks": tasks,
+    }
 
     # Sort by priority then urgency
     urgency_order = {"immediate": 0, "today": 1, "this_week": 2, "when_possible": 3}
