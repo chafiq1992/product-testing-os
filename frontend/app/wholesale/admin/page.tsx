@@ -5,6 +5,13 @@ import Link from 'next/link'
 import { UserPlus, Users, Trash2, Loader2, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Package, Pencil, X, Save } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+const STORE_TYPES = ['shoes', 'clothes', 'electronics', 'general'] as const
+const STORE_TYPE_LABELS: Record<string, string> = {
+  shoes: 'Shoes',
+  clothes: 'Clothes',
+  electronics: 'Electronics',
+  general: 'General',
+}
 
 async function apiPost(path: string, body: object) {
   const res = await fetch(`${API}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -30,6 +37,8 @@ export default function WholesaleAdminPage() {
   const [editStoreType, setEditStoreType] = useState('shoes')
   const [editPassword, setEditPassword] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+  const [titlePrompts, setTitlePrompts] = useState<Record<string, string>>({})
+  const [promptSaving, setPromptSaving] = useState(false)
 
   async function loadVendors() {
     setLoading(true)
@@ -40,7 +49,16 @@ export default function WholesaleAdminPage() {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { loadVendors() }, [])
+  async function loadTitlePrompts() {
+    try {
+      const res = await apiGet('/api/wholesale/title-description-prompts')
+      setTitlePrompts(res?.data || {})
+    } catch {
+      setTitlePrompts({})
+    }
+  }
+
+  useEffect(() => { loadVendors(); loadTitlePrompts() }, [])
 
   function showToast(type: 'success' | 'error', msg: string) {
     setToast({ type, msg })
@@ -91,6 +109,18 @@ export default function WholesaleAdminPage() {
     } catch (err: any) {
       showToast('error', err?.message || 'Network error')
     } finally { setEditSaving(false) }
+  }
+
+  async function handlePromptSave() {
+    setPromptSaving(true)
+    try {
+      const res = await apiPost('/api/wholesale/title-description-prompts', { prompts: titlePrompts })
+      if (res?.error) { showToast('error', res.error); return }
+      setTitlePrompts(res?.data || titlePrompts)
+      showToast('success', 'Store type prompts saved.')
+    } catch (err: any) {
+      showToast('error', err?.message || 'Network error')
+    } finally { setPromptSaving(false) }
   }
 
   return (
@@ -189,6 +219,40 @@ export default function WholesaleAdminPage() {
         </section>
 
         {/* ─── How It Works ──────────────────────────── */}
+        <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 md:p-8">
+          <h2 className="text-lg font-bold mb-2 flex items-center gap-3">
+            <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><Pencil size={20} /></div>
+            Title & Description Prompts
+          </h2>
+          <p className="text-xs text-slate-500 mb-6">
+            Prompt used for each store type when wholesale products generate their Shopify title and description.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {STORE_TYPES.map(type => (
+              <div key={type}>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">{STORE_TYPE_LABELS[type]}</label>
+                <textarea
+                  value={titlePrompts[type] || ''}
+                  onChange={e => setTitlePrompts(prev => ({ ...prev, [type]: e.target.value }))}
+                  className="h-44 w-full resize-none bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-semibold leading-5 outline-none focus:ring-2 focus:ring-emerald-500/30 transition"
+                  placeholder={`Prompt for ${STORE_TYPE_LABELS[type].toLowerCase()} products`}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="mt-5 flex justify-end">
+            <button
+              type="button"
+              onClick={handlePromptSave}
+              disabled={promptSaving}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-emerald-100 transition-all active:scale-95 disabled:opacity-60 flex items-center gap-2 text-sm"
+            >
+              {promptSaving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
+              Save Prompts
+            </button>
+          </div>
+        </section>
+
         <section className="bg-blue-50 rounded-3xl border border-blue-100 p-6">
           <h3 className="text-sm font-black text-blue-700 mb-3">📋 How It Works</h3>
           <ol className="list-decimal list-inside text-sm text-blue-900 space-y-2 font-medium">

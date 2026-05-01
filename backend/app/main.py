@@ -5894,6 +5894,39 @@ def _hash_password(pw: str) -> str:
 
 
 WHOLESALE_STORE_TYPES = ["shoes", "clothes", "electronics", "general"]
+WHOLESALE_TITLE_DESC_PROMPTS_KEY = "wholesale_title_description_prompts"
+
+
+WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS: dict[str, str] = {
+    "shoes": (
+        "You are writing wholesale Shopify product copy for a shoe store in Morocco.\n"
+        "Use PRODUCT_INFO, ANGLE, and the image if provided. Generate a title and description that include the detected color variants, size ranges, pieces per crate, and crate quantities when available.\n"
+        "The description must mention fast delivery to all cities, the key visible product features, and clear reasons this product will sell well for retailers (easy to stock, broad demand, strong perceived value, practical colors/sizes).\n"
+        "Keep the title commercial, specific, and under 70 characters. Keep the description concise but persuasive, 3-5 sentences."
+    ),
+    "clothes": (
+        "You are writing wholesale Shopify product copy for a clothing store in Morocco.\n"
+        "Use PRODUCT_INFO, ANGLE, and the image if provided. Generate a title and description that include detected color variants, available sizes, quantities, fabric/style features, and any visible design details.\n"
+        "The description must mention fast delivery to all cities and explain why retailers can sell this product easily: attractive colors, useful size spread, everyday demand, styling versatility, and good display appeal.\n"
+        "Keep the title commercial, specific, and under 70 characters. Keep the description concise but persuasive, 3-5 sentences."
+    ),
+    "electronics": (
+        "You are writing wholesale Shopify product copy for an electronics/general product store in Morocco.\n"
+        "Use PRODUCT_INFO, ANGLE, and the image if provided. Generate a title and description that include configuration/spec details, quantity, SKU context if useful, and concrete product features.\n"
+        "The description must mention fast delivery to all cities and explain why this product will sell well: practical use case, clear customer benefit, easy upsell/display value, and strong everyday demand.\n"
+        "Keep the title commercial, specific, and under 70 characters. Keep the description concise but persuasive, 3-5 sentences."
+    ),
+    "general": (
+        "You are writing wholesale Shopify product copy for a general wholesale store in Morocco.\n"
+        "Use PRODUCT_INFO, ANGLE, and the image if provided. Generate a title and description that include variants such as colors, sizes, pcs/crate, quantities, visible features, and practical use cases.\n"
+        "The description must mention fast delivery to all cities and explain why this product will sell well for retailers: broad appeal, useful features, attractive presentation, and easy merchandising.\n"
+        "Keep the title commercial, specific, and under 70 characters. Keep the description concise but persuasive, 3-5 sentences."
+    ),
+}
+
+
+class WholesaleTitleDescriptionPromptsUpdate(BaseModel):
+    prompts: Dict[str, str]
 
 
 class WholesaleVendorCreate(BaseModel):
@@ -6033,6 +6066,47 @@ async def api_wholesale_upload_image(request: Request, image: UploadFile = File(
 
 class WholesaleAnalyzeImageRequest(BaseModel):
     image_url: str
+    target_category: Optional[str] = None
+
+
+def _wholesale_title_description_prompts() -> dict[str, str]:
+    saved = db.get_app_setting(WHOLESALE_STORE, WHOLESALE_TITLE_DESC_PROMPTS_KEY)
+    merged = dict(WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS)
+    if isinstance(saved, dict):
+        for store_type in WHOLESALE_STORE_TYPES:
+            val = saved.get(store_type)
+            if isinstance(val, str) and val.strip():
+                merged[store_type] = val
+    return merged
+
+
+def _wholesale_title_description_prompt_for(store_type: str | None) -> str:
+    st = (store_type or "general").strip().lower()
+    if st not in WHOLESALE_STORE_TYPES:
+        st = "general"
+    return _wholesale_title_description_prompts().get(st) or WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS["general"]
+
+
+@app.get("/api/wholesale/title-description-prompts")
+async def api_wholesale_get_title_description_prompts():
+    try:
+        return {"data": _wholesale_title_description_prompts(), "store_types": WHOLESALE_STORE_TYPES}
+    except Exception as e:
+        return {"error": str(e), "data": dict(WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS), "store_types": WHOLESALE_STORE_TYPES}
+
+
+@app.post("/api/wholesale/title-description-prompts")
+async def api_wholesale_set_title_description_prompts(req: WholesaleTitleDescriptionPromptsUpdate):
+    try:
+        cleaned: dict[str, str] = {}
+        incoming = req.prompts or {}
+        for store_type in WHOLESALE_STORE_TYPES:
+            val = str(incoming.get(store_type) or "").strip()
+            cleaned[store_type] = val or WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS[store_type]
+        db.set_app_setting(WHOLESALE_STORE, WHOLESALE_TITLE_DESC_PROMPTS_KEY, cleaned)
+        return {"data": _wholesale_title_description_prompts(), "store_types": WHOLESALE_STORE_TYPES}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/api/wholesale/analyze-image")
@@ -6043,7 +6117,7 @@ async def api_wholesale_analyze_image(req: WholesaleAnalyzeImageRequest):
         image_url = (req.image_url or "").strip()
         if not image_url:
             return {"error": "image_url is required"}
-        data = await run_in_threadpool(gen_product_from_image, image_url)
+        data = await run_in_threadpool(gen_product_from_image, image_url, None, req.target_category)
         return {"data": data, "image_url": image_url}
     except Exception as e:
         return {"error": str(e)}
@@ -6100,6 +6174,84 @@ def _wholesale_variant_title(size_from: Any, size_to: Any, pcs_per_crate: int) -
     return f"{base}*{pcs_per_crate}pcs" if pcs_per_crate > 0 else base
 
 
+def _wholesale_product_ai_payload(
+    *,
+    vendor_name: str,
+    store_type: str | None,
+    title: str | None,
+    description: str | None,
+    colors: list[str] | None,
+    size_groups: list[dict] | None,
+    explicit_variants: list[dict] | None,
+    sale_price: float | None,
+    compare_at_price: float | None,
+    segment: str | None,
+    season: str | None,
+    ai_data: dict | None = None,
+) -> dict[str, Any]:
+    variants_context: list[dict[str, Any]] = []
+    for sg in size_groups or []:
+        try:
+            fr = sg.get("from")
+            to = sg.get("to")
+            pcs = int(sg.get("pcs_per_crate") or sg.get("pcs") or 0)
+            qty = int(sg.get("crate_quantity") or sg.get("qty") or 0)
+            variants_context.append({
+                "size": _wholesale_variant_title(fr, to, pcs),
+                "from": fr,
+                "to": to,
+                "pcs_per_crate": pcs,
+                "crate_quantity": qty,
+                "sku": str(sg.get("sku") or "").strip(),
+            })
+        except Exception:
+            continue
+
+    if not variants_context:
+        for v in explicit_variants or []:
+            if not isinstance(v, dict):
+                continue
+            variants_context.append({
+                "size": v.get("size") or v.get("option1"),
+                "color": v.get("color") or v.get("option2"),
+                "quantity": v.get("quantity"),
+                "pcs_per_crate": v.get("pcs_per_crate"),
+                "sku": v.get("sku"),
+                "price": v.get("price"),
+            })
+
+    ai_data = ai_data if isinstance(ai_data, dict) else {}
+    detected_colors = [str(c).strip() for c in (ai_data.get("colors") or []) if str(c).strip()]
+    visual_variants = [
+        {"name": (v or {}).get("name"), "description": (v or {}).get("description")}
+        for v in (ai_data.get("variants") or [])
+        if isinstance(v, dict)
+    ]
+    benefits = [str(b).strip() for b in (ai_data.get("benefits") or []) if str(b).strip()]
+
+    return {
+        "vendor": vendor_name,
+        "store_type": store_type or "general",
+        "region": "MA",
+        "delivery": "Fast delivery to all cities",
+        "title": title,
+        "description": description,
+        "segment": segment,
+        "season": season,
+        "colors": [c for c in (colors or []) if str(c).strip()] or detected_colors,
+        "detected_colors": detected_colors,
+        "sizes": [v.get("size") for v in variants_context if v.get("size")],
+        "variants": variants_context,
+        "visual_variants": visual_variants,
+        "features": benefits,
+        "pricing": {
+            "sale_price": sale_price,
+            "compare_at_price": compare_at_price,
+        },
+        "merchandising_goal": "Explain why this product will sell well for retailers and include the strongest product features.",
+    }
+
+
 def _wholesale_finalize_product_background(
     product_gid: str,
     initial_title: str,
@@ -6110,6 +6262,13 @@ def _wholesale_finalize_product_background(
     segment: str | None,
     season: str | None,
     cog_price: float | None,
+    vendor_name: str | None = None,
+    store_type: str | None = None,
+    colors: list[str] | None = None,
+    size_groups: list[dict] | None = None,
+    explicit_variants: list[dict] | None = None,
+    sale_price: float | None = None,
+    compare_at_price: float | None = None,
 ) -> None:
     try:
         from app.integrations.shopify_client import (
@@ -6126,6 +6285,7 @@ def _wholesale_finalize_product_background(
 
         image_urls = [url for url in [image_url, catalog_image_url] if url]
 
+        ai_data: dict[str, Any] = {}
         if image_url:
             try:
                 ai_data = gen_product_from_image(image_url) or {}
@@ -6137,6 +6297,36 @@ def _wholesale_finalize_product_background(
                     final_description = ". ".join(str(b).strip() for b in benefits if str(b).strip())
             except Exception:
                 pass
+
+        try:
+            prompt = _wholesale_title_description_prompt_for(store_type)
+            payload = _wholesale_product_ai_payload(
+                vendor_name=vendor_name or "",
+                store_type=store_type,
+                title=title or final_title,
+                description=description or final_description,
+                colors=colors,
+                size_groups=size_groups,
+                explicit_variants=explicit_variants,
+                sale_price=sale_price,
+                compare_at_price=compare_at_price,
+                segment=segment,
+                season=season,
+                ai_data=ai_data,
+            )
+            angle = {
+                "name": f"{store_type or 'wholesale'} product listing",
+                "goal": "Generate Shopify title and description that convert wholesale buyers.",
+            }
+            generated = gen_title_and_description(payload, angle, prompt_override=prompt, image_urls=([image_url] if image_url else [])) or {}
+            gen_title = str((generated or {}).get("title") or "").strip()
+            gen_description = str((generated or {}).get("description") or "").strip()
+            if gen_title:
+                final_title = gen_title
+            if gen_description:
+                final_description = gen_description
+        except Exception:
+            pass
 
         final_desc_html = _wholesale_build_description_html(final_description or None, segment, season)
 
@@ -6188,6 +6378,12 @@ def _wholesale_configure_product_background(
     cog_price: float | None,
     base_price: float | None,
     explicit_variants: list[dict] | None,
+    vendor_name: str | None = None,
+    store_type: str | None = None,
+    colors: list[str] | None = None,
+    size_groups: list[dict] | None = None,
+    sale_price: float | None = None,
+    compare_at_price: float | None = None,
 ) -> None:
     try:
         from app.integrations.shopify_client import (
@@ -6219,6 +6415,13 @@ def _wholesale_configure_product_background(
             segment,
             season,
             cog_price,
+            vendor_name,
+            store_type,
+            colors,
+            size_groups,
+            explicit_variants,
+            sale_price,
+            compare_at_price,
         )
 
         try:
@@ -6348,6 +6551,9 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             return {"error": "vendor_not_found"}
 
         vendor_name = vendor.get("name", vid)
+        store_type = str(vendor.get("store_type") or "general").strip().lower()
+        if store_type not in WHOLESALE_STORE_TYPES:
+            store_type = "general"
         title = (req.title or "").strip() or _wholesale_placeholder_title(vendor_name)
         desc_html = _wholesale_build_description_html(req.description, req.segment, req.season)
 
@@ -6473,6 +6679,12 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 req.cog_price,
                 explicit_variants[0]["price"] if explicit_variants else req.sale_price,
                 explicit_variants if explicit_variants else None,
+                vendor_name,
+                store_type,
+                req.colors,
+                req.size_groups,
+                req.sale_price,
+                req.compare_at_price,
             )
 
         return {"data": result, "background_processing": bool(product_gid)}

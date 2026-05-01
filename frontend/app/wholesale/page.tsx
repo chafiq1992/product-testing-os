@@ -1855,6 +1855,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         setImageUrl(uploadedUrl)
         setUploadStatus(copy.imageUploaded)
         setAiStatus(copy.imageUploaded)
+        void handleAnalyzeImage(uploadedUrl)
       } else {
         setUploadStatus(copy.uploadFailed)
         setAiStatus(copy.uploadFailed)
@@ -1891,21 +1892,27 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   }
 
   // Send image to ChatGPT for analysis
-  async function handleAnalyzeImage() {
-    if (!imageUrl) return
+  async function handleAnalyzeImage(sourceUrl?: string) {
+    const url = sourceUrl || imageUrl
+    if (!url) return
     setAnalyzing(true)
     setAiStatus('🤖 Analyzing product with AI... This may take a few seconds.')
     try {
-      const res = await apiPost('/api/wholesale/analyze-image', { image_url: imageUrl })
+      const res = await apiPost('/api/wholesale/analyze-image', { image_url: url, target_category: storeType })
       if (res?.data) {
         const ai = res.data
+        const detectedColors = Array.isArray(ai.colors) ? ai.colors.map((c: any) => String(c).trim()).filter(Boolean) : []
+        const detectedVariantNames = Array.isArray(ai.variants)
+          ? ai.variants.map((v: any) => String(v?.name || '').trim()).filter(Boolean)
+          : []
+        const imageColors = detectedColors.length > 0 ? detectedColors : detectedVariantNames
         setForm(f => ({
           ...f,
           title: ai.title || f.title,
           description: (ai.benefits || []).join('. ') || f.description,
-          colors: (ai.colors && ai.colors.length > 0) ? ai.colors : f.colors,
+          colors: imageColors.length > 0 ? imageColors : f.colors,
         }))
-        setAiStatus('✅ AI analysis complete! Title and description updated.')
+        setAiStatus(imageColors.length > 0 ? `AI detected ${imageColors.length} color variant${imageColors.length === 1 ? '' : 's'} from the image.` : 'AI analysis complete. No color variants were detected.')
       } else {
         setAiStatus('AI analysis returned no data. Please fill manually.')
       }
@@ -1936,9 +1943,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 
   async function handleSubmit() {
     if (!imageUrl) { setSaveMessage({ type: 'error', text: copy.uploadImageRequired }); return }
-    if (isShoes || isClothes) {
-      if (form.colors.length === 0) { setSaveMessage({ type: 'error', text: copy.colorRequired }); return }
-    }
     if (unitSalePrice <= 0) { setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired }); return }
     if (isShoes) {
       if (form.sizeGroups.length === 0) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
@@ -2048,7 +2052,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             {/* AI Analyze Button */}
             <div className="flex flex-col sm:flex-row gap-3">
               <button
-                onClick={handleAnalyzeImage}
+                onClick={() => handleAnalyzeImage()}
                 disabled={analyzing || !imageUrl}
                 className="hidden"
               >
@@ -2108,6 +2112,12 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           <div className="flex items-center gap-2 mt-3 text-blue-600">
             <Loader2 className="animate-spin" size={16} />
             <span className="text-xs font-bold">{copy.uploadingImage}</span>
+          </div>
+        )}
+        {aiStatus && !uploading && (
+          <div className="flex items-center gap-2 mt-3 text-blue-600">
+            {analyzing && <Loader2 className="animate-spin" size={16} />}
+            <span className="text-xs font-bold">{aiStatus}</span>
           </div>
         )}
       </section>
@@ -2176,7 +2186,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               {/* Colors */}
               <div>
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.colorsLabel}</label>
-                <div className="flex gap-2 mb-3">
+                <div className="hidden">
                   <input type="text" value={colorInput} onChange={e => setColorInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addColor())}
                     placeholder={copy.colorPlaceholder} className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-medium outline-none" />
