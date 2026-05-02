@@ -7661,7 +7661,7 @@ def _wholesale_prepare_storefront_images(
             else:
                 logging.getLogger("app.wholesale").warning("No generated wholesale image returned for %s", label)
         except Exception as e:
-            logging.getLogger("app.wholesale").warning("Failed to generate wholesale image for %s: %s", label, e)
+            logging.getLogger("app.wholesale").exception("Failed to generate wholesale image for %s: %r", label, e)
 
     try:
         set_product_wholesale_image_metafields(product_gid, metafields, store=WHOLESALE_STORE)
@@ -7849,8 +7849,8 @@ def _wholesale_finalize_product_background(
                 if len(generated_images) > 1:
                     alt_texts.append(f"{final_title} catalog image")
                 upload_image_attachments_to_product(product_gid, generated_images, alt_texts, store=WHOLESALE_STORE)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.getLogger("app.wholesale").exception("Failed to upload generated wholesale images to product %s: %r", product_gid, e)
 
         if cog_price is not None:
             try:

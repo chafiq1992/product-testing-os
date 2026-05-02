@@ -250,7 +250,7 @@ def _openai_image_result_to_data_url(result) -> str | None:
     return None
 
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=4))
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=4), reraise=True)
 def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
     """Generate one clean storefront image that includes every visible variant."""
     source = (image_url or "").strip()
@@ -267,7 +267,6 @@ def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
     with tempfile.NamedTemporaryFile(suffix=ext) as fh:
         fh.write(resp.content)
         fh.flush()
-        fh.seek(0)
         prompt = (
             "Edit the vendor product photo into ONE clean, detailed, photorealistic Shopify product image for a wholesale storefront.\n\n"
             "Goal:\n"
@@ -283,15 +282,16 @@ def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
             "Output:\n"
             "A sharp, highly detailed, marketplace-ready product photo with crisp edges, no halos or fringing, natural studio lighting, realistic shadows, and a clean Shopify-ready square crop."
         )
-        result = client.images.edit(
-            model=DEFAULT_IMAGE_MODEL,
-            image=fh,
-            prompt=prompt,
-            size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
-            quality=os.getenv("OPENAI_IMAGE_QUALITY", "high"),
-            response_format="b64_json",
-            n=1,
-        )
+        with open(fh.name, "rb") as image_file:
+            result = client.images.edit(
+                model=DEFAULT_IMAGE_MODEL,
+                image=[image_file],
+                prompt=prompt,
+                size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
+                quality=os.getenv("OPENAI_IMAGE_QUALITY", "high"),
+                background="opaque",
+                n=1,
+            )
     return _openai_image_result_to_data_url(result)
 
 
