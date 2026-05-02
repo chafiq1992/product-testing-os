@@ -82,11 +82,26 @@ export default function ThemeEditorPage() {
     setMessages(prev => [...prev, { id: messageId(), ...item }].slice(-30))
   }
 
+  async function readApiResponse(res: Response) {
+    const text = await res.text()
+    let json: any = null
+    try {
+      json = text ? JSON.parse(text) : null
+    } catch {
+      const fallback = text.trim() || `Request failed with status ${res.status}`
+      return { error: fallback, data: null }
+    }
+    if (!res.ok && !json?.error) {
+      return { error: `Request failed with status ${res.status}`, data: json?.data || null }
+    }
+    return json || {}
+  }
+
   async function refreshStatus() {
     setLoadingStatus(true)
     try {
       const res = await fetch(`${apiBase}/api/theme-editor/status?store=${encodeURIComponent(store)}`)
-      const json = await res.json()
+      const json = await readApiResponse(res)
       if (json?.error) {
         setStatus(json?.data || { connected: false, store })
         addMessage({ role: "system", text: json.error })
@@ -113,7 +128,7 @@ export default function ThemeEditorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ store, prompt: text }),
       })
-      const json = await res.json()
+      const json = await readApiResponse(res)
       if (json?.error) {
         addMessage({ role: "system", text: json.error })
       } else {
