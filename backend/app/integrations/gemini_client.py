@@ -95,7 +95,7 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
         images: List[str] = []
         # Attempt Gemini 2.5 Flash Image generation with image conditioning
         try:
-            model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
+            model = genai.GenerativeModel("gemini-3.1-flash-image-preview")
             # Some SDKs support batch via generation_config num_images; otherwise loop
             count = max(1, int(num_images))
             for _ in range(count):
@@ -264,7 +264,7 @@ def gen_promotional_images_from_angles(
     mime, blob = fetched
     try:
         gen.configure(api_key=api_key)
-        model = gen.GenerativeModel("gemini-2.5-flash-image-preview")
+        model = gen.GenerativeModel("gemini-3.1-flash-image-preview")
         for p in prompts:
             try:
                 out = model.generate_content([
@@ -358,7 +358,7 @@ def gen_feature_benefit_images(
     mime, blob = fetched
     try:
         gen.configure(api_key=api_key)
-        model = gen.GenerativeModel("gemini-2.5-flash-image-preview")
+        model = gen.GenerativeModel("gemini-3.1-flash-image-preview")
         results: List[Dict[str, str]] = []
         for p in prompts:
             success = False
@@ -544,7 +544,7 @@ def gen_variant_images_from_image(
     mime, blob = fetched
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
+        model = genai.GenerativeModel("gemini-3.1-flash-image-preview")
         base_style = (
             "Professional ecommerce product photo, clean neutral background, soft studio lighting, crisp focus, "
             "subtle ground shadow, premium look, 45-degree camera angle, 4:5 crop. "

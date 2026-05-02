@@ -1780,7 +1780,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   const [uploadStatus, setUploadStatus] = useState<string | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
-  const [aiStatus, setAiStatus] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const catalogFileInputRef = useRef<HTMLInputElement>(null)
@@ -1848,21 +1847,17 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     reader.readAsDataURL(file)
     setUploading(true)
     setUploadStatus(copy.uploadingImage)
-    setAiStatus(copy.uploadingImage)
     try {
       const uploadedUrl = await uploadWholesaleImage(file)
       if (uploadedUrl) {
         setImageUrl(uploadedUrl)
         setUploadStatus(copy.imageUploaded)
-        setAiStatus(copy.imageUploaded)
         void handleAnalyzeImage(uploadedUrl)
       } else {
         setUploadStatus(copy.uploadFailed)
-        setAiStatus(copy.uploadFailed)
       }
     } catch {
       setUploadStatus(copy.uploadError)
-      setAiStatus(copy.uploadError)
     } finally {
       setUploading(false)
     }
@@ -1896,7 +1891,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     const url = sourceUrl || imageUrl
     if (!url) return
     setAnalyzing(true)
-    setAiStatus('🤖 Analyzing product with AI... This may take a few seconds.')
     try {
       const res = await apiPost('/api/wholesale/analyze-image', { image_url: url, target_category: storeType })
       if (res?.data) {
@@ -1912,12 +1906,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           description: (ai.benefits || []).join('. ') || f.description,
           colors: imageColors.length > 0 ? imageColors : f.colors,
         }))
-        setAiStatus(imageColors.length > 0 ? `AI detected ${imageColors.length} color variant${imageColors.length === 1 ? '' : 's'} from the image.` : 'AI analysis complete. No color variants were detected.')
-      } else {
-        setAiStatus('AI analysis returned no data. Please fill manually.')
       }
     } catch {
-      setAiStatus('AI analysis failed. Please fill manually.')
+      // Keep analysis silent for vendors; they should only see normal upload/create feedback.
     } finally {
       setAnalyzing(false)
     }
@@ -1929,7 +1920,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     setImageUrl(null)
     setCatalogImagePreview(null)
     setCatalogImageUrl(null)
-    setAiStatus(null)
     setUploadStatus(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
     if (catalogFileInputRef.current) catalogFileInputRef.current.value = ''
@@ -2112,12 +2102,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           <div className="flex items-center gap-2 mt-3 text-blue-600">
             <Loader2 className="animate-spin" size={16} />
             <span className="text-xs font-bold">{copy.uploadingImage}</span>
-          </div>
-        )}
-        {aiStatus && !uploading && (
-          <div className="flex items-center gap-2 mt-3 text-blue-600">
-            {analyzing && <Loader2 className="animate-spin" size={16} />}
-            <span className="text-xs font-bold">{aiStatus}</span>
           </div>
         )}
       </section>
