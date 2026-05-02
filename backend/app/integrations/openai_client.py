@@ -9,6 +9,7 @@ import os
 # Initialize OpenAI client (reads OPENAI_API_KEY from env)
 client = OpenAI()
 DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
 
 ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 
@@ -228,6 +229,66 @@ def gen_images(angle: dict, payload: dict) -> list:
         n=1
     )
     return [img.data[0].url]
+
+
+def _openai_image_result_to_data_url(result) -> str | None:
+    try:
+        item = (getattr(result, "data", None) or [None])[0]
+        if not item:
+            return None
+        b64 = getattr(item, "b64_json", None)
+        if b64:
+            return f"data:image/png;base64,{b64}"
+        url = getattr(item, "url", None)
+        if url:
+            fetched = requests.get(url, timeout=30)
+            fetched.raise_for_status()
+            mime = fetched.headers.get("content-type") or "image/png"
+            return f"data:{mime};base64,{base64.b64encode(fetched.content).decode('ascii')}"
+    except Exception:
+        return None
+    return None
+
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=4))
+def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
+    """Generate one clean storefront image that includes every visible variant."""
+    source = (image_url or "").strip()
+    if not source:
+        return None
+
+    resp = requests.get(source, timeout=30)
+    resp.raise_for_status()
+    mime = resp.headers.get("content-type") or "image/jpeg"
+    ext = mimetypes.guess_extension(mime.split(";")[0].strip()) or ".jpg"
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=ext) as fh:
+        fh.write(resp.content)
+        fh.flush()
+        fh.seek(0)
+        prompt = (
+            "Edit this vendor product photo into ONE professional Shopify storefront product image. "
+            "CRITICAL: include ALL product variants visible in the source image in this single final image: every color, style, pair, item, or variant must appear together. "
+            "Do not choose only one variant. Do not remove, merge, recolor, duplicate incorrectly, or invent variants. "
+            "Arrange all variants neatly in a balanced catalog composition on a clean bright neutral studio background with soft realistic shadows. "
+            "Preserve the exact product identity, shape, proportions, materials, colors, stitching, texture, and functional details for every variant. "
+            "Remove every visible number, size label, price tag, watermark, logo, brand name, store name, QR code, barcode, and handwritten mark. "
+            "Do not add text, logos, badges, labels, packaging, people, hands, lifestyle props, or unrelated objects. "
+            "Make the image premium, sharp, attractive, well lit, and ecommerce-ready while keeping every original product variant recognizable."
+        )
+        result = client.images.edit(
+            model=DEFAULT_IMAGE_MODEL,
+            image=fh,
+            prompt=prompt,
+            size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
+            quality=os.getenv("OPENAI_IMAGE_QUALITY", "high"),
+            input_fidelity="high",
+            response_format="b64_json",
+            n=1,
+        )
+    return _openai_image_result_to_data_url(result)
 
 
 # ---------------- Product extraction from image ----------------
