@@ -269,14 +269,19 @@ def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
         fh.flush()
         fh.seek(0)
         prompt = (
-            "Edit this vendor product photo into ONE professional Shopify storefront product image. "
-            "CRITICAL: include ALL product variants visible in the source image in this single final image: every color, style, pair, item, or variant must appear together. "
-            "Do not choose only one variant. Do not remove, merge, recolor, duplicate incorrectly, or invent variants. "
-            "Arrange all variants neatly in a balanced catalog composition on a clean bright neutral studio background with soft realistic shadows. "
-            "Preserve the exact product identity, shape, proportions, materials, colors, stitching, texture, and functional details for every variant. "
-            "Remove every visible number, size label, price tag, watermark, logo, brand name, store name, QR code, barcode, and handwritten mark. "
-            "Do not add text, logos, badges, labels, packaging, people, hands, lifestyle props, or unrelated objects. "
-            "Make the image premium, sharp, attractive, well lit, and ecommerce-ready while keeping every original product variant recognizable."
+            "Edit the vendor product photo into ONE clean, detailed, photorealistic Shopify product image for a wholesale storefront.\n\n"
+            "Goal:\n"
+            "Create a premium ecommerce catalog photo that preserves the real product accurately while improving the presentation.\n\n"
+            "Composition:\n"
+            "Show ALL product variants visible in the source photo together in this single square image. Include every visible color, style, pair, item, and variant. Arrange them neatly in a balanced catalog layout, centered with generous padding, on a plain bright white or very light neutral opaque background. Add only a subtle realistic contact shadow.\n\n"
+            "Preserve exact product detail:\n"
+            "Keep the product identity, silhouette, geometry, proportions, materials, colors, stitching, seams, texture, decorations, gems, bows, straps, buckles, soles, tread patterns, closures, edges, fabric grain, leather/plastic/rubber finish, and all functional details for every variant. The result must still look like the same real products from the vendor photo.\n\n"
+            "Clean up:\n"
+            "Remove the original background, clutter, table surfaces, hands, people, packaging distractions, price tags, size stickers, handwritten marks, QR codes, barcodes, watermarks, store names, brand names, logos, and any visible numbers or text.\n\n"
+            "Do not:\n"
+            "Do not create a lifestyle scene. Do not add models, hands, props, labels, badges, text, logos, packaging, extra products, invented variants, duplicated variants, or changed colors. Do not choose only one variant. Do not merge variants together. Do not restyle the product.\n\n"
+            "Output:\n"
+            "A sharp, highly detailed, marketplace-ready product photo with crisp edges, no halos or fringing, natural studio lighting, realistic shadows, and a clean Shopify-ready square crop."
         )
         result = client.images.edit(
             model=DEFAULT_IMAGE_MODEL,
@@ -284,7 +289,6 @@ def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
             prompt=prompt,
             size=os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
             quality=os.getenv("OPENAI_IMAGE_QUALITY", "high"),
-            input_fidelity="high",
             response_format="b64_json",
             n=1,
         )
