@@ -6682,6 +6682,12 @@ THEME_EDITOR_AGENT_MAX_FILE_CHARS = 120000
 THEME_EDITOR_AGENT_MAX_TOTAL_CHARS = 420000
 
 
+class ThemeEditorUpsertError(RuntimeError):
+    def __init__(self, user_errors: Any):
+        super().__init__(f"themeFilesUpsert errors: {user_errors}")
+        self.user_errors = user_errors
+
+
 class ThemeEditorAgentRequest(BaseModel):
     store: Optional[str] = None
     prompt: str
@@ -6854,11 +6860,11 @@ mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFil
     payload = (data or {}).get("themeFilesUpsert") or {}
     user_errors = payload.get("userErrors") or []
     if user_errors:
-        raise RuntimeError(f"themeFilesUpsert errors: {user_errors}")
+        raise ThemeEditorUpsertError(user_errors)
     return [item.get("filename") for item in (payload.get("upsertedThemeFiles") or []) if item.get("filename")]
 
 
-def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[str, Any]:
+def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str], repair_context: dict[str, Any] | None = None) -> dict[str, Any]:
     from app.integrations.openai_client import DEFAULT_LLM_MODEL, client as openai_client
 
     compact_files: dict[str, str] = {}
@@ -6881,6 +6887,9 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[
         "You may edit only the files provided in THEME_FILES unless creating a clearly requested new Shopify theme file.\n"
         "Use exact search/replace edits. The `find` value must be copied exactly from the provided file content.\n"
         "Keep changes tightly scoped to the user's request. Do not remove analytics, checkout, Shopify Liquid objects, or unrelated code.\n"
+        "Shopify Liquid syntax is strict: do not use JavaScript/Python-style expressions inside {{ }}.\n"
+        "Do not use parentheses in Liquid conditions. Prefer {% assign %}, {% if %}, {% elsif %}, {% for %}, and simple `and`/`or` conditions.\n"
+        "Never output expressions like {{ customer and (...) }}. For wholesale checks, use Liquid control flow such as assigning a flag and looping over customer.tags.\n"
         "If the request is unclear or the needed code is not visible, return no edits and put a short question in `message`.\n"
         "Schema: {\"message\":\"short user-facing summary\", \"edits\":[{\"filename\":\"sections/main-product.liquid\", \"find\":\"exact existing text\", \"replace\":\"new text\"}], \"warnings\":[\"optional\"]}.\n"
         "For a new file only, use an empty string for `find` and put the full file content in `replace`."
@@ -6890,6 +6899,7 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[
             "USER_PROMPT": prompt,
             "THEME_FILES": compact_files,
             "CONTEXT_NOTES": notes,
+            "REPAIR_CONTEXT": repair_context or {},
         },
         ensure_ascii=False,
     )
@@ -6912,24 +6922,7 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[
     return data
 
 
-def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: list[str] | None = None) -> dict[str, Any]:
-    theme_gid, all_theme_files = _theme_editor_list_theme_files(store)
-    filenames = _theme_editor_rank_files(prompt, all_theme_files, requested_files)
-    if not filenames:
-        filenames = _theme_editor_candidate_files(prompt, requested_files)
-    theme_gid, files = _theme_editor_read_theme_files(store, filenames, theme_gid=theme_gid)
-    if not files:
-        return {
-            "message": "I connected to Shopify, but could not read any matching theme files.",
-            "actions": [],
-            "theme_gid": theme_gid,
-            "theme_file_count": len(all_theme_files),
-            "files_considered": filenames,
-            "files_changed": [],
-            "failed_edits": [],
-        }
-
-    plan = _theme_editor_openai_plan(prompt, files)
+def _theme_editor_build_updates(plan: dict[str, Any], files: dict[str, str]) -> tuple[dict[str, str], list[dict[str, str]], list[str]]:
     updates: dict[str, str] = {}
     failed: list[dict[str, str]] = []
     actions: list[str] = []
@@ -6958,9 +6951,63 @@ def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: l
             updates[filename] = updated
             actions.append(f"updated {filename}")
 
-    changed = _theme_editor_upsert_theme_files(store, theme_gid, updates)
+    return updates, failed, actions
+
+
+def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: list[str] | None = None) -> dict[str, Any]:
+    theme_gid, all_theme_files = _theme_editor_list_theme_files(store)
+    filenames = _theme_editor_rank_files(prompt, all_theme_files, requested_files)
+    if not filenames:
+        filenames = _theme_editor_candidate_files(prompt, requested_files)
+    theme_gid, files = _theme_editor_read_theme_files(store, filenames, theme_gid=theme_gid)
+    if not files:
+        return {
+            "message": "I connected to Shopify, but could not read any matching theme files.",
+            "actions": [],
+            "theme_gid": theme_gid,
+            "theme_file_count": len(all_theme_files),
+            "files_considered": filenames,
+            "files_changed": [],
+            "failed_edits": [],
+        }
+
+    plan = _theme_editor_openai_plan(prompt, files)
+    updates, failed, actions = _theme_editor_build_updates(plan, files)
+
+    repaired = False
+    try:
+        changed = _theme_editor_upsert_theme_files(store, theme_gid, updates)
+    except ThemeEditorUpsertError as exc:
+        repair_files = dict(files)
+        repair_files.update(updates)
+        repair_plan = _theme_editor_openai_plan(
+            prompt,
+            {filename: repair_files.get(filename, "") for filename in (updates.keys() or repair_files.keys())},
+            repair_context={
+                "shopify_user_errors": exc.user_errors,
+                "previous_message": plan.get("message"),
+                "instruction": "The previous edit failed Shopify Liquid validation. Return corrected exact search/replace edits against the attempted file contents. Keep the same user intent.",
+            },
+        )
+        updates, repair_failed, actions = _theme_editor_build_updates(repair_plan, repair_files)
+        failed.extend(repair_failed)
+        try:
+            changed = _theme_editor_upsert_theme_files(store, theme_gid, updates)
+        except ThemeEditorUpsertError as retry_exc:
+            return {
+                "message": "Shopify still rejected the generated Liquid after an automatic repair attempt. I did not save the theme changes.",
+                "actions": actions,
+                "files_considered": list(files.keys()),
+                "theme_file_count": len(all_theme_files),
+                "files_changed": [],
+                "failed_edits": failed + [{"filename": ",".join(updates.keys()), "reason": str(retry_exc.user_errors)}],
+                "warnings": ["Shopify Liquid parser rejected the edit."],
+                "theme_gid": theme_gid,
+            }
+        plan = repair_plan
+        repaired = True
     return {
-        "message": str(plan.get("message") or ("Updated theme files." if changed else "No theme files were changed.")),
+        "message": str(plan.get("message") or ("Updated theme files." if changed else "No theme files were changed.")) + (" Repaired Shopify Liquid syntax and retried successfully." if repaired else ""),
         "actions": actions,
         "files_considered": list(files.keys()),
         "theme_file_count": len(all_theme_files),
