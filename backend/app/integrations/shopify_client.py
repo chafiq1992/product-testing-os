@@ -210,6 +210,26 @@ mutation MetafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
 }
 """
 
+FILE_CREATE = """
+mutation FileCreate($files: [FileCreateInput!]!) {
+  fileCreate(files: $files) {
+    files {
+      id
+      alt
+      createdAt
+      fileStatus
+      ... on MediaImage {
+        image { url }
+      }
+      ... on GenericFile {
+        url
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
 TRANSLATABLE_RESOURCES_BY_IDS = """
 query TranslatableResourcesByIds($resourceIds: [ID!]!, $first: Int!, $locale: String!) {
   translatableResourcesByIds(first: $first, resourceIds: $resourceIds) {
@@ -342,6 +362,7 @@ def _gql_store(store: str | None, query: str, variables: dict):
         or (data or {}).get("publishablePublish", {}).get("userErrors")
         or (data or {}).get("metafieldsSet", {}).get("userErrors")
         or (data or {}).get("metafieldDefinitionCreate", {}).get("userErrors")
+        or (data or {}).get("fileCreate", {}).get("userErrors")
     )
     if ue:
         raise RuntimeError(f"GraphQL userErrors: {ue}")
@@ -2220,6 +2241,52 @@ def upload_image_attachments_to_product(product_gid: str, files: list[tuple[str,
             results.append({"filename": filename, "ok": False, "error": str(e)})
             continue
     return {"cdn_urls": cdn_urls, "per_image": results}
+
+
+def upload_remote_image_to_shopify_files(image_url: str, alt: str | None = None, *, store: str | None = None) -> dict:
+    """Upload a remote image URL into Shopify Files and return file metadata."""
+    src = (image_url or "").strip()
+    if not src:
+        return {}
+    data = _gql_store(store, FILE_CREATE, {
+        "files": [{
+            "originalSource": src,
+            "contentType": "IMAGE",
+            "alt": alt or "Vendor original product image",
+        }]
+    })
+    files = ((data or {}).get("fileCreate") or {}).get("files") or []
+    file_obj = files[0] if files else {}
+    image = (file_obj or {}).get("image") or {}
+    url = image.get("url") or (file_obj or {}).get("url") or src
+    return {
+        "id": (file_obj or {}).get("id"),
+        "url": url,
+        "status": (file_obj or {}).get("fileStatus"),
+    }
+
+
+def set_product_wholesale_image_metafields(
+    product_gid: str,
+    values: dict[str, str | None],
+    *,
+    store: str | None = None,
+) -> None:
+    """Persist wholesale-only image URLs on the product."""
+    metafields = []
+    for key, value in (values or {}).items():
+        val = (value or "").strip() if isinstance(value, str) else ""
+        if not val:
+            continue
+        metafields.append({
+            "ownerId": product_gid,
+            "namespace": "wholesale",
+            "key": key,
+            "type": "single_line_text_field",
+            "value": val,
+        })
+    if metafields:
+        _gql_store(store, METAFIELDS_SET, {"metafields": metafields})
 
 
 def list_product_images(product_gid: str, *, store: str | None = None) -> list[dict]:

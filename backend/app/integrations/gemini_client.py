@@ -162,6 +162,28 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
         return [image_url]
 
 
+def gen_clean_wholesale_product_image(image_url: str) -> str | None:
+    """Create a clean store-facing product image from a vendor source image.
+
+    Returns a data URL when generation succeeds. The original image URL is not
+    returned as a fallback because this flow must not expose vendor photos on
+    the storefront.
+    """
+    prompt = (
+        "Create one professional ecommerce product photo from the reference image. "
+        "Preserve the exact product identity, shape, proportions, materials, colors, stitching, texture, and all functional details. "
+        "Remove every visible number, size label, price tag, watermark, logo, brand name, store name, QR code, barcode, and handwritten mark. "
+        "Do not add text, logos, badges, labels, packaging, people, hands, props, or extra products. "
+        "Use a clean bright neutral studio background with soft realistic shadow, crisp edges, balanced lighting, and attractive catalog-ready composition. "
+        "The product must look polished and premium while remaining identical to the original product."
+    )
+    images = gen_ad_images_from_image(image_url, prompt, num_images=1)
+    first = (images or [None])[0]
+    if isinstance(first, str) and first.startswith("data:image/"):
+        return first
+    return None
+
+
 def _compute_midpoint_size_from_product(product: Dict[str, Any]) -> str | None:
     try:
         sizes = (product or {}).get("sizes") or []

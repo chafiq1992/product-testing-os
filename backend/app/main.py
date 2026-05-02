@@ -19,6 +19,7 @@ from app.integrations.openai_client import gen_angles_and_copy, gen_angles_and_c
 from app.integrations.openai_client import marketing_strategist, marketing_copywriter, marketing_media_buyer
 from app.agent import run_agent_until_final, run_ads_agent
 from app.integrations.gemini_client import gen_ad_images_from_image, gen_promotional_images_from_angles, gen_variant_images_from_image, gen_feature_benefit_images
+from app.integrations.gemini_client import gen_clean_wholesale_product_image
 from app.integrations.gemini_client import analyze_variants_from_image, build_feature_benefit_prompts, _compute_midpoint_size_from_product
 from app.integrations.shopify_client import create_product_and_page, upload_images_to_product, create_product_only, create_page_from_copy, list_product_images, upload_images_to_product_verbose, upload_image_attachments_to_product, _link_product_landing_page
 from app.integrations.shopify_client import configure_variants_for_product
@@ -7591,6 +7592,69 @@ def _wholesale_variant_title(size_from: Any, size_to: Any, pcs_per_crate: int) -
     return f"{base}*{pcs_per_crate}pcs" if pcs_per_crate > 0 else base
 
 
+def _wholesale_decode_data_url_image(data_url: str, fallback_name: str) -> tuple[str, bytes] | None:
+    try:
+        m = re.match(r"^data:(image/[A-Za-z0-9.+-]+);base64,(.+)$", data_url or "", re.DOTALL)
+        if not m:
+            return None
+        mime = m.group(1).lower()
+        ext = mimetypes.guess_extension(mime) or ".png"
+        if ext == ".jpe":
+            ext = ".jpg"
+        return f"{fallback_name}{ext}", base64.b64decode(m.group(2))
+    except Exception:
+        return None
+
+
+def _wholesale_prepare_storefront_images(
+    product_gid: str,
+    image_url: str | None,
+    catalog_image_url: str | None,
+    alt_base: str,
+) -> list[tuple[str, bytes]]:
+    """Store vendor originals privately and return generated images for product media."""
+    from app.integrations.shopify_client import (
+        set_product_wholesale_image_metafields,
+        upload_remote_image_to_shopify_files,
+    )
+
+    generated_files: list[tuple[str, bytes]] = []
+    metafields: dict[str, str | None] = {}
+    sources = [
+        ("vendor_original_image_url", "vendor_original_shopify_file_url", image_url, "primary"),
+        ("vendor_original_catalog_image_url", "vendor_original_catalog_shopify_file_url", catalog_image_url, "catalog"),
+    ]
+
+    for original_key, file_key, source_url, label in sources:
+        source = (source_url or "").strip()
+        if not source:
+            continue
+
+        metafields[original_key] = source
+        try:
+            file_info = upload_remote_image_to_shopify_files(source, f"{alt_base} vendor original {label}", store=WHOLESALE_STORE)
+            file_url = str((file_info or {}).get("url") or "").strip()
+            if file_url:
+                metafields[file_key] = file_url
+        except Exception:
+            pass
+
+        try:
+            clean_data_url = gen_clean_wholesale_product_image(source)
+            decoded = _wholesale_decode_data_url_image(clean_data_url or "", f"wholesale-clean-{label}-{uuid4().hex[:8]}")
+            if decoded:
+                generated_files.append(decoded)
+        except Exception:
+            pass
+
+    try:
+        set_product_wholesale_image_metafields(product_gid, metafields, store=WHOLESALE_STORE)
+    except Exception:
+        pass
+
+    return generated_files
+
+
 def _wholesale_product_ai_payload(
     *,
     vendor_name: str,
@@ -7694,13 +7758,11 @@ def _wholesale_finalize_product_background(
             _set_inventory_item_cost,
             update_product_description,
             update_product_title,
-            upload_images_to_product,
+            upload_image_attachments_to_product,
         )
 
         final_title = (title or "").strip() or initial_title
         final_description = (description or "").strip()
-
-        image_urls = [url for url in [image_url, catalog_image_url] if url]
 
         ai_data: dict[str, Any] = {}
         if image_url:
@@ -7759,12 +7821,18 @@ def _wholesale_finalize_product_background(
             except Exception:
                 pass
 
-        if image_urls:
+        generated_images = _wholesale_prepare_storefront_images(
+            product_gid,
+            image_url,
+            catalog_image_url,
+            final_title,
+        )
+        if generated_images:
             try:
                 alt_texts = [final_title]
-                if len(image_urls) > 1:
+                if len(generated_images) > 1:
                     alt_texts.append(f"{final_title} catalog image")
-                upload_images_to_product(product_gid, image_urls, alt_texts, store=WHOLESALE_STORE)
+                upload_image_attachments_to_product(product_gid, generated_images, alt_texts, store=WHOLESALE_STORE)
             except Exception:
                 pass
 
@@ -7900,6 +7968,37 @@ def _wholesale_enrich_products_inventory(products: list[dict]) -> list[dict]:
     return products
 
 
+def _wholesale_apply_vendor_original_images(products: list[dict]) -> list[dict]:
+    """Show vendor originals in the dashboard even when storefront media is generated."""
+    from app.integrations.shopify_client import _rest_get_store
+
+    for product in products or []:
+        numeric_id = str(product.get("id") or "").strip()
+        if not numeric_id:
+            continue
+        original_url = ""
+        try:
+            data = _rest_get_store(WHOLESALE_STORE, f"/products/{numeric_id}/metafields.json?namespace=wholesale")
+            for metafield in (data or {}).get("metafields", []) or []:
+                key = str((metafield or {}).get("key") or "")
+                if key == "vendor_original_shopify_file_url":
+                    original_url = str((metafield or {}).get("value") or "").strip()
+                    break
+                if key == "vendor_original_image_url" and not original_url:
+                    original_url = str((metafield or {}).get("value") or "").strip()
+        except Exception:
+            continue
+        if not original_url:
+            continue
+
+        image = {"src": original_url}
+        existing_images = product.get("images") if isinstance(product.get("images"), list) else []
+        product["images"] = [image] + [img for img in existing_images if (img or {}).get("src") != original_url]
+        product["image"] = image
+        product["vendor_original_image_url"] = original_url
+    return products
+
+
 def _wholesale_variant_availability(variant_ids: list[int]) -> dict[int, dict[str, Any]]:
     from app.integrations.shopify_client import _rest_get_store
 
@@ -7947,6 +8046,7 @@ async def api_wholesale_vendor_products(vendor_id: str):
         vendor_name = vendor.get("name", vid)
         from app.integrations.shopify_client import list_products_by_vendor
         products = list_products_by_vendor(vendor_name, store=WHOLESALE_STORE, limit=250)
+        products = await run_in_threadpool(_wholesale_apply_vendor_original_images, products)
         products = await run_in_threadpool(_wholesale_enrich_products_inventory, products)
         return {"data": products}
     except Exception as e:
