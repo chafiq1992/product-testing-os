@@ -14,6 +14,15 @@ def _try_import_genai():
         return None
 
 
+def _try_import_google_genai():
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+        return genai, types
+    except Exception:
+        return None, None
+
+
 def _to_data_url(mime: str, b: bytes) -> str:
     import base64
     return f"data:{mime};base64,{base64.b64encode(b).decode('ascii')}"
@@ -71,6 +80,83 @@ def _extract_inline_images(resp) -> List[Tuple[str, bytes]]:
     return results
 
 
+def _extract_google_genai_images(resp) -> List[Tuple[str, bytes]]:
+    """Extract image bytes from google-genai responses."""
+    results: List[Tuple[str, bytes]] = []
+
+    def handle_part(part) -> None:
+        try:
+            inline = getattr(part, "inline_data", None)
+            if inline:
+                mime = getattr(inline, "mime_type", None) or "image/png"
+                data = getattr(inline, "data", None)
+                if isinstance(data, (bytes, bytearray)):
+                    results.append((mime, bytes(data)))
+                elif data:
+                    import base64
+                    results.append((mime, base64.b64decode(data)))
+                return
+
+            as_image = getattr(part, "as_image", None)
+            if callable(as_image):
+                img = as_image()
+                if img:
+                    import io
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    results.append(("image/png", buf.getvalue()))
+        except Exception:
+            return
+
+    for part in getattr(resp, "parts", None) or []:
+        handle_part(part)
+
+    for candidate in getattr(resp, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            handle_part(part)
+
+    return results
+
+
+def _generate_with_google_genai(
+    api_key: str,
+    mime: str,
+    blob: bytes,
+    prompt: str,
+    num_images: int,
+) -> List[str]:
+    genai, types = _try_import_google_genai()
+    if not (genai and types):
+        return []
+
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        _log.warning("google-genai client unavailable: %s", e)
+        return []
+
+    images: List[str] = []
+    for model_name in ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image-preview"):
+        for _ in range(max(1, int(num_images))):
+            try:
+                image_part = types.Part.from_bytes(data=blob, mime_type=mime)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt, image_part],
+                    config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+                )
+                pairs = _extract_google_genai_images(response)
+                for mm, bb in pairs:
+                    images.append(_to_data_url(mm or "image/png", bb))
+            except Exception as e:
+                _log.warning("google-genai image model %s failed: %s", model_name, e)
+                continue
+        if images:
+            break
+    return images
+
+
 def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -> List[str]:
     """Generate ad images using Google Gemini/Imagen, conditioned on a source image.
 
@@ -79,10 +165,11 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
     """
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     genai = _try_import_genai()
+    google_genai, _ = _try_import_google_genai()
 
     # Fallback: no library or key → return the source image URL
-    if not (genai and api_key):
-        _log.warning("Gemini image generation unavailable: sdk=%s api_key=%s", bool(genai), bool(api_key))
+    if not (api_key and (genai or google_genai)):
+        _log.warning("Gemini image generation unavailable: legacy_sdk=%s new_sdk=%s api_key=%s", bool(genai), bool(google_genai), bool(api_key))
         return [image_url]
 
     fetched = _fetch_image_bytes(image_url)
@@ -94,13 +181,17 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
     mime, blob = fetched
 
     try:
-        # Configure client
-        genai.configure(api_key=api_key)
-
         # Prefer the requested Gemini image preview; fall back to the previous
         # working Flash image model before trying legacy Imagen paths.
-        images: List[str] = []
+        images: List[str] = _generate_with_google_genai(api_key, mime, blob, prompt, num_images)
+
+        if genai:
+            genai.configure(api_key=api_key)
         for model_name in ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image-preview"):
+            if images:
+                break
+            if not genai:
+                continue
             try:
                 model = genai.GenerativeModel(model_name)
                 count = max(1, int(num_images))
