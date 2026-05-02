@@ -91,28 +91,30 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
         # Configure client
         genai.configure(api_key=api_key)
 
-        # Prefer Gemini 2.5 Flash Image preview; fall back to Imagen 3 or source image
+        # Prefer the requested Gemini image preview; fall back to the previous
+        # working Flash image model before trying legacy Imagen paths.
         images: List[str] = []
-        # Attempt Gemini 2.5 Flash Image generation with image conditioning
-        try:
-            model = genai.GenerativeModel("gemini-3.1-flash-image-preview")
-            # Some SDKs support batch via generation_config num_images; otherwise loop
-            count = max(1, int(num_images))
-            for _ in range(count):
-                try:
-                    out = model.generate_content([
-                        {"mime_type": mime, "data": blob},
-                        prompt,
-                    ])
-                    pairs = _extract_inline_images(out)
-                    for mm, bb in pairs:
-                        images.append(_to_data_url(mm or "image/png", bb))
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        for model_name in ("gemini-3.1-flash-image-preview", "gemini-2.5-flash-image-preview"):
+            try:
+                model = genai.GenerativeModel(model_name)
+                count = max(1, int(num_images))
+                for _ in range(count):
+                    try:
+                        out = model.generate_content([
+                            {"mime_type": mime, "data": blob},
+                            prompt,
+                        ])
+                        pairs = _extract_inline_images(out)
+                        for mm, bb in pairs:
+                            images.append(_to_data_url(mm or "image/png", bb))
+                    except Exception:
+                        continue
+                if images:
+                    break
+            except Exception:
+                continue
 
-        # If Gemini 2.5 path failed, try Imagen edit, then Imagen generate as legacy fallbacks
+        # If Gemini paths failed, try Imagen edit, then Imagen generate as legacy fallbacks
         if not images:
             try:
                 model = genai.GenerativeModel("imagen-3.0-edit-001")

@@ -7606,6 +7606,21 @@ def _wholesale_decode_data_url_image(data_url: str, fallback_name: str) -> tuple
         return None
 
 
+def _wholesale_store_original_image_metafields(
+    product_gid: str,
+    image_url: str | None,
+    catalog_image_url: str | None,
+) -> None:
+    """Persist vendor-visible original image URLs immediately after product creation."""
+    from app.integrations.shopify_client import set_product_wholesale_image_metafields
+
+    values = {
+        "vendor_original_image_url": (image_url or "").strip() or None,
+        "vendor_original_catalog_image_url": (catalog_image_url or "").strip() or None,
+    }
+    set_product_wholesale_image_metafields(product_gid, values, store=WHOLESALE_STORE)
+
+
 def _wholesale_prepare_storefront_images(
     product_gid: str,
     image_url: str | None,
@@ -7636,21 +7651,23 @@ def _wholesale_prepare_storefront_images(
             file_url = str((file_info or {}).get("url") or "").strip()
             if file_url:
                 metafields[file_key] = file_url
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger("app.wholesale").warning("Failed to upload vendor original to Shopify Files: %s", e)
 
         try:
             clean_data_url = gen_clean_wholesale_product_image(source)
             decoded = _wholesale_decode_data_url_image(clean_data_url or "", f"wholesale-clean-{label}-{uuid4().hex[:8]}")
             if decoded:
                 generated_files.append(decoded)
-        except Exception:
-            pass
+            else:
+                logging.getLogger("app.wholesale").warning("No generated wholesale image returned for %s", label)
+        except Exception as e:
+            logging.getLogger("app.wholesale").warning("Failed to generate wholesale image for %s: %s", label, e)
 
     try:
         set_product_wholesale_image_metafields(product_gid, metafields, store=WHOLESALE_STORE)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("app.wholesale").warning("Failed to save wholesale image metafields: %s", e)
 
     return generated_files
 
@@ -8183,6 +8200,15 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         catalog_image_url = (req.catalog_image_url or "").strip() if req.catalog_image_url else None
         product_gid = ((result or {}).get("product") or {}).get("id") if isinstance(result, dict) else None
         if product_gid:
+            try:
+                await run_in_threadpool(
+                    _wholesale_store_original_image_metafields,
+                    product_gid,
+                    image_url,
+                    catalog_image_url,
+                )
+            except Exception as e:
+                logging.getLogger("app.wholesale").warning("Failed to save original wholesale image before background task: %s", e)
             background_tasks.add_task(
                 _wholesale_configure_product_background,
                 product_gid,
