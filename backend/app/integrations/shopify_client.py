@@ -230,6 +230,23 @@ mutation FileCreate($files: [FileCreateInput!]!) {
 }
 """
 
+FILE_NODE = """
+query FileNode($id: ID!) {
+  node(id: $id) {
+    ... on MediaImage {
+      id
+      fileStatus
+      image { url }
+    }
+    ... on GenericFile {
+      id
+      fileStatus
+      url
+    }
+  }
+}
+"""
+
 TRANSLATABLE_RESOURCES_BY_IDS = """
 query TranslatableResourcesByIds($resourceIds: [ID!]!, $first: Int!, $locale: String!) {
   translatableResourcesByIds(first: $first, resourceIds: $resourceIds) {
@@ -2257,12 +2274,28 @@ def upload_remote_image_to_shopify_files(image_url: str, alt: str | None = None,
     })
     files = ((data or {}).get("fileCreate") or {}).get("files") or []
     file_obj = files[0] if files else {}
+    file_id = (file_obj or {}).get("id")
     image = (file_obj or {}).get("image") or {}
-    url = image.get("url") or (file_obj or {}).get("url") or src
+    url = image.get("url") or (file_obj or {}).get("url")
+    status = (file_obj or {}).get("fileStatus")
+    if file_id and (not url or url == src or status not in ("READY", "UPLOADED", None)):
+        import time
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                node_data = _gql_store(store, FILE_NODE, {"id": file_id})
+                node = (node_data or {}).get("node") or {}
+                image = (node or {}).get("image") or {}
+                url = image.get("url") or (node or {}).get("url") or url
+                status = (node or {}).get("fileStatus") or status
+                if url and url != src:
+                    break
+            except Exception:
+                break
     return {
-        "id": (file_obj or {}).get("id"),
-        "url": url,
-        "status": (file_obj or {}).get("fileStatus"),
+        "id": file_id,
+        "url": url or src,
+        "status": status,
     }
 
 

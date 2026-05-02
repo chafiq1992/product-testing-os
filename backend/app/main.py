@@ -7476,7 +7476,31 @@ async def api_wholesale_upload_image(request: Request, image: UploadFile = File(
         base = (BASE_URL or "").rstrip("/")
         encoded_path = quote(url_path, safe="/:")
         abs_url = f"{base}{encoded_path}" if base else encoded_path
-        return {"data": {"url": abs_url, "filename": filename}}
+        shopify_file_url = ""
+        shopify_file_id = ""
+        try:
+            from app.integrations.shopify_client import upload_remote_image_to_shopify_files
+
+            file_info = await run_in_threadpool(
+                upload_remote_image_to_shopify_files,
+                abs_url,
+                "Wholesale vendor original product image",
+                store=WHOLESALE_STORE,
+            )
+            shopify_file_url = str((file_info or {}).get("url") or "").strip()
+            shopify_file_id = str((file_info or {}).get("id") or "").strip()
+        except Exception as e:
+            logging.getLogger("app.wholesale").exception("Failed to upload wholesale vendor image to Shopify Files: %r", e)
+        durable_url = shopify_file_url or abs_url
+        return {
+            "data": {
+                "url": durable_url,
+                "filename": filename,
+                "source_url": abs_url,
+                "shopify_file_url": shopify_file_url or None,
+                "shopify_file_id": shopify_file_id or None,
+            }
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -7646,10 +7670,13 @@ def _wholesale_prepare_storefront_images(
 
         metafields[original_key] = source
         try:
-            file_info = upload_remote_image_to_shopify_files(source, f"{alt_base} vendor original {label}", store=WHOLESALE_STORE)
-            file_url = str((file_info or {}).get("url") or "").strip()
-            if file_url:
-                metafields[file_key] = file_url
+            if "cdn.shopify.com" in source.lower():
+                metafields[file_key] = source
+            else:
+                file_info = upload_remote_image_to_shopify_files(source, f"{alt_base} vendor original {label}", store=WHOLESALE_STORE)
+                file_url = str((file_info or {}).get("url") or "").strip()
+                if file_url:
+                    metafields[file_key] = file_url
         except Exception as e:
             logging.getLogger("app.wholesale").warning("Failed to upload vendor original to Shopify Files: %s", e)
 

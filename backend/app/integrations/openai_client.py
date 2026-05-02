@@ -268,19 +268,19 @@ def gen_clean_wholesale_product_image_openai(image_url: str) -> str | None:
         fh.write(resp.content)
         fh.flush()
         prompt = (
-            "Edit the vendor product photo into ONE clean, detailed, photorealistic Shopify product image for a wholesale storefront.\n\n"
+            "Edit the vendor product photo into ONE clean, professional Shopify product image for a wholesale storefront.\n\n"
             "Goal:\n"
-            "Create a premium ecommerce catalog photo that preserves the real product accurately while improving the presentation.\n\n"
+            "Create a photorealistic ecommerce catalog image that keeps the real product accurate while making the presentation clean, premium, and attractive.\n\n"
             "Composition:\n"
             "Show ALL product variants visible in the source photo together in this single square image. Include every visible color, style, pair, item, and variant. Arrange them neatly in a balanced catalog layout, centered with generous padding, on a plain bright white or very light neutral opaque background. Add only a subtle realistic contact shadow.\n\n"
-            "Preserve exact product detail:\n"
-            "Keep the product identity, silhouette, geometry, proportions, materials, colors, stitching, seams, texture, decorations, gems, bows, straps, buckles, soles, tread patterns, closures, edges, fabric grain, leather/plastic/rubber finish, and all functional details for every variant. The result must still look like the same real products from the vendor photo.\n\n"
+            "Preserve:\n"
+            "Preserve the exact product identity, silhouette, geometry, proportions, materials, colors, stitching, texture, decorations, soles, straps, closures, and functional details for every variant. The generated image must still look like the same real products from the vendor photo.\n\n"
             "Clean up:\n"
             "Remove the original background, clutter, table surfaces, hands, people, packaging distractions, price tags, size stickers, handwritten marks, QR codes, barcodes, watermarks, store names, brand names, logos, and any visible numbers or text.\n\n"
             "Do not:\n"
             "Do not create a lifestyle scene. Do not add models, hands, props, labels, badges, text, logos, packaging, extra products, invented variants, duplicated variants, or changed colors. Do not choose only one variant. Do not merge variants together. Do not restyle the product.\n\n"
             "Output:\n"
-            "A sharp, highly detailed, marketplace-ready product photo with crisp edges, no halos or fringing, natural studio lighting, realistic shadows, and a clean Shopify-ready square crop."
+            "A sharp, photorealistic, marketplace-ready product photo with crisp edges, no halos or fringing, natural lighting, realistic shadows, and a clean Shopify-ready square crop."
         )
         with open(fh.name, "rb") as image_file:
             result = client.images.edit(
