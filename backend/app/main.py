@@ -5660,6 +5660,808 @@ WHOLESALE_DASHBOARD_TAG = "wholesale_vendor_dashboard"
 WHOLESALE_CUSTOMER_TAG = "wholesale_vendor_customer"
 
 
+THEME_EDITOR_SWATCH_SNIPPET_KEY = "snippets/ptos-variant-swatches.liquid"
+THEME_EDITOR_SWATCH_SECTION_KEY = "sections/ptos-variant-swatches.liquid"
+THEME_EDITOR_SWATCH_LAYOUT_MARKER = "<!-- PTOS_THEME_EDITOR_SWATCHES -->"
+
+THEME_EDITOR_SWATCH_SNIPPET = r"""{% comment %}
+  Product Testing OS variant swatch upgrade.
+  Installed by the app to make mixed color and size bundle variants easier to read.
+{% endcomment %}
+{% if request.page_type == 'product' %}
+<style>
+  .ptos-swatch-ready variant-radios fieldset,
+  .ptos-swatch-ready variant-selects fieldset,
+  .ptos-swatch-ready .product-form__input {
+    gap: 10px;
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio'] + label.ptos-option-label {
+    border-radius: 12px;
+    border: 1.5px solid #d4d7de;
+    background: #fff;
+    color: #0f172a;
+    min-height: 82px;
+    padding: 0;
+    overflow: visible;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, .04);
+    transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio'] + label.ptos-option-label:hover {
+    transform: translateY(-1px);
+    border-color: rgba(15, 23, 42, .28);
+    box-shadow: 0 9px 18px rgba(15, 23, 42, .08);
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-option-label {
+    border-color: #111827;
+    background: #f7f8fa;
+    color: #0f172a;
+    box-shadow: 0 0 0 1px #111827, 0 9px 18px rgba(15, 23, 42, .10);
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio']:disabled + label.ptos-option-label {
+    opacity: .42;
+    transform: none;
+  }
+
+  .ptos-swatch-ready .ptos-enhance-size input[type='radio'] + label:not([data-ptos-rendered-size]),
+  .ptos-swatch-ready .ptos-enhance-color input[type='radio'] + label:not([data-ptos-rendered-color]) {
+    opacity: 0;
+  }
+
+  .ptos-swatch-label {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 140px;
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+
+  .ptos-size-card {
+    position: relative;
+    display: grid;
+    gap: 9px;
+    min-width: 140px;
+    padding: 16px 14px 15px;
+    text-align: center;
+  }
+
+  .ptos-size-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+  }
+
+  .ptos-size-to {
+    color: #1f2937;
+    font-size: 15px;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .ptos-size-eyebrow {
+    display: none;
+  }
+
+  .ptos-size-range {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #0f172a;
+    font-size: 20px;
+    font-weight: 950;
+  }
+
+  .ptos-size-pack {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: center;
+    width: 100%;
+    max-width: 100%;
+    border-radius: 0;
+    background: transparent;
+    color: #374151;
+    border: 0;
+    padding: 0;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .ptos-size-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 0;
+    background: transparent;
+    color: #374151;
+    font-size: 0;
+    font-weight: 950;
+    line-height: 1;
+  }
+
+  .ptos-size-icon::before {
+    content: '';
+    width: 10px;
+    height: 10px;
+    border: 2px solid currentColor;
+    border-top: 0;
+    border-left: 0;
+    transform: rotate(45deg);
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio'] + label.ptos-color-label,
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-color-label {
+    min-height: 0;
+    border: 1.5px solid #d4d7de;
+    border-radius: 14px;
+    background: #fff;
+    color: #111827;
+    padding: 0;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, .04);
+    transform: none;
+    overflow: hidden;
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-color-label {
+    border-color: #111827;
+    box-shadow: 0 0 0 1px #111827, 0 9px 18px rgba(15, 23, 42, .10);
+  }
+
+  .ptos-color-card {
+    display: grid;
+    min-width: 154px;
+    max-width: 210px;
+    line-height: 1.1;
+    direction: ltr;
+  }
+
+  .ptos-color-title {
+    display: block;
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid #e5e7eb;
+    color: #020617;
+    font-size: 13px;
+    font-weight: 950;
+    text-align: center;
+    background: #fff;
+    white-space: normal;
+  }
+
+  .ptos-rtl .ptos-color-title {
+    direction: rtl;
+  }
+
+  .ptos-color-bars {
+    display: grid;
+    min-height: 47px;
+    width: 100%;
+  }
+
+  .ptos-color-bar {
+    display: block;
+    min-width: 46px;
+    box-shadow: inset -1px 0 rgba(15, 23, 42, .13), inset 0 0 0 1px rgba(15, 23, 42, .05);
+  }
+
+  .ptos-color-bar:last-child {
+    box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .05);
+  }
+
+  .ptos-size-check {
+    display: none;
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-option-label .ptos-size-check {
+    display: none;
+  }
+
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-option-label .ptos-size-range,
+  .ptos-swatch-ready .product-form__input input[type='radio']:checked + label.ptos-option-label .ptos-size-pack {
+    color: #020617;
+  }
+
+  .ptos-price-card {
+    margin: 16px 0 18px;
+    max-width: 100%;
+    border: 1px solid #dde1e7;
+    border-radius: 18px;
+    background: #f7f8fa;
+    padding: 24px 28px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04), inset 0 0 0 1px rgba(15, 23, 42, .015);
+    direction: ltr;
+    text-align: left;
+  }
+
+  .ptos-price-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #d8dde5;
+  }
+
+  .ptos-price-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .ptos-price-label {
+    display: block;
+    color: #3f4654;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .ptos-price-unit {
+    color: #020617;
+    font-size: clamp(34px, 7vw, 54px);
+    font-weight: 950;
+    line-height: .95;
+    white-space: nowrap;
+  }
+
+  .ptos-price-crate {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .ptos-price-crate-value {
+    color: #020617;
+    font-size: clamp(30px, 6vw, 48px);
+    font-weight: 950;
+    line-height: .95;
+    max-width: 12ch;
+    word-break: normal;
+  }
+
+  .ptos-price-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding-top: 18px;
+  }
+
+  .ptos-price-offer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .ptos-price-compare {
+    color: #76777d;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: line-through;
+    white-space: nowrap;
+  }
+
+  .ptos-price-save {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    background: #fd761a;
+    color: #5c2400;
+    font-size: 12px;
+    font-weight: 900;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .ptos-price-stock {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 46px;
+    padding: 0 18px;
+    border-radius: 999px;
+    background: #e6e8ea;
+    color: #565e74;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+
+  .ptos-price-stock-icon {
+    position: relative;
+    width: 17px;
+    height: 17px;
+    border: 2px solid currentColor;
+    border-radius: 3px;
+    box-sizing: border-box;
+  }
+
+  .ptos-price-stock-icon::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 4px;
+    height: 2px;
+    background: currentColor;
+  }
+
+  .ptos-price-stock-icon::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    bottom: 3px;
+    height: 5px;
+    border: 2px solid currentColor;
+    border-top: 0;
+    border-radius: 0 0 2px 2px;
+    box-sizing: border-box;
+  }
+
+  .ptos-rtl .product__info-container,
+  .ptos-rtl .product__info-container h1,
+  .ptos-rtl .product__info-container h2,
+  .ptos-rtl .product__info-container h3,
+  .ptos-rtl .product__info-container p,
+  .ptos-rtl .product__info-container legend,
+  .ptos-rtl .product__info-container label:not(.ptos-option-label):not(.ptos-color-label),
+  .ptos-rtl .product__title,
+  .ptos-rtl .price,
+  .ptos-rtl .badge {
+    direction: rtl;
+    text-align: right;
+  }
+
+  .ptos-rtl .product__media-wrapper,
+  .ptos-rtl slider-component,
+  .ptos-rtl .thumbnail-slider,
+  .ptos-rtl .product-media-container {
+    direction: ltr;
+  }
+
+  .ptos-rtl .product,
+  .ptos-rtl .product__media-wrapper,
+  .ptos-rtl .product__info-wrapper,
+  .ptos-rtl .product-form,
+  .ptos-rtl variant-radios,
+  .ptos-rtl variant-selects,
+  .ptos-rtl .product-form__input {
+    direction: ltr;
+  }
+
+  .ptos-rtl .ptos-price-card,
+  .ptos-rtl .ptos-size-card,
+  .ptos-rtl .ptos-size-range,
+  .ptos-rtl .ptos-size-pack {
+    direction: ltr;
+  }
+
+  .ptos-rtl .ptos-price-card,
+  .ptos-rtl .ptos-price-compare,
+  .ptos-rtl .ptos-price-label,
+  .ptos-rtl .ptos-price-unit,
+  .ptos-rtl .ptos-price-crate-value,
+  .ptos-rtl .ptos-price-save,
+  .ptos-rtl .ptos-price-stock,
+  .ptos-rtl .ptos-color-card {
+    text-align: left;
+  }
+
+  @media (max-width: 749px) {
+    .ptos-swatch-ready .product-form__input input[type='radio'] + label.ptos-option-label {
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .ptos-swatch-label,
+    .ptos-size-card {
+      min-width: 0;
+    }
+
+    .ptos-price-card {
+      max-width: 100%;
+      padding: 20px 18px;
+    }
+
+    .ptos-price-grid {
+      gap: 16px;
+      padding-bottom: 16px;
+    }
+
+    .ptos-price-offer {
+      gap: 10px;
+    }
+
+    .ptos-price-unit {
+      font-size: clamp(30px, 10vw, 42px);
+    }
+
+    .ptos-price-crate-value {
+      font-size: clamp(24px, 8vw, 38px);
+    }
+  }
+</style>
+<script>
+  (function () {
+    if (window.PTOSVariantSwatchesLoaded) return;
+    window.PTOSVariantSwatchesLoaded = true;
+
+    function detectRtl() {
+      var html = document.documentElement;
+      var lang = (html.getAttribute('lang') || '').toLowerCase();
+      var dir = (html.getAttribute('dir') || document.body.getAttribute('dir') || '').toLowerCase();
+      var bodyText = (document.querySelector('h1, .product__title, .product__info-container') || document.body).textContent || '';
+      if (dir === 'rtl' || lang.indexOf('ar') === 0 || /[\u0600-\u06FF]/.test(bodyText)) {
+        html.classList.add('ptos-rtl');
+      }
+    }
+
+    var colorMap = {
+      white: '#ffffff', black: '#111111', pink: '#f7a8c8', red: '#dc2626',
+      blue: '#2563eb', navy: '#1e3a8a', green: '#16a34a', yellow: '#facc15',
+      orange: '#f97316', purple: '#9333ea', grey: '#9ca3af', gray: '#9ca3af',
+      beige: '#d6c6a8', cream: '#f5f0df', brown: '#8b5e34', tan: '#d2b48c',
+      gold: '#d4af37', silver: '#c0c0c0', ivory: '#fffff0',
+      'off white': '#f8f4e8', 'light pink': '#f9c6d6', 'hot pink': '#ec4899',
+      'light blue': '#93c5fd', 'sky blue': '#7dd3fc', 'dark blue': '#1d4ed8',
+      'dark green': '#166534', burgundy: '#7f1d1d', khaki: '#b7a57a',
+      'أبيض': '#ffffff', 'ابيض': '#ffffff', 'بيضاء': '#ffffff',
+      'أسود': '#111111', 'اسود': '#111111', 'سوداء': '#111111',
+      'وردي': '#f0a0c2', 'زهري': '#f0a0c2', 'بمبي': '#f0a0c2',
+      'أحمر': '#dc2626', 'احمر': '#dc2626', 'أزرق': '#2563eb', 'ازرق': '#2563eb',
+      'أخضر': '#16a34a', 'اخضر': '#16a34a', 'رمادي': '#9ca3af', 'بنفسجي': '#9333ea',
+      'بيج': '#d6c6a8', 'بني': '#8b5e34'
+    };
+
+    function clean(text) {
+      return String(text || '')
+        .replace(/variant\s+sold\s+out\s+or\s+unavailable/ig, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function esc(text) {
+      return clean(text).replace(/[&<>"']/g, function (ch) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+      });
+    }
+
+    function optionText(input, label) {
+      var value = input && input.value ? input.value : '';
+      if (value) return clean(value);
+      var clone = label.cloneNode(true);
+      Array.prototype.forEach.call(clone.querySelectorAll('.visually-hidden, .hidden, [aria-hidden="true"]'), function (node) {
+        node.parentNode && node.parentNode.removeChild(node);
+      });
+      return clean(clone.textContent);
+    }
+
+    function colorFor(name) {
+      var key = clean(name).toLowerCase();
+      return colorMap[key] || key;
+    }
+
+    function optionKind(fieldset) {
+      var legend = clean((fieldset.querySelector('legend') || {}).textContent).toLowerCase();
+      var labels = Array.prototype.map.call(fieldset.querySelectorAll('input[type="radio"]'), function (input) {
+        var label = input.nextElementSibling;
+        return optionText(input, label || fieldset);
+      }).join(' / ').toLowerCase();
+      if (/colou?r|couleur|لون|color/.test(legend) || /\/.+\//.test(labels)) return 'color';
+      if (/size|shoe|taille|pointure|الحجم|مقاس|قياس/.test(legend) || /\d+\s*[-\u2013]\s*\d+(?:\s*[*x]\s*\d+\s*(?:pcs?|قطعة|قطع)?)?/.test(labels)) return 'size';
+      return '';
+    }
+
+    function renderColor(label, text) {
+      var raw = clean(text);
+      var parts = raw.split(/[\/,+&]+/).map(clean).filter(Boolean).slice(0, 4);
+      if (!parts.length) return;
+      label.classList.add('ptos-color-label');
+      if (label.getAttribute('data-ptos-rendered-color') === raw) return;
+      label.setAttribute('data-ptos-rendered-color', raw);
+      label.innerHTML =
+        '<span class="ptos-color-card">' +
+          '<span class="ptos-color-title">' + esc(raw) + '</span>' +
+          '<span class="ptos-color-bars" style="grid-template-columns:repeat(' + parts.length + ',minmax(0,1fr))">' +
+            parts.map(function (part) {
+              return '<span class="ptos-color-bar" title="' + esc(part) + '" style="background:' + esc(colorFor(part)) + '"></span>';
+            }).join('') +
+          '</span>' +
+        '</span>';
+    }
+
+    function renderSize(label, text) {
+      var raw = clean(text);
+      var match = raw.match(/(\d+(?:\.\d+)?)\s*[-\u2013]\s*(\d+(?:\.\d+)?)(?:\s*[*x]\s*(\d+)\s*(?:pcs?|قطعة|قطع)?)?/i);
+      if (!match) return;
+      var pcs = match[3] || '24';
+      label.classList.add('ptos-option-label');
+      if (label.getAttribute('data-ptos-rendered-size') === raw) return;
+      label.setAttribute('data-ptos-rendered-size', raw);
+      label.innerHTML =
+        '<span class="ptos-size-card">' +
+          '<span class="ptos-size-check" aria-hidden="true"></span>' +
+          '<span class="ptos-size-row"><span class="ptos-size-range"><strong>' + esc(match[1]) + '</strong><span class="ptos-size-to">TO</span><strong>' + esc(match[2]) + '</strong></span></span>' +
+          '<span class="ptos-size-pack"><span class="ptos-size-icon" aria-hidden="true"></span>' + esc(pcs) + ' pcs / pack</span>' +
+        '</span>';
+    }
+
+    function currentPackSize() {
+      var fieldsets = document.querySelectorAll('variant-radios fieldset, variant-selects fieldset, .product-form__input');
+      for (var i = 0; i < fieldsets.length; i += 1) {
+        if (optionKind(fieldsets[i]) !== 'size') continue;
+        var checked = fieldsets[i].querySelector('input[type="radio"]:checked');
+        var text = checked ? optionText(checked, checked.nextElementSibling || fieldsets[i]) : '';
+        var match = text.match(/[*x]\s*(\d+)\s*(?:pcs?|قطعة|قطع)?/i);
+        if (match) return match[1];
+      }
+      return '24';
+    }
+
+    function findProductRoot() {
+      return document.querySelector('.product__info-container') || document.querySelector('product-info') || document.querySelector('.product') || document.body;
+    }
+
+    function findCratePriceLine(root) {
+      var nodes = root.querySelectorAll('p,div,span,strong,b');
+      var best = null;
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        if (el.closest('.ptos-price-card')) continue;
+        var text = clean(el.textContent);
+        if (/(crate\s*price|سعر\s*الكرتونة)/i.test(text) && text.length < 220) {
+          if (!moneyTokens(cratePriceText(text)).length) continue;
+          var candidate = el;
+          while (
+            candidate.parentElement &&
+            candidate.parentElement !== root &&
+            candidate.parentElement.children.length <= 8
+          ) {
+            var parentText = clean(candidate.parentElement.textContent);
+            if (!/(crate\s*price|سعر\s*الكرتونة)/i.test(parentText)) break;
+            if (!moneyTokens(cratePriceText(parentText)).length) break;
+            if (parentText.length > 260) break;
+            candidate = candidate.parentElement;
+          }
+          if (!best || clean(candidate.textContent).length < clean(best.textContent).length) best = candidate;
+        }
+      }
+      return best;
+    }
+
+    function findUnitPriceLine(root) {
+      var nodes = root.querySelectorAll('p,div,span,strong,b');
+      var best = null;
+      for (var i = 0; i < nodes.length; i += 1) {
+        var el = nodes[i];
+        if (el.closest('.ptos-price-card')) continue;
+        var text = clean(el.textContent);
+        if (/(unit\s*price|سعر\s*الوحدة)/i.test(text) && text.length < 180) {
+          if (!moneyTokens(unitPriceText(text)).length) continue;
+          var candidate = el;
+          while (
+            candidate.parentElement &&
+            candidate.parentElement !== root &&
+            candidate.parentElement.children.length <= 8
+          ) {
+            var parentText = clean(candidate.parentElement.textContent);
+            if (!/(unit\s*price|سعر\s*الوحدة)/i.test(parentText)) break;
+            if (!moneyTokens(unitPriceText(parentText)).length) break;
+            if (parentText.length > 220) break;
+            candidate = candidate.parentElement;
+          }
+          if (!best || clean(candidate.textContent).length < clean(best.textContent).length) best = candidate;
+        }
+      }
+      return best;
+    }
+
+    function moneyTokens(text) {
+      var tokens = clean(text).match(/(?:Dh\s*)[\d,]+(?:[.]\d{1,2})?\s*(?:MAD|dh)?|[\d,]+(?:[.]\d{1,2})?\s*(?:MAD|dh)/ig) || [];
+      return tokens.map(clean).filter(function (token) { return /\d/.test(token); });
+    }
+
+    function cratePriceText(text) {
+      var source = clean(text);
+      var match = source.match(/(?:crate\s*price|سعر\s*الكرتونة)\s*:?\s*([\s\S]*)/i);
+      return clean(match ? match[1] : source);
+    }
+
+    function unitPriceText(text) {
+      var source = clean(text);
+      var match = source.match(/(?:unit\s*price|سعر\s*الوحدة)\s*:?\s*([\s\S]*)/i);
+      return clean(match ? match[1] : source);
+    }
+
+    function discountPercent(original, current) {
+      var parse = function (value) {
+        var normalized = String(value || '').replace(/[^\d.,]/g, '').replace(/,/g, '');
+        var num = parseFloat(normalized);
+        return isFinite(num) ? num : 0;
+      };
+      var a = parse(original);
+      var b = parse(current);
+      if (!(a > 0) || !(b > 0) || a <= b) return '';
+      return String(Math.round(((a - b) / a) * 100));
+    }
+
+    function hideCratePriceSources(root) {
+      var nodes = root.querySelectorAll('p,div,span,strong,b');
+      Array.prototype.forEach.call(nodes, function (node) {
+        if (node.closest('.ptos-price-card')) return;
+        var text = clean(node.textContent);
+        if (!/(crate\s*price|سعر\s*الكرتونة)/i.test(text)) return;
+        if (!moneyTokens(cratePriceText(text)).length) return;
+        node.style.display = 'none';
+        node.hidden = true;
+        node.setAttribute('data-ptos-price-source', 'true');
+      });
+    }
+
+    function hideUnitPriceSources(root) {
+      var nodes = root.querySelectorAll('p,div,span,strong,b');
+      Array.prototype.forEach.call(nodes, function (node) {
+        if (node.closest('.ptos-price-card')) return;
+        var text = clean(node.textContent);
+        if (!/(unit\s*price|سعر\s*الوحدة)/i.test(text)) return;
+        if (!moneyTokens(unitPriceText(text)).length) return;
+        node.style.display = 'none';
+        node.hidden = true;
+        node.setAttribute('data-ptos-price-source', 'true');
+      });
+    }
+
+    function enhancePriceCard() {
+      var root = findProductRoot();
+      var crateLine = findCratePriceLine(root);
+      var unitLine = findUnitPriceLine(root);
+      if (!crateLine && !unitLine) return;
+      var cratePrices = crateLine ? moneyTokens(cratePriceText(crateLine.textContent)) : [];
+      var unitPrices = unitLine ? moneyTokens(unitPriceText(unitLine.textContent)) : [];
+      if (!cratePrices.length && !unitPrices.length) return;
+      var crate = cratePrices.length ? cratePrices[cratePrices.length - 1] : '';
+      var compare = cratePrices.length > 1 ? cratePrices[0] : '';
+      var unit = unitPrices.length ? unitPrices[0] : '';
+      if (compare && unit && clean(compare).toLowerCase() === clean(unit).toLowerCase()) compare = '';
+      if (!unit && compare && /dh/i.test(compare) && !/mad/i.test(compare)) {
+        unit = compare;
+        compare = '';
+      }
+      if (!unit) unit = crate;
+      var card = root.querySelector('.ptos-price-card');
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'ptos-price-card';
+        (unitLine || crateLine).insertAdjacentElement('beforebegin', card);
+      }
+      var pack = currentPackSize();
+      var signature = [unit, crate, compare, pack].join('|');
+      if (card.getAttribute('data-ptos-price-signature') === signature) {
+        hideCratePriceSources(root);
+        hideUnitPriceSources(root);
+        return;
+      }
+      var savePct = discountPercent(compare, crate);
+      card.setAttribute('data-ptos-price-signature', signature);
+      card.innerHTML =
+        '<div class="ptos-price-grid">' +
+          '<div class="ptos-price-cell">' +
+            '<span class="ptos-price-label">Unit Price</span>' +
+            '<span class="ptos-price-unit">' + esc(unit) + '</span>' +
+          '</div>' +
+          '<div class="ptos-price-cell">' +
+            '<span class="ptos-price-label">Crate Price</span>' +
+            '<div class="ptos-price-crate"><span class="ptos-price-crate-value">' + esc(crate || unit) + '</span></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="ptos-price-meta">' +
+          (((compare && compare !== crate && compare !== unit) || savePct) ? (
+            '<div class="ptos-price-offer">' +
+              ((compare && compare !== crate && compare !== unit) ? '<span class="ptos-price-compare">Original: ' + esc(compare) + '</span>' : '') +
+              (savePct ? '<span class="ptos-price-save">Save ' + esc(savePct) + '%</span>' : '') +
+            '</div>'
+          ) : '') +
+          '<div class="ptos-price-stock"><span class="ptos-price-stock-icon" aria-hidden="true"></span><span>In Stock &amp; Ready to Ship</span></div>' +
+        '</div>';
+      hideCratePriceSources(root);
+      hideUnitPriceSources(root);
+    }
+
+    function enhance() {
+      document.documentElement.classList.add('ptos-swatch-ready');
+      detectRtl();
+      var fieldsets = document.querySelectorAll('variant-radios fieldset, variant-selects fieldset, .product-form__input');
+      Array.prototype.forEach.call(fieldsets, function (fieldset) {
+        var kind = optionKind(fieldset);
+        if (!kind) return;
+        fieldset.classList.toggle('ptos-enhance-color', kind === 'color');
+        fieldset.classList.toggle('ptos-enhance-size', kind === 'size');
+        Array.prototype.forEach.call(fieldset.querySelectorAll('input[type="radio"]'), function (input) {
+          var label = input.nextElementSibling;
+          if (!label) return;
+          var text = optionText(input, label);
+          if (!text) return;
+          label.setAttribute('data-ptos-option-text', text);
+          if (kind === 'color') renderColor(label, text);
+          if (kind === 'size') renderSize(label, text);
+        });
+      });
+      enhancePriceCard();
+    }
+
+    var enhanceTimer = null;
+    function scheduleEnhance() {
+      if (enhanceTimer) clearTimeout(enhanceTimer);
+      enhanceTimer = setTimeout(enhance, 40);
+      setTimeout(enhance, 180);
+      setTimeout(enhance, 520);
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scheduleEnhance);
+    else scheduleEnhance();
+    document.addEventListener('shopify:section:load', scheduleEnhance);
+    document.addEventListener('change', function (event) {
+      if (event.target && event.target.matches && event.target.matches('variant-radios input, variant-selects input, .product-form__input input, select')) {
+        scheduleEnhance();
+      }
+    }, true);
+    document.addEventListener('click', function (event) {
+      if (event.target && event.target.closest && event.target.closest('variant-radios, variant-selects, .product-form__input')) {
+        scheduleEnhance();
+      }
+    }, true);
+    var observedRoot = findProductRoot();
+    if (window.MutationObserver && observedRoot) {
+      new MutationObserver(scheduleEnhance).observe(observedRoot, { childList: true, subtree: true });
+    }
+  })();
+</script>
+{% endif %}
+"""
+
+THEME_EDITOR_SWATCH_SECTION = r"""{% comment %}
+  Product Testing OS variant swatches.
+  Add this section on product templates when you want the app-managed swatch enhancement.
+{% endcomment %}
+{% render 'ptos-variant-swatches' %}
+
+{% schema %}
+{
+  "name": "Variant swatches",
+  "tag": "section",
+  "class": "section ptos-variant-swatches-section",
+  "settings": [
+    {
+      "type": "paragraph",
+      "content": "Improves mixed color swatches and size bundle labels on product pages."
+    }
+  ],
+  "presets": [
+    {
+      "name": "Variant swatches"
+    }
+  ]
+}
+{% endschema %}
+"""
+
+
 @app.get("/api/wholesale/debug-store-config")
 async def api_wholesale_debug_store_config():
     """Debug endpoint: show how _get_store_config resolves for the MMD store."""
@@ -5699,6 +6501,381 @@ async def api_wholesale_debug_store_config():
             "resolved_shop": resolved_shop,
             "resolved_has_token": resolved_has_token,
         }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class ThemeEditorStoreRequest(BaseModel):
+    store: Optional[str] = None
+
+
+def _inject_theme_editor_swatch_render(layout_content: str) -> tuple[str, bool]:
+    """Add the swatch snippet render to layout/theme.liquid once."""
+    content = layout_content or ""
+    render_block = (
+        f"{THEME_EDITOR_SWATCH_LAYOUT_MARKER}\n"
+        "{% render 'ptos-variant-swatches' %}\n"
+        f"{THEME_EDITOR_SWATCH_LAYOUT_MARKER}"
+    )
+    marker_re = re.escape(THEME_EDITOR_SWATCH_LAYOUT_MARKER)
+    if THEME_EDITOR_SWATCH_LAYOUT_MARKER in content:
+        updated = re.sub(marker_re + r".*?" + marker_re, render_block, content, flags=re.DOTALL)
+        return updated, updated != content
+    if re.search(r"</body\s*>", content, flags=re.IGNORECASE):
+        updated = re.sub(r"</body\s*>", render_block + "\n</body>", content, count=1, flags=re.IGNORECASE)
+        return updated, True
+    return content.rstrip() + "\n" + render_block + "\n", True
+
+
+def _install_theme_editor_swatch_theme(store: str | None = None) -> dict:
+    from app.integrations.shopify_client import get_active_theme_gid, _gql_store
+
+    theme_gid = get_active_theme_gid(store=store)
+    layout_file = "layout/theme.liquid"
+    read_query = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 5) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+    upsert_mutation = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+    layout_data = _gql_store(store, read_query, {"themeId": theme_gid, "filenames": [layout_file]})
+    layout_nodes = ((layout_data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+    layout_content = ""
+    for node in layout_nodes:
+        if node.get("filename") == layout_file:
+            layout_content = (node.get("body") or {}).get("content") or ""
+            break
+    if not layout_content:
+        raise RuntimeError("Could not read layout/theme.liquid from the active theme")
+
+    updated_layout, layout_updated = _inject_theme_editor_swatch_render(layout_content)
+    files = [
+        {
+            "filename": THEME_EDITOR_SWATCH_SNIPPET_KEY,
+            "body": {"type": "TEXT", "value": THEME_EDITOR_SWATCH_SNIPPET},
+        },
+        {
+            "filename": THEME_EDITOR_SWATCH_SECTION_KEY,
+            "body": {"type": "TEXT", "value": THEME_EDITOR_SWATCH_SECTION},
+        },
+    ]
+    if layout_updated:
+        files.append({
+            "filename": layout_file,
+            "body": {"type": "TEXT", "value": updated_layout},
+        })
+
+    upsert_data = _gql_store(store, upsert_mutation, {"themeId": theme_gid, "files": files})
+    payload = (upsert_data or {}).get("themeFilesUpsert") or {}
+    user_errors = payload.get("userErrors") or []
+    if user_errors:
+        raise RuntimeError(f"themeFilesUpsert errors: {user_errors}")
+    upserted = [item.get("filename") for item in (payload.get("upsertedThemeFiles") or [])]
+    return {
+        "installed": True,
+        "theme_gid": theme_gid,
+        "layout_updated": layout_updated,
+        "files": upserted,
+        "section": THEME_EDITOR_SWATCH_SECTION_KEY,
+        "snippet": THEME_EDITOR_SWATCH_SNIPPET_KEY,
+    }
+
+
+def _theme_editor_status(store: str | None = None) -> dict:
+    from app.integrations.shopify_client import get_active_theme_gid, _gql_store, _get_store_config
+
+    cfg = _get_store_config(store)
+    theme_gid = get_active_theme_gid(store=store)
+    filenames = ["layout/theme.liquid", THEME_EDITOR_SWATCH_SNIPPET_KEY, THEME_EDITOR_SWATCH_SECTION_KEY]
+    read_query = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 10) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+    data = _gql_store(store, read_query, {"themeId": theme_gid, "filenames": filenames})
+    nodes = ((data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+    by_name = {node.get("filename"): ((node.get("body") or {}).get("content") or "") for node in nodes}
+    layout = by_name.get("layout/theme.liquid", "")
+    return {
+        "connected": True,
+        "store": store,
+        "shop": cfg.get("SHOP"),
+        "theme_gid": theme_gid,
+        "swatches_installed": bool(
+            THEME_EDITOR_SWATCH_LAYOUT_MARKER in layout
+            and by_name.get(THEME_EDITOR_SWATCH_SNIPPET_KEY)
+            and by_name.get(THEME_EDITOR_SWATCH_SECTION_KEY)
+        ),
+        "files": {
+            "layout": bool(layout),
+            "snippet": bool(by_name.get(THEME_EDITOR_SWATCH_SNIPPET_KEY)),
+            "section": bool(by_name.get(THEME_EDITOR_SWATCH_SECTION_KEY)),
+        },
+    }
+
+
+@app.get("/api/theme-editor/status")
+async def api_theme_editor_status(store: str | None = None):
+    """Return active theme connection and installed enhancement status."""
+    try:
+        resolved_store = (store or "irrakids").strip() or "irrakids"
+        result = await run_in_threadpool(_theme_editor_status, resolved_store)
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e), "data": {"connected": False, "store": store}}
+
+
+@app.post("/api/theme-editor/swatches/install")
+async def api_theme_editor_swatches_install(req: ThemeEditorStoreRequest):
+    """Install the Dawn-compatible swatch enhancement on the active theme."""
+    try:
+        store = (req.store or "irrakids").strip() or "irrakids"
+        result = await run_in_threadpool(_install_theme_editor_swatch_theme, store)
+        return {"data": result}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+THEME_EDITOR_AGENT_DEFAULT_FILES = [
+    "layout/theme.liquid",
+    "templates/product.json",
+    "sections/main-product.liquid",
+    "sections/product-template.liquid",
+    "sections/featured-product.liquid",
+    "sections/ptos-variant-swatches.liquid",
+    "snippets/price.liquid",
+    "snippets/product-price.liquid",
+    "snippets/product-variant-picker.liquid",
+    "snippets/buy-buttons.liquid",
+    "snippets/ptos-variant-swatches.liquid",
+    "assets/base.css",
+    "assets/component-price.css",
+    "assets/component-product-variant-picker.css",
+    "assets/product-info.js",
+    "assets/global.js",
+]
+THEME_EDITOR_AGENT_ALLOWED_PREFIXES = ("layout/", "templates/", "sections/", "snippets/", "assets/", "config/", "locales/")
+THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS = (".liquid", ".json", ".js", ".css", ".scss")
+
+
+class ThemeEditorAgentRequest(BaseModel):
+    store: Optional[str] = None
+    prompt: str
+    files: Optional[List[str]] = None
+
+
+def _theme_editor_candidate_files(prompt: str, requested_files: list[str] | None = None) -> list[str]:
+    candidates: list[str] = []
+
+    def add(filename: Any) -> None:
+        name = str(filename or "").strip().lstrip("/")
+        if not name:
+            return
+        if not name.startswith(THEME_EDITOR_AGENT_ALLOWED_PREFIXES):
+            return
+        if not name.endswith(THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS):
+            return
+        if name not in candidates:
+            candidates.append(name)
+
+    for filename in requested_files or []:
+        add(filename)
+    for match in re.findall(r"(?:layout|templates|sections|snippets|assets|config|locales)/[A-Za-z0-9_.\-/]+", prompt or ""):
+        add(match.rstrip(".,;:)"))
+    for filename in THEME_EDITOR_AGENT_DEFAULT_FILES:
+        add(filename)
+    return candidates[:24]
+
+
+def _theme_editor_read_theme_files(store: str, filenames: list[str]) -> tuple[str, dict[str, str]]:
+    from app.integrations.shopify_client import get_active_theme_gid, _gql_store
+
+    theme_gid = get_active_theme_gid(store=store)
+    query = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 30) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+    data = _gql_store(store, query, {"themeId": theme_gid, "filenames": filenames})
+    nodes = ((data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+    files = {
+        str(node.get("filename")): ((node.get("body") or {}).get("content") or "")
+        for node in nodes
+        if node.get("filename")
+    }
+    return theme_gid, files
+
+
+def _theme_editor_upsert_theme_files(store: str, theme_gid: str, files: dict[str, str]) -> list[str]:
+    if not files:
+        return []
+    from app.integrations.shopify_client import _gql_store
+
+    mutation = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+    payload_files = [
+        {"filename": filename, "body": {"type": "TEXT", "value": content}}
+        for filename, content in files.items()
+    ]
+    data = _gql_store(store, mutation, {"themeId": theme_gid, "files": payload_files})
+    payload = (data or {}).get("themeFilesUpsert") or {}
+    user_errors = payload.get("userErrors") or []
+    if user_errors:
+        raise RuntimeError(f"themeFilesUpsert errors: {user_errors}")
+    return [item.get("filename") for item in (payload.get("upsertedThemeFiles") or []) if item.get("filename")]
+
+
+def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[str, Any]:
+    from app.integrations.openai_client import DEFAULT_LLM_MODEL, client as openai_client
+
+    compact_files: dict[str, str] = {}
+    notes: list[str] = []
+    total = 0
+    for filename, content in theme_files.items():
+        body = content or ""
+        if len(body) > 35000:
+            body = body[:35000]
+            notes.append(f"{filename} was truncated to the first 35000 characters.")
+        total += len(body)
+        if total > 180000:
+            notes.append("Some later files were omitted because the theme context was too large.")
+            break
+        compact_files[filename] = body
+
+    system = (
+        "You are an expert Shopify theme engineer working inside a production app.\n"
+        "Return ONLY a valid JSON object. No markdown.\n"
+        "You may edit only the files provided in THEME_FILES unless creating a clearly requested new Shopify theme file.\n"
+        "Use exact search/replace edits. The `find` value must be copied exactly from the provided file content.\n"
+        "Keep changes tightly scoped to the user's request. Do not remove analytics, checkout, Shopify Liquid objects, or unrelated code.\n"
+        "If the request is unclear or the needed code is not visible, return no edits and put a short question in `message`.\n"
+        "Schema: {\"message\":\"short user-facing summary\", \"edits\":[{\"filename\":\"sections/main-product.liquid\", \"find\":\"exact existing text\", \"replace\":\"new text\"}], \"warnings\":[\"optional\"]}.\n"
+        "For a new file only, use an empty string for `find` and put the full file content in `replace`."
+    )
+    user = json.dumps(
+        {
+            "USER_PROMPT": prompt,
+            "THEME_FILES": compact_files,
+            "CONTEXT_NOTES": notes,
+        },
+        ensure_ascii=False,
+    )
+    resp = openai_client.chat.completions.create(
+        model=os.getenv("THEME_EDITOR_AGENT_MODEL", DEFAULT_LLM_MODEL),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        response_format={"type": "json_object"},
+    )
+    text = resp.choices[0].message.content or "{}"
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        return {"message": "The theme agent returned an invalid response.", "edits": [], "warnings": []}
+    if not isinstance(data.get("edits"), list):
+        data["edits"] = []
+    if not isinstance(data.get("warnings"), list):
+        data["warnings"] = []
+    return data
+
+
+def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: list[str] | None = None) -> dict[str, Any]:
+    filenames = _theme_editor_candidate_files(prompt, requested_files)
+    theme_gid, files = _theme_editor_read_theme_files(store, filenames)
+    if not files:
+        return {
+            "message": "I connected to Shopify, but could not read any matching theme files.",
+            "actions": [],
+            "theme_gid": theme_gid,
+            "files_changed": [],
+            "failed_edits": [],
+        }
+
+    plan = _theme_editor_openai_plan(prompt, files)
+    updates: dict[str, str] = {}
+    failed: list[dict[str, str]] = []
+    actions: list[str] = []
+
+    for raw_edit in plan.get("edits") or []:
+        if not isinstance(raw_edit, dict):
+            continue
+        filename = str(raw_edit.get("filename") or "").strip().lstrip("/")
+        find = str(raw_edit.get("find") or "")
+        replace = str(raw_edit.get("replace") or "")
+        if not filename.startswith(THEME_EDITOR_AGENT_ALLOWED_PREFIXES) or not filename.endswith(THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS):
+            failed.append({"filename": filename, "reason": "file path is not allowed"})
+            continue
+        current = updates.get(filename, files.get(filename, ""))
+        if find:
+            if find not in current:
+                failed.append({"filename": filename, "reason": "exact text to replace was not found"})
+                continue
+            updated = current.replace(find, replace, 1)
+        else:
+            if filename in files and current.strip():
+                failed.append({"filename": filename, "reason": "empty find is only allowed for new or empty files"})
+                continue
+            updated = replace
+        if updated != current:
+            updates[filename] = updated
+            actions.append(f"updated {filename}")
+
+    changed = _theme_editor_upsert_theme_files(store, theme_gid, updates)
+    return {
+        "message": str(plan.get("message") or ("Updated theme files." if changed else "No theme files were changed.")),
+        "actions": actions,
+        "files_considered": list(files.keys()),
+        "files_changed": changed,
+        "failed_edits": failed,
+        "warnings": plan.get("warnings") or [],
+        "theme_gid": theme_gid,
+    }
+
+
+@app.post("/api/theme-editor/agent")
+async def api_theme_editor_agent(req: ThemeEditorAgentRequest):
+    """Use OpenAI to propose exact Shopify theme edits, then apply them to the active theme."""
+    try:
+        prompt = (req.prompt or "").strip()
+        store = (req.store or "irrakids").strip() or "irrakids"
+        if not prompt:
+            return {"error": "prompt is required"}
+        result = await run_in_threadpool(_theme_editor_apply_agent_prompt, store, prompt, req.files)
+        return {"data": result}
     except Exception as e:
         return {"error": str(e)}
 
