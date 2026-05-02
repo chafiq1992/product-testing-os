@@ -6677,6 +6677,9 @@ THEME_EDITOR_AGENT_DEFAULT_FILES = [
 ]
 THEME_EDITOR_AGENT_ALLOWED_PREFIXES = ("layout/", "templates/", "sections/", "snippets/", "assets/", "config/", "locales/")
 THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS = (".liquid", ".json", ".js", ".css", ".scss")
+THEME_EDITOR_AGENT_MAX_FILES = 18
+THEME_EDITOR_AGENT_MAX_FILE_CHARS = 120000
+THEME_EDITOR_AGENT_MAX_TOTAL_CHARS = 420000
 
 
 class ThemeEditorAgentRequest(BaseModel):
@@ -6708,14 +6711,105 @@ def _theme_editor_candidate_files(prompt: str, requested_files: list[str] | None
     return candidates[:24]
 
 
-def _theme_editor_read_theme_files(store: str, filenames: list[str]) -> tuple[str, dict[str, str]]:
+def _theme_editor_list_theme_files(store: str) -> tuple[str, list[str]]:
     from app.integrations.shopify_client import get_active_theme_gid, _gql_store
 
     theme_gid = get_active_theme_gid(store=store)
     query = """
+query ThemeFiles($themeId: ID!, $first: Int!, $after: String) {
+  theme(id: $themeId) {
+    files(first: $first, after: $after) {
+      nodes { filename }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+    filenames: list[str] = []
+    after: str | None = None
+    for _ in range(8):
+        data = _gql_store(store, query, {"themeId": theme_gid, "first": 250, "after": after})
+        files_conn = ((data or {}).get("theme") or {}).get("files") or {}
+        for node in files_conn.get("nodes") or []:
+            filename = str((node or {}).get("filename") or "").strip()
+            if filename:
+                filenames.append(filename)
+        page_info = files_conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    filenames = sorted(dict.fromkeys(filenames))
+    return theme_gid, filenames
+
+
+def _theme_editor_rank_files(prompt: str, all_files: list[str], requested_files: list[str] | None = None) -> list[str]:
+    explicit = _theme_editor_candidate_files(prompt, requested_files)
+    allowed = [
+        filename for filename in all_files
+        if filename.startswith(THEME_EDITOR_AGENT_ALLOWED_PREFIXES)
+        and filename.endswith(THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS)
+    ]
+    selected: list[str] = []
+
+    def add(filename: str) -> None:
+        if filename in allowed and filename not in selected:
+            selected.append(filename)
+
+    for filename in explicit:
+        add(filename)
+
+    lower_prompt = (prompt or "").lower()
+    weighted_terms = [
+        ("product", 6),
+        ("main-product", 8),
+        ("buy", 7),
+        ("button", 7),
+        ("price", 7),
+        ("pricing", 7),
+        ("variant", 5),
+        ("cart", 4),
+        ("trust", 5),
+        ("icon", 4),
+        ("wholesale", 6),
+    ]
+    if "buy" in lower_prompt or "button" in lower_prompt:
+        weighted_terms.extend([("buy-buttons", 10), ("product-form", 8), ("add-to-cart", 8)])
+    if "price" in lower_prompt or "pricing" in lower_prompt:
+        weighted_terms.extend([("price", 10), ("component-price", 8)])
+
+    def score(filename: str) -> tuple[int, str]:
+        lower = filename.lower()
+        value = 0
+        for term, weight in weighted_terms:
+            if term in lower or term in lower_prompt and term in lower:
+                value += weight
+        if lower.startswith("templates/product"):
+            value += 10
+        if lower.startswith("sections/") and "product" in lower:
+            value += 12
+        if lower.startswith("snippets/") and any(term in lower for term in ("product", "price", "buy", "button", "variant")):
+            value += 10
+        if lower.startswith("assets/") and any(term in lower for term in ("product", "price", "theme", "base", "global")):
+            value += 5
+        return (-value, filename)
+
+    for filename in sorted(allowed, key=score):
+        if len(selected) >= THEME_EDITOR_AGENT_MAX_FILES:
+            break
+        add(filename)
+    return selected[:THEME_EDITOR_AGENT_MAX_FILES]
+
+
+def _theme_editor_read_theme_files(store: str, filenames: list[str], theme_gid: str | None = None) -> tuple[str, dict[str, str]]:
+    from app.integrations.shopify_client import get_active_theme_gid, _gql_store
+
+    theme_gid = theme_gid or get_active_theme_gid(store=store)
+    query = """
 query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
   theme(id: $themeId) {
-    files(filenames: $filenames, first: 30) {
+    files(filenames: $filenames, first: 50) {
       nodes {
         filename
         body { ... on OnlineStoreThemeFileBodyText { content } }
@@ -6724,8 +6818,13 @@ query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
   }
 }
 """
-    data = _gql_store(store, query, {"themeId": theme_gid, "filenames": filenames})
-    nodes = ((data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+    nodes: list[dict[str, Any]] = []
+    for start in range(0, len(filenames), 50):
+        chunk = filenames[start:start + 50]
+        if not chunk:
+            continue
+        data = _gql_store(store, query, {"themeId": theme_gid, "filenames": chunk})
+        nodes.extend(((data or {}).get("theme") or {}).get("files", {}).get("nodes") or [])
     files = {
         str(node.get("filename")): ((node.get("body") or {}).get("content") or "")
         for node in nodes
@@ -6767,11 +6866,11 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[
     total = 0
     for filename, content in theme_files.items():
         body = content or ""
-        if len(body) > 35000:
-            body = body[:35000]
-            notes.append(f"{filename} was truncated to the first 35000 characters.")
+        if len(body) > THEME_EDITOR_AGENT_MAX_FILE_CHARS:
+            body = body[:THEME_EDITOR_AGENT_MAX_FILE_CHARS]
+            notes.append(f"{filename} was truncated to the first {THEME_EDITOR_AGENT_MAX_FILE_CHARS} characters.")
         total += len(body)
-        if total > 180000:
+        if total > THEME_EDITOR_AGENT_MAX_TOTAL_CHARS:
             notes.append("Some later files were omitted because the theme context was too large.")
             break
         compact_files[filename] = body
@@ -6814,13 +6913,18 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str]) -> dict[
 
 
 def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: list[str] | None = None) -> dict[str, Any]:
-    filenames = _theme_editor_candidate_files(prompt, requested_files)
-    theme_gid, files = _theme_editor_read_theme_files(store, filenames)
+    theme_gid, all_theme_files = _theme_editor_list_theme_files(store)
+    filenames = _theme_editor_rank_files(prompt, all_theme_files, requested_files)
+    if not filenames:
+        filenames = _theme_editor_candidate_files(prompt, requested_files)
+    theme_gid, files = _theme_editor_read_theme_files(store, filenames, theme_gid=theme_gid)
     if not files:
         return {
             "message": "I connected to Shopify, but could not read any matching theme files.",
             "actions": [],
             "theme_gid": theme_gid,
+            "theme_file_count": len(all_theme_files),
+            "files_considered": filenames,
             "files_changed": [],
             "failed_edits": [],
         }
@@ -6859,6 +6963,7 @@ def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: l
         "message": str(plan.get("message") or ("Updated theme files." if changed else "No theme files were changed.")),
         "actions": actions,
         "files_considered": list(files.keys()),
+        "theme_file_count": len(all_theme_files),
         "files_changed": changed,
         "failed_edits": failed,
         "warnings": plan.get("warnings") or [],
