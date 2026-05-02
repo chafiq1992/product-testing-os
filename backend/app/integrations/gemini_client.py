@@ -1,5 +1,9 @@
 import os
+import logging
 from typing import List, Tuple, Dict, Any
+
+
+_log = logging.getLogger("app.gemini")
 
 
 def _try_import_genai():
@@ -78,10 +82,12 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
 
     # Fallback: no library or key → return the source image URL
     if not (genai and api_key):
+        _log.warning("Gemini image generation unavailable: sdk=%s api_key=%s", bool(genai), bool(api_key))
         return [image_url]
 
     fetched = _fetch_image_bytes(image_url)
     if not fetched:
+        _log.warning("Gemini image generation skipped because source image could not be fetched: %s", image_url)
         # If we can't fetch the image bytes, still return the original URL
         return [image_url]
 
@@ -107,11 +113,13 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
                         pairs = _extract_inline_images(out)
                         for mm, bb in pairs:
                             images.append(_to_data_url(mm or "image/png", bb))
-                    except Exception:
+                    except Exception as e:
+                        _log.warning("Gemini image model %s failed: %s", model_name, e)
                         continue
                 if images:
                     break
-            except Exception:
+            except Exception as e:
+                _log.warning("Gemini image model %s unavailable: %s", model_name, e)
                 continue
 
         # If Gemini paths failed, try Imagen edit, then Imagen generate as legacy fallbacks
@@ -157,9 +165,11 @@ def gen_ad_images_from_image(image_url: str, prompt: str, num_images: int = 1) -
 
         # If generation failed, gracefully return the original URL
         if not images:
+            _log.warning("Gemini/Imagen returned no generated image; returning source URL fallback")
             return [image_url]
         return images
-    except Exception:
+    except Exception as e:
+        _log.warning("Gemini image generation failed: %s", e)
         # Ultimate fallback
         return [image_url]
 
@@ -183,6 +193,7 @@ def gen_clean_wholesale_product_image(image_url: str) -> str | None:
     first = (images or [None])[0]
     if isinstance(first, str) and first.startswith("data:image/"):
         return first
+    _log.warning("Clean wholesale image generation returned no generated data URL")
     return None
 
 

@@ -194,7 +194,7 @@ mutation PublishProduct($id: ID!, $publicationIds: [ID!]!) {
 METAFIELDS_SET = """
 mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
   metafieldsSet(metafields: $metafields) {
-    metafields { id key namespace owner { id } }
+    metafields { id key namespace }
     userErrors { field message }
   }
 }
