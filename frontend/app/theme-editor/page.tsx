@@ -31,6 +31,7 @@ type ChatMessage = {
   text: string
   filesChanged?: string[]
   filesConsidered?: string[]
+  filesSentToModel?: string[]
   themeFileCount?: number
 }
 
@@ -135,6 +136,7 @@ export default function ThemeEditorPage() {
         const data = json?.data || {}
         const changed = Array.isArray(data.files_changed) ? data.files_changed : []
         const considered = Array.isArray(data.files_considered) ? data.files_considered : []
+        const sentToModel = Array.isArray(data.files_sent_to_model) ? data.files_sent_to_model : []
         const failed = Array.isArray(data.failed_edits) && data.failed_edits.length > 0
           ? " Some edits could not be applied because the exact code did not match."
           : ""
@@ -143,6 +145,7 @@ export default function ThemeEditorPage() {
           text: `${data.message || "Theme action completed."}${failed}`,
           filesChanged: changed,
           filesConsidered: considered,
+          filesSentToModel: sentToModel,
           themeFileCount: typeof data.theme_file_count === "number" ? data.theme_file_count : undefined,
         })
         await refreshStatus()
@@ -278,11 +281,12 @@ export default function ThemeEditorPage() {
                       : "border border-slate-200 bg-white text-slate-800"
                 }`}>
                   <p className="whitespace-pre-wrap">{message.text}</p>
-                  {message.role === "agent" && (message.filesChanged?.length || message.filesConsidered?.length || message.themeFileCount) ? (
+                  {message.role === "agent" && (message.filesChanged?.length || message.filesSentToModel?.length || message.filesConsidered?.length || message.themeFileCount) ? (
                     <div className="mt-3 space-y-2 border-t border-slate-100 pt-3 text-xs font-semibold text-slate-500">
                       {message.themeFileCount ? <p>Theme files found: {message.themeFileCount}</p> : null}
                       {message.filesChanged?.length ? <p>Changed: {message.filesChanged.join(", ")}</p> : null}
-                      {message.filesConsidered?.length ? <p>Read: {message.filesConsidered.slice(0, 8).join(", ")}{message.filesConsidered.length > 8 ? "..." : ""}</p> : null}
+                      {message.filesSentToModel?.length ? <p>Sent to model: {message.filesSentToModel.slice(0, 8).join(", ")}{message.filesSentToModel.length > 8 ? "..." : ""}</p> : null}
+                      {!message.filesSentToModel?.length && message.filesConsidered?.length ? <p>Read from Shopify: {message.filesConsidered.slice(0, 8).join(", ")}{message.filesConsidered.length > 8 ? "..." : ""}</p> : null}
                     </div>
                   ) : null}
                 </div>

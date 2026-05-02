@@ -6717,6 +6717,27 @@ def _theme_editor_candidate_files(prompt: str, requested_files: list[str] | None
     return candidates[:24]
 
 
+def _theme_editor_explicit_files(prompt: str, requested_files: list[str] | None = None) -> list[str]:
+    candidates: list[str] = []
+
+    def add(filename: Any) -> None:
+        name = str(filename or "").strip().lstrip("/")
+        if not name:
+            return
+        if not name.startswith(THEME_EDITOR_AGENT_ALLOWED_PREFIXES):
+            return
+        if not name.endswith(THEME_EDITOR_AGENT_ALLOWED_EXTENSIONS):
+            return
+        if name not in candidates:
+            candidates.append(name)
+
+    for filename in requested_files or []:
+        add(filename)
+    for match in re.findall(r"(?:layout|templates|sections|snippets|assets|config|locales)/[A-Za-z0-9_.\-/]+", prompt or ""):
+        add(match.rstrip(".,;:)"))
+    return candidates[:24]
+
+
 def _theme_editor_list_theme_files(store: str) -> tuple[str, list[str]]:
     from app.integrations.shopify_client import get_active_theme_gid, _gql_store
 
@@ -6751,7 +6772,7 @@ query ThemeFiles($themeId: ID!, $first: Int!, $after: String) {
 
 
 def _theme_editor_rank_files(prompt: str, all_files: list[str], requested_files: list[str] | None = None) -> list[str]:
-    explicit = _theme_editor_candidate_files(prompt, requested_files)
+    explicit = _theme_editor_explicit_files(prompt, requested_files)
     allowed = [
         filename for filename in all_files
         if filename.startswith(THEME_EDITOR_AGENT_ALLOWED_PREFIXES)
@@ -6767,6 +6788,8 @@ def _theme_editor_rank_files(prompt: str, all_files: list[str], requested_files:
         add(filename)
 
     lower_prompt = (prompt or "").lower()
+    is_product_request = any(term in lower_prompt for term in ("product", "buy", "button", "cart", "trust", "wholesale"))
+    is_style_request = any(term in lower_prompt for term in ("style", "css", "color", "mobile", "design", "layout", "spacing"))
     weighted_terms = [
         ("product", 6),
         ("main-product", 8),
@@ -6788,9 +6811,19 @@ def _theme_editor_rank_files(prompt: str, all_files: list[str], requested_files:
     def score(filename: str) -> tuple[int, str]:
         lower = filename.lower()
         value = 0
+        if filename in THEME_EDITOR_AGENT_DEFAULT_FILES:
+            value += 2
         for term, weight in weighted_terms:
             if term in lower or term in lower_prompt and term in lower:
                 value += weight
+        if is_product_request and lower == "sections/main-product.liquid":
+            value += 60
+        if is_product_request and lower == "snippets/buy-buttons.liquid":
+            value += 55
+        if is_product_request and lower in ("templates/product.json", "sections/featured-product.liquid"):
+            value += 35
+        if is_product_request and lower.startswith("assets/") and not is_style_request:
+            value -= 25
         if lower.startswith("templates/product"):
             value += 10
         if lower.startswith("sections/") and "product" in lower:
@@ -6806,6 +6839,53 @@ def _theme_editor_rank_files(prompt: str, all_files: list[str], requested_files:
             break
         add(filename)
     return selected[:THEME_EDITOR_AGENT_MAX_FILES]
+
+
+def _theme_editor_compact_content(filename: str, content: str, prompt: str) -> tuple[str, str | None]:
+    body = content or ""
+    if len(body) <= THEME_EDITOR_AGENT_MAX_FILE_CHARS:
+        return body, None
+
+    lower_body = body.lower()
+    lower_prompt = (prompt or "").lower()
+    anchors = [
+        "buy_buttons",
+        "buy-buttons",
+        "product-form",
+        "add-to-cart",
+        "add_to_cart",
+        "payment_button",
+        "product__info",
+        "product-info",
+        "price",
+        "variant",
+        "trust",
+        "wholesale",
+    ]
+    prompt_words = [
+        word for word in re.findall(r"[a-z0-9_-]{4,}", lower_prompt)
+        if word not in {"that", "with", "from", "this", "have", "want", "need", "please"}
+    ][:18]
+    matches: list[int] = []
+    for term in anchors + prompt_words:
+        index = lower_body.find(term)
+        if index >= 0:
+            matches.append(index)
+
+    if not matches:
+        return body[:THEME_EDITOR_AGENT_MAX_FILE_CHARS], f"{filename} was truncated to the first {THEME_EDITOR_AGENT_MAX_FILE_CHARS} characters."
+
+    center = min(matches)
+    before = 24000
+    start = max(0, center - before)
+    end = min(len(body), start + THEME_EDITOR_AGENT_MAX_FILE_CHARS)
+    start = max(0, end - THEME_EDITOR_AGENT_MAX_FILE_CHARS)
+    excerpt = body[start:end]
+    note = (
+        f"{filename} was too large, so the model received an exact excerpt around relevant anchors "
+        f"(characters {start}-{end} of {len(body)})."
+    )
+    return excerpt, note
 
 
 def _theme_editor_read_theme_files(store: str, filenames: list[str], theme_gid: str | None = None) -> tuple[str, dict[str, str]]:
@@ -6871,10 +6951,9 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str], repair_c
     notes: list[str] = []
     total = 0
     for filename, content in theme_files.items():
-        body = content or ""
-        if len(body) > THEME_EDITOR_AGENT_MAX_FILE_CHARS:
-            body = body[:THEME_EDITOR_AGENT_MAX_FILE_CHARS]
-            notes.append(f"{filename} was truncated to the first {THEME_EDITOR_AGENT_MAX_FILE_CHARS} characters.")
+        body, note = _theme_editor_compact_content(filename, content or "", prompt)
+        if note:
+            notes.append(note)
         total += len(body)
         if total > THEME_EDITOR_AGENT_MAX_TOTAL_CHARS:
             notes.append("Some later files were omitted because the theme context was too large.")
@@ -6885,6 +6964,8 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str], repair_c
         "You are an expert Shopify theme engineer working inside a production app.\n"
         "Return ONLY a valid JSON object. No markdown.\n"
         "You may edit only the files provided in THEME_FILES unless creating a clearly requested new Shopify theme file.\n"
+        "The filenames inside THEME_FILES are the files you can see. Do not ask the user to provide a file that is present in THEME_FILES.\n"
+        "If a requested exact location is not present inside the visible content, say the exact block is not visible instead of saying the whole file was not provided.\n"
         "Use exact search/replace edits. The `find` value must be copied exactly from the provided file content.\n"
         "Keep changes tightly scoped to the user's request. Do not remove analytics, checkout, Shopify Liquid objects, or unrelated code.\n"
         "Shopify Liquid syntax is strict: do not use JavaScript/Python-style expressions inside {{ }}.\n"
@@ -6919,6 +7000,8 @@ def _theme_editor_openai_plan(prompt: str, theme_files: dict[str, str], repair_c
         data["edits"] = []
     if not isinstance(data.get("warnings"), list):
         data["warnings"] = []
+    data["_context_files"] = list(compact_files.keys())
+    data["_context_notes"] = notes
     return data
 
 
@@ -6967,6 +7050,7 @@ def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: l
             "theme_gid": theme_gid,
             "theme_file_count": len(all_theme_files),
             "files_considered": filenames,
+            "files_sent_to_model": [],
             "files_changed": [],
             "failed_edits": [],
         }
@@ -6998,6 +7082,8 @@ def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: l
                 "message": "Shopify still rejected the generated Liquid after an automatic repair attempt. I did not save the theme changes.",
                 "actions": actions,
                 "files_considered": list(files.keys()),
+                "files_sent_to_model": repair_plan.get("_context_files") or plan.get("_context_files") or [],
+                "context_notes": repair_plan.get("_context_notes") or plan.get("_context_notes") or [],
                 "theme_file_count": len(all_theme_files),
                 "files_changed": [],
                 "failed_edits": failed + [{"filename": ",".join(updates.keys()), "reason": str(retry_exc.user_errors)}],
@@ -7010,6 +7096,8 @@ def _theme_editor_apply_agent_prompt(store: str, prompt: str, requested_files: l
         "message": str(plan.get("message") or ("Updated theme files." if changed else "No theme files were changed.")) + (" Repaired Shopify Liquid syntax and retried successfully." if repaired else ""),
         "actions": actions,
         "files_considered": list(files.keys()),
+        "files_sent_to_model": plan.get("_context_files") or [],
+        "context_notes": plan.get("_context_notes") or [],
         "theme_file_count": len(all_theme_files),
         "files_changed": changed,
         "failed_edits": failed,
