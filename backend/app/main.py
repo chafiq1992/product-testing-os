@@ -8135,7 +8135,10 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 to = sg.get("to", 0)
                 pcs_per_crate = int(sg.get("pcs_per_crate") or sg.get("pcs") or 0)
                 crate_quantity = int(sg.get("crate_quantity") or sg.get("qty") or 0)
-                variant_price = round(base_sale_price * pcs_per_crate, 2) if pcs_per_crate > 0 else base_sale_price
+                unit_sale_price = _wholesale_safe_float(sg.get("sale_price"), base_sale_price)
+                unit_compare_at_price = _wholesale_safe_float(sg.get("compare_at_price"), base_compare_at_price)
+                unit_cog_price = sg.get("cog_price")
+                variant_price = round(unit_sale_price * pcs_per_crate, 2) if pcs_per_crate > 0 else unit_sale_price
                 variant_spec = {
                     "size": _wholesale_variant_title(fr, to, pcs_per_crate),
                     "quantity": crate_quantity,
@@ -8143,8 +8146,13 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                     "sku": str(sg.get("sku") or req.variant_group_id or "").strip(),
                     "pcs_per_crate": pcs_per_crate,
                 }
-                if base_compare_at_price > 0:
-                    variant_spec["compare_at_price"] = round(base_compare_at_price * pcs_per_crate, 2) if pcs_per_crate > 0 else base_compare_at_price
+                try:
+                    if unit_cog_price is not None and float(unit_cog_price) > 0:
+                        variant_spec["cog_price"] = float(unit_cog_price)
+                except Exception:
+                    pass
+                if unit_compare_at_price > 0:
+                    variant_spec["compare_at_price"] = round(unit_compare_at_price * pcs_per_crate, 2) if pcs_per_crate > 0 else unit_compare_at_price
                 variant_specs.append(variant_spec)
 
         # ── Combine colors into a single value ──
@@ -8167,6 +8175,8 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 }
                 if spec.get("compare_at_price"):
                     v["compare_at_price"] = spec["compare_at_price"]
+                if spec.get("cog_price"):
+                    v["cog_price"] = spec["cog_price"]
                 if int(spec.get("pcs_per_crate") or 0) > 0:
                     v["unit_price_measurement"] = {
                         "quantityValue": float(spec["pcs_per_crate"]),

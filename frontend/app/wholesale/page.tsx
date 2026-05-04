@@ -20,6 +20,9 @@ type StockVariantFormRow = {
   pcsPerCrate: number | string
   crateQty: number | string
   sku: string
+  cogPrice: string
+  salePrice: string
+  compareAtPrice: string
 }
 
 type WholesaleAddressForm = {
@@ -31,7 +34,7 @@ type WholesaleAddressForm = {
 }
 
 function createStockVariantRow(): StockVariantFormRow {
-  return { from: '', to: '', pcsPerCrate: '', crateQty: '', sku: '' }
+  return { from: '', to: '', pcsPerCrate: '', crateQty: '', sku: '', cogPrice: '', salePrice: '', compareAtPrice: '' }
 }
 
 function getLocale(lang: Lang) {
@@ -73,6 +76,10 @@ function getVariantCratePrice(unitSalePrice: number, group: Pick<StockVariantFor
   return unitSalePrice * Math.max(0, toInteger(group.pcsPerCrate))
 }
 
+function getSizeGroupUnitProfit(group: Pick<StockVariantFormRow, 'cogPrice' | 'salePrice'>) {
+  return toNumber(group.salePrice) - toNumber(group.cogPrice)
+}
+
 function getDisplaySize(value: string | null | undefined) {
   const raw = String(value || '').trim()
   if (!raw || raw.toLowerCase() === 'default title') return '-'
@@ -101,6 +108,44 @@ function getLocalizedVariantTitle(variant: any, lang: Lang) {
 
 function getProductImageSrc(product: any) {
   return product?.images?.[0]?.src || product?.image?.src || ''
+}
+
+function uniqueCleanValues(values: Array<string | null | undefined>) {
+  const seen = new Set<string>()
+  const out: string[] = []
+  values.forEach(value => {
+    const clean = String(value || '').trim()
+    if (!clean || clean.toLowerCase() === 'default title') return
+    const key = clean.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(clean)
+  })
+  return out
+}
+
+function splitColorValues(value: string | null | undefined) {
+  return String(value || '')
+    .split(/[\/,|]+/)
+    .map(part => part.trim())
+    .filter(Boolean)
+}
+
+function getProductShareOverlayLines(product: any, lang: Lang) {
+  const variants = Array.isArray(product?.variants) ? product.variants : []
+  const sizes = uniqueCleanValues(variants.map((variant: any) => getLocalizedVariantTitle(variant, lang)))
+  const colors = uniqueCleanValues(variants.flatMap((variant: any) => {
+    const titleParts = String(variant?.title || '').split(' / ').slice(1)
+    return [
+      ...splitColorValues(variant?.option2),
+      ...splitColorValues(variant?.option3),
+      ...titleParts.flatMap(splitColorValues),
+    ]
+  }))
+  return [
+    sizes.length ? { label: 'Sizes', value: sizes.join(' / ') } : null,
+    colors.length ? { label: 'Colors', value: colors.join(' / ') } : null,
+  ].filter(Boolean) as { label: string; value: string }[]
 }
 
 function createDefaultWholesaleAddress(): WholesaleAddressForm {
@@ -1409,8 +1454,9 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
   const [stockQty, setStockQty] = useState('')
   const [stockSaving, setStockSaving] = useState(false)
   const [stockMessage, setStockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [imageModal, setImageModal] = useState<{ src: string; title: string } | null>(null)
+  const [imageModal, setImageModal] = useState<{ src: string; title: string; overlayLines: { label: string; value: string }[] } | null>(null)
   const [imageSharing, setImageSharing] = useState(false)
+  const [shareOverlayEnabled, setShareOverlayEnabled] = useState(true)
   const [expandedProductId, setExpandedProductId] = useState<string | null>(null)
   const locale = getLocale(lang)
   const isArabic = lang === 'ar'
@@ -1481,6 +1527,102 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     }
   }
 
+  function openImageModal(product: any) {
+    const src = getProductImageSrc(product)
+    if (!src) return
+    setImageModal({
+      src,
+      title: getLocalizedProductTitle(product, lang, copy.untitled),
+      overlayLines: getProductShareOverlayLines(product, lang),
+    })
+  }
+
+  function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+    const words = text.split(/\s+/).filter(Boolean)
+    const lines: string[] = []
+    let line = ''
+    words.forEach(word => {
+      const testLine = line ? `${line} ${word}` : word
+      if (ctx.measureText(testLine).width > maxWidth && line) {
+        lines.push(line)
+        line = word
+      } else {
+        line = testLine
+      }
+    })
+    if (line) lines.push(line)
+    return lines
+  }
+
+  async function buildOverlayShareFile() {
+    if (!imageModal?.src) return null
+    if (!shareOverlayEnabled || imageModal.overlayLines.length === 0) return null
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = reject
+    })
+    image.src = imageModal.src
+    await loaded
+
+    const canvas = document.createElement('canvas')
+    const width = image.naturalWidth || 1200
+    const height = image.naturalHeight || 1200
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(image, 0, 0, width, height)
+
+    const margin = Math.max(26, Math.round(width * 0.035))
+    const maxBoxWidth = Math.min(width - margin * 2, Math.max(420, Math.round(width * 0.58)))
+    const labelFont = `900 ${Math.max(22, Math.round(width * 0.028))}px Inter, Arial, sans-serif`
+    const valueFont = `900 ${Math.max(36, Math.round(width * 0.047))}px Inter, Arial, sans-serif`
+    const labelLineHeight = Math.max(26, Math.round(width * 0.034))
+    const valueLineHeight = Math.max(42, Math.round(width * 0.056))
+    const paddingX = Math.max(24, Math.round(width * 0.03))
+    const paddingY = Math.max(22, Math.round(width * 0.028))
+    const wrapped = imageModal.overlayLines.map(line => {
+      ctx.font = valueFont
+      return { ...line, valueLines: wrapCanvasText(ctx, line.value, maxBoxWidth - paddingX * 2) }
+    })
+    const boxHeight = paddingY * 2 + wrapped.reduce((sum, line) => sum + labelLineHeight + line.valueLines.length * valueLineHeight + 10, 0)
+
+    ctx.save()
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.38)'
+    ctx.shadowBlur = 28
+    ctx.shadowOffsetY = 12
+    ctx.fillStyle = 'rgba(250, 204, 21, 0.95)'
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
+    ctx.lineWidth = Math.max(5, Math.round(width * 0.006))
+    const radius = Math.max(22, Math.round(width * 0.026))
+    ctx.beginPath()
+    ctx.roundRect(margin, margin, maxBoxWidth, boxHeight, radius)
+    ctx.fill()
+    ctx.stroke()
+    ctx.restore()
+
+    let y = margin + paddingY
+    wrapped.forEach(line => {
+      ctx.font = labelFont
+      ctx.fillStyle = '#111827'
+      ctx.fillText(line.label.toUpperCase(), margin + paddingX, y + labelLineHeight - 6)
+      y += labelLineHeight
+      ctx.font = valueFont
+      ctx.fillStyle = '#020617'
+      line.valueLines.forEach(valueLine => {
+        ctx.fillText(valueLine, margin + paddingX, y + valueLineHeight - 8)
+        y += valueLineHeight
+      })
+      y += 10
+    })
+
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png', 0.95))
+    if (!blob) return null
+    return new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}-sizes-colors.png`, { type: 'image/png' })
+  }
+
   async function shareProductImage(channel: 'native' | 'whatsapp' | 'telegram' = 'native') {
     if (!imageModal?.src) return
     setImageSharing(true)
@@ -1496,10 +1638,14 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       }
       if (navigator.share) {
         try {
-          const response = await fetch(imageModal.src, { mode: 'cors' })
-          const blob = await response.blob()
-          const ext = blob.type?.split('/')[1] || 'jpg'
-          const file = new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}.${ext}`, { type: blob.type || 'image/jpeg' })
+          const overlayFile = await buildOverlayShareFile()
+          let file = overlayFile
+          if (!file) {
+            const response = await fetch(imageModal.src, { mode: 'cors' })
+            const blob = await response.blob()
+            const ext = blob.type?.split('/')[1] || 'jpg'
+            file = new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}.${ext}`, { type: blob.type || 'image/jpeg' })
+          }
           const shareData = { title: imageModal.title, text: imageModal.title, files: [file] }
           if (navigator.canShare?.(shareData)) {
             await navigator.share(shareData)
@@ -1596,15 +1742,15 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                     <span
                       role="button"
                       tabIndex={0}
-                      onClick={e => { e.stopPropagation(); setImageModal({ src: imageSrc, title: productTitle }) }}
+                      onClick={e => { e.stopPropagation(); openImageModal(p) }}
                       onKeyDown={e => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault()
                           e.stopPropagation()
-                          setImageModal({ src: imageSrc, title: productTitle })
+                          openImageModal(p)
                         }
                       }}
-                      className={`absolute top-3 ${isArabic ? 'left-3' : 'right-14'} inline-flex rounded-full bg-white/95 p-2 text-slate-700 shadow-sm transition hover:bg-white hover:text-blue-600`}
+                      className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-2xl border border-white/70 bg-yellow-300 px-4 py-2 text-xs font-black uppercase text-slate-950 shadow-lg transition hover:bg-yellow-200"
                       aria-label={inventoryLabels.preview}
                     >
                       <Share2 size={18} />
@@ -1720,6 +1866,17 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                 <p className="truncate text-xs font-semibold text-slate-500">{imageModal.title}</p>
               </div>
               <div className="flex items-center gap-2">
+                {imageModal.overlayLines.length > 0 && (
+                  <label className="hidden cursor-pointer items-center gap-2 rounded-xl border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs font-black text-slate-900 sm:flex">
+                    <input
+                      type="checkbox"
+                      checked={shareOverlayEnabled}
+                      onChange={e => setShareOverlayEnabled(e.target.checked)}
+                      className="h-4 w-4 accent-yellow-400"
+                    />
+                    Show size/color overlay
+                  </label>
+                )}
                 <button
                   type="button"
                   onClick={() => shareProductImage('native')}
@@ -1748,9 +1905,32 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                 </button>
               </div>
             </div>
+            {imageModal.overlayLines.length > 0 && (
+              <label className="flex cursor-pointer items-center justify-between gap-3 border-b border-slate-100 bg-yellow-50 px-4 py-3 text-xs font-black text-slate-900 sm:hidden">
+                Show size/color overlay
+                <input
+                  type="checkbox"
+                  checked={shareOverlayEnabled}
+                  onChange={e => setShareOverlayEnabled(e.target.checked)}
+                  className="h-4 w-4 accent-yellow-400"
+                />
+              </label>
+            )}
             <div className="max-h-[78vh] bg-slate-50 p-3">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={imageModal.src} alt={imageModal.title} className="mx-auto max-h-[74vh] w-auto max-w-full rounded-2xl object-contain bg-white" />
+              <div className="relative mx-auto w-fit max-w-full">
+                {shareOverlayEnabled && imageModal.overlayLines.length > 0 && (
+                  <div className="absolute left-4 top-4 z-10 max-w-[82%] rounded-2xl border-2 border-white bg-yellow-300 px-4 py-3 text-left text-slate-950 shadow-2xl">
+                    {imageModal.overlayLines.map(line => (
+                      <div key={line.label} className="mb-2 last:mb-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">{line.label}</p>
+                        <p className="text-xl font-black leading-tight sm:text-3xl">{line.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={imageModal.src} alt={imageModal.title} className="mx-auto max-h-[74vh] w-auto max-w-full rounded-2xl object-contain bg-white" />
+              </div>
             </div>
           </div>
         </div>
@@ -1933,23 +2113,28 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
 
   async function handleSubmit() {
     if (!imageUrl) { setSaveMessage({ type: 'error', text: copy.uploadImageRequired }); return }
-    if (unitSalePrice <= 0) { setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired }); return }
     if (isShoes) {
       if (form.sizeGroups.length === 0) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
+      if (form.sizeGroups.some(group => toNumber(group.salePrice) <= 0)) { setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired }); return }
       if (form.sizeGroups.some(group => !group.sku.trim())) { setSaveMessage({ type: 'error', text: copy.skuRequired }); return }
       if (form.sizeGroups.some(group => toInteger(group.pcsPerCrate) <= 0)) { setSaveMessage({ type: 'error', text: copy.piecesPerCrateRequired }); return }
       if (form.sizeGroups.some(group => toInteger(group.crateQty) <= 0)) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
+    } else if (unitSalePrice <= 0) {
+      setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired })
+      return
     }
     setSaving(true)
     setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج...' : 'Creating product...' })
     try {
       // Build request body based on store type
       const reqBody: any = {
-        cog_price: parseFloat(form.cogPrice) || undefined,
-        sale_price: unitSalePrice || undefined,
-        compare_at_price: parseFloat(form.compareAtPrice) || undefined,
         image_url: imageUrl || undefined,
         catalog_image_url: catalogImageUrl || undefined,
+      }
+      if (!isShoes) {
+        reqBody.cog_price = parseFloat(form.cogPrice) || undefined
+        reqBody.sale_price = unitSalePrice || undefined
+        reqBody.compare_at_price = parseFloat(form.compareAtPrice) || undefined
       }
       if (isShoes || isClothes) {
         reqBody.colors = form.colors.length > 0 ? form.colors : undefined
@@ -1961,6 +2146,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           pcs_per_crate: toInteger(group.pcsPerCrate),
           crate_quantity: toInteger(group.crateQty),
           sku: group.sku.trim(),
+          cog_price: parseFloat(group.cogPrice) || undefined,
+          sale_price: toNumber(group.salePrice),
+          compare_at_price: parseFloat(group.compareAtPrice) || undefined,
         }))
       }
       if (isClothes) {
@@ -2238,6 +2426,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         {/* RIGHT COLUMN */}
         <div className="space-y-6">
           {/* Pricing */}
+          {!isShoes && (
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
               <DollarSign size={14} /> {copy.financialsTitle}
@@ -2263,6 +2452,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               </div>
             </div>
           </section>
+          )}
 
           {/* Size Groups / Quantities */}
           {isShoes && (
@@ -2313,6 +2503,47 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                         className="font-bold text-sm outline-none w-full" placeholder="SKU-001" />
                     </div>
                   </div>
+                  <div className="rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
+                    <h4 className="mb-3 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700">
+                      <DollarSign size={13} /> {copy.financialsTitle}
+                    </h4>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+                        <label className="mb-1 block text-[9px] font-bold uppercase text-slate-400">{copy.cogPrice}</label>
+                        <input
+                          type="number"
+                          value={group.cogPrice}
+                          onChange={e => updateSizeGroup(idx, 'cogPrice', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none"
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div className="rounded-xl border-2 border-blue-300 bg-blue-50 p-2 shadow-sm">
+                        <label className="mb-1 block text-[9px] font-black uppercase text-blue-600">{copy.salePrice}</label>
+                        <input
+                          type="number"
+                          value={group.salePrice}
+                          onChange={e => updateSizeGroup(idx, 'salePrice', e.target.value)}
+                          className="w-full bg-transparent text-sm font-black text-blue-900 outline-none"
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+                        <label className="mb-1 block text-[9px] font-bold uppercase text-slate-400">{copy.compareAtPrice}</label>
+                        <input
+                          type="number"
+                          value={group.compareAtPrice}
+                          onChange={e => updateSizeGroup(idx, 'compareAtPrice', e.target.value)}
+                          className="w-full bg-transparent text-sm font-bold outline-none"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 font-bold text-emerald-700">
+                      <span className="text-[10px] uppercase">{copy.estimatedProfit}</span>
+                      <span className="text-lg font-black">{formatDh(getSizeGroupUnitProfit(group), locale)}</span>
+                    </div>
+                  </div>
                   <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div>
@@ -2324,7 +2555,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
                       </div>
                       <div className={`${isArabic ? 'sm:text-left' : 'sm:text-right'}`}>
                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{copy.cratePrice}</p>
-                        <p className="mt-1 text-lg font-black text-emerald-600">{formatDh(getVariantCratePrice(unitSalePrice, group), locale)}</p>
+                        <p className="mt-1 text-lg font-black text-emerald-600">{formatDh(getVariantCratePrice(toNumber(group.salePrice), group), locale)}</p>
                       </div>
                     </div>
                   </div>

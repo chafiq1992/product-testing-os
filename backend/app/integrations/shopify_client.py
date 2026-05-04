@@ -2731,6 +2731,13 @@ def _configure_variants_for_product(
                     eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
                     _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
                     _set_inventory_tracked(inv_item_id, eff_tq, store=store)
+                    cost_val = v_cfg.get("cog_price", v_cfg.get("cost"))
+                    if cost_val is not None:
+                        try:
+                            if float(cost_val) > 0:
+                                _set_inventory_item_cost(inv_item_id, float(cost_val), store=store)
+                        except Exception:
+                            pass
                     variant_gid = _variant_gid_from_rest(cv_data)
                     if variant_gid:
                         gql_variant: dict = {
