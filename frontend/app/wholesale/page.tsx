@@ -1554,6 +1554,44 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     return lines
   }
 
+  function fitOverlayText(ctx: CanvasRenderingContext2D, lines: { label: string; value: string }[], maxWidth: number, maxHeight: number, minSide: number) {
+    let valueSize = Math.max(18, Math.round(minSide * 0.038))
+    let labelSize = Math.max(10, Math.round(valueSize * 0.42))
+    const paddingX = Math.max(10, Math.round(minSide * 0.014))
+    const paddingY = Math.max(8, Math.round(minSide * 0.012))
+    const gap = Math.max(4, Math.round(minSide * 0.006))
+    let fitted: { label: string; valueLines: string[] }[] = []
+    let boxHeight = maxHeight
+
+    for (; valueSize >= 12; valueSize -= 2) {
+      labelSize = Math.max(8, Math.round(valueSize * 0.42))
+      const valueLineHeight = Math.round(valueSize * 1.12)
+      const labelLineHeight = Math.round(labelSize * 1.15)
+      ctx.font = `900 ${valueSize}px Inter, Arial, sans-serif`
+      fitted = lines.map(line => {
+        const wrapped = wrapCanvasText(ctx, line.value, maxWidth - paddingX * 2)
+        const visibleLines = wrapped.length > 2 ? [`${wrapped[0]}`, `${wrapped[1].replace(/\s+\S*$/, '')}...`] : wrapped
+        return { label: line.label, valueLines: visibleLines.filter(Boolean) }
+      })
+      boxHeight = paddingY * 2 + fitted.reduce((sum, line) => sum + labelLineHeight + line.valueLines.length * valueLineHeight + gap, 0)
+      if (boxHeight <= maxHeight) {
+        return { fitted, valueSize, labelSize, valueLineHeight, labelLineHeight, paddingX, paddingY, gap, boxHeight }
+      }
+    }
+
+    return {
+      fitted,
+      valueSize,
+      labelSize,
+      valueLineHeight: Math.round(valueSize * 1.12),
+      labelLineHeight: Math.round(labelSize * 1.15),
+      paddingX,
+      paddingY,
+      gap,
+      boxHeight: maxHeight,
+    }
+  }
+
   async function buildOverlayShareFile() {
     if (!imageModal?.src) return null
     if (!shareOverlayEnabled || imageModal.overlayLines.length === 0) return null
@@ -1575,48 +1613,47 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     if (!ctx) return null
     ctx.drawImage(image, 0, 0, width, height)
 
-    const margin = Math.max(26, Math.round(width * 0.035))
-    const maxBoxWidth = Math.min(width - margin * 2, Math.max(420, Math.round(width * 0.58)))
-    const labelFont = `900 ${Math.max(22, Math.round(width * 0.028))}px Inter, Arial, sans-serif`
-    const valueFont = `900 ${Math.max(36, Math.round(width * 0.047))}px Inter, Arial, sans-serif`
-    const labelLineHeight = Math.max(26, Math.round(width * 0.034))
-    const valueLineHeight = Math.max(42, Math.round(width * 0.056))
-    const paddingX = Math.max(24, Math.round(width * 0.03))
-    const paddingY = Math.max(22, Math.round(width * 0.028))
-    const wrapped = imageModal.overlayLines.map(line => {
-      ctx.font = valueFont
-      return { ...line, valueLines: wrapCanvasText(ctx, line.value, maxBoxWidth - paddingX * 2) }
-    })
-    const boxHeight = paddingY * 2 + wrapped.reduce((sum, line) => sum + labelLineHeight + line.valueLines.length * valueLineHeight + 10, 0)
+    const minSide = Math.min(width, height)
+    const margin = Math.max(10, Math.round(minSide * 0.018))
+    const maxBoxWidth = Math.min(width - margin * 2, Math.round(width * 0.34))
+    const maxBoxHeight = Math.min(height - margin * 2, Math.round(height * 0.2))
+    const fit = fitOverlayText(ctx, imageModal.overlayLines, maxBoxWidth, maxBoxHeight, minSide)
+    const boxHeight = Math.min(maxBoxHeight, fit.boxHeight)
 
     ctx.save()
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.38)'
-    ctx.shadowBlur = 28
-    ctx.shadowOffsetY = 12
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.26)'
+    ctx.shadowBlur = Math.max(8, Math.round(minSide * 0.016))
+    ctx.shadowOffsetY = Math.max(4, Math.round(minSide * 0.006))
     ctx.fillStyle = 'rgba(250, 204, 21, 0.95)'
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
-    ctx.lineWidth = Math.max(5, Math.round(width * 0.006))
-    const radius = Math.max(22, Math.round(width * 0.026))
+    ctx.lineWidth = Math.max(2, Math.round(minSide * 0.004))
+    const radius = Math.max(10, Math.round(minSide * 0.016))
     ctx.beginPath()
     ctx.roundRect(margin, margin, maxBoxWidth, boxHeight, radius)
     ctx.fill()
     ctx.stroke()
+    ctx.clip()
     ctx.restore()
 
-    let y = margin + paddingY
-    wrapped.forEach(line => {
-      ctx.font = labelFont
+    ctx.save()
+    ctx.beginPath()
+    ctx.roundRect(margin, margin, maxBoxWidth, boxHeight, radius)
+    ctx.clip()
+    let y = margin + fit.paddingY
+    fit.fitted.forEach(line => {
+      ctx.font = `900 ${fit.labelSize}px Inter, Arial, sans-serif`
       ctx.fillStyle = '#111827'
-      ctx.fillText(line.label.toUpperCase(), margin + paddingX, y + labelLineHeight - 6)
-      y += labelLineHeight
-      ctx.font = valueFont
+      ctx.fillText(line.label.toUpperCase(), margin + fit.paddingX, y + fit.labelLineHeight - 2)
+      y += fit.labelLineHeight
+      ctx.font = `900 ${fit.valueSize}px Inter, Arial, sans-serif`
       ctx.fillStyle = '#020617'
       line.valueLines.forEach(valueLine => {
-        ctx.fillText(valueLine, margin + paddingX, y + valueLineHeight - 8)
-        y += valueLineHeight
+        ctx.fillText(valueLine, margin + fit.paddingX, y + fit.valueLineHeight - 3)
+        y += fit.valueLineHeight
       })
-      y += 10
+      y += fit.gap
     })
+    ctx.restore()
 
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png', 0.95))
     if (!blob) return null
@@ -1628,6 +1665,20 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
     setImageSharing(true)
     const shareText = `${imageModal.title}\n${imageModal.src}`
     try {
+      const overlayFile = await buildOverlayShareFile()
+      if (overlayFile && navigator.share) {
+        const overlayShareData = { title: imageModal.title, text: imageModal.title, files: [overlayFile] }
+        if (!navigator.canShare || navigator.canShare(overlayShareData)) {
+          await navigator.share(overlayShareData)
+          return
+        }
+      }
+      if (overlayFile) {
+        const overlayUrl = URL.createObjectURL(overlayFile)
+        window.open(overlayUrl, '_blank', 'noopener,noreferrer')
+        setTimeout(() => URL.revokeObjectURL(overlayUrl), 60000)
+        return
+      }
       if (channel === 'whatsapp') {
         window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer')
         return
@@ -1638,14 +1689,10 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       }
       if (navigator.share) {
         try {
-          const overlayFile = await buildOverlayShareFile()
-          let file = overlayFile
-          if (!file) {
-            const response = await fetch(imageModal.src, { mode: 'cors' })
-            const blob = await response.blob()
-            const ext = blob.type?.split('/')[1] || 'jpg'
-            file = new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}.${ext}`, { type: blob.type || 'image/jpeg' })
-          }
+          const response = await fetch(imageModal.src, { mode: 'cors' })
+          const blob = await response.blob()
+          const ext = blob.type?.split('/')[1] || 'jpg'
+          const file = new File([blob], `${(imageModal.title || 'product').replace(/[^\w-]+/g, '-').slice(0, 40)}.${ext}`, { type: blob.type || 'image/jpeg' })
           const shareData = { title: imageModal.title, text: imageModal.title, files: [file] }
           if (navigator.canShare?.(shareData)) {
             await navigator.share(shareData)
@@ -1919,11 +1966,11 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
             <div className="max-h-[78vh] bg-slate-50 p-3">
               <div className="relative mx-auto w-fit max-w-full">
                 {shareOverlayEnabled && imageModal.overlayLines.length > 0 && (
-                  <div className="absolute left-4 top-4 z-10 max-w-[82%] rounded-2xl border-2 border-white bg-yellow-300 px-4 py-3 text-left text-slate-950 shadow-2xl">
+                  <div className="absolute left-3 top-3 z-10 max-h-[20%] w-[34%] overflow-hidden rounded-xl border-2 border-white bg-yellow-300 px-2 py-1.5 text-left text-slate-950 shadow-xl sm:left-4 sm:top-4 sm:px-3 sm:py-2">
                     {imageModal.overlayLines.map(line => (
-                      <div key={line.label} className="mb-2 last:mb-0">
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">{line.label}</p>
-                        <p className="text-xl font-black leading-tight sm:text-3xl">{line.value}</p>
+                      <div key={line.label} className="mb-1 last:mb-0">
+                        <p className="truncate text-[7px] font-black uppercase tracking-wider opacity-80 sm:text-[8px]">{line.label}</p>
+                        <p className="line-clamp-2 text-[10px] font-black leading-tight sm:text-sm">{line.value}</p>
                       </div>
                     ))}
                   </div>
