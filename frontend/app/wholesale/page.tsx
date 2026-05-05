@@ -12,7 +12,7 @@ import {
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
-const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall']
+const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall', 'All Season']
 type Lang = 'en' | 'ar'
 type StockVariantFormRow = {
   from: number | string
@@ -1992,8 +1992,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     title: '',
     description: '',
     cogPrice: '', salePrice: '', compareAtPrice: '',
-    segment: SEGMENTS[0],
-    season: SEASONS[0],
+    segment: '',
+    season: '',
+    collection: '',
+    productType: '',
+    tags: [] as string[],
     colors: [] as string[],
     sizeGroups: [createStockVariantRow()] as StockVariantFormRow[],
     variantGroupId: '',
@@ -2131,6 +2134,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
           ...f,
           title: ai.title || f.title,
           description: (ai.benefits || []).join('. ') || f.description,
+          segment: SEGMENTS.includes(ai.segment) ? ai.segment : f.segment,
+          season: SEASONS.includes(ai.season) ? ai.season : f.season,
+          collection: typeof ai.collection === 'string' && ai.collection.trim() ? ai.collection.trim() : f.collection,
+          productType: typeof ai.product_type === 'string' && ai.product_type.trim() ? ai.product_type.trim() : f.productType,
+          tags: Array.isArray(ai.tags) ? ai.tags.map((t: any) => String(t).trim()).filter(Boolean) : f.tags,
           colors: imageColors.length > 0 ? imageColors : f.colors,
         }))
       }
@@ -2177,6 +2185,13 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       const reqBody: any = {
         image_url: imageUrl || undefined,
         catalog_image_url: catalogImageUrl || undefined,
+        title: form.title || undefined,
+        description: form.description || undefined,
+        segment: form.segment || undefined,
+        season: form.season || undefined,
+        collection: form.collection || undefined,
+        product_type: form.productType || undefined,
+        tags: form.tags.length > 0 ? form.tags : undefined,
       }
       if (!isShoes) {
         reqBody.cog_price = parseFloat(form.cogPrice) || undefined
@@ -2205,8 +2220,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         }))
       }
       if (isElectronics) {
-        reqBody.title = form.title || undefined
-        reqBody.description = form.description || undefined
         reqBody.size_groups = [{
           from: 'default', to: 'default', pcs_per_crate: 1, crate_quantity: toInteger(simpleQty), sku: form.sizeGroups[0]?.sku?.trim() || '',
         }]

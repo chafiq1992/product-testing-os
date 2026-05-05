@@ -7361,6 +7361,8 @@ class WholesaleProductCreate(BaseModel):
     compare_at_price: Optional[float] = None
     segment: Optional[str] = None
     season: Optional[str] = None
+    collection: Optional[str] = None
+    tags: Optional[List[str]] = None
     colors: Optional[List[str]] = None
     sizes: Optional[List[str]] = None
     product_type: Optional[str] = None
@@ -7559,6 +7561,23 @@ async def api_wholesale_analyze_image(req: WholesaleAnalyzeImageRequest):
         if not image_url:
             return {"error": "image_url is required"}
         data = await run_in_threadpool(gen_product_from_image, image_url, None, req.target_category)
+        if isinstance(data, dict):
+            org_req = WholesaleProductCreate(
+                title=data.get("title"),
+                description=". ".join(str(b).strip() for b in (data.get("benefits") or []) if str(b).strip()),
+                segment=data.get("segment"),
+                season=data.get("season"),
+                collection=data.get("collection"),
+                product_type=data.get("product_type"),
+                tags=[str(t) for t in (data.get("tags") or []) if str(t).strip()],
+                colors=[str(c) for c in (data.get("colors") or []) if str(c).strip()],
+                sizes=[str(s) for s in (data.get("sizes") or []) if str(s).strip()],
+            )
+            org = _wholesale_build_product_organization(org_req, store_type=req.target_category)
+            for key in ("segment", "season", "collection", "product_type"):
+                if org.get(key):
+                    data[key] = org.get(key)
+            data["tags"] = _wholesale_unique_labels([*(data.get("tags") or []), *(org.get("tags") or [])])
         return {"data": data, "image_url": image_url}
     except Exception as e:
         return {"error": str(e)}
@@ -7613,6 +7632,201 @@ def _wholesale_build_description_html(description: str | None, segment: str | No
 def _wholesale_variant_title(size_from: Any, size_to: Any, pcs_per_crate: int) -> str:
     base = f"{size_from}-{size_to}"
     return f"{base}*{pcs_per_crate}pcs" if pcs_per_crate > 0 else base
+
+
+WHOLESALE_SEGMENTS = {"men": "Men", "mens": "Men", "man": "Men", "women": "Women", "womens": "Women", "woman": "Women", "kids": "Kids", "kid": "Kids", "children": "Kids", "child": "Kids"}
+WHOLESALE_SEASONS = {"winter": "Winter", "summer": "Summer", "spring": "Spring", "fall": "Fall", "autumn": "Fall", "all season": "All Season", "all-season": "All Season", "allseason": "All Season"}
+
+
+def _wholesale_clean_label(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return text[:80]
+
+
+def _wholesale_unique_labels(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values or []:
+        label = _wholesale_clean_label(value)
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(label)
+    return out
+
+
+def _wholesale_normalize_segment(value: Any) -> str | None:
+    raw = _wholesale_clean_label(value).lower()
+    return WHOLESALE_SEGMENTS.get(raw)
+
+
+def _wholesale_normalize_season(value: Any) -> str | None:
+    raw = _wholesale_clean_label(value).lower()
+    return WHOLESALE_SEASONS.get(raw)
+
+
+def _wholesale_size_numbers(size_groups: list[dict] | None, sizes: list[str] | None = None) -> list[float]:
+    nums: list[float] = []
+    for sg in size_groups or []:
+        if not isinstance(sg, dict):
+            continue
+        for key in ("from", "to", "size"):
+            raw = str(sg.get(key) or "")
+            nums.extend(float(m.group(1)) for m in re.finditer(r"(\d+(?:\.\d+)?)", raw))
+    for raw_size in sizes or []:
+        raw = str(raw_size or "")
+        nums.extend(float(m.group(1)) for m in re.finditer(r"(\d+(?:\.\d+)?)", raw))
+    return nums
+
+
+def _wholesale_segment_from_sizes(size_groups: list[dict] | None, sizes: list[str] | None = None) -> str | None:
+    nums = _wholesale_size_numbers(size_groups, sizes)
+    if not nums:
+        return None
+    min_size = min(nums)
+    max_size = max(nums)
+    if max_size >= 40:
+        return "Men"
+    if max_size <= 35:
+        return "Kids"
+    if 36 <= min_size and max_size <= 41:
+        return "Women"
+    return None
+
+
+def _wholesale_collection_for_segment(segment: str | None) -> str | None:
+    seg = _wholesale_normalize_segment(segment)
+    return seg if seg in {"Men", "Women", "Kids"} else None
+
+
+def _wholesale_infer_product_type(title: Any, description: Any, tags: list[Any] | None, store_type: str | None) -> str | None:
+    text = " ".join([str(title or ""), str(description or ""), " ".join(str(t or "") for t in (tags or []))]).lower()
+    matches = [
+        (("led", "light up", "light-up", "lights"), "LED Shoes"),
+        (("sandale", "sandal", "sandals"), "Summer Sandals"),
+        (("slide", "slides"), "Summer Slides"),
+        (("flip flop", "flip-flop"), "Flip Flops"),
+        (("slipper", "slippers"), "Slippers"),
+        (("boot", "boots"), "Winter Boots"),
+        (("sneaker", "sneakers", "trainer", "trainers"), "Sneakers"),
+        (("sport", "sports", "running"), "Sport Shoes"),
+        (("loafer", "loafers"), "Loafers"),
+        (("heel", "heels"), "Heels"),
+    ]
+    for keys, label in matches:
+        if any(k in text for k in keys):
+            return label
+    if (store_type or "").strip().lower() == "shoes":
+        return "Shoes"
+    return None
+
+
+def _wholesale_infer_season(season: Any, product_type: Any, tags: list[Any] | None) -> str | None:
+    normalized = _wholesale_normalize_season(season)
+    if normalized:
+        return normalized
+    text = " ".join([str(product_type or ""), " ".join(str(t or "") for t in (tags or []))]).lower()
+    if any(k in text for k in ("sandal", "sandale", "slide", "flip flop", "flip-flop")):
+        return "Summer"
+    if any(k in text for k in ("boot", "winter", "fur", "warm")):
+        return "Winter"
+    return None
+
+
+def _wholesale_build_product_organization(
+    req: WholesaleProductCreate,
+    *,
+    store_type: str | None,
+) -> dict[str, Any]:
+    size_segment = _wholesale_segment_from_sizes(req.size_groups, req.sizes)
+    segment = size_segment or _wholesale_normalize_segment(req.segment)
+    incoming_tags_all = _wholesale_unique_labels(req.tags or [])
+    segment_values = {v.lower() for v in WHOLESALE_SEGMENTS.values()}
+    incoming_tags = [
+        tag for tag in incoming_tags_all
+        if not tag.lower().startswith(("segment:", "season:", "collection:"))
+        and tag.lower() not in segment_values
+    ]
+    product_type = _wholesale_clean_label(req.product_type) or _wholesale_infer_product_type(req.title, req.description, incoming_tags, store_type)
+    season = _wholesale_infer_season(req.season, product_type, incoming_tags)
+    collection = _wholesale_collection_for_segment(segment) if size_segment else (_wholesale_clean_label(req.collection) or _wholesale_collection_for_segment(segment))
+
+    extra_tags = [
+        *incoming_tags,
+        segment,
+        f"segment:{segment}" if segment else None,
+        season,
+        f"season:{season}" if season else None,
+        collection,
+        f"collection:{collection}" if collection else None,
+        product_type,
+    ]
+    if product_type:
+        pt_lc = product_type.lower()
+        if "sandal" in pt_lc or "sandale" in pt_lc:
+            extra_tags.append("Sandals")
+        if "led" in pt_lc:
+            extra_tags.append("LED Shoes")
+    return {
+        "segment": segment,
+        "season": season,
+        "collection": collection,
+        "product_type": product_type,
+        "tags": _wholesale_unique_labels(extra_tags),
+    }
+
+
+def _wholesale_attach_product_to_collection(product_gid: str, collection_name: str | None) -> None:
+    """Best-effort: add to a manual collection if it exists; smart collections can use the tags."""
+    collection = _wholesale_clean_label(collection_name)
+    if not (product_gid and collection):
+        return
+    try:
+        from app.integrations.shopify_client import _numeric_product_id_from_gid, _rest_get_store, _rest_post_store
+
+        product_id = _numeric_product_id_from_gid(product_gid)
+        if not product_id:
+            return
+        wanted = collection.strip().lower()
+        handles = [
+            re.sub(r"[^a-z0-9]+", "-", wanted).strip("-"),
+            re.sub(r"[^a-z0-9]+", "-", f"{wanted} shoes").strip("-"),
+        ]
+        custom_collections: list[dict[str, Any]] = []
+        for handle in [h for h in handles if h]:
+            try:
+                data = _rest_get_store(WHOLESALE_STORE, f"/custom_collections.json?handle={quote(handle, safe='')}&limit=10")
+                custom_collections.extend((data or {}).get("custom_collections") or [])
+            except Exception:
+                continue
+        if not custom_collections:
+            try:
+                data = _rest_get_store(WHOLESALE_STORE, "/custom_collections.json?limit=250")
+                custom_collections.extend((data or {}).get("custom_collections") or [])
+            except Exception:
+                pass
+        for coll in custom_collections:
+            title = str((coll or {}).get("title") or "").strip().lower()
+            handle = str((coll or {}).get("handle") or "").strip().lower()
+            if title not in {wanted, f"{wanted} shoes"} and handle not in set(handles):
+                continue
+            collection_id = coll.get("id")
+            if not collection_id:
+                continue
+            try:
+                _rest_post_store(
+                    WHOLESALE_STORE,
+                    "/collects.json",
+                    {"collect": {"product_id": int(product_id), "collection_id": int(collection_id)}},
+                )
+            except Exception:
+                pass
+            return
+    except Exception:
+        return
 
 
 def _wholesale_decode_data_url_image(data_url: str, fallback_name: str) -> tuple[str, bytes] | None:
@@ -8115,14 +8329,15 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         if store_type not in WHOLESALE_STORE_TYPES:
             store_type = "general"
         title = (req.title or "").strip() or _wholesale_placeholder_title(vendor_name)
-        desc_html = _wholesale_build_description_html(req.description, req.segment, req.season)
+        organization = _wholesale_build_product_organization(req, store_type=store_type)
+        segment = organization.get("segment")
+        season = organization.get("season")
+        collection_name = organization.get("collection")
+        product_type = organization.get("product_type")
+        desc_html = _wholesale_build_description_html(req.description, segment, season)
 
         # Tags for filtering
-        tags_list = [f"vendor:{vendor_name}"]
-        if req.segment:
-            tags_list.append(f"segment:{req.segment}")
-        if req.season:
-            tags_list.append(f"season:{req.season}")
+        tags_list = _wholesale_unique_labels([f"vendor:{vendor_name}", *organization.get("tags", [])])
 
         # ── Derive sizes from size_groups ──
         # Each group {from, to, qty} becomes a size like "20-25" with its own qty
@@ -8220,7 +8435,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             price=explicit_variants[0]["price"] if explicit_variants else req.sale_price,
             sizes=None,   # handled via explicit variants
             colors=None,   # handled via explicit variants
-            product_type=req.product_type,
+            product_type=product_type,
             vendor=vendor_name,
             tags=tags_list,
             track_quantity=True,
@@ -8253,8 +8468,8 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 catalog_image_url,
                 req.title,
                 req.description,
-                req.segment,
-                req.season,
+                segment,
+                season,
                 req.cog_price,
                 explicit_variants[0]["price"] if explicit_variants else req.sale_price,
                 explicit_variants if explicit_variants else None,
@@ -8265,8 +8480,14 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 req.sale_price,
                 req.compare_at_price,
             )
+            if collection_name:
+                background_tasks.add_task(
+                    _wholesale_attach_product_to_collection,
+                    product_gid,
+                    collection_name,
+                )
 
-        return {"data": result, "background_processing": bool(product_gid)}
+        return {"data": result, "background_processing": bool(product_gid), "organization": organization}
     except Exception as e:
         return {"error": str(e)}
 

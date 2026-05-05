@@ -310,10 +310,15 @@ def gen_product_from_image(image_url: str, model: str | None = None, target_cate
       - colors (string[])
       - sizes (string[])
       - variants (array of { name, description })
+      - segment (Men/Women/Kids)
+      - season (Winter/Summer/Spring/Fall/All Season)
+      - collection (string)
+      - product_type (string)
+      - tags (string[])
     """
     system_base = (
         "You are a senior ecommerce analyst. From ONE product photo, infer only what is visually reliable.\n"
-        "Return ONLY a JSON object with keys: title, audience, benefits, pain_points, colors, sizes, variants.\n"
+        "Return ONLY a JSON object with keys: title, audience, benefits, pain_points, colors, sizes, variants, segment, season, collection, product_type, tags.\n"
         "- title: brief product name.\n"
         "- audience: the most likely buyer (e.g., 'Parents of toddlers in Morocco').\n"
         "- benefits: 3-6 concrete benefits/outcomes. Include 1-2 that reflect visible design features (e.g., breathable mesh, extra height, reinforced toe, non-slip sole).\n"
@@ -321,6 +326,11 @@ def gen_product_from_image(image_url: str, model: str | None = None, target_cate
         "- colors: detected color variants (names).\n"
         "- sizes: visible or typical size hints (if any), else [].\n"
         "- variants: list of distinct visual variants (e.g., colors/patterns/materials/prints) with {name, description}. If unknown, [].\n"
+        "- segment: one of Men, Women, Kids. For shoes, kids normally use small child sizes; adult ranges around 40-44 are Men.\n"
+        "- season: one of Winter, Summer, Spring, Fall, All Season. Sandals/slides are normally Summer; boots are normally Winter.\n"
+        "- collection: the Shopify collection bucket to use, usually Kids, Men, or Women based on segment.\n"
+        "- product_type: Shopify product type such as Summer Sandals, LED Shoes, Sneakers, Boots, Slippers, Casual Shoes, Sport Shoes, or another concise shoe/clothing/product type visible in the image.\n"
+        "- tags: 4-10 Shopify-ready tags, including segment, season, collection, product_type, and specific type words like Sandals, LED Shoes, Sneakers when relevant.\n"
         "Guidance: Note any visible prints/patterns, unique silhouettes, materials, added height/platforms, embroidery, special seams, closures, or accessories in variants.description.\n"
         "If uncertain, add minimal [ASSUMPTION] notes inside descriptions only."
     )
@@ -407,6 +417,11 @@ def gen_product_from_image(image_url: str, model: str | None = None, target_cate
             for v in (data.get("variants") or [])
             if isinstance(v, dict)
         ],
+        "segment": data.get("segment") if isinstance(data.get("segment"), str) else None,
+        "season": data.get("season") if isinstance(data.get("season"), str) else None,
+        "collection": data.get("collection") if isinstance(data.get("collection"), str) else None,
+        "product_type": data.get("product_type") if isinstance(data.get("product_type"), str) else None,
+        "tags": [x for x in (data.get("tags") or []) if isinstance(x, str)],
     }
     return out
 
