@@ -7704,13 +7704,30 @@ def _wholesale_collection_for_segment(segment: str | None) -> str | None:
 
 def _wholesale_infer_product_type(title: Any, description: Any, tags: list[Any] | None, store_type: str | None) -> str | None:
     text = " ".join([str(title or ""), str(description or ""), " ".join(str(t or "") for t in (tags or []))]).lower()
+    audience_prefix = ""
+    if any(k in text for k in ("girl", "girls", "fille", "filles")):
+        audience_prefix = "Girls"
+    elif any(k in text for k in ("boy", "boys", "garcon", "garcons", "garçon", "garçons")):
+        audience_prefix = "Boys"
+    elif any(k in text for k in ("kid", "kids", "children", "child", "baby", "toddler")):
+        audience_prefix = "Kids"
+    elif any(k in text for k in ("women", "woman", "ladies")):
+        audience_prefix = "Women"
+    elif any(k in text for k in ("men", "man", "mens")):
+        audience_prefix = "Men"
+
+    def typed(label: str) -> str:
+        if audience_prefix and not label.lower().startswith(audience_prefix.lower()):
+            return f"{audience_prefix} {label}"
+        return label
+
     matches = [
         (("led", "light up", "light-up", "lights"), "LED Shoes"),
-        (("sandale", "sandal", "sandals"), "Summer Sandals"),
-        (("slide", "slides"), "Summer Slides"),
+        (("sandale", "sandal", "sandals"), "Sandals"),
+        (("slide", "slides"), "Slides"),
         (("flip flop", "flip-flop"), "Flip Flops"),
         (("slipper", "slippers"), "Slippers"),
-        (("boot", "boots"), "Winter Boots"),
+        (("boot", "boots"), "Boots"),
         (("sneaker", "sneakers", "trainer", "trainers"), "Sneakers"),
         (("sport", "sports", "running"), "Sport Shoes"),
         (("loafer", "loafers"), "Loafers"),
@@ -7718,9 +7735,9 @@ def _wholesale_infer_product_type(title: Any, description: Any, tags: list[Any] 
     ]
     for keys, label in matches:
         if any(k in text for k in keys):
-            return label
+            return typed(label)
     if (store_type or "").strip().lower() == "shoes":
-        return "Shoes"
+        return typed("Shoes")
     return None
 
 
@@ -7754,22 +7771,36 @@ def _wholesale_build_product_organization(
     season = _wholesale_infer_season(req.season, product_type, incoming_tags)
     collection = _wholesale_collection_for_segment(segment) if size_segment else (_wholesale_clean_label(req.collection) or _wholesale_collection_for_segment(segment))
 
-    extra_tags = [
-        *incoming_tags,
-        segment,
-        f"segment:{segment}" if segment else None,
-        season,
-        f"season:{season}" if season else None,
-        collection,
-        f"collection:{collection}" if collection else None,
-        product_type,
-    ]
+    text = " ".join([str(req.title or ""), str(req.description or ""), " ".join(incoming_tags), str(product_type or "")]).lower()
+    simple_tags: list[str] = []
+    if segment:
+        simple_tags.append(segment.lower())
+    if season:
+        simple_tags.append(season.lower().replace(" ", "-"))
+    if collection:
+        simple_tags.append(collection.lower())
+    if any(k in text for k in ("girl", "girls", "fille", "filles")):
+        simple_tags.append("girls")
+    if any(k in text for k in ("boy", "boys", "garcon", "garcons", "garçon", "garçons")):
+        simple_tags.append("boys")
+    if any(k in text for k in ("sandale", "sandal", "sandals")):
+        simple_tags.append("sandals")
+    if any(k in text for k in ("led", "light up", "light-up", "lights")):
+        simple_tags.append("led-shoes")
+    if any(k in text for k in ("sneaker", "sneakers", "trainer", "trainers")):
+        simple_tags.append("sneakers")
+    if any(k in text for k in ("boot", "boots")):
+        simple_tags.append("boots")
+    if (store_type or "").strip().lower() == "shoes":
+        simple_tags.append("shoes")
+
+    extra_tags = [*incoming_tags, *simple_tags]
     if product_type:
         pt_lc = product_type.lower()
         if "sandal" in pt_lc or "sandale" in pt_lc:
-            extra_tags.append("Sandals")
+            extra_tags.append("sandals")
         if "led" in pt_lc:
-            extra_tags.append("LED Shoes")
+            extra_tags.append("led-shoes")
     return {
         "segment": segment,
         "season": season,
@@ -8014,6 +8045,7 @@ def _wholesale_finalize_product_background(
             _numeric_product_id_from_gid,
             _set_inventory_item_cost,
             update_product_description,
+            update_product_organization,
             update_product_title,
             upload_image_attachments_to_product,
         )
@@ -8061,6 +8093,34 @@ def _wholesale_finalize_product_background(
                 final_title = gen_title
             if gen_description:
                 final_description = gen_description
+        except Exception:
+            pass
+
+        try:
+            org_req = WholesaleProductCreate(
+                title=final_title,
+                description=final_description,
+                segment=segment,
+                season=season,
+                collection=None,
+                product_type=None,
+                tags=[str(t) for t in ((ai_data or {}).get("tags") or []) if str(t).strip()],
+                colors=colors,
+                sizes=[str(v.get("size")) for v in (explicit_variants or []) if isinstance(v, dict) and v.get("size")],
+                size_groups=size_groups,
+            )
+            organization = _wholesale_build_product_organization(org_req, store_type=store_type)
+            org_tags = _wholesale_unique_labels([*(organization.get("tags") or [])])
+            if organization.get("product_type") or org_tags:
+                update_product_organization(
+                    product_gid,
+                    product_type=organization.get("product_type"),
+                    tags=org_tags,
+                    merge_tags=True,
+                    store=WHOLESALE_STORE,
+                )
+            if organization.get("collection"):
+                _wholesale_attach_product_to_collection(product_gid, organization.get("collection"))
         except Exception:
             pass
 

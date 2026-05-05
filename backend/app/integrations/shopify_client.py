@@ -3387,6 +3387,55 @@ def update_product_title(product_gid: str, title: str, *, store: str | None = No
     return prod
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_organization(
+    product_gid: str,
+    *,
+    product_type: str | None = None,
+    tags: list[str] | None = None,
+    merge_tags: bool = True,
+    store: str | None = None,
+) -> dict:
+    inp: dict = {"id": product_gid}
+    clean_type = str(product_type or "").strip()
+    if clean_type:
+        inp["productType"] = clean_type
+
+    clean_tags: list[str] = []
+    seen: set[str] = set()
+    for tag in tags or []:
+        value = str(tag or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_tags.append(value)
+
+    if merge_tags:
+        numeric_id = _numeric_product_id_from_gid(product_gid)
+        if numeric_id:
+            try:
+                data = _rest_get_store(store, f"/products/{numeric_id}.json?fields=id,tags")
+                existing_raw = ((data or {}).get("product") or {}).get("tags") or ""
+                existing_tags = _tags_to_list(existing_raw)
+                for tag in existing_tags:
+                    key = str(tag or "").strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        clean_tags.insert(0, str(tag).strip())
+            except Exception:
+                pass
+
+    if clean_tags:
+        inp["tags"] = clean_tags
+    if len(inp) == 1:
+        return {"id": product_gid}
+    data = _gql_store(store, PRODUCT_UPDATE, {"input": inp})
+    return data["productUpdate"]["product"]
+
+
 # ==================== Theme API (Page Builder) ====================
 
 THEME_FILES_UPSERT = """
