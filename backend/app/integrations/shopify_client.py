@@ -1963,6 +1963,58 @@ def count_paid_orders_by_title(title_contains: str, created_at_min: str, created
     return total
 
 
+def count_paid_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+) -> int:
+    """Count paid orders with Shopify's order search, matching Admin's product_id filter.
+
+    This mirrors Admin queries like:
+    product_id:"123" processed_at:>="YYYY-MM-DD" processed_at:<="YYYY-MM-DD" financial_status:"paid"
+    """
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return 0
+    query = (
+        f'product_id:"{ident}" '
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
+        'financial_status:"paid"'
+    )
+    gql = """
+    query PaidOrdersForProduct($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+        edges {
+          cursor
+          node { id }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    total = 0
+    after = None
+    seen: set[str] = set()
+    while True:
+        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
+        conn = (data or {}).get("orders") or {}
+        edges = conn.get("edges") or []
+        for edge in edges:
+            oid = str(((edge or {}).get("node") or {}).get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                total += 1
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return total
+
+
 def count_paid_orders_by_product_or_variant_processed_batch(
     numeric_ids: list[str],
     processed_min_date: str,
@@ -1987,6 +2039,27 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     out: dict[str, int] = {v: 0 for v in targets.values()}
     if not targets:
         return out
+
+    # Prefer Shopify's own order-search query. It matches what the Admin UI uses
+    # for product_id + processed_at + financial_status filters and can find
+    # historical paid orders that the REST page scan may miss.
+    try:
+        searched: dict[str, int] = {}
+        for key in targets.values():
+            searched[key] = count_paid_orders_by_product_search(
+                key,
+                processed_min_date,
+                processed_max_date,
+                store=store,
+            )
+        for key, val in searched.items():
+            out[key] = int(val or 0)
+        if any(int(v or 0) > 0 for v in searched.values()):
+            targets = {tid: key for tid, key in targets.items() if int(out.get(key, 0) or 0) <= 0}
+            if not targets:
+                return out
+    except Exception:
+        pass
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
     from urllib.parse import urlencode
