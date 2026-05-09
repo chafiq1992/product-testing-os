@@ -7,7 +7,9 @@ import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, sh
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
   { value: 'irranova', label: 'irranova' },
+  { value: 'nouralibas', label: 'nouralibas' },
 ]
+type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
 
@@ -108,7 +110,7 @@ export default function AdsManagementPage(){
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
   })
-  const [manualIds, setManualIds] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
+  const [manualIds, setManualIds] = useState<Record<string, CampaignMapping>>({})
   const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -431,16 +433,32 @@ export default function AdsManagementPage(){
     }))
   }
 
-  function profitStores(): Array<string | undefined>{
-    const stores = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
-    return stores.length ? Array.from(new Set(stores)) : [store || undefined]
+  function uniqueStores(values: Array<string | undefined | null>): Array<string | undefined>{
+    const out: Array<string | undefined> = []
+    const seen = new Set<string>()
+    for(const raw of values){
+      const val = String(raw || '').trim()
+      const key = val || '__default__'
+      if(seen.has(key)) continue
+      seen.add(key)
+      out.push(val || undefined)
+    }
+    return out
   }
 
-  async function loadPaidOrdersForProduct(pid: string): Promise<number>{
-    const productId = String(pid||'').trim()
-    if(!productId) return 0
+  function storesForProduct(productId?: string, includeKnownFallback = false): Array<string | undefined>{
+    const pid = String(productId || '').trim()
+    const mappedStores = Object.values(manualIds || {})
+      .filter(m => m && m.kind === 'product' && String(m.id || '') === pid && String(m.store || '').trim())
+      .map(m => String(m.store || '').trim())
+    const selected = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
+    const known = includeKnownFallback ? ALL_STORES.map(s => s.value) : []
+    const stores = uniqueStores([...mappedStores, ...selected, store, ...known])
+    return stores.length ? stores : [store || undefined]
+  }
+
+  async function paidOrdersForStores(productId: string, storesToUse: Array<string | undefined>): Promise<number>{
     const { start, end } = effectiveYmdRange(datePreset)
-    const storesToUse = profitStores()
     const results = await Promise.allSettled(storesToUse.map(st =>
       shopifyOrdersCountPaidByTitle({ names: [productId], start, end, store: st, include_closed: true, date_field: 'processed' })
     ))
@@ -448,6 +466,27 @@ export default function AdsManagementPage(){
       if(res.status !== 'fulfilled') return sum
       return sum + (Number(((res.value as any)?.data||{})[productId] ?? 0) || 0)
     }, 0)
+  }
+
+  async function loadPaidOrdersForProduct(pid: string): Promise<number>{
+    const productId = String(pid||'').trim()
+    if(!productId) return 0
+    const primaryStores = storesForProduct(productId, false)
+    const primaryTotal = await paidOrdersForStores(productId, primaryStores)
+    if(primaryTotal > 0) return primaryTotal
+
+    const primaryKeys = new Set(primaryStores.map(st => String(st || '')))
+    const fallbackStores = storesForProduct(productId, true).filter(st => !primaryKeys.has(String(st || '')))
+    if(fallbackStores.length === 0) return primaryTotal
+    return primaryTotal + await paidOrdersForStores(productId, fallbackStores)
+  }
+
+  async function loadProductBriefForProduct(productId: string): Promise<any | null>{
+    const storesToUse = storesForProduct(productId, true)
+    const results = await Promise.allSettled(storesToUse.map(st => shopifyProductsBrief({ ids: [productId], store: st })))
+    const merged = mergeBriefResults(results)
+    if(Object.keys(merged).length > 0) setProductBriefs(prev=> ({ ...prev, ...merged }))
+    return merged[productId] || null
   }
 
   async function calculateGroupProfit(pid: string, spendUsd: number){
@@ -458,12 +497,8 @@ export default function AdsManagementPage(){
       let brief = productBriefs[productId]
       if(!brief || brief.price == null){
         try{
-          const pb = await shopifyProductsBrief({ ids: [productId], store })
-          const next = (((pb as any)?.data)||{}) as Record<string, any>
-          if(next[productId]){
-            brief = next[productId]
-            setProductBriefs(prev=> ({ ...prev, ...next }))
-          }
+          const nextBrief = await loadProductBriefForProduct(productId)
+          if(nextBrief) brief = nextBrief
         }catch{}
       }
       const paidOrders = await loadPaidOrdersForProduct(productId)
@@ -483,7 +518,7 @@ export default function AdsManagementPage(){
     }
   }
 
-  function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, { kind:'product'|'collection', id:string }>): string[]{
+  function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>): string[]{
     const idsOrdered: string[] = []
     const seen: Record<string, true> = {}
     for(const c of campaigns){
@@ -528,7 +563,7 @@ export default function AdsManagementPage(){
       // Phase 1: One bundle call per ad account (campaigns come from Meta, not per-store).
       // Mappings + meta come from first store. This keeps it to N calls (one per ad account).
       let allCampaigns: MetaCampaignRow[] = []
-      let shaped: Record<string, { kind:'product'|'collection', id:string }> = {}
+      let shaped: Record<string, CampaignMapping> = {}
       let allMeta: Record<string, any> = {}
       const primaryStore = effStores[0] || 'irrakids'
       const acctList = effAdAccounts.length > 0 ? effAdAccounts : ['']
@@ -571,7 +606,7 @@ export default function AdsManagementPage(){
         const bundleMappings = bundle?.mappings || {}
         for(const k of Object.keys(bundleMappings)){
           const v = bundleMappings[k]
-          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id }
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id, store: v.store || primaryStore }
         }
         allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
         // Extract product life instructions from bundle (last one wins – they're global per store)
@@ -590,7 +625,7 @@ export default function AdsManagementPage(){
           const map = ((r.value as any)?.data) || {}
           for(const k of Object.keys(map)){
             const v = map[k]
-            if(v && (v.kind==='product' || v.kind==='collection') && v.id && !shaped[k]) shaped[k] = { kind: v.kind, id: v.id }
+            if(v && (v.kind==='product' || v.kind==='collection') && v.id && !shaped[k]) shaped[k] = { kind: v.kind, id: v.id, store: v.store }
           }
         }
       }
@@ -632,7 +667,7 @@ export default function AdsManagementPage(){
       if(profitOnly){
         const briefToken = ++ordersSeqToken.current
         ;(async()=>{
-          const storeList = effStores.length ? effStores : [primaryStore]
+          const storeList = uniqueStores([...(effStores.length ? effStores : [primaryStore]), ...ALL_STORES.map(s => s.value)])
           for(let i = 0; i < idsOrdered.length; i += chunkSize){
             if(briefToken !== ordersSeqToken.current) break
             const chunk = idsOrdered.slice(i, i + chunkSize)
@@ -1161,7 +1196,7 @@ export default function AdsManagementPage(){
     setManualIds(prev=> {
       const next = { ...prev }
       for(const rk of keys){
-        ;(next as any)[rk] = { kind:'product', id: pid }
+        ;(next as any)[rk] = { kind:'product', id: pid, store }
       }
       return next
     })
@@ -2347,7 +2382,7 @@ export default function AdsManagementPage(){
                               />
                               <button
                                 onClick={async()=>{
-                                  const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim() }
+                                  const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim(), store }
                                   setManualIds(prev=> ({ ...prev, [rk]: next }))
                                   // Fetch now for this row respecting current range
                                   try{
