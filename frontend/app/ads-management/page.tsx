@@ -483,6 +483,37 @@ export default function AdsManagementPage(){
     }
   }
 
+  function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, { kind:'product'|'collection', id:string }>): string[]{
+    const idsOrdered: string[] = []
+    const seen: Record<string, true> = {}
+    for(const c of campaigns){
+      const rk = (c.campaign_id || c.name || '') as any
+      const manual = mappings[rk]
+      let pid: string | null = null
+      if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)) pid = manual.id
+      else pid = extractNumericId(c.name||'')
+      if(pid && !seen[pid]){
+        seen[pid] = true
+        idsOrdered.push(pid)
+      }
+    }
+    return idsOrdered
+  }
+
+  function mergeBriefResults(results: PromiseSettledResult<any>[]): Record<string, any>{
+    const mergedBriefs: Record<string, any> = {}
+    for(const pbRes of results){
+      if(pbRes.status === 'fulfilled'){
+        const data = ((pbRes.value as any)?.data) || {}
+        for(const [k, v] of Object.entries(data)){
+          if(!mergedBriefs[k]) mergedBriefs[k] = v
+          else if(!mergedBriefs[k].image && (v as any)?.image) mergedBriefs[k] = v
+        }
+      }
+    }
+    return mergedBriefs
+  }
+
   async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
@@ -594,8 +625,23 @@ export default function AdsManagementPage(){
 
       setLoading(false)
 
+      const ranked = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+      const idsOrdered = productIdsForCampaigns(ranked, shaped)
+      const chunkSize = 4
+
       if(profitOnly){
-        ++ordersSeqToken.current
+        const briefToken = ++ordersSeqToken.current
+        ;(async()=>{
+          const storeList = effStores.length ? effStores : [primaryStore]
+          for(let i = 0; i < idsOrdered.length; i += chunkSize){
+            if(briefToken !== ordersSeqToken.current) break
+            const chunk = idsOrdered.slice(i, i + chunkSize)
+            const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st })))
+            if(briefToken !== ordersSeqToken.current) break
+            const mergedBriefs = mergeBriefResults(pbResults)
+            if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
+          }
+        })()
         return
       }
 
@@ -623,24 +669,7 @@ export default function AdsManagementPage(){
         }
       })()
 
-      // Build prioritized product IDs (top spend first)
-      const ranked = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
-      const idsOrdered: string[] = []
-      const seen: Record<string, true> = {}
-      for(const c of ranked){
-        const rk = (c.campaign_id || c.name || '') as any
-        const manual = shaped[rk]
-        let pid: string | null = null
-        if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)) pid = manual.id
-        else pid = extractNumericId(c.name||'')
-        if(pid && !seen[pid]){
-          seen[pid] = true
-          idsOrdered.push(pid)
-        }
-      }
-
       // Load product briefs + order counts in parallel chunks of 4
-      const chunkSize = 4
       const countsById: Record<string, number> = {}
 
       for(let i = 0; i < idsOrdered.length; i += chunkSize){
@@ -656,16 +685,7 @@ export default function AdsManagementPage(){
         if(ordersToken !== ordersSeqToken.current) break
 
         // Merge product briefs (first store that has image wins)
-        const mergedBriefs: Record<string, any> = {}
-        for(const pbRes of pbResults){
-          if(pbRes.status === 'fulfilled'){
-            const data = ((pbRes.value as any)?.data) || {}
-            for(const [k, v] of Object.entries(data)){
-              if(!mergedBriefs[k]) mergedBriefs[k] = v
-              else if(!mergedBriefs[k].image && (v as any)?.image) mergedBriefs[k] = v
-            }
-          }
-        }
+        const mergedBriefs = mergeBriefResults(pbResults)
         setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
 
         // Merge order counts (sum across stores)
@@ -1300,6 +1320,7 @@ export default function AdsManagementPage(){
                 setAdsetsByCampaign({})
                 setAdsetOrdersByCampaign({})
                 if(next) ++ordersSeqToken.current
+                load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts, profit: next })
               }}
               className="sr-only peer"
             />
