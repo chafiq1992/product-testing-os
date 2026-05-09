@@ -936,7 +936,7 @@ async def get_saved_audiences():
 
 
 @app.get("/api/meta/campaigns")
-async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None, store: str | None = None, start: str | None = None, end: str | None = None):
+async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | None = None, store: str | None = None, start: str | None = None, end: str | None = None, profit_only: bool | None = False):
     """Return active campaigns with key metrics.
 
     Query params:
@@ -950,7 +950,7 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
                 acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             except Exception:
                 acct = None
-        key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store or None})
+        key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store or None, "profit_only": bool(profit_only)})
 
         async def _compute():
             return await run_in_threadpool(
@@ -959,6 +959,7 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
                 ad_account_id=(acct or None),
                 since=start,
                 until=end,
+                profit_only=bool(profit_only),
             )
 
         items = await _cached(key, 30, _compute)
@@ -1386,6 +1387,7 @@ class AdsManagementBundleRequest(BaseModel):
     store: Optional[str] = None
     start: Optional[str] = None
     end: Optional[str] = None
+    profit_only: Optional[bool] = False
 
 
 @app.post("/api/ads-management/bundle")
@@ -1402,6 +1404,7 @@ async def api_ads_management_bundle(req: AdsManagementBundleRequest):
         store=req.store,
         start=req.start,
         end=req.end,
+        profit_only=bool(req.profit_only),
     )
 
 
@@ -1412,6 +1415,7 @@ async def api_ads_management_bundle_get(
     store: str | None = None,
     start: str | None = None,
     end: str | None = None,
+    profit_only: bool | None = False,
 ):
     """GET variant for browser/CDN cacheability."""
     return await _ads_management_bundle_impl(
@@ -1420,6 +1424,7 @@ async def api_ads_management_bundle_get(
         store=store,
         start=start,
         end=end,
+        profit_only=bool(profit_only),
     )
 
 
@@ -1429,6 +1434,7 @@ async def _ads_management_bundle_impl(
     store: str | None = None,
     start: str | None = None,
     end: str | None = None,
+    profit_only: bool = False,
 ):
     try:
         store = store or None
@@ -1454,11 +1460,11 @@ async def _ads_management_bundle_impl(
 
         bundle_key = _cache_key("ads_mgmt_bundle", {
             "acct": acct or None, "date_preset": date_preset,
-            "start": start, "end": end, "store": store,
+            "start": start, "end": end, "store": store, "profit_only": bool(profit_only),
         })
 
         async def _compute_bundle():
-            return await _ads_management_bundle_compute(acct, date_preset, start, end, store)
+            return await _ads_management_bundle_compute(acct, date_preset, start, end, store, profit_only=bool(profit_only))
 
         result = await _cached(bundle_key, 25, _compute_bundle)
         result["ad_account"] = ad_account_info
@@ -1467,13 +1473,13 @@ async def _ads_management_bundle_impl(
         return {"error": str(e), "data": {}}
 
 
-async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
+async def _ads_management_bundle_compute(acct, date_preset, start, end, store, profit_only: bool = False):
     """Fast bundle: only campaigns + mappings + meta (no slow Shopify calls).
 
     Shopify product briefs and order counts are loaded progressively by the
     frontend in small chunks so results appear gradually.
     """
-    campaigns_key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset, "start": start, "end": end, "store": store})
+    campaigns_key = _cache_key("meta_campaigns", {"acct": acct or None, "date_preset": date_preset, "start": start, "end": end, "store": store, "profit_only": bool(profit_only)})
 
     async def _fetch_campaigns():
         try:
@@ -1484,6 +1490,7 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
                     ad_account_id=(acct or None),
                     since=start,
                     until=end,
+                    profit_only=bool(profit_only),
                 )),
                 timeout=55,
             )
@@ -1517,7 +1524,7 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store):
         _fetch_campaigns(),
         _fetch_mappings(),
         _fetch_meta(),
-        _fetch_product_life_instructions(),
+        _fetch_product_life_instructions() if not profit_only else asyncio.sleep(0, result={}),
     )
 
     return {

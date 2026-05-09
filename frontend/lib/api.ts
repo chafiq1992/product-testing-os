@@ -623,6 +623,7 @@ export async function fetchAdsManagementBundle(payload: {
   store?: string,
   start?: string,
   end?: string,
+  profit_only?: boolean,
 }){
   const url = `${base}/api/ads-management/bundle`
   const body = { ...payload }
@@ -644,11 +645,12 @@ export type MetaCampaignRow = {
   status?: string|null,
   created_time?: string|null,
 }
-export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string, range?: { start?: string, end?: string }){
+export async function fetchMetaCampaigns(datePreset?: string, adAccount?: string, range?: { start?: string, end?: string }, profitOnly?: boolean){
   const parts: string[] = []
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
   if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
+  if(profitOnly) parts.push('profit_only=true')
   const s = selectedStore()
   if(s) parts.push(`store=${encodeURIComponent(s)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''

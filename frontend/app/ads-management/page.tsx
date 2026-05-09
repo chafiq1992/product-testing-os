@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -103,7 +103,7 @@ export default function AdsManagementPage(){
   const setStore = (v: string) => { setSelectedStores([v]); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify([v])); localStorage.setItem('ptos_store', v) }catch{} }
   const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
-  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number }>>({})
+  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, price?: number|null }>>({})
   const [adAccountName, setAdAccountName] = useState<string>('')
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
@@ -131,6 +131,12 @@ export default function AdsManagementPage(){
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+  const [profitMode, setProfitMode] = useState<boolean>(false)
+  const [profitProductCosts, setProfitProductCosts] = useState<Record<string, string>>({})
+  const [profitServiceCost, setProfitServiceCost] = useState<number>(70)
+  const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
+  const [profitLoading, setProfitLoading] = useState<Record<string, boolean>>({})
+  const [profitResults, setProfitResults] = useState<Record<string, { paidOrders:number, productPrice:number, spendUsd:number, spendMad:number, costsMad:number, profit:number }>>({})
   // AI Campaign Analyzer state
   const [analysisOpen, setAnalysisOpen] = useState<boolean>(false)
   const [analysisLoading, setAnalysisLoading] = useState<string|null>(null) // campaign key being analyzed
@@ -425,13 +431,66 @@ export default function AdsManagementPage(){
     }))
   }
 
-  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[] }){
+  function profitStores(): Array<string | undefined>{
+    const stores = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
+    return stores.length ? Array.from(new Set(stores)) : [store || undefined]
+  }
+
+  async function loadPaidOrdersForProduct(pid: string): Promise<number>{
+    const productId = String(pid||'').trim()
+    if(!productId) return 0
+    const { start, end } = effectiveYmdRange(datePreset)
+    const storesToUse = profitStores()
+    const results = await Promise.allSettled(storesToUse.map(st =>
+      shopifyOrdersCountPaidByTitle({ names: [productId], start, end, store: st, include_closed: true, date_field: 'processed' })
+    ))
+    return results.reduce((sum, res) => {
+      if(res.status !== 'fulfilled') return sum
+      return sum + (Number(((res.value as any)?.data||{})[productId] ?? 0) || 0)
+    }, 0)
+  }
+
+  async function calculateGroupProfit(pid: string, spendUsd: number){
+    const productId = String(pid||'').trim()
+    if(!productId) return
+    setProfitLoading(prev=> ({ ...prev, [productId]: true }))
+    try{
+      let brief = productBriefs[productId]
+      if(!brief || brief.price == null){
+        try{
+          const pb = await shopifyProductsBrief({ ids: [productId], store })
+          const next = (((pb as any)?.data)||{}) as Record<string, any>
+          if(next[productId]){
+            brief = next[productId]
+            setProductBriefs(prev=> ({ ...prev, ...next }))
+          }
+        }catch{}
+      }
+      const paidOrders = await loadPaidOrdersForProduct(productId)
+      const productPrice = Number((brief as any)?.price || 0)
+      const spendMad = Number(spendUsd||0) * 10
+      const productCost = Number(profitProductCosts[productId] || 0)
+      const costPerOrder = productCost + Number(profitServiceCost||0)
+      const costsMad = costPerOrder * paidOrders
+      const profit = (productPrice * paidOrders) - spendMad - costsMad
+      setProfitPaidCounts(prev=> ({ ...prev, [productId]: paidOrders }))
+      setProfitResults(prev=> ({
+        ...prev,
+        [productId]: { paidOrders, productPrice, spendUsd: Number(spendUsd||0), spendMad, costsMad, profit },
+      }))
+    }finally{
+      setProfitLoading(prev=> ({ ...prev, [productId]: false }))
+    }
+  }
+
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
       const effPreset = preset||datePreset
       const effStores = opts?.stores ?? selectedStores
       const effAdAccounts = opts?.adAccounts ?? selectedAdAccounts
+      const profitOnly = opts?.profit ?? profitMode
       const metaParams = metaRangeParams(effPreset)
       const { start: rangeStart, end: rangeEnd } = effectiveYmdRange(effPreset)
 
@@ -450,6 +509,7 @@ export default function AdsManagementPage(){
           store: primaryStore,
           start: metaParams.range?.start || rangeStart,
           end: metaParams.range?.end || rangeEnd,
+          profit_only: profitOnly,
         }).catch(() => null)
       )
       const bundleResults = await Promise.allSettled(bundlePromises)
@@ -506,7 +566,7 @@ export default function AdsManagementPage(){
 
       if(allCampaigns.length === 0 && acctList.length > 0){
         try {
-          const res = await fetchMetaCampaigns(metaParams.datePreset, acctList[0]||undefined, metaParams.range)
+          const res = await fetchMetaCampaigns(metaParams.datePreset, acctList[0]||undefined, metaParams.range, profitOnly)
           if(loadToken !== loadSeqToken.current) return
           if(!(res as any)?.error) allCampaigns = (res as any)?.data || []
         } catch {}
@@ -533,6 +593,11 @@ export default function AdsManagementPage(){
       setAdsetOrdersExpanded({})
 
       setLoading(false)
+
+      if(profitOnly){
+        ++ordersSeqToken.current
+        return
+      }
 
       // Phase 2: Progressive Shopify data loading in chunks of 4
       const ordersToken = ++ordersSeqToken.current
@@ -993,7 +1058,7 @@ export default function AdsManagementPage(){
           if(!matches) continue
         }
         out.push({ kind:'group', productId: p.productId, rows: p.rows, primary: p.primary })
-        if(groupExpanded[p.productId]){
+        if(!profitMode && groupExpanded[p.productId]){
           const children = (p.rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
           for(const r of children){
             out.push({ kind:'campaign', row: r, groupProductId: p.productId, isChild: true })
@@ -1009,7 +1074,7 @@ export default function AdsManagementPage(){
       }
     }
     return out
-  }, [sortedParents, groupExpanded, searchActive])
+  }, [sortedParents, groupExpanded, searchActive, profitMode])
 
   const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
   function campaignKeysForRows(rows: MetaCampaignRow[]): string[]{
@@ -1177,6 +1242,8 @@ export default function AdsManagementPage(){
     )
   }
 
+  const tableColSpan = profitMode ? 9 : 15
+
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <InventoryTooltip />
@@ -1212,6 +1279,47 @@ export default function AdsManagementPage(){
               >{owner}</button>
             ))}
           </div>
+          <label className={`inline-flex items-center gap-2 rounded-xl border px-2 py-1 text-sm bg-white ${profitMode ? 'border-emerald-300 text-emerald-700' : 'text-slate-600'}`}>
+            <input
+              type="checkbox"
+              checked={profitMode}
+              onChange={(e)=> {
+                const next = e.target.checked
+                setProfitMode(next)
+                setProfitPaidCounts({})
+                setProfitResults({})
+                setSortKey('spend')
+                setSortDir('desc')
+                setShopifyCounts({})
+                setManualCounts({})
+                setStoreOrdersTotal(null)
+                setExpanded({})
+                setCollectionProducts({})
+                setCollectionCounts({})
+                setAdsetsExpanded({})
+                setAdsetsByCampaign({})
+                setAdsetOrdersByCampaign({})
+                if(next) ++ordersSeqToken.current
+              }}
+              className="sr-only peer"
+            />
+            <span className={`w-9 h-5 rounded-full transition-colors ${profitMode ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+              <span className={`block w-4 h-4 bg-white rounded-full shadow mt-0.5 transition-transform ${profitMode ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            </span>
+            <span className="font-semibold">Profit</span>
+          </label>
+          {profitMode && (
+            <div className="flex items-center gap-1 text-xs">
+              <span className="text-slate-500">Service</span>
+              <input
+                type="number"
+                value={profitServiceCost}
+                min={0}
+                onChange={(e)=> setProfitServiceCost(Number(e.target.value||0))}
+                className="w-20 rounded-lg border px-2 py-1 bg-white text-sm"
+              />
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
@@ -1447,11 +1555,20 @@ export default function AdsManagementPage(){
             </div>
             <div className="flex items-center gap-3 text-xs flex-wrap justify-end">
               <div><span className="opacity-70">Spend </span><span className="font-bold text-sm">{fmtCurrency(totalSpend)}</span></div>
-              <div><span className="opacity-70">Orders </span><span className="font-bold text-sm">{fmtInt(tableOrdersTotal)}</span></div>
-              <div><span className="opacity-70">Store </span><span className="font-bold text-sm">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</span></div>
-              <div><span className="opacity-70">CPP </span><span className="font-bold text-sm">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</span></div>
-              <div><span className="opacity-70">Full CPP </span><span className="font-bold text-sm">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</span></div>
-              {CAMPAIGN_OWNERS.map(owner => {
+              {profitMode ? (
+                <>
+                  <div><span className="opacity-70">Ads MAD </span><span className="font-bold text-sm">{Math.round(totalSpend*10).toLocaleString()}</span></div>
+                  <div><span className="opacity-70">Service/order </span><span className="font-bold text-sm">{Math.round(Number(profitServiceCost||0)).toLocaleString()} MAD</span></div>
+                </>
+              ) : (
+                <>
+                  <div><span className="opacity-70">Orders </span><span className="font-bold text-sm">{fmtInt(tableOrdersTotal)}</span></div>
+                  <div><span className="opacity-70">Store </span><span className="font-bold text-sm">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</span></div>
+                  <div><span className="opacity-70">CPP </span><span className="font-bold text-sm">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</span></div>
+                  <div><span className="opacity-70">Full CPP </span><span className="font-bold text-sm">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</span></div>
+                </>
+              )}
+              {!profitMode && CAMPAIGN_OWNERS.map(owner => {
                 const s = ownerStats[owner]
                 return (
                   <button
@@ -1647,71 +1764,79 @@ export default function AdsManagementPage(){
                     {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
-                    <span>Purch</span>
-                    {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
-                  </button>
-                </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
-                    <span>CPP</span>
-                    {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
-                  </button>
-                </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
-                    <span>CTR</span>
-                    {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
-                  </button>
-                </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
-                    <span>ATC</span>
-                    {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
-                  </button>
-                </th>
+                {!profitMode && (
+                  <>
+                    <th className="px-1 py-0.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                        <span>Purch</span>
+                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                      </button>
+                    </th>
+                    <th className="px-1 py-0.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                        <span>CPP</span>
+                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                      </button>
+                    </th>
+                    <th className="px-1 py-0.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                        <span>CTR</span>
+                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                      </button>
+                    </th>
+                    <th className="px-1 py-0.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                        <span>ATC</span>
+                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                      </button>
+                    </th>
+                  </>
+                )}
                 <th className="px-1 py-0.5 font-semibold text-emerald-700">
                   <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-0.5 hover:text-emerald-800">
-                    <span>Orders</span>
+                    <span>{profitMode ? 'Paid' : 'Orders'}</span>
                     {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-emerald-400"/>}
                   </button>
                 </th>
                 <th className="px-1 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
-                    <span>tCPP</span>
+                    <span>{profitMode ? 'Ad CPP' : 'tCPP'}</span>
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
-                <th className="px-1 py-0.5 font-semibold text-indigo-700 text-right">
-                  <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-0.5 hover:text-indigo-800">
-                    <span>Inv</span>
-                    {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-indigo-400"/>}
-                  </button>
-                  <span className="text-rose-500 ml-0.5">/</span>
-                  <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-0.5 hover:text-rose-800">
-                    <span className="text-rose-700">0v</span>
-                    {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
-                  </button>
-                </th>
-                <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'80px', maxWidth:'100px'}}>Life</th>
+                {!profitMode && (
+                  <>
+                    <th className="px-1 py-0.5 font-semibold text-indigo-700 text-right">
+                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-0.5 hover:text-indigo-800">
+                        <span>Inv</span>
+                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-indigo-400"/>}
+                      </button>
+                      <span className="text-rose-500 ml-0.5">/</span>
+                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-0.5 hover:text-rose-800">
+                        <span className="text-rose-700">0v</span>
+                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
+                      </button>
+                    </th>
+                    <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'80px', maxWidth:'100px'}}>Life</th>
+                  </>
+                )}
                 <th className="px-1 py-0.5 font-semibold text-right w-[70px]"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
                 </tr>
               )}
               {!loading && items.length>0 && displayRows.length===0 && (
                 <tr>
-                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">No campaigns match this filter.</td>
+                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">No campaigns match this filter.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -1735,6 +1860,11 @@ export default function AdsManagementPage(){
                   const statusClass = active===0 ? 'bg-slate-200 text-slate-700' : (paused===0 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800')
                   const noteVal = groupNotes[pid] || ''
                   const groupSelection = getGroupSelectionState(d.rows)
+                  const paidOrders = profitPaidCounts[pid]
+                  const profitResult = profitResults[pid]
+                  const productPrice = Number((brief as any)?.price || profitResult?.productPrice || 0)
+                  const spendMad = Number(m.spend||0) * 10
+                  const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
@@ -1757,14 +1887,37 @@ export default function AdsManagementPage(){
                         </td>
                         <td className="px-1 py-0.5 whitespace-nowrap">
                           <div className="flex items-center gap-1">
-                            <button
+                            {!profitMode && <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
                               className="px-1 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
                               title="Show merged campaigns"
-                            >{groupExpanded[pid]? '▾' : '▸'}</button>
+                            >{groupExpanded[pid]? '▾' : '▸'}</button>}
                             <span className="font-medium text-xs">{d.primary.name || `Product ${pid}`}</span>
                             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{d.rows.length} camps</span>
                           </div>
+                          {profitMode && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+                              <label className="inline-flex items-center gap-1 rounded bg-white border px-1.5 py-0.5">
+                                <span>Product cost</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={profitProductCosts[pid] || ''}
+                                  placeholder="0"
+                                  onChange={(e)=> setProfitProductCosts(prev=> ({ ...prev, [pid]: e.target.value }))}
+                                  className="w-14 bg-transparent outline-none text-right font-semibold"
+                                />
+                              </label>
+                              <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrders!=null ? fmtInt(paidOrders) : '—'}</span>
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMad).toLocaleString()} MAD</span>
+                              <span className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5">Price {productPrice>0 ? `${Math.round(productPrice).toLocaleString()} MAD` : '—'}</span>
+                              {profitResult && (
+                                <span className={`rounded px-1.5 py-0.5 font-bold ${profitResult.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                  Profit {Math.round(profitResult.profit).toLocaleString()} MAD
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </td>
                         <td className="px-1 py-0.5">
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${statusClass}`}>{statusLabel}</span>
@@ -1785,40 +1938,64 @@ export default function AdsManagementPage(){
                             )
                           })()}
                         </td>
-                        <td className="px-1 py-0.5 text-right">${Number(m.spend||0).toFixed(2)}</td>
-                        <td className="px-1 py-0.5 text-right">{Number(m.purchases||0)}</td>
-                        <td className="px-1 py-0.5 text-right">{cpp}</td>
-                        <td className="px-1 py-0.5 text-right">{ctr}</td>
-                        <td className="px-1 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
+                        <td className="px-1 py-0.5 text-right">
+                          {profitMode ? (
+                            <div>
+                              <div>${Number(m.spend||0).toFixed(2)}</div>
+                              <div className="text-[10px] text-slate-500">{Math.round(spendMad).toLocaleString()} MAD</div>
+                            </div>
+                          ) : `$${Number(m.spend||0).toFixed(2)}`}
+                        </td>
+                        {!profitMode && (
+                          <>
+                            <td className="px-1 py-0.5 text-right">{Number(m.purchases||0)}</td>
+                            <td className="px-1 py-0.5 text-right">{cpp}</td>
+                            <td className="px-1 py-0.5 text-right">{ctr}</td>
+                            <td className="px-1 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
+                          </>
+                        )}
                         <td className="px-1 py-0.5">
-                          {orders==null ? (
+                          {profitMode ? (
+                            paidOrders==null ? (
+                              <span className="text-slate-400">—</span>
+                            ) : (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrders} paid</span>
+                            )
+                          ) : orders==null ? (
                             <span className="text-slate-400">—</span>
                           ) : (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                           )}
                         </td>
-                        <td className="px-1 py-0.5 text-right">{orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp}</td>
                         <td className="px-1 py-0.5 text-right">
-                          <div className="flex items-center justify-end gap-0.5 cursor-pointer"
-                            onMouseEnter={(e) => {
-                              const rect = e.currentTarget.getBoundingClientRect()
-                              setInvHover({ pid, rect })
-                              loadVariantInventory(pid)
-                            }}
-                            onMouseLeave={() => setInvHover(null)}
-                          >
-                            {inv==null ? <span className="text-slate-400">—</span> : (
-                              <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
-                            )}
-                            <span className="text-slate-300">/</span>
-                            {zeros==null ? <span className="text-slate-400">—</span> : (
-                              <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
-                            )}
-                          </div>
+                          {profitMode ? (
+                            profitTrueCpp!=null ? `${Math.round(profitTrueCpp).toLocaleString()} MAD` : '—'
+                          ) : (
+                            orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp
+                          )}
                         </td>
-                        {/* Product Life */}
-                        <td className="px-1.5 py-0.5">
-                          {(()=>{
+                        {!profitMode && (
+                          <>
+                            <td className="px-1 py-0.5 text-right">
+                              <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                                onMouseEnter={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect()
+                                  setInvHover({ pid, rect })
+                                  loadVariantInventory(pid)
+                                }}
+                                onMouseLeave={() => setInvHover(null)}
+                              >
+                                {inv==null ? <span className="text-slate-400">—</span> : (
+                                  <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                                )}
+                                <span className="text-slate-300">/</span>
+                                {zeros==null ? <span className="text-slate-400">—</span> : (
+                                  <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-1.5 py-0.5">
+                              {(()=>{
                             const firstCampaign = d.rows[0]
                             const ct = (firstCampaign as any)?.created_time
                             if(!ct) return <span className="text-slate-400 text-xs">—</span>
@@ -1865,11 +2042,25 @@ export default function AdsManagementPage(){
                                 })}
                               </div>
                             )
-                          })()}
-                        </td>
+                              })()}
+                            </td>
+                          </>
+                        )}
                         <td className="px-1 py-0.5 text-right">
                           <div className="flex items-center justify-end gap-1">
-                          <button
+                          {profitMode && (
+                            <button
+                              title="Calculate profit"
+                              disabled={!!profitLoading[pid]}
+                              onClick={()=> calculateGroupProfit(pid, Number(m.spend||0))}
+                              className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                                profitLoading[pid]
+                                  ? 'bg-emerald-300 animate-pulse cursor-wait'
+                                  : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
+                              }`}
+                            ><Calculator className="w-3.5 h-3.5"/></button>
+                          )}
+                          {!profitMode && <button
                             title="Performance"
                             onClick={async()=>{
                               setPerfOpen(true)
@@ -1901,9 +2092,9 @@ export default function AdsManagementPage(){
                               }
                             }}
                             className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
-                          ><BarChart3 className="w-3.5 h-3.5"/></button>
+                          ><BarChart3 className="w-3.5 h-3.5"/></button>}
                           {/* Group Timeline button with red badge */}
-                          {(()=>{
+                          {!profitMode && (()=>{
                             const groupKey = `group:${pid}`
                             const tl = (campaignMeta[groupKey] as any)?.timeline || []
                             const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
@@ -1925,7 +2116,7 @@ export default function AdsManagementPage(){
                               </button>
                             )
                           })()}
-                          <button
+                          {!profitMode && <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{
                               setAnalysisLoading(pid)
@@ -1982,7 +2173,7 @@ export default function AdsManagementPage(){
                                 ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
                                 : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
                             }`}
-                          ><Sparkles className="w-3.5 h-3.5"/></button>
+                          ><Sparkles className="w-3.5 h-3.5"/></button>}
                           </div>
                         </td>
                       </tr>
@@ -2008,6 +2199,11 @@ export default function AdsManagementPage(){
                 const inv = (invSelf==null || invSelf==undefined)? null : Number(invSelf||0)
                 const zeros = (zerosSelf==null || zerosSelf==undefined)? null : Number(zerosSelf||0)
                 const hasAnyPid = !!pidSelf
+                const paidOrdersSelf = pidSelf ? profitPaidCounts[pidSelf] : undefined
+                const profitResultSelf = pidSelf ? profitResults[pidSelf] : undefined
+                const productPriceSelf = Number((briefSelf as any)?.price || profitResultSelf?.productPrice || 0)
+                const spendMadSelf = Number(c.spend||0) * 10
+                const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 return (
@@ -2034,7 +2230,7 @@ export default function AdsManagementPage(){
                     </td>
                     <td className="px-1.5 py-0.5 whitespace-nowrap">
                       <div className="flex items-center gap-2">
-                        <button
+                        {!profitMode && <button
                           onClick={async()=>{
                             const cid = String(c.campaign_id||'')
                             if(!cid) return
@@ -2068,10 +2264,10 @@ export default function AdsManagementPage(){
                             }
                           }}
                           className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
-                        >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>
+                        >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>}
                         <span>{c.name||'-'}</span>
                       </div>
-                      {(()=>{
+                      {!profitMode && (()=>{
                         const rk = String(rowKey)
                         const meta = (campaignMeta as any)[rk] || {}
                         const s1 = (meta.supplier_name||'').trim()
@@ -2085,6 +2281,29 @@ export default function AdsManagementPage(){
                           </div>
                         )
                       })()}
+                      {profitMode && pidSelf && !isChild && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+                          <label className="inline-flex items-center gap-1 rounded bg-white border px-1.5 py-0.5">
+                            <span>Product cost</span>
+                            <input
+                              type="number"
+                              min={0}
+                              value={profitProductCosts[pidSelf] || ''}
+                              placeholder="0"
+                              onChange={(e)=> setProfitProductCosts(prev=> ({ ...prev, [pidSelf]: e.target.value }))}
+                              className="w-14 bg-transparent outline-none text-right font-semibold"
+                            />
+                          </label>
+                          <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrdersSelf!=null ? fmtInt(paidOrdersSelf) : '—'}</span>
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMadSelf).toLocaleString()} MAD</span>
+                          <span className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5">Price {productPriceSelf>0 ? `${Math.round(productPriceSelf).toLocaleString()} MAD` : '—'}</span>
+                          {profitResultSelf && (
+                            <span className={`rounded px-1.5 py-0.5 font-bold ${profitResultSelf.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                              Profit {Math.round(profitResultSelf.profit).toLocaleString()} MAD
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div className="mt-1 flex items-center gap-1">
                         {(()=>{
                           const rk = (c.campaign_id || c.name || '') as any
@@ -2115,12 +2334,17 @@ export default function AdsManagementPage(){
                                     try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: next.kind, id: next.id, store }) }catch{}
                                     const { start, end } = computeRange(datePreset)
                                     if(next.kind==='product'){
+                                      if(profitMode){
+                                        try{ const pb = await shopifyProductsBrief({ ids: [next.id], store }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
+                                        return
+                                      }
                                       // ensure product brief is loaded for inventory/zero-variants columns
                                       try{ const pb = await shopifyProductsBrief({ ids: [next.id], store }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
                                       const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
                                     }else{
+                                      if(profitMode) return
                                       const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
@@ -2133,7 +2357,7 @@ export default function AdsManagementPage(){
                                 }}
                                 className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
                               >Save</button>
-                              {(manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
+                              {!profitMode && (manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
                                 <button
                                   onClick={async()=>{
                                     const open = !expanded[String(rk)]
@@ -2215,56 +2439,76 @@ export default function AdsManagementPage(){
                         {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
                       </select>
                     </td>
-                    <td className="px-1 py-0.5 text-right">${(c.spend||0).toFixed(2)}</td>
-                    <td className="px-1 py-0.5 text-right">{c.purchases||0}</td>
-                    <td className="px-1 py-0.5 text-right">{cpp}</td>
-                    <td className="px-1 py-0.5 text-right">{ctr}</td>
-                    <td className="px-1 py-0.5 text-right">{c.add_to_cart||0}</td>
+                    <td className="px-1 py-0.5 text-right">
+                      {profitMode ? (
+                        <div>
+                          <div>${(c.spend||0).toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-500">{Math.round(spendMadSelf).toLocaleString()} MAD</div>
+                        </div>
+                      ) : `$${(c.spend||0).toFixed(2)}`}
+                    </td>
+                    {!profitMode && (
+                      <>
+                        <td className="px-1 py-0.5 text-right">{c.purchases||0}</td>
+                        <td className="px-1 py-0.5 text-right">{cpp}</td>
+                        <td className="px-1 py-0.5 text-right">{ctr}</td>
+                        <td className="px-1 py-0.5 text-right">{c.add_to_cart||0}</td>
+                      </>
+                    )}
                     <td className="px-1 py-0.5">
-                      {orders==null ? (
+                      {profitMode ? (
+                        paidOrdersSelf==null ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrdersSelf} paid</span>
+                        )
+                      ) : orders==null ? (
                         <span className="text-slate-400">—</span>
                       ) : (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
                     </td>
                     <td className="px-1 py-0.5 text-right">
-                      {isChild ? (
+                      {profitMode ? (
+                        profitTrueCppSelf!=null ? `${Math.round(profitTrueCppSelf).toLocaleString()} MAD` : '—'
+                      ) : isChild ? (
                         <span className="text-slate-400">—</span>
                       ) : (
                         orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp
                       )}
                     </td>
-                    <td className="px-1 py-0.5 text-right">
-                      {hasAnyPid ? (
-                        <div className="flex items-center justify-end gap-0.5 cursor-pointer"
-                          onMouseEnter={(e) => {
-                            if(pidSelf){
-                              const rect = e.currentTarget.getBoundingClientRect()
-                              setInvHover({ pid: pidSelf, rect })
-                              loadVariantInventory(pidSelf)
-                            }
-                          }}
-                          onMouseLeave={() => setInvHover(null)}
-                        >
-                          {inv===null || inv===undefined ? (
-                            <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
+                    {!profitMode && (
+                      <>
+                        <td className="px-1 py-0.5 text-right">
+                          {hasAnyPid ? (
+                            <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                              onMouseEnter={(e) => {
+                                if(pidSelf){
+                                  const rect = e.currentTarget.getBoundingClientRect()
+                                  setInvHover({ pid: pidSelf, rect })
+                                  loadVariantInventory(pidSelf)
+                                }
+                              }}
+                              onMouseLeave={() => setInvHover(null)}
+                            >
+                              {inv===null || inv===undefined ? (
+                                <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
+                              ) : (
+                                <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                              )}
+                              <span className="text-slate-300">/</span>
+                              {zeros===null || zeros===undefined ? (
+                                <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" />
+                              ) : (
+                                <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
+                              )}
+                            </div>
                           ) : (
-                            <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                            <span className="text-slate-400">—</span>
                           )}
-                          <span className="text-slate-300">/</span>
-                          {zeros===null || zeros===undefined ? (
-                            <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" />
-                          ) : (
-                            <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    {/* Product Life */}
-                    <td className="px-1.5 py-0.5">
-                      {(()=>{
+                        </td>
+                        <td className="px-1.5 py-0.5">
+                          {(()=>{
                         const ct = (c as any)?.created_time
                         if(!ct) return <span className="text-slate-400 text-xs">—</span>
                         const startDate = new Date(ct)
@@ -2309,11 +2553,25 @@ export default function AdsManagementPage(){
                             })}
                           </div>
                         )
-                      })()}
-                    </td>
+                          })()}
+                        </td>
+                      </>
+                    )}
                     <td className="px-1 py-0.5 text-right">
                       <div className="flex items-center justify-end gap-1">
-                      {!isChild && <button
+                      {profitMode && !isChild && pidSelf && (
+                        <button
+                          title="Calculate profit"
+                          disabled={!!profitLoading[pidSelf]}
+                          onClick={()=> calculateGroupProfit(pidSelf, Number(c.spend||0))}
+                          className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                            profitLoading[pidSelf]
+                              ? 'bg-emerald-300 animate-pulse cursor-wait'
+                              : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
+                          }`}
+                        ><Calculator className="w-3.5 h-3.5"/></button>
+                      )}
+                      {!profitMode && !isChild && <button
                         title="Performance"
                         onClick={async()=>{
                           const cid = String(c.campaign_id||'')
@@ -2340,7 +2598,7 @@ export default function AdsManagementPage(){
                         }}
                         className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
                       ><BarChart3 className="w-3.5 h-3.5"/></button>}
-                      {(()=>{
+                      {!profitMode && (()=>{
                         const ck = String(c.campaign_id||c.name||'')
                         const tl = (campaignMeta[ck] as any)?.timeline || []
                         const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
@@ -2362,7 +2620,7 @@ export default function AdsManagementPage(){
                           </button>
                         )
                       })()}
-                      <button
+                      {!profitMode && <button
                         title="Analyze"
                         disabled={analysisLoading===rowKey}
                         onClick={async()=>{
@@ -2432,14 +2690,14 @@ export default function AdsManagementPage(){
                             ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
                             : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
                         }`}
-                      ><Sparkles className="w-3.5 h-3.5"/></button>
+                      ><Sparkles className="w-3.5 h-3.5"/></button>}
                       </div>
                     </td>
                   </tr>
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 14
+                    const colSpan = tableColSpan
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -2634,7 +2892,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={14}>
+                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={tableColSpan}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (

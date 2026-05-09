@@ -396,7 +396,7 @@ def get_campaign_summary(campaign_id: str, *, since: str, until: str) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None, since: str | None = None, until: str | None = None) -> list[dict]:
+def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None, since: str | None = None, until: str | None = None, profit_only: bool = False) -> list[dict]:
     """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 
     Metrics per campaign:
@@ -416,7 +416,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
 
     params: dict = {
         "level": "campaign",
-        "fields": "campaign_id,campaign_name,spend,actions,ctr,cpp",
+        "fields": "campaign_id,campaign_name,spend" if profit_only else "campaign_id,campaign_name,spend,actions,ctr,cpp",
         # Filter to active and paused campaigns
         "filtering": json.dumps([
             {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
@@ -434,7 +434,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     status_map: dict[str, str] = {}
     try:
         cparams = {
-            "fields": "id,name,effective_status,configured_status,created_time",
+            "fields": "id,name,effective_status,configured_status" if profit_only else "id,name,effective_status,configured_status,created_time",
             "filtering": json.dumps([
                 {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
             ]),
@@ -464,22 +464,28 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     for r in rows:
         name = (r or {}).get("campaign_name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
-        ctr = _parse_float((r or {}).get("ctr"))
-        cpp = _parse_float((r or {}).get("cpp"))
-        actions = (r or {}).get("actions") or []
-        purchases = _action_count(actions, [
-            "purchase",
-            "omni_purchase",
-            "onsite_conversion.purchase",
-            "offsite_conversion.fb_pixel_purchase",
-        ])
-        add_to_cart = _action_count(actions, [
-            "add_to_cart",
-            "omni_add_to_cart",
-            "onsite_conversion.add_to_cart",
-            "offsite_conversion.fb_pixel_add_to_cart",
-        ])
-        eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
+        if profit_only:
+            ctr = None
+            eff_cpp = None
+            purchases = 0
+            add_to_cart = 0
+        else:
+            ctr = _parse_float((r or {}).get("ctr"))
+            cpp = _parse_float((r or {}).get("cpp"))
+            actions = (r or {}).get("actions") or []
+            purchases = _action_count(actions, [
+                "purchase",
+                "omni_purchase",
+                "onsite_conversion.purchase",
+                "offsite_conversion.fb_pixel_purchase",
+            ])
+            add_to_cart = _action_count(actions, [
+                "add_to_cart",
+                "omni_add_to_cart",
+                "onsite_conversion.add_to_cart",
+                "offsite_conversion.fb_pixel_add_to_cart",
+            ])
+            eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
         cid = (r or {}).get("campaign_id")
         if cid:
             seen_ids.add(str(cid))
