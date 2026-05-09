@@ -1259,6 +1259,7 @@ class CampaignMetaUpsertRequest(BaseModel):
     supplier_name: Optional[str] = None
     supplier_alt_name: Optional[str] = None  # legacy
     supply_available: Optional[str] = None   # new
+    owner: Optional[str] = None
     timeline: Optional[List[Dict[str, Any]]] = None
     product_life_checks: Optional[Dict[str, Any]] = None  # per-campaign phase checks
     store: Optional[str] = None
@@ -1277,6 +1278,8 @@ async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
             patch["supplier_alt_name"] = req.supplier_alt_name
         if isinstance(req.supply_available, str):
             patch["supply_available"] = req.supply_available
+        if isinstance(req.owner, str):
+            patch["owner"] = req.owner.strip().lower()
         if isinstance(req.timeline, list):
             patch["timeline"] = req.timeline
         if req.product_life_checks is not None:

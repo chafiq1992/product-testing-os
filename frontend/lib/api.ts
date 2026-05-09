@@ -455,13 +455,13 @@ export async function campaignMetaList(store?: string){
   if(s) params.push(`store=${encodeURIComponent(s)}`)
   const q = params.length? `?${params.join('&')}` : ''
   const {data} = await axios.get(`${base}/api/campaign_meta${q}`)
-  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
+  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, owner?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
 }
 
-export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?: Array<{ text:string, at:string }>, product_life_checks?: Record<string, any>, store?: string }){
+export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, owner?:string, timeline?: Array<{ text:string, at:string }>, product_life_checks?: Record<string, any>, store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/campaign_meta`, body)
-  return data as { data?: { supplier_name?: string, supplier_alt_name?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }
+  return data as { data?: { supplier_name?: string, supplier_alt_name?: string, owner?: string, timeline?: Array<{ text:string, at:string }> }, error?: string }
 }
 
 export async function campaignTimelineAdd(payload:{ campaign_key:string, text:string, store?: string }){
@@ -613,7 +613,7 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
 export type AdsManagementBundle = {
   campaigns: MetaCampaignRow[],
   mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
-  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, timeline?: Array<{ text: string, at: string }>, product_life_checks?: Record<string, Record<string, boolean>> }>,
+  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, owner?: string, timeline?: Array<{ text: string, at: string }>, product_life_checks?: Record<string, Record<string, boolean>> }>,
   ad_account?: { id?: string, name?: string },
   product_life_instructions: { phases: Record<string, string[]> },
 }

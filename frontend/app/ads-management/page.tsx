@@ -8,6 +8,8 @@ const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
   { value: 'irranova', label: 'irranova' },
 ]
+const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
+type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
 
 function MultiCheckDropdown({ label, options, selected, onChange, className }: {
   label: string,
@@ -158,7 +160,8 @@ export default function AdsManagementPage(){
     try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes_by_product')||'{}') }catch{ return {} }
   })
   const [groupTarget, setGroupTarget] = useState<string>('') // product id
-  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, timeline?:Array<{text:string, at:string}>, product_life_checks?:Record<string, Record<string, boolean>> }>>({})
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, owner?:string, timeline?:Array<{text:string, at:string}>, product_life_checks?:Record<string, Record<string, boolean>> }>>({})
+  const [ownerFilter, setOwnerFilter] = useState<CampaignOwner|''>('')
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
@@ -180,12 +183,17 @@ export default function AdsManagementPage(){
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
-  const totalSpend = useMemo(()=> (items||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [items])
+  const visibleItems = useMemo(()=> {
+    if(!ownerFilter) return items || []
+    return (items||[]).filter(r => ownerOfRow(r) === ownerFilter)
+  }, [items, campaignMeta, ownerFilter])
+
+  const totalSpend = useMemo(()=> (visibleItems||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [visibleItems])
   const tableOrdersTotal = useMemo(()=>{
     // Sum orders while respecting product-grouping (count each product once)
     const pidToAnyRow: Record<string, MetaCampaignRow> = {}
     const ungrouped: MetaCampaignRow[] = []
-    for(const r of (items||[])){
+    for(const r of (visibleItems||[])){
       const pid = getProductIdForRow(r)
       if(pid){
         if(!pidToAnyRow[pid]) pidToAnyRow[pid] = r
@@ -203,9 +211,42 @@ export default function AdsManagementPage(){
       if(typeof v==='number' && v>0) sum += v
     }
     return sum
-  }, [items, shopifyCounts, manualCounts, manualIds])
+  }, [visibleItems, shopifyCounts, manualCounts, manualIds])
   const totalCPP = useMemo(()=> (tableOrdersTotal>0? (totalSpend / tableOrdersTotal) : null), [totalSpend, tableOrdersTotal])
   const storeCPP = useMemo(()=> ((storeOrdersTotal||0)>0? (totalSpend / Number(storeOrdersTotal||0)) : null), [totalSpend, storeOrdersTotal])
+  const ownerStats = useMemo(()=> {
+    const stats: Record<CampaignOwner, { spend:number, orders:number, trueCpp:number|null, campaigns:number }> = {
+      chafiq: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+      nour: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+      adil: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+    }
+    for(const owner of CAMPAIGN_OWNERS){
+      const rows = (items||[]).filter(r => ownerOfRow(r) === owner)
+      const pidToAnyRow: Record<string, MetaCampaignRow> = {}
+      const ungrouped: MetaCampaignRow[] = []
+      let spend = 0
+      for(const r of rows){
+        spend += Number(r.spend||0)
+        const pid = getProductIdForRow(r)
+        if(pid){
+          if(!pidToAnyRow[pid]) pidToAnyRow[pid] = r
+        }else{
+          ungrouped.push(r)
+        }
+      }
+      let orders = 0
+      for(const pid of Object.keys(pidToAnyRow)){
+        const v = getOrdersByProductId(pid)
+        if(typeof v === 'number' && v > 0) orders += v
+      }
+      for(const r of ungrouped){
+        const v = getOrders(r)
+        if(typeof v === 'number' && v > 0) orders += v
+      }
+      stats[owner] = { spend, orders, campaigns: rows.length, trueCpp: orders > 0 ? spend / orders : null }
+    }
+    return stats
+  }, [items, campaignMeta, shopifyCounts, manualCounts, manualIds])
 
   function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
   function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
@@ -214,6 +255,52 @@ export default function AdsManagementPage(){
     const n = String(s||'')
     const m = n.match(/(\d{3,})/)
     return m? m[1] : null
+  }
+
+  function normalizeOwner(v?: string|null): CampaignOwner|''{
+    const s = String(v||'').trim().toLowerCase()
+    return (CAMPAIGN_OWNERS as readonly string[]).includes(s) ? (s as CampaignOwner) : ''
+  }
+
+  function ownerOfKey(key: string): CampaignOwner|''{
+    return normalizeOwner((campaignMeta as any)[String(key||'')]?.owner)
+  }
+
+  function ownerOfRow(row: MetaCampaignRow): CampaignOwner|''{
+    const campaignKey = String((row as any)?.campaign_id || '').trim()
+    const nameKey = String((row as any)?.name || '').trim()
+    return ownerOfKey(campaignKey) || ownerOfKey(nameKey)
+  }
+
+  function ownerValueForRows(rows: MetaCampaignRow[]): CampaignOwner|'mixed'|''{
+    const owners = Array.from(new Set((rows||[]).map(r => ownerOfRow(r)).filter(Boolean)))
+    if(owners.length === 0) return ''
+    if(owners.length === 1) return owners[0] as CampaignOwner
+    return 'mixed'
+  }
+
+  async function saveCampaignOwner(campaignKey: string, owner: string){
+    const key = String(campaignKey||'').trim()
+    const nextOwner = normalizeOwner(owner)
+    if(!key) return
+    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), owner: nextOwner } }))
+    try{
+      await campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })
+    }catch{}
+  }
+
+  async function saveOwnerForRows(rows: MetaCampaignRow[], owner: string){
+    const nextOwner = normalizeOwner(owner)
+    const keys = Array.from(new Set((rows||[]).map(r => String((r as any).campaign_id || (r as any).name || '').trim()).filter(Boolean)))
+    if(keys.length === 0) return
+    setCampaignMeta(prev => {
+      const out = { ...prev }
+      for(const key of keys){
+        out[key] = { ...(out[key] || {}), owner: nextOwner }
+      }
+      return out
+    })
+    await Promise.allSettled(keys.map(key => campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })))
   }
 
   function computeRange(preset: string){
@@ -295,6 +382,47 @@ export default function AdsManagementPage(){
   function effectiveYmdRange(preset: string){
     if(preset==='custom' && customStart && customEnd) return { start: customStart, end: customEnd }
     return computeRange(preset)
+  }
+
+  function performanceOrderStores(rowStore?: string | null): Array<string | undefined>{
+    const stores = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
+    if(stores.length>0) return Array.from(new Set(stores))
+    const fallback = String(rowStore || store || '').trim()
+    return fallback ? [fallback] : [undefined]
+  }
+
+  async function loadPerformanceOrdersByDay(
+    days: Array<{ date: string }>,
+    source: { productId?: string | null, collectionId?: string | null, rowStore?: string | null }
+  ): Promise<number[]>{
+    const productId = String(source.productId||'').trim()
+    const collectionId = String(source.collectionId||'').trim()
+    if(!productId && !collectionId) return (days||[]).map(()=> 0)
+    const storesToUse = performanceOrderStores(source.rowStore)
+    return Promise.all((days||[]).map(async (dd) => {
+      const dayDate = String(dd?.date||'').trim()
+      if(!dayDate) return 0
+      try{
+        if(productId){
+          const results = await Promise.allSettled(storesToUse.map(st =>
+            shopifyOrdersCountByTitle({ names: [productId], start: dayDate, end: dayDate, store: st, include_closed: true, date_field: 'processed' })
+          ))
+          return results.reduce((sum, res) => {
+            if(res.status !== 'fulfilled') return sum
+            return sum + (Number(((res.value as any)?.data||{})[productId] ?? 0) || 0)
+          }, 0)
+        }
+        const results = await Promise.allSettled(storesToUse.map(st =>
+          shopifyOrdersCountByCollection({ collection_id: collectionId, start: dayDate, end: dayDate, store: st, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+        ))
+        return results.reduce((sum, res) => {
+          if(res.status !== 'fulfilled') return sum
+          return sum + (Number(((res.value as any)?.data||{})?.count ?? 0) || 0)
+        }, 0)
+      }catch{
+        return 0
+      }
+    }))
   }
 
   async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[] }){
@@ -693,7 +821,7 @@ export default function AdsManagementPage(){
   const parentRows = useMemo<ParentRow[]>(()=>{
     const byPid: Record<string, MetaCampaignRow[]> = {}
     const singles: MetaCampaignRow[] = []
-    for(const r of (items||[])){
+    for(const r of (visibleItems||[])){
       const pid = getProductIdForRow(r)
       if(pid){
         ;(byPid[pid] ||= []).push(r)
@@ -715,7 +843,7 @@ export default function AdsManagementPage(){
       out.push({ kind:'single', row: r })
     }
     return out
-  }, [items, manualIds, shopifyCounts, manualCounts])
+  }, [visibleItems, manualIds, shopifyCounts, manualCounts])
 
   function parentMetric(p: ParentRow){
     if(p.kind==='group'){
@@ -822,7 +950,7 @@ export default function AdsManagementPage(){
     const q = (searchQuery||'').trim().toLowerCase()
     if(!q || q.length < 1) return []
     const results: Array<{ id:string, name:string, score:number }> = []
-    for(const c of (items||[])){
+    for(const c of (visibleItems||[])){
       const name = String(c.name||'').toLowerCase()
       const id = String(c.campaign_id||'')
       let score = 0
@@ -848,7 +976,7 @@ export default function AdsManagementPage(){
     const deduped = results.filter(r => { if(seen.has(r.id)) return false; seen.add(r.id); return true })
     deduped.sort((a,b) => b.score - a.score)
     return deduped.slice(0, 12)
-  }, [searchQuery, items])
+  }, [searchQuery, visibleItems])
 
   const displayRows = useMemo<DisplayRow[]>(()=>{
     const activeFilter = (searchActive||'').trim().toLowerCase()
@@ -922,13 +1050,13 @@ export default function AdsManagementPage(){
   }
   const productIdToCount = useMemo(()=>{
     const map: Record<string, number> = {}
-    for(const r of (items||[])){
+    for(const r of (visibleItems||[])){
       const pid = getProductIdForRow(r)
       if(!pid) continue
       map[pid] = (map[pid]||0) + 1
     }
     return map
-  }, [items, manualIds])
+  }, [visibleItems, manualIds])
   const productIdOptions = useMemo(()=>{
     const ids = Object.keys(productIdToCount||{})
     ids.sort((a,b)=> (Number(a)||0) - (Number(b)||0))
@@ -1071,6 +1199,19 @@ export default function AdsManagementPage(){
             onChange={(next) => { setSelectedAdAccounts(next); try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{} }}
             className="min-w-[180px]"
           />
+          <div className="flex items-center gap-1 rounded-xl border bg-white px-1 py-1">
+            <button
+              onClick={()=> setOwnerFilter('')}
+              className={`px-2 py-0.5 rounded-lg text-xs font-semibold ${ownerFilter==='' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >All</button>
+            {CAMPAIGN_OWNERS.map(owner => (
+              <button
+                key={owner}
+                onClick={()=> setOwnerFilter(owner)}
+                className={`px-2 py-0.5 rounded-lg text-xs font-semibold capitalize ${ownerFilter===owner ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-blue-50'}`}
+              >{owner}</button>
+            ))}
+          </div>
           <div className="flex items-center gap-2">
             <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
@@ -1297,13 +1438,34 @@ export default function AdsManagementPage(){
               <span className="opacity-70">{datePreset==='custom'? `${customStart||'—'}→${customEnd||'—'}` : presetLabel(datePreset)}</span>
               <span className="opacity-50">•</span>
               <span className="opacity-70">{selectedStores.join(', ')||'—'}</span>
+              {ownerFilter && (
+                <>
+                  <span className="opacity-50">•</span>
+                  <span className="font-semibold capitalize">{ownerFilter}</span>
+                </>
+              )}
             </div>
-            <div className="flex items-center gap-4 text-xs">
+            <div className="flex items-center gap-3 text-xs flex-wrap justify-end">
               <div><span className="opacity-70">Spend </span><span className="font-bold text-sm">{fmtCurrency(totalSpend)}</span></div>
               <div><span className="opacity-70">Orders </span><span className="font-bold text-sm">{fmtInt(tableOrdersTotal)}</span></div>
               <div><span className="opacity-70">Store </span><span className="font-bold text-sm">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</span></div>
               <div><span className="opacity-70">CPP </span><span className="font-bold text-sm">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</span></div>
               <div><span className="opacity-70">Full CPP </span><span className="font-bold text-sm">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</span></div>
+              {CAMPAIGN_OWNERS.map(owner => {
+                const s = ownerStats[owner]
+                return (
+                  <button
+                    key={owner}
+                    onClick={()=> setOwnerFilter(ownerFilter===owner ? '' : owner)}
+                    className={`rounded-lg px-2 py-1 text-left ${ownerFilter===owner ? 'bg-white text-blue-700' : 'bg-white/10 hover:bg-white/20 text-white'}`}
+                    title={`Filter ${owner} campaigns`}
+                  >
+                    <span className="font-bold capitalize">{owner}</span>
+                    <span className="ml-1 opacity-80">{fmtInt(s.orders)} orders</span>
+                    <span className="ml-1 opacity-80">{s.trueCpp!=null ? fmtCurrency(s.trueCpp) : '—'} CPP</span>
+                  </button>
+                )
+              })}
             </div>
           </div>
         </div>
@@ -1476,6 +1638,9 @@ export default function AdsManagementPage(){
                 <th className="px-1 py-0.5 font-semibold">
                   <span>Status</span>
                 </th>
+                <th className="px-1 py-0.5 font-semibold">
+                  <span>Owner</span>
+                </th>
                 <th className="px-1 py-0.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
                     <span>Spend</span>
@@ -1536,12 +1701,17 @@ export default function AdsManagementPage(){
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">Loading…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={13} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                </tr>
+              )}
+              {!loading && items.length>0 && displayRows.length===0 && (
+                <tr>
+                  <td colSpan={14} className="px-3 py-6 text-center text-slate-500">No campaigns match this filter.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -1598,6 +1768,22 @@ export default function AdsManagementPage(){
                         </td>
                         <td className="px-1 py-0.5">
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${statusClass}`}>{statusLabel}</span>
+                        </td>
+                        <td className="px-1 py-0.5">
+                          {(()=>{
+                            const owner = ownerValueForRows(d.rows)
+                            return (
+                              <select
+                                value={owner === 'mixed' ? '' : owner}
+                                onChange={(e)=> saveOwnerForRows(d.rows, e.target.value)}
+                                className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
+                                title={owner === 'mixed' ? 'Mixed owners' : 'Campaign owner'}
+                              >
+                                <option value="">{owner === 'mixed' ? 'Mixed' : 'No owner'}</option>
+                                {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                            )
+                          })()}
                         </td>
                         <td className="px-1 py-0.5 text-right">${Number(m.spend||0).toFixed(2)}</td>
                         <td className="px-1 py-0.5 text-right">{Number(m.purchases||0)}</td>
@@ -1688,6 +1874,7 @@ export default function AdsManagementPage(){
                             onClick={async()=>{
                               setPerfOpen(true)
                               setPerfLoading(true)
+                              setPerfOrders([])
                               try{
                                 const campaignIds = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
                                 setPerfCampaign({ id: pid, name: d.primary.name || `Product ${pid}` })
@@ -1707,13 +1894,7 @@ export default function AdsManagementPage(){
                                 }
                                 const mergedDays = Object.values(dateMap).sort((a,b) => a.date.localeCompare(b.date))
                                 setPerfMetrics(mergedDays)
-                                // Fetch Shopify orders per day by product ID
-                                const ordersPerDay = await Promise.all(mergedDays.map(async (dd) => {
-                                  try{
-                                    const oc = await shopifyOrdersCountByTitle({ names: [pid], start: dd.date, end: dd.date, include_closed: true, date_field: 'processed' })
-                                    return Number(((oc as any)?.data||{})[pid] ?? 0)
-                                  }catch{ return 0 }
-                                }))
+                                const ordersPerDay = await loadPerformanceOrdersByDay(mergedDays, { productId: pid })
                                 setPerfOrders(ordersPerDay)
                               }finally{
                                 setPerfLoading(false)
@@ -2024,6 +2205,16 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
+                    <td className="px-1 py-0.5">
+                      <select
+                        value={ownerOfRow(c)}
+                        onChange={(e)=> saveCampaignOwner(rowKey, e.target.value)}
+                        className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
+                      >
+                        <option value="">No owner</option>
+                        {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </td>
                     <td className="px-1 py-0.5 text-right">${(c.spend||0).toFixed(2)}</td>
                     <td className="px-1 py-0.5 text-right">{c.purchases||0}</td>
                     <td className="px-1 py-0.5 text-right">{cpp}</td>
@@ -2128,6 +2319,7 @@ export default function AdsManagementPage(){
                           const cid = String(c.campaign_id||'')
                           setPerfOpen(true)
                           setPerfLoading(true)
+                          setPerfOrders([])
                           try{
                             if(!cid) return
                             setPerfCampaign({ id: cid, name: c.name||'' })
@@ -2136,23 +2328,11 @@ export default function AdsManagementPage(){
                             setPerfMetrics(days)
                             const rk = (c.campaign_id || c.name || '') as any
                             const conf = (manualIds as any)[rk]
-                            const useProduct = conf? (conf.kind==='product') : /^\d+$/.test((c.name||'').trim())
-                            const prodId = useProduct? (conf? conf.id : (c.name||'').trim()) : undefined
+                            const extractedPid = extractNumericId((c.name||'').trim())
+                            const useProduct = conf? (conf.kind==='product') : !!extractedPid
+                            const prodId = useProduct? (conf? conf.id : extractedPid) : undefined
                             const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
-                            // Batch all Shopify order requests in parallel for reliability
-                            const ordersPerDay = await Promise.all((days||[]).map(async (dd: any) => {
-                              const dayDate = dd.date
-                              try{
-                                if(prodId){
-                                  const oc = await shopifyOrdersCountByTitle({ names: [prodId], start: dayDate, end: dayDate, include_closed: true, date_field: 'processed' })
-                                  return Number(((oc as any)?.data||{})[prodId] ?? 0)
-                                }else if(collId){
-                                  const oc = await shopifyOrdersCountByCollection({ collection_id: collId, start: dayDate, end: dayDate, store, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-                                  return Number(((oc as any)?.data||{})?.count ?? 0)
-                                }
-                                return 0
-                              }catch{ return 0 }
-                            }))
+                            const ordersPerDay = await loadPerformanceOrdersByDay(days, { productId: prodId, collectionId: collId, rowStore: (c as any)._store || store })
                             setPerfOrders(ordersPerDay)
                           }finally{
                             setPerfLoading(false)
@@ -2259,7 +2439,7 @@ export default function AdsManagementPage(){
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
-                    const colSpan = 13
+                    const colSpan = 14
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
@@ -2454,7 +2634,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={13}>
+                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={14}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading products…</div>
                           ) : (
