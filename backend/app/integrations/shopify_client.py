@@ -2,6 +2,10 @@ import os, requests, base64, re, time, logging
 from datetime import datetime, timedelta
 
 _perf_log = logging.getLogger("shopify_client.perf")
+if not _perf_log.handlers:
+    _perf_log.addHandler(logging.StreamHandler())
+_perf_log.setLevel(logging.INFO)
+_perf_log.propagate = False
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
