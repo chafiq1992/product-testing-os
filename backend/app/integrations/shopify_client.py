@@ -918,12 +918,14 @@ def count_orders_by_product_or_variant_processed_batch(
         "processed_at_min": processed_min_iso,
         "processed_at_max": processed_max_iso,
         "order": "processed_at asc",
+        "fields": "id,cancelled_at,line_items",
     }
     page_info = None
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250}
+            # With page_info, Shopify only allows page_info + limit (+ fields).
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         try:
@@ -995,13 +997,14 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
         "processed_at_min": processed_min,
         "processed_at_max": processed_max,
         "order": "processed_at asc",
+        "fields": "id,cancelled_at",
     }
     total = 0
     page_info = None
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250}
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         try:
@@ -1800,7 +1803,7 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
       }
     """
     try:
-        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json?fields=id,options,variants")
         p = (pdata or {}).get("product") or {}
     except Exception:
         return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}

@@ -1535,6 +1535,438 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store, p
     }
 
 
+# -------- Ads Management Shopify enrichment (resumable background job) --------
+class AdsManagementEnrichmentRequest(BaseModel):
+    campaigns: Optional[List[Dict[str, Any]]] = None
+    mappings: Optional[Dict[str, Any]] = None
+    stores: Optional[List[str]] = None
+    primary_store: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    profit_only: Optional[bool] = False
+    force: Optional[bool] = False
+
+
+_ADS_MGMT_ENRICHMENT_LOCK = threading.Lock()
+_ADS_MGMT_ENRICHMENT_THREADS: Dict[str, threading.Thread] = {}
+_ADS_MGMT_ENRICHMENT_PREFIX = "ads_mgmt_enrichment_job:"
+_ADS_MGMT_ENRICHMENT_DONE_TTL_S = int(os.getenv("PTOS_ADS_MGMT_ENRICHMENT_DONE_TTL_S", "3600") or "3600")
+
+
+def _ads_mgmt_enrichment_db_key(job_id: str) -> str:
+    return f"{_ADS_MGMT_ENRICHMENT_PREFIX}{str(job_id or '').strip()}"
+
+
+def _ads_mgmt_job_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _ads_mgmt_save_job(job_id: str, patch: dict) -> dict:
+    key = _ads_mgmt_enrichment_db_key(job_id)
+    existing = db.get_app_setting(None, key)
+    if not isinstance(existing, dict):
+        existing = {}
+    payload = {**existing, **(patch or {})}
+    payload["job_id"] = job_id
+    payload["updated_at"] = _ads_mgmt_job_now()
+    saved = db.set_app_setting(None, key, payload)
+    return saved if isinstance(saved, dict) else payload
+
+
+def _ads_mgmt_get_job(job_id: str) -> dict | None:
+    key = _ads_mgmt_enrichment_db_key(job_id)
+    val = db.get_app_setting(None, key)
+    return val if isinstance(val, dict) else None
+
+
+def _ads_mgmt_done_job_is_fresh(job: dict | None) -> bool:
+    if not isinstance(job, dict) or job.get("status") != "done":
+        return False
+    try:
+        completed = float(job.get("completed_at_epoch") or 0)
+        return completed > 0 and (time.time() - completed) <= max(60, _ADS_MGMT_ENRICHMENT_DONE_TTL_S)
+    except Exception:
+        return False
+
+
+def _ads_mgmt_sanitize_campaigns(campaigns: list | None) -> list[dict]:
+    out: list[dict] = []
+    allowed = {
+        "campaign_id", "name", "spend", "purchases", "cpp", "ctr", "add_to_cart",
+        "status", "created_time", "_store", "_adAccount",
+    }
+    for raw in (campaigns or [])[:1500]:
+        if not isinstance(raw, dict):
+            continue
+        row = {k: raw.get(k) for k in allowed if k in raw}
+        if row.get("campaign_id") or row.get("name"):
+            out.append(row)
+    return out
+
+
+def _ads_mgmt_sanitize_mappings(mappings: dict | None) -> dict:
+    out: dict[str, dict] = {}
+    for key, raw in list((mappings or {}).items())[:2500]:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind") or "").strip()
+        target_id = str(raw.get("id") or raw.get("target_id") or "").strip()
+        if kind not in ("product", "collection") or not target_id:
+            continue
+        out[str(key)] = {
+            "kind": kind,
+            "id": target_id,
+            "store": str(raw.get("store") or "").strip() or None,
+        }
+    return out
+
+
+def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
+    stores = []
+    seen: set[str] = set()
+    for raw in (req.stores or []):
+        s = str(raw or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        stores.append(s)
+    primary_store = str(req.primary_store or (stores[0] if stores else "") or "").strip() or None
+    if primary_store and primary_store not in seen:
+        stores.insert(0, primary_store)
+    return {
+        "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
+        "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
+        "stores": stores or ([primary_store] if primary_store else []),
+        "primary_store": primary_store,
+        "start": (req.start or "").split("T")[0],
+        "end": (req.end or "").split("T")[0],
+        "profit_only": bool(req.profit_only),
+    }
+
+
+def _ads_mgmt_job_id(payload: dict) -> str:
+    digest = hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+def _ads_mgmt_row_key(row: dict) -> str:
+    return str((row or {}).get("campaign_id") or (row or {}).get("name") or "").strip()
+
+
+def _ads_mgmt_extract_product_id(name: str | None) -> str | None:
+    try:
+        m = re.search(r"(\d{3,})", str(name or ""))
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _ads_mgmt_mapping_for_row(row: dict, mappings: dict) -> dict | None:
+    for key in (
+        str((row or {}).get("campaign_id") or "").strip(),
+        str((row or {}).get("name") or "").strip(),
+        _ads_mgmt_row_key(row),
+    ):
+        if key and isinstance((mappings or {}).get(key), dict):
+            return (mappings or {}).get(key)
+    return None
+
+
+def _ads_mgmt_product_id_for_row(row: dict, mappings: dict) -> str | None:
+    manual = _ads_mgmt_mapping_for_row(row, mappings)
+    if manual and manual.get("kind") == "product":
+        pid = str(manual.get("id") or "").strip()
+        if pid.isdigit():
+            return pid
+    pid = _ads_mgmt_extract_product_id((row or {}).get("name"))
+    return pid if pid and pid.isdigit() else None
+
+
+def _ads_mgmt_merge_briefs(target: dict, source: dict | None) -> dict:
+    for pid, brief in (source or {}).items():
+        if not isinstance(brief, dict):
+            continue
+        key = str(pid)
+        existing = target.get(key)
+        if not existing:
+            target[key] = brief
+            continue
+        next_brief = {**existing, **{k: v for k, v in brief.items() if v not in (None, "", [])}}
+        if not existing.get("image") and brief.get("image"):
+            next_brief["image"] = brief.get("image")
+        target[key] = next_brief
+    return target
+
+
+def _ads_mgmt_store_list(payload: dict) -> list[str | None]:
+    stores = []
+    seen: set[str] = set()
+    for raw in (payload.get("stores") or []):
+        s = str(raw or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            stores.append(s)
+    primary = str(payload.get("primary_store") or "").strip()
+    if primary and primary not in seen:
+        stores.insert(0, primary)
+    return stores or ([primary] if primary else [None])
+
+
+def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
+    log = logging.getLogger("ads_management.enrichment")
+    result = {
+        "shopify_counts": {},
+        "product_briefs": {},
+        "manual_counts": {},
+        "store_orders_total": None,
+        "reveal_campaign_keys": [],
+    }
+    try:
+        campaigns = list(payload.get("campaigns") or [])
+        mappings = payload.get("mappings") if isinstance(payload.get("mappings"), dict) else {}
+        stores = _ads_mgmt_store_list(payload)
+        primary_store = str(payload.get("primary_store") or (stores[0] if stores else "") or "").strip() or None
+        start = str(payload.get("start") or "").split("T")[0]
+        end = str(payload.get("end") or "").split("T")[0]
+        profit_only = bool(payload.get("profit_only"))
+
+        if not campaigns:
+            _ads_mgmt_save_job(job_id, {
+                "status": "done",
+                "progress": {"done": 0, "total": 0, "phase": "done"},
+                "result": result,
+                "completed_at": _ads_mgmt_job_now(),
+                "completed_at_epoch": time.time(),
+            })
+            return
+
+        ranked = sorted(campaigns, key=lambda c: float((c or {}).get("spend") or 0), reverse=True)
+        spending = [c for c in ranked if float((c or {}).get("spend") or 0) > 0]
+
+        product_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for row in [*spending, *ranked]:
+            pid = _ads_mgmt_product_id_for_row(row, mappings)
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                product_ids.append(pid)
+
+        spending_ids = []
+        seen_spending: set[str] = set()
+        for row in spending:
+            pid = _ads_mgmt_product_id_for_row(row, mappings)
+            if pid and pid not in seen_spending:
+                seen_spending.add(pid)
+                spending_ids.append(pid)
+
+        collection_rows: list[tuple[str, dict, dict]] = []
+        for row in ranked:
+            key = _ads_mgmt_row_key(row)
+            manual = _ads_mgmt_mapping_for_row(row, mappings)
+            if manual and manual.get("kind") == "collection" and str(manual.get("id") or "").isdigit():
+                collection_rows.append((key, row, manual))
+
+        total_steps = max(1, len(stores) + len(stores) + len(stores) + len(collection_rows))
+        done_steps = 0
+        _ads_mgmt_save_job(job_id, {
+            "status": "running",
+            "progress": {"done": done_steps, "total": total_steps, "phase": "orders"},
+            "request": payload,
+            "result": result,
+        })
+
+        counts_by_id: dict[str, int] = {pid: 0 for pid in product_ids}
+        if not profit_only and product_ids and start and end:
+            for st in stores:
+                try:
+                    batch = count_orders_by_product_or_variant_processed_batch(
+                        product_ids,
+                        start,
+                        end,
+                        store=st,
+                        include_closed=True,
+                    ) or {}
+                    for pid in product_ids:
+                        counts_by_id[pid] = int(counts_by_id.get(pid, 0) or 0) + int(batch.get(pid, 0) or 0)
+                except Exception as e:
+                    log.warning("orders batch failed for store=%s job=%s: %s", st, job_id, e)
+                done_steps += 1
+                result["shopify_counts"] = dict(counts_by_id)
+                _ads_mgmt_save_job(job_id, {
+                    "status": "running",
+                    "progress": {"done": done_steps, "total": total_steps, "phase": "orders"},
+                    "result": result,
+                })
+
+        brief_targets = spending_ids if profit_only else [
+            pid for pid in product_ids
+            if pid in seen_spending or int(counts_by_id.get(pid, 0) or 0) > 0
+        ]
+        briefs: dict[str, dict] = {}
+        if brief_targets:
+            for st in stores:
+                try:
+                    for i in range(0, len(brief_targets), 200):
+                        chunk = brief_targets[i:i + 200]
+                        if not chunk:
+                            continue
+                        data = get_products_brief(chunk, store=st) or {}
+                        _ads_mgmt_merge_briefs(briefs, data)
+                except Exception as e:
+                    log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
+                done_steps += 1
+                result["product_briefs"] = dict(briefs)
+                _ads_mgmt_save_job(job_id, {
+                    "status": "running",
+                    "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
+                    "result": result,
+                })
+
+        if not profit_only and start and end:
+            store_total = 0
+            for st in stores:
+                try:
+                    store_total += int(count_orders_total_processed(start, end, store=st, include_closed=True) or 0)
+                except Exception as e:
+                    log.warning("store total failed for store=%s job=%s: %s", st, job_id, e)
+                done_steps += 1
+                result["store_orders_total"] = store_total
+                _ads_mgmt_save_job(job_id, {
+                    "status": "running",
+                    "progress": {"done": done_steps, "total": total_steps, "phase": "store_total"},
+                    "result": result,
+                })
+
+        manual_counts: dict[str, int] = {}
+        if not profit_only:
+            for row in ranked:
+                key = _ads_mgmt_row_key(row)
+                manual = _ads_mgmt_mapping_for_row(row, mappings)
+                if not key or not manual:
+                    continue
+                target_id = str(manual.get("id") or "").strip()
+                if not target_id.isdigit():
+                    continue
+                if manual.get("kind") == "product":
+                    manual_counts[key] = int(counts_by_id.get(target_id, 0) or 0)
+
+            for key, row, manual in collection_rows:
+                target_id = str(manual.get("id") or "").strip()
+                row_store = str(manual.get("store") or row.get("_store") or primary_store or "").strip() or None
+                try:
+                    count = sum_product_order_counts_for_collection(
+                        target_id,
+                        start,
+                        end,
+                        store=row_store,
+                        include_closed=True,
+                    )
+                    manual_counts[key] = int(count or 0)
+                except Exception as e:
+                    log.warning("collection count failed for key=%s store=%s job=%s: %s", key, row_store, job_id, e)
+                    manual_counts[key] = 0
+                done_steps += 1
+                result["manual_counts"] = dict(manual_counts)
+                _ads_mgmt_save_job(job_id, {
+                    "status": "running",
+                    "progress": {"done": done_steps, "total": total_steps, "phase": "collections"},
+                    "result": result,
+                })
+
+        reveal: list[str] = []
+        for row in ranked:
+            key = _ads_mgmt_row_key(row)
+            if not key or float((row or {}).get("spend") or 0) > 0:
+                continue
+            pid = _ads_mgmt_product_id_for_row(row, mappings)
+            manual = _ads_mgmt_mapping_for_row(row, mappings)
+            count = 0
+            if manual and manual.get("kind") == "collection":
+                count = int(manual_counts.get(key, 0) or 0)
+            elif pid:
+                count = int(counts_by_id.get(pid, 0) or 0)
+            if count > 0:
+                reveal.append(key)
+        result["reveal_campaign_keys"] = reveal
+        result["shopify_counts"] = dict(counts_by_id)
+        result["product_briefs"] = dict(briefs)
+        result["manual_counts"] = dict(manual_counts)
+
+        _ads_mgmt_save_job(job_id, {
+            "status": "done",
+            "progress": {"done": total_steps, "total": total_steps, "phase": "done"},
+            "result": result,
+            "completed_at": _ads_mgmt_job_now(),
+            "completed_at_epoch": time.time(),
+        })
+    except Exception as e:
+        log.exception("ads management enrichment job failed: %s", e)
+        _ads_mgmt_save_job(job_id, {
+            "status": "error",
+            "error": str(e),
+            "result": result,
+        })
+    finally:
+        with _ADS_MGMT_ENRICHMENT_LOCK:
+            _ADS_MGMT_ENRICHMENT_THREADS.pop(job_id, None)
+
+
+def _ads_mgmt_start_thread(job_id: str, payload: dict) -> None:
+    with _ADS_MGMT_ENRICHMENT_LOCK:
+        existing = _ADS_MGMT_ENRICHMENT_THREADS.get(job_id)
+        if existing and existing.is_alive():
+            return
+        thread = threading.Thread(
+            target=_run_ads_mgmt_enrichment_job,
+            args=(job_id, payload),
+            daemon=False,
+            name=f"ads-mgmt-enrich-{job_id[:8]}",
+        )
+        _ADS_MGMT_ENRICHMENT_THREADS[job_id] = thread
+        thread.start()
+
+
+@app.post("/api/ads-management/enrichment")
+async def api_ads_management_enrichment(req: AdsManagementEnrichmentRequest):
+    try:
+        payload = _ads_mgmt_request_payload(req)
+        job_id = _ads_mgmt_job_id(payload)
+        existing = _ads_mgmt_get_job(job_id)
+        if existing and _ads_mgmt_done_job_is_fresh(existing) and not bool(req.force):
+            return existing
+
+        if bool(req.force) or not isinstance(existing, dict) or existing.get("status") == "done":
+            existing = _ads_mgmt_save_job(job_id, {
+                "status": "pending",
+                "progress": {"done": 0, "total": 1, "phase": "starting"},
+                "request": payload,
+                "result": {},
+            })
+        else:
+            _ads_mgmt_save_job(job_id, {"request": payload})
+
+        _ads_mgmt_start_thread(job_id, payload)
+        job = _ads_mgmt_get_job(job_id) or existing or {"job_id": job_id, "status": "pending"}
+        return job
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+
+@app.get("/api/ads-management/enrichment/{job_id}")
+async def api_ads_management_enrichment_status(job_id: str):
+    try:
+        job = _ads_mgmt_get_job(job_id)
+        if not job:
+            return {"status": "not_found", "error": "Job not found", "job_id": job_id}
+        if job.get("status") in ("pending", "running"):
+            payload = job.get("request")
+            if isinstance(payload, dict):
+                _ads_mgmt_start_thread(job_id, payload)
+        return _ads_mgmt_get_job(job_id) or job
+    except Exception as e:
+        return {"error": str(e), "status": "error", "job_id": job_id}
+
+
 # -------- Campaign AI Analyzer (async job pattern) --------
 # In-memory job store: { job_id: { status, result, error } }
 _analysis_jobs: Dict[str, Dict[str, Any]] = {}
