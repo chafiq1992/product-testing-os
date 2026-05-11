@@ -915,6 +915,45 @@ def count_orders_by_product_or_variant_processed_batch(
     if not targets:
         return out
 
+    # Fast path: Shopify's order-search query filters by product_id natively,
+    # so we don't scan every order in the window. Run all products in parallel.
+    try:
+        _t_search = time.time()
+        keys = list(targets.values())
+        workers = max(1, min(len(keys), int(os.getenv("PTOS_ORDERS_SEARCH_WORKERS", "8") or "8")))
+
+        def _one(k: str) -> tuple[str, int]:
+            try:
+                return (k, int(_count_orders_by_product_search(
+                    k, processed_min_date, processed_max_date,
+                    store=store, include_closed=include_closed,
+                ) or 0))
+            except Exception:
+                return (k, 0)
+
+        searched: dict[str, int] = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for fut in as_completed([ex.submit(_one, k) for k in keys]):
+                try:
+                    k, v = fut.result()
+                    searched[k] = v
+                except Exception:
+                    continue
+        for key, val in searched.items():
+            out[key] = int(val or 0)
+        _nonzero = sum(1 for v in searched.values() if int(v or 0) > 0)
+        _perf_log.info(
+            "orders_search.batch store=%s ids=%d workers=%d nonzero=%d elapsed_ms=%d window=%s..%s",
+            store, len(keys), workers, _nonzero,
+            int((time.time() - _t_search) * 1000),
+            processed_min_date, processed_max_date,
+        )
+        # If every product returned a value (including 0), trust it and skip REST scan.
+        if searched and all(k in searched for k in keys):
+            return out
+    except Exception as e:
+        _perf_log.warning("orders_search.batch_failed store=%s err=%s", store, e)
+
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
     _t0 = time.time()
     _pages = 0
@@ -2024,6 +2063,69 @@ def count_paid_orders_by_title(title_contains: str, created_at_min: str, created
             qs["since_id"] = last_id
         except Exception:
             break
+    return total
+
+
+def _count_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+) -> int:
+    """Count orders (any financial status, excluding cancelled) matching product_id.
+
+    Uses Shopify's GraphQL `orders` connection with a search query, which is
+    indexed by product_id and far faster than scanning the REST orders feed.
+    """
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return 0
+    parts = [
+        f'product_id:"{ident}"',
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")',
+    ]
+    # status:open mirrors REST status=open; status:any (include_closed) -> no filter
+    if not include_closed:
+        parts.append('status:open')
+    # Exclude cancelled to match REST behaviour
+    parts.append('-cancelled_at:*')
+    query = " ".join(parts)
+    gql = """
+    query OrdersForProduct($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+        edges { cursor node { id } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    total = 0
+    after = None
+    seen: set[str] = set()
+    _t0 = time.time()
+    _pages = 0
+    while True:
+        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
+        conn = (data or {}).get("orders") or {}
+        edges = conn.get("edges") or []
+        _pages += 1
+        for edge in edges:
+            oid = str(((edge or {}).get("node") or {}).get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                total += 1
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    _perf_log.info(
+        "orders_search.one store=%s pid=%s window=%s..%s pages=%d total=%d elapsed_ms=%d",
+        store, ident, processed_min_date, processed_max_date,
+        _pages, total, int((time.time() - _t0) * 1000),
+    )
     return total
 
 
