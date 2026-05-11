@@ -1590,6 +1590,13 @@ def _ads_mgmt_done_job_is_fresh(job: dict | None) -> bool:
 
 
 def _ads_mgmt_sanitize_campaigns(campaigns: list | None) -> list[dict]:
+    """Keep only campaigns with positive spend in the selected window.
+
+    The dashboard fetches Shopify briefs/orders only for campaigns with
+    spend — paused / zero-spend campaigns add no value to enrichment but
+    bloat the request payload and the polled response. Filtering here
+    keeps the server-side worker honest and the GET response small.
+    """
     out: list[dict] = []
     allowed = {
         "campaign_id", "name", "spend", "purchases", "cpp", "ctr", "add_to_cart",
@@ -1597,6 +1604,12 @@ def _ads_mgmt_sanitize_campaigns(campaigns: list | None) -> list[dict]:
     }
     for raw in (campaigns or [])[:1500]:
         if not isinstance(raw, dict):
+            continue
+        try:
+            spend = float(raw.get("spend") or 0)
+        except Exception:
+            spend = 0.0
+        if spend <= 0:
             continue
         row = {k: raw.get(k) for k in allowed if k in raw}
         if row.get("campaign_id") or row.get("name"):
@@ -1634,7 +1647,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
-        "version": 5,
+        "version": 6,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -1648,6 +1661,20 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
 def _ads_mgmt_job_id(payload: dict) -> str:
     digest = hashlib.sha256(_stable_json(payload).encode("utf-8")).hexdigest()
     return digest[:32]
+
+
+def _ads_mgmt_public_job(job: dict | None) -> dict | None:
+    """Trim a job dict for the HTTP response.
+
+    The persisted job carries the entire request payload (campaign list,
+    mappings) and internal phase state — neither is useful to the polling
+    client, and including them blows up the response size to 35KB+ on
+    every poll. Strip them.
+    """
+    if not isinstance(job, dict):
+        return job
+    out = {k: v for k, v in job.items() if k not in ("request", "phase_state")}
+    return out
 
 
 def _ads_mgmt_row_key(row: dict) -> str:
@@ -1805,7 +1832,7 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
             if manual and manual.get("kind") == "collection" and str(manual.get("id") or "").isdigit():
                 collection_rows.append((key, row, manual))
 
-        BRIEF_CHUNK = 25
+        BRIEF_CHUNK = 8
 
         def _brief_chunks(ids: list[str]) -> int:
             return max(0, (len(ids) + BRIEF_CHUNK - 1) // BRIEF_CHUNK)
@@ -2133,7 +2160,7 @@ async def api_ads_management_enrichment(req: AdsManagementEnrichmentRequest):
         job_id = _ads_mgmt_job_id(payload)
         existing = _ads_mgmt_get_job(job_id)
         if existing and _ads_mgmt_done_job_is_fresh(existing) and not bool(req.force):
-            return existing
+            return _ads_mgmt_public_job(existing)
 
         if bool(req.force) or not isinstance(existing, dict) or existing.get("status") == "done":
             existing = _ads_mgmt_save_job(job_id, {
@@ -2154,7 +2181,7 @@ async def api_ads_management_enrichment(req: AdsManagementEnrichmentRequest):
             pass
 
         job = _ads_mgmt_get_job(job_id) or existing or {"job_id": job_id, "status": "pending"}
-        return job
+        return _ads_mgmt_public_job(job)
     except Exception as e:
         return {"error": str(e), "status": "error"}
 
@@ -2178,7 +2205,7 @@ async def api_ads_management_enrichment_status(job_id: str):
                     _ads_mgmt_kick_driver(job_id, payload, time_budget_s=20.0)
                 except Exception:
                     pass
-        return job
+        return _ads_mgmt_public_job(job)
     except Exception as e:
         return {"error": str(e), "status": "error", "job_id": job_id}
 
