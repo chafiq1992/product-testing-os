@@ -535,6 +535,37 @@ export default function AdsManagementPage(){
     return idsOrdered
   }
 
+  function campaignHasSpend(campaign: MetaCampaignRow): boolean{
+    return Number(campaign?.spend || 0) > 0
+  }
+
+  function campaignProductId(campaign: MetaCampaignRow, mappings: Record<string, CampaignMapping>): string | null{
+    const rowKey = String(campaign?.campaign_id || campaign?.name || '')
+    const manual = mappings[rowKey]
+    if(manual && manual.kind === 'product' && manual.id && /^\d+$/.test(String(manual.id))) return String(manual.id)
+    const pid = extractNumericId(campaign?.name || '')
+    return pid && /^\d+$/.test(pid) ? pid : null
+  }
+
+  function campaignMergeKey(campaign: MetaCampaignRow): string{
+    const acct = String((campaign as any)?._adAccount || '')
+    return `${String(campaign?.campaign_id || campaign?.name || '')}__${acct}`
+  }
+
+  function mergeCampaignRows(current: MetaCampaignRow[], additions: MetaCampaignRow[]): MetaCampaignRow[]{
+    if(additions.length === 0) return current
+    const seen = new Set(current.map(campaignMergeKey))
+    const next = current.slice()
+    for(const row of additions){
+      const key = campaignMergeKey(row)
+      if(seen.has(key)) continue
+      seen.add(key)
+      next.push(row)
+    }
+    next.sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+    return next
+  }
+
   function mergeBriefResults(results: PromiseSettledResult<any>[]): Record<string, any>{
     const mergedBriefs: Record<string, any> = {}
     for(const pbRes of results){
@@ -638,7 +669,18 @@ export default function AdsManagementPage(){
         } catch {}
       }
 
-      setItems(allCampaigns)
+      const rankedAllCampaigns = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+      const spendingCampaigns = rankedAllCampaigns.filter(campaignHasSpend)
+      const zeroSpendCampaigns = rankedAllCampaigns.filter(c => !campaignHasSpend(c))
+      const revealZeroSpendCampaigns = (countsById: Record<string, number>) => {
+        const rowsToReveal = zeroSpendCampaigns.filter(row => {
+          const pid = campaignProductId(row, shaped)
+          return !!pid && Number(countsById[pid] || 0) > 0
+        })
+        if(rowsToReveal.length > 0) setItems(prev => mergeCampaignRows(prev, rowsToReveal))
+      }
+
+      setItems(spendingCampaigns)
       setManualIds(shaped)
       setCampaignMeta(allMeta)
 
@@ -660,17 +702,22 @@ export default function AdsManagementPage(){
 
       setLoading(false)
 
-      const ranked = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
-      const idsOrdered = productIdsForCampaigns(ranked, shaped)
+      const spendingProductIds = productIdsForCampaigns(spendingCampaigns, shaped)
+      const allProductIds = productIdsForCampaigns(rankedAllCampaigns, shaped)
+      const spendingProductIdSet = new Set(spendingProductIds)
+      const idsOrdered = [
+        ...spendingProductIds,
+        ...allProductIds.filter(id => !spendingProductIdSet.has(id)),
+      ]
       const chunkSize = 4
 
       if(profitOnly){
         const briefToken = ++ordersSeqToken.current
         ;(async()=>{
           const storeList = uniqueStores([...(effStores.length ? effStores : [primaryStore]), ...ALL_STORES.map(s => s.value)])
-          for(let i = 0; i < idsOrdered.length; i += chunkSize){
+          for(let i = 0; i < spendingProductIds.length; i += chunkSize){
             if(briefToken !== ordersSeqToken.current) break
-            const chunk = idsOrdered.slice(i, i + chunkSize)
+            const chunk = spendingProductIds.slice(i, i + chunkSize)
             const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st })))
             if(briefToken !== ordersSeqToken.current) break
             const mergedBriefs = mergeBriefResults(pbResults)
@@ -711,17 +758,11 @@ export default function AdsManagementPage(){
         if(ordersToken !== ordersSeqToken.current) break
         const chunk = idsOrdered.slice(i, i + chunkSize)
 
-        // Fetch briefs + counts per store in parallel, then merge
+        // Fetch counts first. Product briefs are only loaded for campaigns with spend,
+        // or zero-spend campaigns once Shopify confirms at least one order.
         const storeList = effStores.length ? effStores : [primaryStore]
-        const [pbResults, ocResults] = await Promise.all([
-          Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st }))),
-          Promise.allSettled(storeList.map(st => shopifyOrdersCountByTitle({ names: chunk, start, end, store: st, include_closed: true, date_field: 'processed' }))),
-        ])
+        const ocResults = await Promise.allSettled(storeList.map(st => shopifyOrdersCountByTitle({ names: chunk, start, end, store: st, include_closed: true, date_field: 'processed' })))
         if(ordersToken !== ordersSeqToken.current) break
-
-        // Merge product briefs (first store that has image wins)
-        const mergedBriefs = mergeBriefResults(pbResults)
-        setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
 
         // Merge order counts (sum across stores)
         const next: Record<string, number> = {}
@@ -734,10 +775,19 @@ export default function AdsManagementPage(){
         }
         for(const id of chunk) countsById[id] = next[id]
         setShopifyCounts(prev => ({ ...prev, ...next }))
+        revealZeroSpendCampaigns(countsById)
+
+        const briefChunk = chunk.filter(id => spendingProductIdSet.has(id) || Number(next[id] || 0) > 0)
+        if(briefChunk.length > 0){
+          const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: briefChunk, store: st })))
+          if(ordersToken !== ordersSeqToken.current) break
+          const mergedBriefs = mergeBriefResults(pbResults)
+          if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
+        }
       }
 
       // Phase 3: Manual mapped rows (collections)
-      for(const row of ranked){
+      for(const row of rankedAllCampaigns){
         if(ordersToken !== ordersSeqToken.current) break
         const rowKey = (row.campaign_id || row.name || '') as any
         const rowStore = (row as any)._store || primaryStore
@@ -748,10 +798,12 @@ export default function AdsManagementPage(){
           if(conf.kind === 'product'){
             const count = Number(countsById[conf.id] ?? 0) || 0
             setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
           } else {
             const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
             const count = Number(((oc as any)?.data||{})?.count ?? 0)
             setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
           }
         }catch{
           setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
