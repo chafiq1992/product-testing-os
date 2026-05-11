@@ -1634,7 +1634,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
-        "version": 3,
+        "version": 4,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -1713,16 +1713,54 @@ def _ads_mgmt_store_list(payload: dict) -> list[str | None]:
     return stores or ([primary] if primary else [None])
 
 
-def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
+_ADS_MGMT_DRIVE_LOCKS: Dict[str, threading.Lock] = {}
+_ADS_MGMT_DRIVE_LOCKS_GUARD = threading.Lock()
+
+
+def _ads_mgmt_drive_lock(job_id: str) -> threading.Lock:
+    with _ADS_MGMT_DRIVE_LOCKS_GUARD:
+        lk = _ADS_MGMT_DRIVE_LOCKS.get(job_id)
+        if lk is None:
+            lk = threading.Lock()
+            _ADS_MGMT_DRIVE_LOCKS[job_id] = lk
+        return lk
+
+
+def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: float | None = None):
+    """Run (or resume) an enrichment job.
+
+    Resumable: skips work already reflected in the persisted ``result``
+    (e.g. product briefs that are already cached, store-level scans that
+    have already been recorded in ``phase_state``).
+
+    Time-bounded: when ``time_budget_s`` is set, returns early after the
+    budget expires so it can be invoked from within an HTTP request on
+    Cloud Run (where CPU is only allocated during requests). The caller
+    is expected to invoke again on the next poll to continue.
+    """
     log = logging.getLogger("ads_management.enrichment")
-    result = {
-        "shopify_counts": {},
-        "product_briefs": {},
-        "manual_counts": {},
-        "store_orders_total": None,
-        "reveal_campaign_keys": [],
-    }
+    started_at = time.time()
+
+    def _budget_exceeded() -> bool:
+        if time_budget_s is None:
+            return False
+        return (time.time() - started_at) >= float(time_budget_s)
+
+    # Serialize concurrent invocations for the same job within an instance.
+    lock = _ads_mgmt_drive_lock(job_id)
+    if not lock.acquire(blocking=False):
+        return
+
     try:
+        existing_job = _ads_mgmt_get_job(job_id) or {}
+        result = dict(existing_job.get("result") or {})
+        result.setdefault("shopify_counts", {})
+        result.setdefault("product_briefs", {})
+        result.setdefault("manual_counts", {})
+        result.setdefault("store_orders_total", None)
+        result.setdefault("reveal_campaign_keys", [])
+        phase_state = dict(existing_job.get("phase_state") or {})
+
         campaigns = list(payload.get("campaigns") or [])
         mappings = payload.get("mappings") if isinstance(payload.get("mappings"), dict) else {}
         stores = _ads_mgmt_store_list(payload)
@@ -1783,42 +1821,133 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
             + len(stores)                        # phase 4: store totals
             + len(collection_rows),              # phase 5: collection counts
         )
-        done_steps = 0
-        _ads_mgmt_save_job(job_id, {
-            "status": "running",
-            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
-            "request": payload,
-            "result": result,
-        })
 
-        briefs: dict[str, dict] = {}
-        if initial_brief_targets:
-            for st in stores:
+        briefs: dict[str, dict] = dict(result.get("product_briefs") or {})
+        counts_by_id: dict[str, int] = {pid: int((result.get("shopify_counts") or {}).get(pid, 0) or 0) for pid in product_ids}
+        manual_counts: dict[str, int] = dict(result.get("manual_counts") or {})
+
+        def _current_done() -> int:
+            done = 0
+            # phase 1 done = chunks where every pid in the chunk is in briefs, per store
+            if initial_brief_targets:
+                for st in stores:
+                    st_key = str(st or "")
+                    completed_chunks = set(phase_state.get("initial_brief_chunks", {}).get(st_key, []))
+                    done += len(completed_chunks)
+            # phase 2
+            done += len(phase_state.get("orders_stores", []) or [])
+            # phase 3
+            done += len(phase_state.get("extra_brief_stores", []) or [])
+            # phase 4
+            done += len(phase_state.get("totals_stores", []) or [])
+            # phase 5
+            done += len(phase_state.get("collections_done", []) or [])
+            return min(done, total_steps)
+
+        def _save(phase: str, status: str = "running"):
+            # Merge with the latest persisted state so concurrent polls on
+            # other Cloud Run instances don't overwrite each other's work.
+            latest = _ads_mgmt_get_job(job_id) or {}
+            latest_result = dict(latest.get("result") or {})
+
+            # Briefs: union, prefer entries that have an image
+            merged_briefs = dict(latest_result.get("product_briefs") or {})
+            _ads_mgmt_merge_briefs(merged_briefs, briefs)
+            briefs.clear(); briefs.update(merged_briefs)
+
+            # Order counts per pid: take max (each instance only adds, never subtracts)
+            merged_counts = dict(latest_result.get("shopify_counts") or {})
+            for pid, c in counts_by_id.items():
                 try:
-                    for i in range(0, len(initial_brief_targets), BRIEF_CHUNK):
-                        chunk = initial_brief_targets[i:i + BRIEF_CHUNK]
-                        if not chunk:
-                            continue
-                        try:
-                            data = get_products_brief(chunk, store=st) or {}
-                            _ads_mgmt_merge_briefs(briefs, data)
-                        except Exception as e:
-                            log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
-                        done_steps += 1
-                        result["product_briefs"] = dict(briefs)
-                        _ads_mgmt_save_job(job_id, {
-                            "status": "running",
-                            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
-                            "result": result,
-                        })
-                except Exception as e:
-                    log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
-        else:
-            done_steps += initial_brief_steps
+                    merged_counts[pid] = max(int(merged_counts.get(pid, 0) or 0), int(c or 0))
+                except Exception:
+                    merged_counts[pid] = int(c or 0)
+            counts_by_id.clear(); counts_by_id.update(merged_counts)
 
-        counts_by_id: dict[str, int] = {pid: 0 for pid in product_ids}
-        if not profit_only and product_ids and start and end:
+            # Manual counts: latest local wins if set, else persisted
+            merged_manual = dict(latest_result.get("manual_counts") or {})
+            merged_manual.update(manual_counts)
+            manual_counts.clear(); manual_counts.update(merged_manual)
+
+            # store_orders_total: take max of persisted and local
+            local_total = result.get("store_orders_total")
+            latest_total = latest_result.get("store_orders_total")
+            chosen = None
+            for v in (local_total, latest_total):
+                if isinstance(v, (int, float)):
+                    chosen = max(chosen, int(v)) if isinstance(chosen, int) else int(v)
+            if chosen is not None:
+                result["store_orders_total"] = chosen
+
+            # Phase state: union per phase
+            latest_ps = dict(latest.get("phase_state") or {})
+            # Nested per-store map
+            merged_brief_chunks = dict(latest_ps.get("initial_brief_chunks") or {})
+            local_brief_chunks = phase_state.get("initial_brief_chunks") or {}
+            for st_key, chunks in local_brief_chunks.items():
+                cur = set(merged_brief_chunks.get(st_key) or [])
+                cur.update(chunks or [])
+                merged_brief_chunks[st_key] = sorted(cur, key=lambda x: int(x) if str(x).isdigit() else 0)
+            phase_state["initial_brief_chunks"] = merged_brief_chunks
+            # Flat sets
+            for key in ("orders_stores", "extra_brief_stores", "totals_stores", "collections_done"):
+                cur = set(latest_ps.get(key) or [])
+                cur.update(phase_state.get(key) or [])
+                phase_state[key] = sorted(cur)
+
+            patch = {
+                "status": status,
+                "progress": {"done": _current_done(), "total": total_steps, "phase": phase},
+                "result": {
+                    **result,
+                    "product_briefs": dict(briefs),
+                    "shopify_counts": dict(counts_by_id),
+                    "manual_counts": dict(manual_counts),
+                },
+                "phase_state": dict(phase_state),
+            }
+            _ads_mgmt_save_job(job_id, patch)
+
+        # Initial save to flip status to running with a sane total_steps.
+        _save("product_briefs")
+
+        # ---- Phase 1: initial product briefs (per-store, per-chunk) ----
+        if initial_brief_targets:
+            phase_state.setdefault("initial_brief_chunks", {})
             for st in stores:
+                st_key = str(st or "")
+                completed = set(phase_state["initial_brief_chunks"].setdefault(st_key, []))
+                chunks_total = _brief_chunks(initial_brief_targets)
+                for chunk_idx in range(chunks_total):
+                    if str(chunk_idx) in completed:
+                        continue
+                    if _budget_exceeded():
+                        _save("product_briefs")
+                        return
+                    i = chunk_idx * BRIEF_CHUNK
+                    chunk = initial_brief_targets[i:i + BRIEF_CHUNK]
+                    if not chunk:
+                        completed.add(str(chunk_idx))
+                        continue
+                    try:
+                        data = get_products_brief(chunk, store=st) or {}
+                        _ads_mgmt_merge_briefs(briefs, data)
+                    except Exception as e:
+                        log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
+                    completed.add(str(chunk_idx))
+                    phase_state["initial_brief_chunks"][st_key] = sorted(completed)
+                    _save("product_briefs")
+
+        # ---- Phase 2: order counts per store ----
+        if not profit_only and product_ids and start and end:
+            orders_done = set(phase_state.get("orders_stores", []) or [])
+            for st in stores:
+                st_key = str(st or "")
+                if st_key in orders_done:
+                    continue
+                if _budget_exceeded():
+                    _save("orders")
+                    return
                 try:
                     batch = count_orders_by_product_or_variant_processed_batch(
                         product_ids,
@@ -1831,22 +1960,24 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                         counts_by_id[pid] = int(counts_by_id.get(pid, 0) or 0) + int(batch.get(pid, 0) or 0)
                 except Exception as e:
                     log.warning("orders batch failed for store=%s job=%s: %s", st, job_id, e)
-                done_steps += 1
-                result["shopify_counts"] = dict(counts_by_id)
-                _ads_mgmt_save_job(job_id, {
-                    "status": "running",
-                    "progress": {"done": done_steps, "total": total_steps, "phase": "orders"},
-                    "result": result,
-                })
-        else:
-            done_steps += len(stores)
+                orders_done.add(st_key)
+                phase_state["orders_stores"] = sorted(orders_done)
+                _save("orders")
 
+        # ---- Phase 3: extra briefs for products with orders ----
         extra_brief_targets = [] if profit_only else [
             pid for pid in product_ids
             if pid not in briefs and int(counts_by_id.get(pid, 0) or 0) > 0
         ]
         if extra_brief_targets:
+            extra_done = set(phase_state.get("extra_brief_stores", []) or [])
             for st in stores:
+                st_key = str(st or "")
+                if st_key in extra_done:
+                    continue
+                if _budget_exceeded():
+                    _save("product_briefs")
+                    return
                 try:
                     for i in range(0, len(extra_brief_targets), BRIEF_CHUNK):
                         chunk = extra_brief_targets[i:i + BRIEF_CHUNK]
@@ -1857,42 +1988,36 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                             _ads_mgmt_merge_briefs(briefs, data)
                         except Exception as e:
                             log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
-                        result["product_briefs"] = dict(briefs)
-                        _ads_mgmt_save_job(job_id, {
-                            "status": "running",
-                            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
-                            "result": result,
-                        })
+                        _save("product_briefs")
+                        if _budget_exceeded():
+                            return
                 except Exception as e:
                     log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
-                done_steps += 1
-                result["product_briefs"] = dict(briefs)
-                _ads_mgmt_save_job(job_id, {
-                    "status": "running",
-                    "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
-                    "result": result,
-                })
-        else:
-            done_steps += len(stores)
+                extra_done.add(st_key)
+                phase_state["extra_brief_stores"] = sorted(extra_done)
+                _save("product_briefs")
 
+        # ---- Phase 4: store totals ----
         if not profit_only and start and end:
-            store_total = 0
+            totals_done = set(phase_state.get("totals_stores", []) or [])
+            store_total = int(result.get("store_orders_total") or 0) if isinstance(result.get("store_orders_total"), (int, float)) else 0
             for st in stores:
+                st_key = str(st or "")
+                if st_key in totals_done:
+                    continue
+                if _budget_exceeded():
+                    _save("store_total")
+                    return
                 try:
                     store_total += int(count_orders_total_processed(start, end, store=st, include_closed=True) or 0)
                 except Exception as e:
                     log.warning("store total failed for store=%s job=%s: %s", st, job_id, e)
-                done_steps += 1
                 result["store_orders_total"] = store_total
-                _ads_mgmt_save_job(job_id, {
-                    "status": "running",
-                    "progress": {"done": done_steps, "total": total_steps, "phase": "store_total"},
-                    "result": result,
-                })
-        else:
-            done_steps += len(stores)
+                totals_done.add(st_key)
+                phase_state["totals_stores"] = sorted(totals_done)
+                _save("store_total")
 
-        manual_counts: dict[str, int] = {}
+        # ---- Phase 5: collection counts ----
         if not profit_only:
             for row in ranked:
                 key = _ads_mgmt_row_key(row)
@@ -1905,7 +2030,13 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                 if manual.get("kind") == "product":
                     manual_counts[key] = int(counts_by_id.get(target_id, 0) or 0)
 
+            collections_done = set(phase_state.get("collections_done", []) or [])
             for key, row, manual in collection_rows:
+                if key in collections_done:
+                    continue
+                if _budget_exceeded():
+                    _save("collections")
+                    return
                 target_id = str(manual.get("id") or "").strip()
                 row_store = str(manual.get("store") or row.get("_store") or primary_store or "").strip() or None
                 try:
@@ -1920,14 +2051,11 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                 except Exception as e:
                     log.warning("collection count failed for key=%s store=%s job=%s: %s", key, row_store, job_id, e)
                     manual_counts[key] = 0
-                done_steps += 1
-                result["manual_counts"] = dict(manual_counts)
-                _ads_mgmt_save_job(job_id, {
-                    "status": "running",
-                    "progress": {"done": done_steps, "total": total_steps, "phase": "collections"},
-                    "result": result,
-                })
+                collections_done.add(key)
+                phase_state["collections_done"] = sorted(collections_done)
+                _save("collections")
 
+        # ---- Finalize: compute reveal keys and mark done ----
         reveal: list[str] = []
         for row in ranked:
             key = _ads_mgmt_row_key(row)
@@ -1951,17 +2079,24 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
             "status": "done",
             "progress": {"done": total_steps, "total": total_steps, "phase": "done"},
             "result": result,
+            "phase_state": dict(phase_state),
             "completed_at": _ads_mgmt_job_now(),
             "completed_at_epoch": time.time(),
         })
     except Exception as e:
         log.exception("ads management enrichment job failed: %s", e)
-        _ads_mgmt_save_job(job_id, {
-            "status": "error",
-            "error": str(e),
-            "result": result,
-        })
+        try:
+            _ads_mgmt_save_job(job_id, {
+                "status": "error",
+                "error": str(e),
+            })
+        except Exception:
+            pass
     finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
         with _ADS_MGMT_ENRICHMENT_LOCK:
             _ADS_MGMT_ENRICHMENT_THREADS.pop(job_id, None)
 
@@ -1974,6 +2109,7 @@ def _ads_mgmt_start_thread(job_id: str, payload: dict) -> None:
         thread = threading.Thread(
             target=_run_ads_mgmt_enrichment_job,
             args=(job_id, payload),
+            kwargs={"time_budget_s": None},
             daemon=False,
             name=f"ads-mgmt-enrich-{job_id[:8]}",
         )
@@ -2000,7 +2136,11 @@ async def api_ads_management_enrichment(req: AdsManagementEnrichmentRequest):
         else:
             _ads_mgmt_save_job(job_id, {"request": payload})
 
-        _ads_mgmt_start_thread(job_id, payload)
+        # Work is driven from polls (see GET handler below). Cloud Run
+        # throttles CPU when no request is active, so a background thread
+        # would either make almost no progress or hold the per-job lock
+        # and starve the poll-driven driver. The frontend polls within
+        # ~300ms, so this adds negligible startup latency.
         job = _ads_mgmt_get_job(job_id) or existing or {"job_id": job_id, "status": "pending"}
         return job
     except Exception as e:
@@ -2016,7 +2156,20 @@ async def api_ads_management_enrichment_status(job_id: str):
         if job.get("status") in ("pending", "running"):
             payload = job.get("request")
             if isinstance(payload, dict):
-                _ads_mgmt_start_thread(job_id, payload)
+                # Drive a slice of work inside this request. Cloud Run only
+                # allocates CPU during active requests, so doing the work
+                # here guarantees it actually progresses. The function is
+                # resumable: it picks up from whatever the persisted state
+                # already reflects, so successive polls advance the job.
+                try:
+                    await run_in_threadpool(
+                        _run_ads_mgmt_enrichment_job,
+                        job_id,
+                        payload,
+                        4.0,  # seconds of work per poll; total request stays under 8s
+                    )
+                except Exception:
+                    pass
         return _ads_mgmt_get_job(job_id) or job
     except Exception as e:
         return {"error": str(e), "status": "error", "job_id": job_id}

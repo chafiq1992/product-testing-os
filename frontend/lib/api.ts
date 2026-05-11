@@ -665,7 +665,9 @@ export async function startAdsManagementEnrichment(payload: {
 
 export async function getAdsManagementEnrichmentStatus(jobId: string): Promise<AdsManagementEnrichmentJob> {
   const url = `${base}/api/ads-management/enrichment/${encodeURIComponent(jobId)}`
-  const {data} = await axios.get(url, { timeout: 10000 })
+  // The backend drives ~4s of enrichment work synchronously per poll
+  // (Cloud Run only allocates CPU during requests), so allow up to 15s.
+  const {data} = await axios.get(url, { timeout: 15000 })
   return data as AdsManagementEnrichmentJob
 }
 
