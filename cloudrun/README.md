@@ -5,6 +5,24 @@
 3. Run `bash cloudrun/deploy.sh`.
 4. Put the printed API URL into `frontend/.env.local` as `NEXT_PUBLIC_API_BASE_URL` and redeploy frontend if needed.
 
+## App login
+
+Set these env vars on the public app service to enable the login screen:
+
+- `PRODUCT_TESTING_USERNAME`
+- `PRODUCT_TESTING_PASSWORD`
+- `PRODUCT_TESTING_AUTH_SECRET`
+
+Example:
+
+```bash
+gcloud run services update pto-app \
+  --region europe-west1 \
+  --update-env-vars PRODUCT_TESTING_USERNAME="admin",PRODUCT_TESTING_PASSWORD="change-me",PRODUCT_TESTING_AUTH_SECRET="$(openssl rand -hex 32)"
+```
+
+Use your actual Cloud Run service name if it is not `pto-app`. After the update, anyone without the new login cookie is sent to `/login`.
+
 ## Persistent uploads (/uploads) via Cloud Storage
 
 Cloud Run instances have an ephemeral filesystem. To keep pre‑Shopify images and other flow assets reliable between restarts, mount a GCS bucket at `/app/uploads` so existing endpoints continue to work.

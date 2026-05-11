@@ -10,6 +10,16 @@ FastAPI + Celery backend, Next.js frontend wizard, and Cloud Run deploy scripts.
 ## Cloud Run
 See `cloudrun/README.md`.
 
+## Product Testing OS login
+
+Set these environment variables on the app service to require a username and password before the UI or API can be used:
+
+- `PRODUCT_TESTING_USERNAME`
+- `PRODUCT_TESTING_PASSWORD`
+- `PRODUCT_TESTING_AUTH_SECRET` (recommended long random string for signing login cookies)
+
+If `PRODUCT_TESTING_USERNAME` or `PRODUCT_TESTING_PASSWORD` is missing, the login gate stays disabled for local/dev setups. When enabled, users without the new signed cookie are redirected to `"/login"` and API requests receive `401`.
+
 ## Confirmation page (order confirmation team)
 
 The frontend route is `"/confirmation"` (link available on Home).

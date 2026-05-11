@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, Form, File, Request, BackgroundTasks
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from datetime import datetime
 import json, os
+import html
 import base64, hmac, hashlib
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -107,6 +108,209 @@ logger = logging.getLogger("app.chatkit")
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
+
+
+# ---------------- Whole-app login gate ----------------
+# Enabled only when PRODUCT_TESTING_USERNAME and PRODUCT_TESTING_PASSWORD are set.
+# This protects both the static frontend and same-origin API calls with a signed cookie.
+PRODUCT_AUTH_COOKIE = "ptos_auth"
+PRODUCT_AUTH_MAX_AGE = 60 * 60 * 24 * 30
+
+
+def _product_auth_credentials() -> tuple[str, str]:
+    return (
+        (os.getenv("PRODUCT_TESTING_USERNAME", "") or "").strip(),
+        (os.getenv("PRODUCT_TESTING_PASSWORD", "") or "").strip(),
+    )
+
+
+def _product_auth_enabled() -> bool:
+    username, password = _product_auth_credentials()
+    return bool(username and password)
+
+
+def _product_auth_secret() -> bytes:
+    username, password = _product_auth_credentials()
+    sec = (
+        os.getenv("PRODUCT_TESTING_AUTH_SECRET", "")
+        or os.getenv("JWT_SECRET", "")
+        or f"{username}:{password}"
+    ).strip()
+    return sec.encode("utf-8")
+
+
+def _product_auth_credential_fingerprint() -> str:
+    username, password = _product_auth_credentials()
+    msg = f"{username}\0{password}".encode("utf-8")
+    return hashlib.sha256(msg).hexdigest()
+
+
+def _ptos_b64u_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _ptos_b64u_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode((s or "") + pad)
+
+
+def _issue_product_auth_token(username: str) -> str:
+    now = int(time.time())
+    payload = {
+        "sub": username,
+        "iat": now,
+        "exp": now + PRODUCT_AUTH_MAX_AGE,
+        "cred": _product_auth_credential_fingerprint(),
+    }
+    body = _ptos_b64u_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    sig = _ptos_b64u_encode(hmac.new(_product_auth_secret(), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{sig}"
+
+
+def _verify_product_auth_token(token: str) -> dict | None:
+    try:
+        tok = (token or "").strip()
+        if not tok or "." not in tok:
+            return None
+        body, sig = tok.split(".", 1)
+        exp_sig = _ptos_b64u_encode(hmac.new(_product_auth_secret(), body.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(exp_sig, sig):
+            return None
+        payload = json.loads(_ptos_b64u_decode(body).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("cred") != _product_auth_credential_fingerprint():
+            return None
+        exp = int(payload.get("exp") or 0)
+        if exp and int(time.time()) > exp:
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _product_auth_next_path(raw: str | None) -> str:
+    nxt = (raw or "/").strip() or "/"
+    if not nxt.startswith("/") or nxt.startswith("//") or nxt.startswith("/login"):
+        return "/"
+    return nxt
+
+
+def _product_auth_secure_cookie(request: Request) -> bool:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+    host = (request.headers.get("host") or "").lower()
+    return proto == "https" and "localhost" not in host and "127.0.0.1" not in host
+
+
+def _product_auth_exempt_path(path: str) -> bool:
+    if path in ("/login", "/login/", "/logout", "/logout/", "/favicon.ico"):
+        return True
+    if path.startswith("/_next/"):
+        return True
+    if path.startswith("/api/shopify/oauth/"):
+        return True
+    return False
+
+
+def _product_login_html(next_path: str = "/", error: str = "") -> str:
+    safe_next = html.escape(_product_auth_next_path(next_path), quote=True)
+    safe_error = html.escape(error, quote=True)
+    err_html = (
+        f'<div class="error" role="alert">{safe_error}</div>'
+        if safe_error else ""
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login - Product Testing OS</title>
+  <style>
+    :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7fafc; color: #0f172a; }}
+    main {{ width: min(92vw, 380px); border: 1px solid #dbe3ef; background: #fff; border-radius: 8px; padding: 28px; box-shadow: 0 18px 45px rgba(15, 23, 42, .10); }}
+    h1 {{ margin: 0 0 6px; font-size: 24px; line-height: 1.15; letter-spacing: 0; }}
+    p {{ margin: 0 0 22px; color: #64748b; font-size: 14px; }}
+    label {{ display: block; margin: 14px 0 6px; font-size: 13px; font-weight: 650; color: #334155; }}
+    input {{ width: 100%; height: 42px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 12px; font-size: 15px; outline: none; }}
+    input:focus {{ border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, .14); }}
+    button {{ width: 100%; height: 42px; border: 0; border-radius: 6px; margin-top: 20px; background: #0f172a; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }}
+    button:hover {{ background: #1e293b; }}
+    .error {{ margin: 0 0 16px; border: 1px solid #fecdd3; background: #fff1f2; color: #be123c; border-radius: 6px; padding: 10px 12px; font-size: 13px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Product Testing OS</h1>
+    <p>Sign in to continue.</p>
+    {err_html}
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{safe_next}" />
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required autofocus />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
+      <button type="submit">Log in</button>
+    </form>
+  </main>
+</body>
+</html>"""
+
+
+@app.middleware("http")
+async def _product_testing_login_gate(request: Request, call_next):
+    if not _product_auth_enabled():
+        return await call_next(request)
+    path = request.url.path or "/"
+    if request.method.upper() == "OPTIONS" or _product_auth_exempt_path(path):
+        return await call_next(request)
+    token = request.cookies.get(PRODUCT_AUTH_COOKIE, "")
+    if _verify_product_auth_token(token):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return Response('{"error":"unauthorized"}', status_code=401, media_type="application/json")
+    next_path = path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}", status_code=303)
+
+
+@app.api_route("/login", methods=["GET", "POST"], response_class=HTMLResponse)
+async def product_testing_login(request: Request):
+    if not _product_auth_enabled():
+        return RedirectResponse(url="/", status_code=303)
+    if request.method.upper() == "GET":
+        return HTMLResponse(_product_login_html(request.query_params.get("next") or "/"))
+    form = await request.form()
+    username = (str(form.get("username") or "")).strip()
+    password = (str(form.get("password") or "")).strip()
+    next_path = _product_auth_next_path(str(form.get("next") or "/"))
+    expected_username, expected_password = _product_auth_credentials()
+    ok = (
+        hmac.compare_digest(username, expected_username)
+        and hmac.compare_digest(password, expected_password)
+    )
+    if not ok:
+        return HTMLResponse(_product_login_html(next_path, "Invalid username or password."), status_code=401)
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        PRODUCT_AUTH_COOKIE,
+        _issue_product_auth_token(username),
+        max_age=PRODUCT_AUTH_MAX_AGE,
+        httponly=True,
+        secure=_product_auth_secure_cookie(request),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.get("/logout")
+async def product_testing_logout(request: Request):
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(PRODUCT_AUTH_COOKIE, path="/")
+    return response
 
 # ---------------- Small in-memory TTL cache (per Cloud Run instance) ----------------
 # Avoid duplicate expensive Meta/Shopify calls when the UI triggers the same request multiple
