@@ -1647,7 +1647,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
-        "version": 6,
+        "version": 7,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -1825,6 +1825,33 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
                 seen_spending.add(pid)
                 spending_ids.append(pid)
 
+        # Map each product to the store it actually lives in (from the
+        # campaign's _store). Without this we'd fetch every product brief
+        # from all stores (3x wasted Shopify calls for a 3-store setup).
+        # Manual mappings can override; fall back to the campaign's store.
+        def _row_store_key(row: dict, pid: str | None) -> str | None:
+            manual = _ads_mgmt_mapping_for_row(row, mappings) if pid else None
+            if manual and manual.get("store"):
+                return str(manual.get("store") or "").strip().lower() or None
+            st = str((row or {}).get("_store") or "").strip().lower()
+            return st or None
+
+        pid_to_store: dict[str, str] = {}
+        for row in [*spending, *ranked]:
+            pid = _ads_mgmt_product_id_for_row(row, mappings)
+            if not pid or pid in pid_to_store:
+                continue
+            st = _row_store_key(row, pid)
+            if st:
+                pid_to_store[pid] = st
+
+        spending_ids_by_store: dict[str, list[str]] = {}
+        for pid in spending_ids:
+            st = pid_to_store.get(pid)
+            if not st:
+                continue
+            spending_ids_by_store.setdefault(st, []).append(pid)
+
         collection_rows: list[tuple[str, dict, dict]] = []
         for row in ranked:
             key = _ads_mgmt_row_key(row)
@@ -1838,7 +1865,10 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
             return max(0, (len(ids) + BRIEF_CHUNK - 1) // BRIEF_CHUNK)
 
         initial_brief_targets = spending_ids
-        initial_brief_steps = _brief_chunks(initial_brief_targets) * len(stores)
+        initial_brief_steps = sum(
+            _brief_chunks(spending_ids_by_store.get(str(st or "").lower(), []))
+            for st in stores
+        )
 
         total_steps = max(
             1,
@@ -1936,36 +1966,11 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
             _ads_mgmt_save_job(job_id, patch)
 
         # Initial save to flip status to running with a sane total_steps.
-        _save("product_briefs")
+        _save("orders")
 
-        # ---- Phase 1: initial product briefs (per-store, per-chunk) ----
-        if initial_brief_targets:
-            phase_state.setdefault("initial_brief_chunks", {})
-            for st in stores:
-                st_key = str(st or "")
-                completed = set(phase_state["initial_brief_chunks"].setdefault(st_key, []))
-                chunks_total = _brief_chunks(initial_brief_targets)
-                for chunk_idx in range(chunks_total):
-                    if str(chunk_idx) in completed:
-                        continue
-                    if _budget_exceeded():
-                        _save("product_briefs")
-                        return
-                    i = chunk_idx * BRIEF_CHUNK
-                    chunk = initial_brief_targets[i:i + BRIEF_CHUNK]
-                    if not chunk:
-                        completed.add(str(chunk_idx))
-                        continue
-                    try:
-                        data = get_products_brief(chunk, store=st) or {}
-                        _ads_mgmt_merge_briefs(briefs, data)
-                    except Exception as e:
-                        log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
-                    completed.add(str(chunk_idx))
-                    phase_state["initial_brief_chunks"][st_key] = sorted(completed)
-                    _save("product_briefs")
-
-        # ---- Phase 2: order counts per store ----
+        # ---- Phase A (fast): order counts per store ----
+        # Runs before briefs so the user sees real order numbers within
+        # seconds instead of waiting for all product images to load.
         if not profit_only and product_ids and start and end:
             orders_done = set(phase_state.get("orders_stores", []) or [])
             for st in stores:
@@ -1991,11 +1996,69 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
                 phase_state["orders_stores"] = sorted(orders_done)
                 _save("orders")
 
+        # ---- Phase B: store totals (also fast, one call per store) ----
+        if not profit_only and start and end:
+            totals_done_pre = set(phase_state.get("totals_stores", []) or [])
+            store_total_pre = int(result.get("store_orders_total") or 0) if isinstance(result.get("store_orders_total"), (int, float)) else 0
+            for st in stores:
+                st_key = str(st or "")
+                if st_key in totals_done_pre:
+                    continue
+                if _budget_exceeded():
+                    _save("store_total")
+                    return
+                try:
+                    store_total_pre += int(count_orders_total_processed(start, end, store=st, include_closed=True) or 0)
+                except Exception as e:
+                    log.warning("store total failed for store=%s job=%s: %s", st, job_id, e)
+                result["store_orders_total"] = store_total_pre
+                totals_done_pre.add(st_key)
+                phase_state["totals_stores"] = sorted(totals_done_pre)
+                _save("store_total")
+
+        # ---- Phase 1: initial product briefs (only from each pid's own
+        # store — avoids 3x wasted Shopify calls). ----
+        if initial_brief_targets:
+            phase_state.setdefault("initial_brief_chunks", {})
+            for st in stores:
+                st_key = str(st or "")
+                st_lower = st_key.lower()
+                store_targets = spending_ids_by_store.get(st_lower, [])
+                completed = set(phase_state["initial_brief_chunks"].setdefault(st_key, []))
+                chunks_total = _brief_chunks(store_targets)
+                for chunk_idx in range(chunks_total):
+                    if str(chunk_idx) in completed:
+                        continue
+                    if _budget_exceeded():
+                        _save("product_briefs")
+                        return
+                    i = chunk_idx * BRIEF_CHUNK
+                    chunk = store_targets[i:i + BRIEF_CHUNK]
+                    if not chunk:
+                        completed.add(str(chunk_idx))
+                        continue
+                    try:
+                        data = get_products_brief(chunk, store=st) or {}
+                        _ads_mgmt_merge_briefs(briefs, data)
+                    except Exception as e:
+                        log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
+                    completed.add(str(chunk_idx))
+                    phase_state["initial_brief_chunks"][st_key] = sorted(completed)
+                    _save("product_briefs")
+
         # ---- Phase 3: extra briefs for products with orders ----
+        # Extra briefs: only fetch each pid from its own store.
         extra_brief_targets = [] if profit_only else [
             pid for pid in product_ids
             if pid not in briefs and int(counts_by_id.get(pid, 0) or 0) > 0
         ]
+        extra_targets_by_store: dict[str, list[str]] = {}
+        for pid in extra_brief_targets:
+            st = pid_to_store.get(pid)
+            if not st:
+                continue
+            extra_targets_by_store.setdefault(st, []).append(pid)
+
         if extra_brief_targets:
             extra_done = set(phase_state.get("extra_brief_stores", []) or [])
             for st in stores:
@@ -2005,9 +2068,10 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
                 if _budget_exceeded():
                     _save("product_briefs")
                     return
+                store_targets = extra_targets_by_store.get(st_key.lower(), [])
                 try:
-                    for i in range(0, len(extra_brief_targets), BRIEF_CHUNK):
-                        chunk = extra_brief_targets[i:i + BRIEF_CHUNK]
+                    for i in range(0, len(store_targets), BRIEF_CHUNK):
+                        chunk = store_targets[i:i + BRIEF_CHUNK]
                         if not chunk:
                             continue
                         try:
@@ -2023,26 +2087,6 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
                 extra_done.add(st_key)
                 phase_state["extra_brief_stores"] = sorted(extra_done)
                 _save("product_briefs")
-
-        # ---- Phase 4: store totals ----
-        if not profit_only and start and end:
-            totals_done = set(phase_state.get("totals_stores", []) or [])
-            store_total = int(result.get("store_orders_total") or 0) if isinstance(result.get("store_orders_total"), (int, float)) else 0
-            for st in stores:
-                st_key = str(st or "")
-                if st_key in totals_done:
-                    continue
-                if _budget_exceeded():
-                    _save("store_total")
-                    return
-                try:
-                    store_total += int(count_orders_total_processed(start, end, store=st, include_closed=True) or 0)
-                except Exception as e:
-                    log.warning("store total failed for store=%s job=%s: %s", st, job_id, e)
-                result["store_orders_total"] = store_total
-                totals_done.add(st_key)
-                phase_state["totals_stores"] = sorted(totals_done)
-                _save("store_total")
 
         # ---- Phase 5: collection counts ----
         if not profit_only:
