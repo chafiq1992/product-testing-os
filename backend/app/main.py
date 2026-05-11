@@ -1634,7 +1634,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
-        "version": 2,
+        "version": 3,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -1767,7 +1767,22 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
             if manual and manual.get("kind") == "collection" and str(manual.get("id") or "").isdigit():
                 collection_rows.append((key, row, manual))
 
-        total_steps = max(1, (len(stores) * 4) + len(collection_rows))
+        BRIEF_CHUNK = 25
+
+        def _brief_chunks(ids: list[str]) -> int:
+            return max(0, (len(ids) + BRIEF_CHUNK - 1) // BRIEF_CHUNK)
+
+        initial_brief_targets = spending_ids
+        initial_brief_steps = _brief_chunks(initial_brief_targets) * len(stores)
+
+        total_steps = max(
+            1,
+            initial_brief_steps                  # phase 1: per-chunk product briefs (spending)
+            + len(stores)                        # phase 2: orders (one scan per store)
+            + len(stores)                        # phase 3: extra briefs (ordered) — capped per-store budget
+            + len(stores)                        # phase 4: store totals
+            + len(collection_rows),              # phase 5: collection counts
+        )
         done_steps = 0
         _ads_mgmt_save_job(job_id, {
             "status": "running",
@@ -1777,27 +1792,29 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
         })
 
         briefs: dict[str, dict] = {}
-        initial_brief_targets = spending_ids
         if initial_brief_targets:
             for st in stores:
                 try:
-                    for i in range(0, len(initial_brief_targets), 120):
-                        chunk = initial_brief_targets[i:i + 120]
+                    for i in range(0, len(initial_brief_targets), BRIEF_CHUNK):
+                        chunk = initial_brief_targets[i:i + BRIEF_CHUNK]
                         if not chunk:
                             continue
-                        data = get_products_brief(chunk, store=st) or {}
-                        _ads_mgmt_merge_briefs(briefs, data)
+                        try:
+                            data = get_products_brief(chunk, store=st) or {}
+                            _ads_mgmt_merge_briefs(briefs, data)
+                        except Exception as e:
+                            log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
+                        done_steps += 1
+                        result["product_briefs"] = dict(briefs)
+                        _ads_mgmt_save_job(job_id, {
+                            "status": "running",
+                            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
+                            "result": result,
+                        })
                 except Exception as e:
                     log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
-                done_steps += 1
-                result["product_briefs"] = dict(briefs)
-                _ads_mgmt_save_job(job_id, {
-                    "status": "running",
-                    "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
-                    "result": result,
-                })
         else:
-            done_steps += len(stores)
+            done_steps += initial_brief_steps
 
         counts_by_id: dict[str, int] = {pid: 0 for pid in product_ids}
         if not profit_only and product_ids and start and end:
@@ -1831,12 +1848,21 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
         if extra_brief_targets:
             for st in stores:
                 try:
-                    for i in range(0, len(extra_brief_targets), 120):
-                        chunk = extra_brief_targets[i:i + 120]
+                    for i in range(0, len(extra_brief_targets), BRIEF_CHUNK):
+                        chunk = extra_brief_targets[i:i + BRIEF_CHUNK]
                         if not chunk:
                             continue
-                        data = get_products_brief(chunk, store=st) or {}
-                        _ads_mgmt_merge_briefs(briefs, data)
+                        try:
+                            data = get_products_brief(chunk, store=st) or {}
+                            _ads_mgmt_merge_briefs(briefs, data)
+                        except Exception as e:
+                            log.warning("product briefs chunk failed for store=%s job=%s: %s", st, job_id, e)
+                        result["product_briefs"] = dict(briefs)
+                        _ads_mgmt_save_job(job_id, {
+                            "status": "running",
+                            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
+                            "result": result,
+                        })
                 except Exception as e:
                     log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
                 done_steps += 1

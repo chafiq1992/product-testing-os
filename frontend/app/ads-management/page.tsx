@@ -772,15 +772,15 @@ export default function AdsManagementPage(){
           const jobId = String(first?.job_id || '')
           if(!jobId || first?.status === 'done' || first?.status === 'error') return
 
-          let delay = 900
-          for(let attempt = 0; attempt < 720; attempt++){
+          let delay = 300
+          for(let attempt = 0; attempt < 900; attempt++){
             await wait(delay)
             if(ordersToken !== ordersSeqToken.current || loadToken !== loadSeqToken.current) return
             const job = await getAdsManagementEnrichmentStatus(jobId).catch(() => null)
             if(!job) continue
             if(!applyEnrichmentJob(job)) return
             if(job.status === 'done' || job.status === 'error') return
-            delay = Math.min(5000, delay + 350)
+            delay = Math.min(5000, delay + 250)
           }
         }catch{
           if(ordersToken === ordersSeqToken.current && loadToken === loadSeqToken.current) setEnrichmentProgress(null)
