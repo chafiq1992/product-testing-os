@@ -1,5 +1,7 @@
-import os, requests, base64, re, time
+import os, requests, base64, re, time, logging
 from datetime import datetime, timedelta
+
+_perf_log = logging.getLogger("shopify_client.perf")
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
@@ -910,6 +912,9 @@ def count_orders_by_product_or_variant_processed_batch(
         return out
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    _t0 = time.time()
+    _pages = 0
+    _orders_scanned = 0
     from urllib.parse import urlencode
     base_path = "/orders.json"
     params = {
@@ -927,12 +932,20 @@ def count_orders_by_product_or_variant_processed_batch(
             # With page_info, Shopify only allows page_info + limit (+ fields).
             q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
         path = base_path + ("?" + urlencode(q))
+        _t_page = time.time()
         resp = _rest_get_store_raw(store, path)
         try:
             data = resp.json() if resp.content else {}
         except Exception:
             data = {}
         orders = (data or {}).get("orders") or []
+        _pages += 1
+        _orders_scanned += len(orders)
+        _perf_log.info(
+            "count_orders.page store=%s page=%d orders=%d elapsed_ms=%d window=%s..%s ids=%d",
+            store, _pages, len(orders), int((time.time() - _t_page) * 1000),
+            processed_min_iso, processed_max_iso, len(targets),
+        )
         for o in orders:
             try:
                 if o.get("cancelled_at"):
@@ -959,6 +972,12 @@ def count_orders_by_product_or_variant_processed_batch(
         page_info = _parse_link_next(link)
         if not page_info:
             break
+    _nonzero = sum(1 for v in out.values() if int(v or 0) > 0)
+    _perf_log.info(
+        "count_orders.done store=%s ids=%d pages=%d orders_scanned=%d nonzero=%d elapsed_ms=%d window=%s..%s",
+        store, len(targets), _pages, _orders_scanned, _nonzero,
+        int((time.time() - _t0) * 1000), processed_min_iso, processed_max_iso,
+    )
     return out
 
 
@@ -2038,10 +2057,13 @@ def count_paid_orders_by_product_search(
     total = 0
     after = None
     seen: set[str] = set()
+    _t0 = time.time()
+    _pages = 0
     while True:
         data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
         conn = (data or {}).get("orders") or {}
         edges = conn.get("edges") or []
+        _pages += 1
         for edge in edges:
             oid = str(((edge or {}).get("node") or {}).get("id") or "")
             if oid and oid not in seen:
@@ -2053,6 +2075,11 @@ def count_paid_orders_by_product_search(
         after = page_info.get("endCursor")
         if not after:
             break
+    _perf_log.info(
+        "paid_search.done store=%s pid=%s window=%s..%s pages=%d total=%d elapsed_ms=%d",
+        store, ident, processed_min_date, processed_max_date,
+        _pages, total, int((time.time() - _t0) * 1000),
+    )
     return total
 
 
@@ -2085,24 +2112,47 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     # for product_id + processed_at + financial_status filters and can find
     # historical paid orders that the REST page scan may miss.
     try:
+        _t_search = time.time()
         searched: dict[str, int] = {}
-        for key in targets.values():
-            searched[key] = count_paid_orders_by_product_search(
-                key,
-                processed_min_date,
-                processed_max_date,
-                store=store,
-            )
+        keys = list(targets.values())
+        workers = max(1, min(len(keys), int(os.getenv("PTOS_PAID_SEARCH_WORKERS", "8") or "8")))
+
+        def _one(k: str) -> tuple[str, int]:
+            try:
+                return (k, int(count_paid_orders_by_product_search(
+                    k, processed_min_date, processed_max_date, store=store,
+                ) or 0))
+            except Exception:
+                return (k, 0)
+
+        if keys:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for fut in as_completed([ex.submit(_one, k) for k in keys]):
+                    try:
+                        k, v = fut.result()
+                        searched[k] = v
+                    except Exception:
+                        continue
         for key, val in searched.items():
             out[key] = int(val or 0)
+        _nonzero = sum(1 for v in searched.values() if int(v or 0) > 0)
+        _perf_log.info(
+            "paid_search.batch store=%s ids=%d workers=%d nonzero=%d elapsed_ms=%d window=%s..%s",
+            store, len(keys), workers, _nonzero,
+            int((time.time() - _t_search) * 1000),
+            processed_min_date, processed_max_date,
+        )
         if any(int(v or 0) > 0 for v in searched.values()):
             targets = {tid: key for tid, key in targets.items() if int(out.get(key, 0) or 0) <= 0}
             if not targets:
                 return out
-    except Exception:
-        pass
+    except Exception as e:
+        _perf_log.warning("paid_search.batch_failed store=%s err=%s", store, e)
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    _t_rest = time.time()
+    _pages = 0
+    _orders_scanned = 0
     from urllib.parse import urlencode
     base_path = "/orders.json"
     params = {
@@ -2124,6 +2174,8 @@ def count_paid_orders_by_product_or_variant_processed_batch(
         except Exception:
             data = {}
         orders = (data or {}).get("orders") or []
+        _pages += 1
+        _orders_scanned += len(orders)
         for o in orders:
             try:
                 if o.get("cancelled_at"):
@@ -2153,6 +2205,12 @@ def count_paid_orders_by_product_or_variant_processed_batch(
         page_info = _parse_link_next(link)
         if not page_info:
             break
+    _nonzero = sum(1 for v in out.values() if int(v or 0) > 0)
+    _perf_log.info(
+        "paid_count.done store=%s remaining_ids=%d pages=%d orders_scanned=%d nonzero=%d elapsed_ms=%d window=%s..%s",
+        store, len(targets), _pages, _orders_scanned, _nonzero,
+        int((time.time() - _t_rest) * 1000), processed_min_iso, processed_max_iso,
+    )
     return out
 
 
@@ -2268,21 +2326,26 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
             missing.append(pid)
 
     if not missing:
+        _perf_log.info(
+            "products_brief.cache_hit store=%s ids=%d", store_key, len(ids),
+        )
         return out
 
-    def _fetch_one(pid: str) -> tuple[str, dict]:
+    def _fetch_one(pid: str) -> tuple[str, dict, int]:
+        _t = time.time()
         try:
             data = get_product_brief(str(pid), store=store)
-            return (pid, data)
+            return (pid, data, int((time.time() - _t) * 1000))
         except Exception:
-            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0})
+            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0}, int((time.time() - _t) * 1000))
 
+    _t_all = time.time()
     workers = max(1, min(int(_PRODUCT_BRIEF_WORKERS or 8), 16))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_fetch_one, pid) for pid in missing]
         for f in as_completed(futs):
             try:
-                pid, data = f.result()
+                pid, data, _ms = f.result()
             except Exception:
                 continue
             out[pid] = data
@@ -2290,6 +2353,12 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
             except Exception:
                 pass
+    _with_image = sum(1 for v in out.values() if (v or {}).get("image"))
+    _perf_log.info(
+        "products_brief.done store=%s ids=%d missing=%d workers=%d with_image=%d elapsed_ms=%d",
+        store_key, len(ids), len(missing), workers, _with_image,
+        int((time.time() - _t_all) * 1000),
+    )
     return out
 
 
