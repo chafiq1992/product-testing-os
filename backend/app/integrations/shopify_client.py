@@ -805,7 +805,7 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250}
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         data = resp.json() if resp.content else {}
@@ -1145,7 +1145,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250}
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         data = resp.json() if resp.content else {}
@@ -1247,16 +1247,54 @@ def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max
     Each returned row includes a `store` field indicating the source store.
     Orders are deduplicated within each store but not across stores (different stores have different order IDs).
     """
-    store_list = stores or [None]  # type: ignore
+    raw_stores = stores or [None]  # type: ignore
+    store_list: list[str | None] = []
+    seen_stores: set[str] = set()
+    for raw in raw_stores:
+        st = str(raw or "").strip() or None
+        key = st or "__default__"
+        if key in seen_stores:
+            continue
+        seen_stores.add(key)
+        store_list.append(st)
+
     out: list[dict] = []
-    for st in store_list:
+    if len(store_list) <= 1:
+        store_list = store_list or [None]
         try:
-            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
+            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=store_list[0], include_closed=include_closed)
             for o in (orders or []):
-                o["store"] = st or "default"
+                o["store"] = store_list[0] or "default"
             out.extend(orders)
         except Exception:
-            continue
+            pass
+        return out
+
+    try:
+        max_workers = max(1, int(os.getenv("SHOPIFY_UTM_ORDER_STORE_WORKERS", "4") or "4"))
+    except Exception:
+        max_workers = 4
+    max_workers = min(max_workers, len(store_list))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_store = {
+            pool.submit(
+                list_orders_with_utms_processed,
+                processed_min_date,
+                processed_max_date,
+                store=st,
+                include_closed=include_closed,
+            ): st
+            for st in store_list
+        }
+        for fut in as_completed(future_to_store):
+            st = future_to_store[fut]
+            try:
+                orders = fut.result() or []
+            except Exception:
+                continue
+            for o in orders:
+                o["store"] = st or "default"
+            out.extend(orders)
     return out
 
 

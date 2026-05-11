@@ -773,7 +773,7 @@ export type AttributedOrder = {
   store?: string,
 }
 
-export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[]){
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[], adsets?: Pick<MetaAdsetRow, 'adset_id'|'name'>[]){
   const params: string[] = []
   if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
   if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
@@ -783,6 +783,12 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
   } else {
     const s = store ?? selectedStore()
     if(s) params.push(`store=${encodeURIComponent(s)}`)
+  }
+  if(adsets && adsets.length > 0){
+    const compact = adsets
+      .map((a)=> ({ adset_id: a?.adset_id || '', name: a?.name || '' }))
+      .filter((a)=> a.adset_id || a.name)
+    if(compact.length > 0) params.push(`adsets=${encodeURIComponent(JSON.stringify(compact))}`)
   }
   const qp = params.length? `?${params.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`

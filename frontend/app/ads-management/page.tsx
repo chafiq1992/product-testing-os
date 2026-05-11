@@ -2356,22 +2356,24 @@ export default function AdsManagementPage(){
                                 const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
                                 const items = ((res as any)?.data)||[]
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
-                                // Load Shopify-attributed orders per ad set for this campaign
-                                try{
-                                  const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
-                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
-                                  const rowStore = (c as any)._store || store
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined)
-                                  const mapping = ((ord as any)?.data)||{}
-                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
-                                }catch{
-                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
-                                }finally{
-                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
-                                }
+                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
+                                // Load Shopify-attributed orders per ad set without blocking the ad-set rows.
+                                void (async()=>{
+                                  try{
+                                    const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
+                                    setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
+                                    const rowStore = (c as any)._store || store
+                                    const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined, items)
+                                    const mapping = ((ord as any)?.data)||{}
+                                    setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
+                                  }catch{
+                                    setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
+                                  }finally{
+                                    setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
+                                  }
+                                })()
                               }catch{
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
-                              }finally{
                                 setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
                               }
                             }
@@ -2864,9 +2866,9 @@ export default function AdsManagementPage(){
                                         <div className="text-right">{a.purchases||0}</div>
                                         <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
                                         <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
-                                        <div className="text-right">{utmOrders}</div>
+                                        <div className="text-right">{adsetOrdersLoading[cid] ? '...' : utmOrders}</div>
                                         <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
-                                          {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
+                                          {adsetOrdersLoading[cid] ? '-' : (utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-')}
                                         </div>
                                         <div className="flex items-center justify-end gap-2">
                                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${acolor}`}>{aactive? 'Active' : 'Paused'}</span>

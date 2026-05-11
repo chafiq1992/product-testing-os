@@ -1634,6 +1634,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
+        "version": 2,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -1766,14 +1767,37 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
             if manual and manual.get("kind") == "collection" and str(manual.get("id") or "").isdigit():
                 collection_rows.append((key, row, manual))
 
-        total_steps = max(1, len(stores) + len(stores) + len(stores) + len(collection_rows))
+        total_steps = max(1, (len(stores) * 4) + len(collection_rows))
         done_steps = 0
         _ads_mgmt_save_job(job_id, {
             "status": "running",
-            "progress": {"done": done_steps, "total": total_steps, "phase": "orders"},
+            "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
             "request": payload,
             "result": result,
         })
+
+        briefs: dict[str, dict] = {}
+        initial_brief_targets = spending_ids
+        if initial_brief_targets:
+            for st in stores:
+                try:
+                    for i in range(0, len(initial_brief_targets), 120):
+                        chunk = initial_brief_targets[i:i + 120]
+                        if not chunk:
+                            continue
+                        data = get_products_brief(chunk, store=st) or {}
+                        _ads_mgmt_merge_briefs(briefs, data)
+                except Exception as e:
+                    log.warning("product briefs failed for store=%s job=%s: %s", st, job_id, e)
+                done_steps += 1
+                result["product_briefs"] = dict(briefs)
+                _ads_mgmt_save_job(job_id, {
+                    "status": "running",
+                    "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
+                    "result": result,
+                })
+        else:
+            done_steps += len(stores)
 
         counts_by_id: dict[str, int] = {pid: 0 for pid in product_ids}
         if not profit_only and product_ids and start and end:
@@ -1797,17 +1821,18 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                     "progress": {"done": done_steps, "total": total_steps, "phase": "orders"},
                     "result": result,
                 })
+        else:
+            done_steps += len(stores)
 
-        brief_targets = spending_ids if profit_only else [
+        extra_brief_targets = [] if profit_only else [
             pid for pid in product_ids
-            if pid in seen_spending or int(counts_by_id.get(pid, 0) or 0) > 0
+            if pid not in briefs and int(counts_by_id.get(pid, 0) or 0) > 0
         ]
-        briefs: dict[str, dict] = {}
-        if brief_targets:
+        if extra_brief_targets:
             for st in stores:
                 try:
-                    for i in range(0, len(brief_targets), 200):
-                        chunk = brief_targets[i:i + 200]
+                    for i in range(0, len(extra_brief_targets), 120):
+                        chunk = extra_brief_targets[i:i + 120]
                         if not chunk:
                             continue
                         data = get_products_brief(chunk, store=st) or {}
@@ -1821,6 +1846,8 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                     "progress": {"done": done_steps, "total": total_steps, "phase": "product_briefs"},
                     "result": result,
                 })
+        else:
+            done_steps += len(stores)
 
         if not profit_only and start and end:
             store_total = 0
@@ -1836,6 +1863,8 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict):
                     "progress": {"done": done_steps, "total": total_steps, "phase": "store_total"},
                     "result": result,
                 })
+        else:
+            done_steps += len(stores)
 
         manual_counts: dict[str, int] = {}
         if not profit_only:
@@ -5152,7 +5181,7 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
-async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None):
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, adsets: str | None = None):
     """Attribute Shopify orders to ad sets by matching UTM parameters.
 
     Dual-strategy attribution:
@@ -5174,13 +5203,42 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        key = _cache_key("meta_campaign_adset_orders_v2", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
+        provided_adsets: list[dict] = []
+        if adsets:
+            try:
+                parsed = json.loads(adsets)
+            except Exception:
+                parsed = []
+            seen_adsets: set[str] = set()
+            if isinstance(parsed, list):
+                for raw in parsed:
+                    if not isinstance(raw, dict):
+                        continue
+                    aid = str(raw.get("adset_id") or raw.get("id") or "").strip()
+                    name = str(raw.get("name") or "").strip()
+                    if not aid and not name:
+                        continue
+                    dedupe_key = aid or name.lower()
+                    if dedupe_key in seen_adsets:
+                        continue
+                    seen_adsets.add(dedupe_key)
+                    provided_adsets.append({"adset_id": aid, "name": name})
+
+        key = _cache_key("meta_campaign_adset_orders_v3", {
+            "campaign_id": campaign_id,
+            "start": start,
+            "end": end,
+            "stores": store_list or None,
+            "adsets": provided_adsets or None,
+        })
 
         async def _compute():
             import asyncio
 
             # 1) List ad sets for campaign and their ads — run in parallel
             async def _fetch_adsets():
+                if provided_adsets:
+                    return provided_adsets
                 return await run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d")
 
             async def _fetch_orders():
@@ -5202,8 +5260,18 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                 if aid and name:
                     adset_name_to_id[name.lower()] = aid
 
-            # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
-            ads_by_adset = await run_in_threadpool(list_ads_for_adsets, adset_ids)
+            # Fetch ads for ad-set reverse mapping (ad_id -> adset_id). Direct adset_id
+            # and name attribution still work if Meta is slow, so keep this bounded.
+            ads_by_adset = {}
+            if adset_ids:
+                try:
+                    ads_by_adset = await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=20)
+                except Exception as e:
+                    logging.getLogger("ads_management.adset_orders").warning(
+                        "ad reverse map timed out for campaign=%s: %s",
+                        campaign_id,
+                        e,
+                    )
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
