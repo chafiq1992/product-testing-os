@@ -1634,7 +1634,7 @@ def _ads_mgmt_request_payload(req: AdsManagementEnrichmentRequest) -> dict:
     if primary_store and primary_store not in seen:
         stores.insert(0, primary_store)
     return {
-        "version": 4,
+        "version": 5,
         "campaigns": _ads_mgmt_sanitize_campaigns(req.campaigns),
         "mappings": _ads_mgmt_sanitize_mappings(req.mappings),
         "stores": stores or ([primary_store] if primary_store else []),
@@ -2101,7 +2101,16 @@ def _run_ads_mgmt_enrichment_job(job_id: str, payload: dict, time_budget_s: floa
             _ADS_MGMT_ENRICHMENT_THREADS.pop(job_id, None)
 
 
-def _ads_mgmt_start_thread(job_id: str, payload: dict) -> None:
+def _ads_mgmt_kick_driver(job_id: str, payload: dict, time_budget_s: float = 20.0) -> None:
+    """Kick a detached driver thread for this instance/job if not already running.
+
+    The thread is daemonless and runs independently of the request that
+    started it, so the HTTP response returns immediately. Each Cloud Run
+    instance that receives a poll kicks its own driver — together they
+    process slices in parallel (merge logic in ``_save`` reconciles state
+    across instances). The per-job in-process lock keeps a single instance
+    from spawning overlapping drivers.
+    """
     with _ADS_MGMT_ENRICHMENT_LOCK:
         existing = _ADS_MGMT_ENRICHMENT_THREADS.get(job_id)
         if existing and existing.is_alive():
@@ -2109,7 +2118,7 @@ def _ads_mgmt_start_thread(job_id: str, payload: dict) -> None:
         thread = threading.Thread(
             target=_run_ads_mgmt_enrichment_job,
             args=(job_id, payload),
-            kwargs={"time_budget_s": None},
+            kwargs={"time_budget_s": time_budget_s},
             daemon=False,
             name=f"ads-mgmt-enrich-{job_id[:8]}",
         )
@@ -2136,11 +2145,14 @@ async def api_ads_management_enrichment(req: AdsManagementEnrichmentRequest):
         else:
             _ads_mgmt_save_job(job_id, {"request": payload})
 
-        # Work is driven from polls (see GET handler below). Cloud Run
-        # throttles CPU when no request is active, so a background thread
-        # would either make almost no progress or hold the per-job lock
-        # and starve the poll-driven driver. The frontend polls within
-        # ~300ms, so this adds negligible startup latency.
+        # Kick a detached driver on this instance so work starts before the
+        # first poll arrives. Subsequent polls will kick drivers on whichever
+        # instance handles them.
+        try:
+            _ads_mgmt_kick_driver(job_id, payload, time_budget_s=20.0)
+        except Exception:
+            pass
+
         job = _ads_mgmt_get_job(job_id) or existing or {"job_id": job_id, "status": "pending"}
         return job
     except Exception as e:
@@ -2156,21 +2168,17 @@ async def api_ads_management_enrichment_status(job_id: str):
         if job.get("status") in ("pending", "running"):
             payload = job.get("request")
             if isinstance(payload, dict):
-                # Drive a slice of work inside this request. Cloud Run only
-                # allocates CPU during active requests, so doing the work
-                # here guarantees it actually progresses. The function is
-                # resumable: it picks up from whatever the persisted state
-                # already reflects, so successive polls advance the job.
+                # Fire-and-forget: kick a detached driver on this instance.
+                # The request returns immediately so it never blocks Cloud
+                # Run's request timeout. The driver runs in the background
+                # and saves progress chunk-by-chunk; the next poll sees the
+                # updated state. Frequent polls keep the instance warm so
+                # Cloud Run's CPU throttling doesn't starve the thread.
                 try:
-                    await run_in_threadpool(
-                        _run_ads_mgmt_enrichment_job,
-                        job_id,
-                        payload,
-                        4.0,  # seconds of work per poll; total request stays under 8s
-                    )
+                    _ads_mgmt_kick_driver(job_id, payload, time_budget_s=20.0)
                 except Exception:
                     pass
-        return _ads_mgmt_get_job(job_id) or job
+        return job
     except Exception as e:
         return {"error": str(e), "status": "error", "job_id": job_id}
 
