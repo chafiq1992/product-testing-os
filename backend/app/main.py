@@ -5116,7 +5116,10 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     adset_name_to_id[name.lower()] = aid
 
             # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
-            ads_by_adset = await run_in_threadpool(list_ads_for_adsets, adset_ids)
+            try:
+                ads_by_adset = await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
+            except Exception:
+                ads_by_adset = {}
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
@@ -5256,7 +5259,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     continue
             return result
 
-        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=55)
+        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=45)
         try:
             db.set_app_setting((store_list or [store or ""])[0], db_cache_key, {"ts": time.time(), "data": result or {}})
         except Exception:

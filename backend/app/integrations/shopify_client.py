@@ -1253,15 +1253,15 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         "limit": 250,
         "processed_at_min": processed_min,
         "processed_at_max": processed_max,
-        "order": "processed_at asc",
+        "order": "processed_at desc",
         "fields": "id,name,processed_at,created_at,total_price,currency,source_name,landing_site,referring_site,note_attributes,cancelled_at",
     }
     out: list[dict] = []
     page_info = None
     pages = 0
     started = time.time()
-    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "12") or "12"))
-    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "5") or "5"))
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "10") or "10"))
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "3") or "3"))
     while True:
         q = params.copy()
         if page_info:
