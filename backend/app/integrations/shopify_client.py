@@ -452,6 +452,20 @@ def _rest_get_store_raw(store: str | None, path: str):
     return r
 
 
+def _rest_get_store_raw_once(store: str | None, path: str, *, timeout: int = 20):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = requests.get(url, headers=cfg["HEADERS"], timeout=timeout, auth=auth, allow_redirects=False)
+    r.raise_for_status()
+    return r
+
+
 def _processed_window_iso(store: str | None, processed_min_date: str, processed_max_date: str) -> tuple[str, str]:
     """Return (processed_at_min_iso, processed_at_max_iso) aligned to the shop's timezone day bounds."""
     try:
@@ -1243,14 +1257,30 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
     }
     out: list[dict] = []
     page_info = None
+    pages = 0
+    started = time.time()
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "20") or "20"))
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "8") or "8"))
     while True:
         q = params.copy()
         if page_info:
             q = {"page_info": page_info, "limit": 250}
         path = base_path + ("?" + urlencode(q))
-        resp = _rest_get_store_raw(store, path)
+        try:
+            resp = _rest_get_store_raw_once(store, path, timeout=timeout_s)
+        except Exception as e:
+            _perf_log.warning(
+                "utm_orders.rest_page_failed store=%s pages=%d rows=%d elapsed_ms=%d err=%s",
+                store,
+                pages,
+                len(out),
+                int((time.time() - started) * 1000),
+                e,
+            )
+            break
         data = resp.json() if resp.content else {}
         orders = (data or {}).get("orders") or []
+        pages += 1
         for o in orders:
             try:
                 if o.get("cancelled_at"):
@@ -1339,6 +1369,22 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         page_info = _parse_link_next(link)
         if not page_info:
             break
+        if pages >= max_pages:
+            _perf_log.warning(
+                "utm_orders.max_pages store=%s pages=%d rows=%d elapsed_ms=%d",
+                store,
+                pages,
+                len(out),
+                int((time.time() - started) * 1000),
+            )
+            break
+    _perf_log.info(
+        "utm_orders.list store=%s pages=%d rows=%d elapsed_ms=%d",
+        store,
+        pages,
+        len(out),
+        int((time.time() - started) * 1000),
+    )
     return out
 
 
@@ -1738,6 +1784,165 @@ def _product_first_image_url(numeric_product_id: str, *, store: str | None = Non
     return None
 
 
+def _is_size_like_value(value: str) -> bool:
+    t = str(value or "").strip().lower()
+    if not t:
+        return False
+    common = {"xxs","xs","s","m","l","xl","xxl","xxxl","os","one size","2t","3t","4t","5t","6t","7t"}
+    if t in common:
+        return True
+    return bool(re.match(r"^\d+(?:[./-]\d+)?$", t))
+
+
+def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
+    node = node or {}
+    gid = str(node.get("id") or "")
+    pid = gid.split("/")[-1] if "/" in gid else gid
+    image = ((node.get("featuredImage") or {}).get("url")) if isinstance(node.get("featuredImage"), dict) else None
+    variants = (((node.get("variants") or {}).get("nodes") or []) if isinstance(node.get("variants"), dict) else [])
+
+    option_names: list[str] = []
+    option_values_by_name: dict[str, set[str]] = {}
+    normalized_by_name: dict[str, str] = {}
+    for v in variants:
+        for opt in ((v or {}).get("selectedOptions") or []):
+            name = str((opt or {}).get("name") or "").strip()
+            val = str((opt or {}).get("value") or "").strip()
+            if not name:
+                continue
+            lname = name.lower()
+            if name not in option_names:
+                option_names.append(name)
+            normalized_by_name[name] = lname
+            if val:
+                option_values_by_name.setdefault(name, set()).add(val)
+
+    size_name = None
+    color_name = None
+    for name in option_names:
+        lname = normalized_by_name.get(name, "").lower()
+        if size_name is None and ("size" in lname or "taille" in lname):
+            size_name = name
+        if color_name is None and ("color" in lname or "colour" in lname or "couleur" in lname):
+            color_name = name
+
+    if size_name is None and option_names:
+        scored = []
+        for name in option_names:
+            vals = option_values_by_name.get(name) or set()
+            if not vals:
+                score = 0.0
+            else:
+                score = sum(1 for val in vals if _is_size_like_value(val)) / max(1, len(vals))
+            scored.append((name, score, len(vals)))
+        best = max(scored, key=lambda x: (x[1], x[2]))
+        if best[1] >= 0.5:
+            size_name = best[0]
+        else:
+            size_name = max(scored, key=lambda x: x[2])[0]
+    if color_name is None:
+        for name in option_names:
+            if name != size_name:
+                color_name = name
+                break
+
+    def _selected(v: dict, opt_name: str | None, fallback: str) -> str:
+        if not opt_name:
+            return fallback
+        for opt in ((v or {}).get("selectedOptions") or []):
+            if str((opt or {}).get("name") or "").strip() == opt_name:
+                val = str((opt or {}).get("value") or "").strip()
+                return val or fallback
+        return fallback
+
+    sizes_set: list[str] = []
+    colors_set: list[str] = []
+    matrix: dict[str, dict[str, int]] = {}
+    size_to_avails: dict[str, list[int]] = {}
+    total_available = 0
+    zero_variants = 0
+    min_price = None
+
+    for v in variants:
+        try:
+            raw_qty = (v or {}).get("inventoryQuantity")
+            avail = int(raw_qty if raw_qty is not None else 0)
+        except Exception:
+            avail = 0
+        total_available += max(0, avail)
+        if avail <= 0:
+            zero_variants += 1
+        try:
+            raw_price = (v or {}).get("price")
+            if raw_price is not None:
+                price = float(str(raw_price))
+                if min_price is None or price < min_price:
+                    min_price = price
+        except Exception:
+            pass
+
+        size_val = _selected(v or {}, size_name, "Default")
+        color_val = _selected(v or {}, color_name, "Default")
+        if size_val not in sizes_set:
+            sizes_set.append(size_val)
+        if color_val not in colors_set:
+            colors_set.append(color_val)
+        matrix.setdefault(color_val, {})
+        matrix[color_val][size_val] = int(matrix[color_val].get(size_val, 0) or 0) + avail
+        size_to_avails.setdefault(size_val, []).append(avail)
+
+    try:
+        zero_sizes = sum(1 for avs in size_to_avails.values() if all(int(a) <= 0 for a in (avs or [0])))
+    except Exception:
+        zero_sizes = 0
+
+    return {
+        "id": pid,
+        "image": image,
+        "total_available": int(total_available),
+        "zero_variants": int(zero_variants),
+        "zero_sizes": int(zero_sizes),
+        "price": float(min_price) if min_price is not None else None,
+        "sizes": sizes_set,
+        "colors": colors_set,
+        "matrix": matrix,
+    }
+
+
+def _get_product_inventory_graphql(numeric_product_id: str, *, store: str | None = None) -> dict:
+    pid = str(numeric_product_id or "").strip()
+    if not pid.isdigit():
+        return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+    query = """
+    query ProductInventory($id: ID!) {
+      node(id: $id) {
+        ... on Product {
+          id
+          featuredImage { url }
+          variants(first: 250) {
+            nodes {
+              id
+              price
+              inventoryQuantity
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
+    """
+    timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_INVENTORY_GRAPHQL_TIMEOUT_S", "24") or "24"))
+    data = _gql_store_once(store, query, {"id": f"gid://shopify/Product/{pid}"}, timeout=timeout_s)
+    node = (data or {}).get("node") or {}
+    summary = _inventory_summary_from_graphql_product(node)
+    return {
+        "sizes": summary.get("sizes") or [],
+        "colors": summary.get("colors") or [],
+        "matrix": summary.get("matrix") or {},
+        "total_available": int(summary.get("total_available") or 0),
+    }
+
+
 def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> dict:
     """Return a brief for a product: image, total_available, zero_variants, zero_sizes.
 
@@ -1746,6 +1951,39 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
     - Counts how many sizes have all color variants at 0 or less
     - Picks the first product image as thumbnail
     """
+    try:
+        query = """
+        query ProductBrief($id: ID!) {
+          node(id: $id) {
+            ... on Product {
+              id
+              featuredImage { url }
+              variants(first: 250) {
+                nodes {
+                  price
+                  inventoryQuantity
+                  selectedOptions { name value }
+                }
+              }
+            }
+          }
+        }
+        """
+        timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_INVENTORY_GRAPHQL_TIMEOUT_S", "24") or "24"))
+        data = _gql_store_once(store, query, {"id": f"gid://shopify/Product/{numeric_product_id}"}, timeout=timeout_s)
+        summary = _inventory_summary_from_graphql_product((data or {}).get("node") or {})
+        return {
+            "image": summary.get("image"),
+            "total_available": int(summary.get("total_available") or 0),
+            "zero_variants": int(summary.get("zero_variants") or 0),
+            "zero_sizes": int(summary.get("zero_sizes") or 0),
+            "price": summary.get("price"),
+        }
+    except Exception as e:
+        _perf_log.warning("product_brief.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
+        if os.getenv("PTOS_PRODUCTS_BRIEF_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+
     total_available = 0
     zero_variants = 0
     zero_sizes = 0
@@ -1925,6 +2163,13 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
         "total_available": int
       }
     """
+    try:
+        return _get_product_inventory_graphql(numeric_product_id, store=store)
+    except Exception as e:
+        _perf_log.warning("product_variants_inventory.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
+        if os.getenv("PTOS_PRODUCTS_INVENTORY_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+
     try:
         pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
         p = (pdata or {}).get("product") or {}
@@ -2394,7 +2639,7 @@ def count_orders_and_paid_by_product_or_variant_processed_batch(
 def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
     """Fast product-card data for ads management.
 
-    Returns image and first variant price without the heavy REST inventory chain.
+    Returns image, price, and inventory without the heavy REST inventory chain.
     """
     ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip().isdigit()]
     if not ids:
@@ -2405,8 +2650,12 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
         ... on Product {
           id
           featuredImage { url }
-          variants(first: 1) {
-            nodes { price }
+          variants(first: 250) {
+            nodes {
+              price
+              inventoryQuantity
+              selectedOptions { name value }
+            }
           }
         }
       }
@@ -2423,22 +2672,13 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
         pid = gid.split("/")[-1] if "/" in gid else gid
         if not pid:
             continue
-        image = ((node or {}).get("featuredImage") or {}).get("url")
-        price = None
-        try:
-            variants = (((node or {}).get("variants") or {}).get("nodes") or [])
-            if variants:
-                raw_price = (variants[0] or {}).get("price")
-                if raw_price is not None:
-                    price = float(str(raw_price))
-        except Exception:
-            price = None
+        summary = _inventory_summary_from_graphql_product(node or {})
         out[str(pid)] = {
-            "image": image,
-            "total_available": 0,
-            "zero_variants": 0,
-            "zero_sizes": 0,
-            "price": price,
+            "image": summary.get("image"),
+            "total_available": int(summary.get("total_available") or 0),
+            "zero_variants": int(summary.get("zero_variants") or 0),
+            "zero_sizes": int(summary.get("zero_sizes") or 0),
+            "price": summary.get("price"),
         }
     return out
 

@@ -1471,6 +1471,7 @@ class ProductVariantsInventoryRequest(BaseModel):
 @app.post("/api/shopify/product_variants_inventory")
 async def api_product_variants_inventory(req: ProductVariantsInventoryRequest):
     """Return variant-level inventory breakdown (sizes x colors matrix) for a product."""
+    started = time.perf_counter()
     try:
         pid = (req.product_id or "").strip()
         if not pid or not pid.isdigit():
@@ -1482,8 +1483,16 @@ async def api_product_variants_inventory(req: ProductVariantsInventoryRequest):
             from app.integrations.shopify_client import get_product_variants_inventory
             return await run_in_threadpool(get_product_variants_inventory, pid, store=store)
 
-        data = await _cached(key, 300, _compute)
+        data = await asyncio.wait_for(_cached(key, 300, _compute), timeout=28)
         return {"data": data}
+    except asyncio.TimeoutError:
+        shopify_logger.warning(
+            "shopify.product_variants_inventory timeout store=%s pid=%s elapsed_ms=%s",
+            getattr(req, "store", None),
+            getattr(req, "product_id", None),
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"error": "shopify_product_variants_inventory_timeout", "data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
     except Exception as e:
         return {"error": str(e), "data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
 
@@ -5060,6 +5069,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
     Supports multi-store: pass ?stores=store1,store2 or ?store=single_store
     Returns mapping: { adset_id: { count: number, orders: [...] } }
     """
+    started = time.perf_counter()
     try:
         # Parse store list: prefer comma-separated ?stores= param, fall back to single ?store=
         store_list: list[str] | None = None
@@ -5237,8 +5247,16 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     continue
             return result
 
-        result = await _cached(key, 60, _compute)
+        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=75)
         return {"data": result}
+    except asyncio.TimeoutError:
+        shopify_logger.warning(
+            "meta.campaign_adset_orders timeout campaign_id=%s stores=%s elapsed_ms=%s",
+            campaign_id,
+            stores or store,
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"error": "campaign_adset_orders_timeout", "data": {}}
     except Exception as e:
         return {"error": str(e), "data": {}}
 
