@@ -1,11 +1,5 @@
-import os, requests, base64, re, time, logging
+import os, requests, base64, re, time
 from datetime import datetime, timedelta
-
-_perf_log = logging.getLogger("shopify_client.perf")
-if not _perf_log.handlers:
-    _perf_log.addHandler(logging.StreamHandler())
-_perf_log.setLevel(logging.INFO)
-_perf_log.propagate = False
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
@@ -811,7 +805,7 @@ def count_orders_by_product_processed(product_id: str, processed_min_date: str, 
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+            q = {"page_info": page_info, "limit": 250}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         data = resp.json() if resp.content else {}
@@ -915,49 +909,7 @@ def count_orders_by_product_or_variant_processed_batch(
     if not targets:
         return out
 
-    # Fast path: Shopify's order-search query filters by product_id natively,
-    # so we don't scan every order in the window. Run all products in parallel.
-    try:
-        _t_search = time.time()
-        keys = list(targets.values())
-        workers = max(1, min(len(keys), int(os.getenv("PTOS_ORDERS_SEARCH_WORKERS", "8") or "8")))
-
-        def _one(k: str) -> tuple[str, int]:
-            try:
-                return (k, int(_count_orders_by_product_search(
-                    k, processed_min_date, processed_max_date,
-                    store=store, include_closed=include_closed,
-                ) or 0))
-            except Exception:
-                return (k, 0)
-
-        searched: dict[str, int] = {}
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for fut in as_completed([ex.submit(_one, k) for k in keys]):
-                try:
-                    k, v = fut.result()
-                    searched[k] = v
-                except Exception:
-                    continue
-        for key, val in searched.items():
-            out[key] = int(val or 0)
-        _nonzero = sum(1 for v in searched.values() if int(v or 0) > 0)
-        _perf_log.info(
-            "orders_search.batch store=%s ids=%d workers=%d nonzero=%d elapsed_ms=%d window=%s..%s",
-            store, len(keys), workers, _nonzero,
-            int((time.time() - _t_search) * 1000),
-            processed_min_date, processed_max_date,
-        )
-        # If every product returned a value (including 0), trust it and skip REST scan.
-        if searched and all(k in searched for k in keys):
-            return out
-    except Exception as e:
-        _perf_log.warning("orders_search.batch_failed store=%s err=%s", store, e)
-
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
-    _t0 = time.time()
-    _pages = 0
-    _orders_scanned = 0
     from urllib.parse import urlencode
     base_path = "/orders.json"
     params = {
@@ -966,29 +918,19 @@ def count_orders_by_product_or_variant_processed_batch(
         "processed_at_min": processed_min_iso,
         "processed_at_max": processed_max_iso,
         "order": "processed_at asc",
-        "fields": "id,cancelled_at,line_items",
     }
     page_info = None
     while True:
         q = params.copy()
         if page_info:
-            # With page_info, Shopify only allows page_info + limit (+ fields).
-            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+            q = {"page_info": page_info, "limit": 250}
         path = base_path + ("?" + urlencode(q))
-        _t_page = time.time()
         resp = _rest_get_store_raw(store, path)
         try:
             data = resp.json() if resp.content else {}
         except Exception:
             data = {}
         orders = (data or {}).get("orders") or []
-        _pages += 1
-        _orders_scanned += len(orders)
-        _perf_log.info(
-            "count_orders.page store=%s page=%d orders=%d elapsed_ms=%d window=%s..%s ids=%d",
-            store, _pages, len(orders), int((time.time() - _t_page) * 1000),
-            processed_min_iso, processed_max_iso, len(targets),
-        )
         for o in orders:
             try:
                 if o.get("cancelled_at"):
@@ -1015,12 +957,6 @@ def count_orders_by_product_or_variant_processed_batch(
         page_info = _parse_link_next(link)
         if not page_info:
             break
-    _nonzero = sum(1 for v in out.values() if int(v or 0) > 0)
-    _perf_log.info(
-        "count_orders.done store=%s ids=%d pages=%d orders_scanned=%d nonzero=%d elapsed_ms=%d window=%s..%s",
-        store, len(targets), _pages, _orders_scanned, _nonzero,
-        int((time.time() - _t0) * 1000), processed_min_iso, processed_max_iso,
-    )
     return out
 
 
@@ -1059,14 +995,13 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
         "processed_at_min": processed_min,
         "processed_at_max": processed_max,
         "order": "processed_at asc",
-        "fields": "id,cancelled_at",
     }
     total = 0
     page_info = None
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+            q = {"page_info": page_info, "limit": 250}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         try:
@@ -1207,7 +1142,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
     while True:
         q = params.copy()
         if page_info:
-            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+            q = {"page_info": page_info, "limit": 250}
         path = base_path + ("?" + urlencode(q))
         resp = _rest_get_store_raw(store, path)
         data = resp.json() if resp.content else {}
@@ -1309,54 +1244,16 @@ def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max
     Each returned row includes a `store` field indicating the source store.
     Orders are deduplicated within each store but not across stores (different stores have different order IDs).
     """
-    raw_stores = stores or [None]  # type: ignore
-    store_list: list[str | None] = []
-    seen_stores: set[str] = set()
-    for raw in raw_stores:
-        st = str(raw or "").strip() or None
-        key = st or "__default__"
-        if key in seen_stores:
-            continue
-        seen_stores.add(key)
-        store_list.append(st)
-
+    store_list = stores or [None]  # type: ignore
     out: list[dict] = []
-    if len(store_list) <= 1:
-        store_list = store_list or [None]
+    for st in store_list:
         try:
-            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=store_list[0], include_closed=include_closed)
+            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
             for o in (orders or []):
-                o["store"] = store_list[0] or "default"
-            out.extend(orders)
-        except Exception:
-            pass
-        return out
-
-    try:
-        max_workers = max(1, int(os.getenv("SHOPIFY_UTM_ORDER_STORE_WORKERS", "4") or "4"))
-    except Exception:
-        max_workers = 4
-    max_workers = min(max_workers, len(store_list))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_store = {
-            pool.submit(
-                list_orders_with_utms_processed,
-                processed_min_date,
-                processed_max_date,
-                store=st,
-                include_closed=include_closed,
-            ): st
-            for st in store_list
-        }
-        for fut in as_completed(future_to_store):
-            st = future_to_store[fut]
-            try:
-                orders = fut.result() or []
-            except Exception:
-                continue
-            for o in orders:
                 o["store"] = st or "default"
             out.extend(orders)
+        except Exception:
+            continue
     return out
 
 
@@ -1903,7 +1800,7 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
       }
     """
     try:
-        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json?fields=id,options,variants")
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
         p = (pdata or {}).get("product") or {}
     except Exception:
         return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
@@ -2066,69 +1963,6 @@ def count_paid_orders_by_title(title_contains: str, created_at_min: str, created
     return total
 
 
-def _count_orders_by_product_search(
-    numeric_id: str,
-    processed_min_date: str,
-    processed_max_date: str,
-    *,
-    store: str | None = None,
-    include_closed: bool = False,
-) -> int:
-    """Count orders (any financial status, excluding cancelled) matching product_id.
-
-    Uses Shopify's GraphQL `orders` connection with a search query, which is
-    indexed by product_id and far faster than scanning the REST orders feed.
-    """
-    ident = str(numeric_id or "").strip()
-    if not ident.isdigit():
-        return 0
-    parts = [
-        f'product_id:"{ident}"',
-        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")',
-    ]
-    # status:open mirrors REST status=open; status:any (include_closed) -> no filter
-    if not include_closed:
-        parts.append('status:open')
-    # Exclude cancelled to match REST behaviour
-    parts.append('-cancelled_at:*')
-    query = " ".join(parts)
-    gql = """
-    query OrdersForProduct($query: String!, $first: Int!, $after: String) {
-      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
-        edges { cursor node { id } }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-    """
-    total = 0
-    after = None
-    seen: set[str] = set()
-    _t0 = time.time()
-    _pages = 0
-    while True:
-        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
-        conn = (data or {}).get("orders") or {}
-        edges = conn.get("edges") or []
-        _pages += 1
-        for edge in edges:
-            oid = str(((edge or {}).get("node") or {}).get("id") or "")
-            if oid and oid not in seen:
-                seen.add(oid)
-                total += 1
-        page_info = conn.get("pageInfo") or {}
-        if not page_info.get("hasNextPage"):
-            break
-        after = page_info.get("endCursor")
-        if not after:
-            break
-    _perf_log.info(
-        "orders_search.one store=%s pid=%s window=%s..%s pages=%d total=%d elapsed_ms=%d",
-        store, ident, processed_min_date, processed_max_date,
-        _pages, total, int((time.time() - _t0) * 1000),
-    )
-    return total
-
-
 def count_paid_orders_by_product_search(
     numeric_id: str,
     processed_min_date: str,
@@ -2163,13 +1997,10 @@ def count_paid_orders_by_product_search(
     total = 0
     after = None
     seen: set[str] = set()
-    _t0 = time.time()
-    _pages = 0
     while True:
         data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
         conn = (data or {}).get("orders") or {}
         edges = conn.get("edges") or []
-        _pages += 1
         for edge in edges:
             oid = str(((edge or {}).get("node") or {}).get("id") or "")
             if oid and oid not in seen:
@@ -2181,11 +2012,6 @@ def count_paid_orders_by_product_search(
         after = page_info.get("endCursor")
         if not after:
             break
-    _perf_log.info(
-        "paid_search.done store=%s pid=%s window=%s..%s pages=%d total=%d elapsed_ms=%d",
-        store, ident, processed_min_date, processed_max_date,
-        _pages, total, int((time.time() - _t0) * 1000),
-    )
     return total
 
 
@@ -2218,47 +2044,24 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     # for product_id + processed_at + financial_status filters and can find
     # historical paid orders that the REST page scan may miss.
     try:
-        _t_search = time.time()
         searched: dict[str, int] = {}
-        keys = list(targets.values())
-        workers = max(1, min(len(keys), int(os.getenv("PTOS_PAID_SEARCH_WORKERS", "8") or "8")))
-
-        def _one(k: str) -> tuple[str, int]:
-            try:
-                return (k, int(count_paid_orders_by_product_search(
-                    k, processed_min_date, processed_max_date, store=store,
-                ) or 0))
-            except Exception:
-                return (k, 0)
-
-        if keys:
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                for fut in as_completed([ex.submit(_one, k) for k in keys]):
-                    try:
-                        k, v = fut.result()
-                        searched[k] = v
-                    except Exception:
-                        continue
+        for key in targets.values():
+            searched[key] = count_paid_orders_by_product_search(
+                key,
+                processed_min_date,
+                processed_max_date,
+                store=store,
+            )
         for key, val in searched.items():
             out[key] = int(val or 0)
-        _nonzero = sum(1 for v in searched.values() if int(v or 0) > 0)
-        _perf_log.info(
-            "paid_search.batch store=%s ids=%d workers=%d nonzero=%d elapsed_ms=%d window=%s..%s",
-            store, len(keys), workers, _nonzero,
-            int((time.time() - _t_search) * 1000),
-            processed_min_date, processed_max_date,
-        )
         if any(int(v or 0) > 0 for v in searched.values()):
             targets = {tid: key for tid, key in targets.items() if int(out.get(key, 0) or 0) <= 0}
             if not targets:
                 return out
-    except Exception as e:
-        _perf_log.warning("paid_search.batch_failed store=%s err=%s", store, e)
+    except Exception:
+        pass
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
-    _t_rest = time.time()
-    _pages = 0
-    _orders_scanned = 0
     from urllib.parse import urlencode
     base_path = "/orders.json"
     params = {
@@ -2280,8 +2083,6 @@ def count_paid_orders_by_product_or_variant_processed_batch(
         except Exception:
             data = {}
         orders = (data or {}).get("orders") or []
-        _pages += 1
-        _orders_scanned += len(orders)
         for o in orders:
             try:
                 if o.get("cancelled_at"):
@@ -2311,12 +2112,6 @@ def count_paid_orders_by_product_or_variant_processed_batch(
         page_info = _parse_link_next(link)
         if not page_info:
             break
-    _nonzero = sum(1 for v in out.values() if int(v or 0) > 0)
-    _perf_log.info(
-        "paid_count.done store=%s remaining_ids=%d pages=%d orders_scanned=%d nonzero=%d elapsed_ms=%d window=%s..%s",
-        store, len(targets), _pages, _orders_scanned, _nonzero,
-        int((time.time() - _t_rest) * 1000), processed_min_iso, processed_max_iso,
-    )
     return out
 
 
@@ -2432,26 +2227,21 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
             missing.append(pid)
 
     if not missing:
-        _perf_log.info(
-            "products_brief.cache_hit store=%s ids=%d", store_key, len(ids),
-        )
         return out
 
-    def _fetch_one(pid: str) -> tuple[str, dict, int]:
-        _t = time.time()
+    def _fetch_one(pid: str) -> tuple[str, dict]:
         try:
             data = get_product_brief(str(pid), store=store)
-            return (pid, data, int((time.time() - _t) * 1000))
+            return (pid, data)
         except Exception:
-            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0}, int((time.time() - _t) * 1000))
+            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0})
 
-    _t_all = time.time()
     workers = max(1, min(int(_PRODUCT_BRIEF_WORKERS or 8), 16))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = [ex.submit(_fetch_one, pid) for pid in missing]
         for f in as_completed(futs):
             try:
-                pid, data, _ms = f.result()
+                pid, data = f.result()
             except Exception:
                 continue
             out[pid] = data
@@ -2459,12 +2249,6 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
             except Exception:
                 pass
-    _with_image = sum(1 for v in out.values() if (v or {}).get("image"))
-    _perf_log.info(
-        "products_brief.done store=%s ids=%d missing=%d workers=%d with_image=%d elapsed_ms=%d",
-        store_key, len(ids), len(missing), workers, _with_image,
-        int((time.time() - _t_all) * 1000),
-    )
     return out
 
 

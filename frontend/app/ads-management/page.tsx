@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, startAdsManagementEnrichment, getAdsManagementEnrichmentStatus, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -75,7 +75,6 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
 export default function AdsManagementPage(){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
-  const [enrichmentProgress, setEnrichmentProgress] = useState<{ phase?: string, done?: number, total?: number }|null>(null)
   const loadSeqToken = useRef(0)
   const [datePreset, setDatePreset] = useState<string>('last_7d_incl_today')
   const [customStart, setCustomStart] = useState<string>('')
@@ -191,9 +190,6 @@ export default function AdsManagementPage(){
   const [invHover, setInvHover] = useState<{ pid: string, rect?: DOMRect }|null>(null)
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
-  const invHoverRef = useRef<{ pid: string, rect?: DOMRect }|null>(null)
-  const variantInventoryHoverTimer = useRef<ReturnType<typeof setTimeout>|null>(null)
-  const variantInventoryActiveRef = useRef(0)
 
   const visibleItems = useMemo(()=> {
     if(!ownerFilter) return items || []
@@ -262,7 +258,6 @@ export default function AdsManagementPage(){
 
   function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
   function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
-  function wait(ms: number){ return new Promise(resolve => setTimeout(resolve, ms)) }
 
   function extractNumericId(s?: string|null){
     const n = String(s||'')
@@ -585,7 +580,7 @@ export default function AdsManagementPage(){
     return mergedBriefs
   }
 
-  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean, force?: boolean }){
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
@@ -707,85 +702,113 @@ export default function AdsManagementPage(){
 
       setLoading(false)
 
-      // Phase 2: Server-side Shopify enrichment. The backend persists progress by
-      // request key so orders/images continue loading even when the page is hidden
-      // or reopened later.
-      const ordersToken = ++ordersSeqToken.current
-      const { start, end } = effectiveYmdRange(effPreset)
-      const applyEnrichmentJob = (job: any) => {
-        if(ordersToken !== ordersSeqToken.current || loadToken !== loadSeqToken.current) return false
-        const progress = (job || {}).progress
-        if(progress && job?.status !== 'done' && job?.status !== 'error'){
-          setEnrichmentProgress({
-            phase: String(progress.phase || 'loading'),
-            done: Number(progress.done || 0),
-            total: Number(progress.total || 0),
-          })
-        }
-        const result = (job || {}).result || {}
-        const counts = result.shopify_counts || {}
-        if(counts && Object.keys(counts).length > 0){
-          setShopifyCounts(prev => ({ ...prev, ...counts }))
-          revealZeroSpendCampaigns(counts)
-        }
-        const briefs = result.product_briefs || {}
-        if(briefs && Object.keys(briefs).length > 0){
-          setProductBriefs(prev => ({ ...prev, ...briefs }))
-        }
-        const manual = result.manual_counts || {}
-        if(manual && Object.keys(manual).length > 0){
-          setManualCounts(prev => ({ ...prev, ...manual }))
-        }
-        if(typeof result.store_orders_total === 'number'){
-          setStoreOrdersTotal(Number(result.store_orders_total || 0))
-        }
-        const revealKeys = Array.isArray(result.reveal_campaign_keys) ? result.reveal_campaign_keys : []
-        if(revealKeys.length > 0){
-          const revealSet = new Set(revealKeys.map((x: any) => String(x || '')))
-          const rowsToReveal = zeroSpendCampaigns.filter(row => revealSet.has(rowKeyOf(row)))
-          if(rowsToReveal.length > 0) setItems(prev => mergeCampaignRows(prev, rowsToReveal))
-        }
-        if(job?.status === 'done' || job?.status === 'error'){
-          setEnrichmentProgress(null)
-        }
-        return true
+      const spendingProductIds = productIdsForCampaigns(spendingCampaigns, shaped)
+      const allProductIds = productIdsForCampaigns(rankedAllCampaigns, shaped)
+      const spendingProductIdSet = new Set(spendingProductIds)
+      const idsOrdered = [
+        ...spendingProductIds,
+        ...allProductIds.filter(id => !spendingProductIdSet.has(id)),
+      ]
+      const chunkSize = 4
+
+      if(profitOnly){
+        const briefToken = ++ordersSeqToken.current
+        ;(async()=>{
+          const storeList = uniqueStores([...(effStores.length ? effStores : [primaryStore]), ...ALL_STORES.map(s => s.value)])
+          for(let i = 0; i < spendingProductIds.length; i += chunkSize){
+            if(briefToken !== ordersSeqToken.current) break
+            const chunk = spendingProductIds.slice(i, i + chunkSize)
+            const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st })))
+            if(briefToken !== ordersSeqToken.current) break
+            const mergedBriefs = mergeBriefResults(pbResults)
+            if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
+          }
+        })()
+        return
       }
 
+      // Phase 2: Progressive Shopify data loading in chunks of 4
+      const ordersToken = ++ordersSeqToken.current
+      const { start, end } = effectiveYmdRange(effPreset)
+
+      // Fire store-total in background for each store
       ;(async()=>{
         try{
-          const enrichmentStoresRaw = profitOnly
-            ? uniqueStores([...(effStores.length ? effStores : [primaryStore]), ...ALL_STORES.map(s => s.value)])
-            : uniqueStores(effStores.length ? effStores : [primaryStore])
-          const enrichmentStores = enrichmentStoresRaw.map(st => String(st || '').trim()).filter(Boolean)
-          setEnrichmentProgress({ phase: 'starting', done: 0, total: 1 })
-          const first = await startAdsManagementEnrichment({
-            campaigns: rankedAllCampaigns,
-            mappings: shaped,
-            stores: enrichmentStores.length ? enrichmentStores : [primaryStore],
-            primary_store: primaryStore,
-            start,
-            end,
-            profit_only: profitOnly,
-            force: !!opts?.force,
-          })
-          if(!applyEnrichmentJob(first)) return
-          const jobId = String(first?.job_id || '')
-          if(!jobId || first?.status === 'done' || first?.status === 'error') return
-
-          let delay = 300
-          for(let attempt = 0; attempt < 900; attempt++){
-            await wait(delay)
-            if(ordersToken !== ordersSeqToken.current || loadToken !== loadSeqToken.current) return
-            const job = await getAdsManagementEnrichmentStatus(jobId).catch(() => null)
-            if(!job) continue
-            if(!applyEnrichmentJob(job)) return
-            if(job.status === 'done' || job.status === 'error') return
-            delay = Math.min(5000, delay + 250)
+          const totals = await Promise.allSettled(
+            (effStores.length ? effStores : ['irrakids']).map(st =>
+              shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
+            )
+          )
+          if(ordersToken !== ordersSeqToken.current) return
+          let sum = 0
+          for(const t of totals){
+            if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
           }
+          setStoreOrdersTotal(sum)
         }catch{
-          if(ordersToken === ordersSeqToken.current && loadToken === loadSeqToken.current) setEnrichmentProgress(null)
+          if(ordersToken !== ordersSeqToken.current) return
+          setStoreOrdersTotal(0)
         }
       })()
+
+      // Load product briefs + order counts in parallel chunks of 4
+      const countsById: Record<string, number> = {}
+
+      for(let i = 0; i < idsOrdered.length; i += chunkSize){
+        if(ordersToken !== ordersSeqToken.current) break
+        const chunk = idsOrdered.slice(i, i + chunkSize)
+
+        // Fetch counts first. Product briefs are only loaded for campaigns with spend,
+        // or zero-spend campaigns once Shopify confirms at least one order.
+        const storeList = effStores.length ? effStores : [primaryStore]
+        const ocResults = await Promise.allSettled(storeList.map(st => shopifyOrdersCountByTitle({ names: chunk, start, end, store: st, include_closed: true, date_field: 'processed' })))
+        if(ordersToken !== ordersSeqToken.current) break
+
+        // Merge order counts (sum across stores)
+        const next: Record<string, number> = {}
+        for(const id of chunk) next[id] = 0
+        for(const ocRes of ocResults){
+          if(ocRes.status === 'fulfilled'){
+            const map = ((ocRes.value as any)?.data) || {}
+            for(const id of chunk) next[id] = (next[id] || 0) + (Number(map[id] ?? 0) || 0)
+          }
+        }
+        for(const id of chunk) countsById[id] = next[id]
+        setShopifyCounts(prev => ({ ...prev, ...next }))
+        revealZeroSpendCampaigns(countsById)
+
+        const briefChunk = chunk.filter(id => spendingProductIdSet.has(id) || Number(next[id] || 0) > 0)
+        if(briefChunk.length > 0){
+          const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: briefChunk, store: st })))
+          if(ordersToken !== ordersSeqToken.current) break
+          const mergedBriefs = mergeBriefResults(pbResults)
+          if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
+        }
+      }
+
+      // Phase 3: Manual mapped rows (collections)
+      for(const row of rankedAllCampaigns){
+        if(ordersToken !== ordersSeqToken.current) break
+        const rowKey = (row.campaign_id || row.name || '') as any
+        const rowStore = (row as any)._store || primaryStore
+        try{
+          const conf = shaped[rowKey]
+          if(!conf) continue
+          if(!conf.id || !/^\d+$/.test(conf.id)) continue
+          if(conf.kind === 'product'){
+            const count = Number(countsById[conf.id] ?? 0) || 0
+            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
+          } else {
+            const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+            const count = Number(((oc as any)?.data||{})?.count ?? 0)
+            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
+            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
+          }
+        }catch{
+          setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
+        }
+      }
 
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
@@ -1248,28 +1271,8 @@ export default function AdsManagementPage(){
     return sortDir==='asc'? <ArrowUp className="w-3.5 h-3.5"/> : <ArrowDown className="w-3.5 h-3.5"/>
   }
 
-  function showInventoryHover(pid: string, rect: DOMRect){
-    invHoverRef.current = { pid, rect }
-    setInvHover({ pid, rect })
-    if(variantInventoryHoverTimer.current) clearTimeout(variantInventoryHoverTimer.current)
-    variantInventoryHoverTimer.current = setTimeout(() => {
-      if(invHoverRef.current?.pid === pid) loadVariantInventory(pid)
-    }, 350)
-  }
-
-  function hideInventoryHover(){
-    invHoverRef.current = null
-    if(variantInventoryHoverTimer.current){
-      clearTimeout(variantInventoryHoverTimer.current)
-      variantInventoryHoverTimer.current = null
-    }
-    setInvHover(null)
-  }
-
   async function loadVariantInventory(pid: string){
     if(variantInventoryCache[pid] || variantInventoryLoading[pid]) return
-    if(variantInventoryActiveRef.current >= 2) return
-    variantInventoryActiveRef.current += 1
     setVariantInventoryLoading(prev => ({ ...prev, [pid]: true }))
     try{
       // Try all selected stores in parallel – use the first one that returns real data
@@ -1292,10 +1295,7 @@ export default function AdsManagementPage(){
         setVariantInventoryCache(prev => ({ ...prev, [pid]: best }))
       }
     }catch{}
-    finally{
-      variantInventoryActiveRef.current = Math.max(0, variantInventoryActiveRef.current - 1)
-      setVariantInventoryLoading(prev => ({ ...prev, [pid]: false }))
-    }
+    finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
   }
 
   function InventoryTooltip(){
@@ -1312,7 +1312,7 @@ export default function AdsManagementPage(){
         className="fixed z-[999] bg-white border border-slate-200 rounded-lg shadow-xl p-2 text-xs"
         style={{ top, left, maxWidth: '420px', maxHeight: '320px', overflowY: 'auto' }}
         onMouseEnter={() => {}} // keep tooltip visible
-        onMouseLeave={hideInventoryHover}
+        onMouseLeave={() => setInvHover(null)}
       >
         {loading && <div className="text-slate-400 py-2 px-3">Loading variants…</div>}
         {!loading && !data && <div className="text-slate-400 py-2 px-3">No data</div>}
@@ -1634,7 +1634,7 @@ export default function AdsManagementPage(){
               </button>
             )
           })()}
-          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts, force: true })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
+          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
           </button>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm">Home</Link>
@@ -1654,12 +1654,6 @@ export default function AdsManagementPage(){
               <span className="opacity-70">{datePreset==='custom'? `${customStart||'—'}→${customEnd||'—'}` : presetLabel(datePreset)}</span>
               <span className="opacity-50">•</span>
               <span className="opacity-70">{selectedStores.join(', ')||'—'}</span>
-              {enrichmentProgress && (
-                <>
-                  <span className="opacity-50">•</span>
-                  <span className="font-semibold">Shopify {enrichmentProgress.phase || 'loading'} {enrichmentProgress.total ? `${enrichmentProgress.done||0}/${enrichmentProgress.total}` : ''}</span>
-                </>
-              )}
               {ownerFilter && (
                 <>
                   <span className="opacity-50">•</span>
@@ -2094,9 +2088,10 @@ export default function AdsManagementPage(){
                               <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                                 onMouseEnter={(e) => {
                                   const rect = e.currentTarget.getBoundingClientRect()
-                                  showInventoryHover(pid, rect)
+                                  setInvHover({ pid, rect })
+                                  loadVariantInventory(pid)
                                 }}
-                                onMouseLeave={hideInventoryHover}
+                                onMouseLeave={() => setInvHover(null)}
                               >
                                 {inv==null ? <span className="text-slate-400">—</span> : (
                                   <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
@@ -2356,24 +2351,22 @@ export default function AdsManagementPage(){
                                 const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
                                 const items = ((res as any)?.data)||[]
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
-                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
-                                // Load Shopify-attributed orders per ad set without blocking the ad-set rows.
-                                void (async()=>{
-                                  try{
-                                    const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
-                                    setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
-                                    const rowStore = (c as any)._store || store
-                                    const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined, items)
-                                    const mapping = ((ord as any)?.data)||{}
-                                    setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
-                                  }catch{
-                                    setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
-                                  }finally{
-                                    setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
-                                  }
-                                })()
+                                // Load Shopify-attributed orders per ad set for this campaign
+                                try{
+                                  const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
+                                  const rowStore = (c as any)._store || store
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined)
+                                  const mapping = ((ord as any)?.data)||{}
+                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
+                                }catch{
+                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
+                                }finally{
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
+                                }
                               }catch{
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
+                              }finally{
                                 setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
                               }
                             }
@@ -2600,10 +2593,11 @@ export default function AdsManagementPage(){
                               onMouseEnter={(e) => {
                                 if(pidSelf){
                                   const rect = e.currentTarget.getBoundingClientRect()
-                                  showInventoryHover(pidSelf, rect)
+                                  setInvHover({ pid: pidSelf, rect })
+                                  loadVariantInventory(pidSelf)
                                 }
                               }}
-                              onMouseLeave={hideInventoryHover}
+                              onMouseLeave={() => setInvHover(null)}
                             >
                               {inv===null || inv===undefined ? (
                                 <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
@@ -2866,9 +2860,9 @@ export default function AdsManagementPage(){
                                         <div className="text-right">{a.purchases||0}</div>
                                         <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
                                         <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
-                                        <div className="text-right">{adsetOrdersLoading[cid] ? '...' : utmOrders}</div>
+                                        <div className="text-right">{utmOrders}</div>
                                         <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
-                                          {adsetOrdersLoading[cid] ? '-' : (utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-')}
+                                          {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
                                         </div>
                                         <div className="flex items-center justify-end gap-2">
                                           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${acolor}`}>{aactive? 'Active' : 'Paused'}</span>

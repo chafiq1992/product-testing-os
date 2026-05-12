@@ -633,44 +633,6 @@ export async function fetchAdsManagementBundle(payload: {
   })
 }
 
-export type AdsManagementEnrichmentJob = {
-  job_id?: string,
-  status?: 'pending'|'running'|'done'|'error'|'not_found',
-  progress?: { done?: number, total?: number, phase?: string },
-  result?: {
-    shopify_counts?: Record<string, number>,
-    product_briefs?: Record<string, { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null }>,
-    manual_counts?: Record<string, number>,
-    store_orders_total?: number|null,
-    reveal_campaign_keys?: string[],
-  },
-  error?: string,
-  updated_at?: string,
-}
-
-export async function startAdsManagementEnrichment(payload: {
-  campaigns: MetaCampaignRow[],
-  mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
-  stores?: string[],
-  primary_store?: string,
-  start: string,
-  end: string,
-  profit_only?: boolean,
-  force?: boolean,
-}): Promise<AdsManagementEnrichmentJob> {
-  const url = `${base}/api/ads-management/enrichment`
-  const {data} = await axios.post(url, payload, { timeout: 15000 })
-  return data as AdsManagementEnrichmentJob
-}
-
-export async function getAdsManagementEnrichmentStatus(jobId: string): Promise<AdsManagementEnrichmentJob> {
-  const url = `${base}/api/ads-management/enrichment/${encodeURIComponent(jobId)}`
-  // The backend drives ~4s of enrichment work synchronously per poll
-  // (Cloud Run only allocates CPU during requests), so allow up to 15s.
-  const {data} = await axios.get(url, { timeout: 15000 })
-  return data as AdsManagementEnrichmentJob
-}
-
 // Meta Ads: list active campaigns with insights
 export type MetaCampaignRow = {
   campaign_id?: string,
@@ -775,7 +737,7 @@ export type AttributedOrder = {
   store?: string,
 }
 
-export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[], adsets?: Pick<MetaAdsetRow, 'adset_id'|'name'>[]){
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[]){
   const params: string[] = []
   if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
   if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
@@ -785,12 +747,6 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
   } else {
     const s = store ?? selectedStore()
     if(s) params.push(`store=${encodeURIComponent(s)}`)
-  }
-  if(adsets && adsets.length > 0){
-    const compact = adsets
-      .map((a)=> ({ adset_id: a?.adset_id || '', name: a?.name || '' }))
-      .filter((a)=> a.adset_id || a.name)
-    if(compact.length > 0) params.push(`adsets=${encodeURIComponent(JSON.stringify(compact))}`)
   }
   const qp = params.length? `?${params.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`
