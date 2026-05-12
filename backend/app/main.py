@@ -765,6 +765,72 @@ async def api_shopify_debug_order_search(
         return {"error": str(e), "data": {}}
 
 
+@app.get("/api/shopify/debug/utm_orders")
+async def api_shopify_debug_utm_orders(
+    store: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    campaign_id: str | None = None,
+):
+    """Safe UTM attribution probe. Does not expose customer PII or tokens."""
+    store = _canonical_store_label(store)
+    try:
+        from datetime import timedelta
+        today = datetime.utcnow().date()
+        s_date = (start or str(today - timedelta(days=7))).split("T")[0]
+        e_date = (end or str(today)).split("T")[0]
+    except Exception:
+        s_date = (start or "").split("T")[0]
+        e_date = (end or "").split("T")[0]
+
+    def _probe():
+        from app.integrations.shopify_client import list_orders_with_utms_processed_graphql, list_orders_with_utms_processed
+        rows = []
+        source = "graphql"
+        try:
+            rows = list_orders_with_utms_processed_graphql(s_date, e_date, store=store, include_closed=True)
+        except Exception as e:
+            source = f"rest_fallback:{e}"
+            rows = list_orders_with_utms_processed(s_date, e_date, store=store, include_closed=True)
+        cid = str(campaign_id or "").strip()
+        with_utm = []
+        matched = []
+        for o in rows or []:
+            utm = (o or {}).get("utm") or {}
+            has_utm = bool(utm or (o or {}).get("campaign_id") or (o or {}).get("adset_id") or (o or {}).get("ad_id"))
+            if has_utm:
+                item = {
+                    "name": (o or {}).get("name"),
+                    "processed_at": (o or {}).get("processed_at"),
+                    "campaign_id": (o or {}).get("campaign_id"),
+                    "adset_id": (o or {}).get("adset_id"),
+                    "ad_id": (o or {}).get("ad_id"),
+                    "utm": utm,
+                    "landing_site": (o or {}).get("landing_site"),
+                    "referring_site": (o or {}).get("referring_site"),
+                }
+                with_utm.append(item)
+                if cid and str(item.get("campaign_id") or "") == cid:
+                    matched.append(item)
+        return {
+            "source": source,
+            "store": store,
+            "start": s_date,
+            "end": e_date,
+            "rows_scanned": len(rows or []),
+            "rows_with_utm": len(with_utm),
+            "campaign_id": cid or None,
+            "campaign_matches": len(matched),
+            "sample_with_utm": with_utm[:20],
+            "sample_campaign_matches": matched[:20],
+        }
+
+    try:
+        return {"data": await run_in_threadpool(_probe)}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 def _oauth_enabled_store_labels() -> set[str]:
     raw = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
     if not raw:
