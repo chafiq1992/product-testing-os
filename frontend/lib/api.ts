@@ -790,6 +790,48 @@ export async function shopifyProductsBrief(payload:{ ids: string[], store?: stri
   })
 }
 
+export type AdsShopifyHydrateProduct = {
+  image?: string|null,
+  total_available?: number,
+  zero_variants?: number,
+  zero_sizes?: number,
+  price?: number|null,
+  orders?: number,
+  cached?: boolean,
+  refreshing?: boolean,
+}
+
+export async function shopifyHydrateProducts(payload:{
+  product_ids: string[],
+  start: string,
+  end: string,
+  store?: string,
+  stores?: string[],
+  include?: Array<'brief'|'orders'>,
+  cache_mode?: 'stale_then_refresh',
+}){
+  const body = {
+    ...payload,
+    store: payload.store ?? selectedStore(),
+    include: payload.include ?? ['brief', 'orders'],
+    cache_mode: payload.cache_mode ?? 'stale_then_refresh',
+  }
+  const url = `${base}/api/ads-management/shopify-hydrate`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { products: Record<string, AdsShopifyHydrateProduct> }, error?: string }
+  })
+}
+
+export async function warmShopifyUtmOrders(payload:{ start: string, end: string, store?: string, stores?: string[] }){
+  const body = { ...payload, store: payload.store ?? selectedStore() }
+  const url = `${base}/api/ads-management/utm-orders/warm`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { ok?: boolean, queued?: boolean, stores?: string[], error?: string }
+  })
+}
+
 export async function shopifyProductVariantsInventory(payload:{ product_id: string, store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const url = `${base}/api/shopify/product_variants_inventory`

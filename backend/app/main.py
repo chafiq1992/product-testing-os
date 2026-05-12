@@ -1529,6 +1529,277 @@ async def api_products_brief(req: ProductsBriefRequest):
         return {"error": str(e), "data": {}}
 
 
+_ADS_MGMT_PRODUCT_ORDERS_CACHE_TTL_S = int(os.getenv("PTOS_ADS_MGMT_PRODUCT_ORDERS_CACHE_TTL_S", "300") or "300")
+_ADS_MGMT_PRODUCT_BRIEF_CACHE_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_DB_TTL_S", "1800") or "1800")
+
+
+def _ads_product_cache_key(kind: str, product_id: str) -> str:
+    return f"shopify_{kind}:{str(product_id or '').strip()}"
+
+
+def _ads_orders_cache_key(product_id: str, start: str, end: str, include_closed: bool, date_field: str) -> str:
+    return _cache_key("ads_mgmt_product_orders", {
+        "product_id": str(product_id or "").strip(),
+        "start": start,
+        "end": end,
+        "include_closed": include_closed,
+        "date_field": date_field,
+    })
+
+
+def _ads_get_app_cache(store: str | None, key: str, ttl_s: int) -> tuple[object | None, bool, bool]:
+    """Return (data, cached, fresh). Fresh means within product/order TTL."""
+    try:
+        rec = db.get_app_setting(_canonical_store_label(store), key) or {}
+        if not isinstance(rec, dict):
+            return None, False, False
+        ts = float(rec.get("ts") or 0)
+        data = rec.get("data")
+        if ts <= 0:
+            return data, data is not None, False
+        age = time.time() - ts
+        fresh = age <= int(ttl_s or 0)
+        return data, data is not None, fresh
+    except Exception:
+        return None, False, False
+
+
+def _ads_set_orders_cache(store: str | None, product_id: str, start: str, end: str, include_closed: bool, date_field: str, count: int) -> None:
+    try:
+        db.set_app_setting(
+            _canonical_store_label(store),
+            _ads_orders_cache_key(product_id, start, end, include_closed, date_field),
+            {"ts": time.time(), "data": int(count or 0)},
+        )
+    except Exception:
+        pass
+
+
+def _ads_cached_briefs_for_ids(store_list: list[str | None], product_ids: list[str]) -> tuple[dict[str, dict], set[str], set[str]]:
+    out: dict[str, dict] = {}
+    cached_ids: set[str] = set()
+    stale_ids: set[str] = set()
+    for pid in product_ids:
+        merged: dict[str, Any] = {}
+        saw_cache = False
+        all_fresh = True
+        for st in store_list:
+            data, cached, fresh = _ads_get_app_cache(st, _ads_product_cache_key("brief", pid), _ADS_MGMT_PRODUCT_BRIEF_CACHE_TTL_S)
+            if cached and isinstance(data, dict):
+                saw_cache = True
+                all_fresh = all_fresh and fresh
+                if not merged:
+                    merged = dict(data)
+                elif not merged.get("image") and data.get("image"):
+                    merged = dict(data)
+            if not cached:
+                all_fresh = False
+        if saw_cache:
+            out[pid] = merged
+            cached_ids.add(pid)
+            if not all_fresh:
+                stale_ids.add(pid)
+    return out, cached_ids, stale_ids
+
+
+def _ads_cached_order_counts_for_ids(store_list: list[str | None], product_ids: list[str], start: str, end: str, include_closed: bool, date_field: str) -> tuple[dict[str, int], set[str], set[str]]:
+    out: dict[str, int] = {}
+    cached_ids: set[str] = set()
+    stale_ids: set[str] = set()
+    for pid in product_ids:
+        total = 0
+        all_cached = True
+        all_fresh = True
+        for st in store_list:
+            data, cached, fresh = _ads_get_app_cache(st, _ads_orders_cache_key(pid, start, end, include_closed, date_field), _ADS_MGMT_PRODUCT_ORDERS_CACHE_TTL_S)
+            if cached:
+                try:
+                    total += int(data or 0)
+                except Exception:
+                    pass
+                all_fresh = all_fresh and fresh
+            else:
+                all_cached = False
+                all_fresh = False
+        if all_cached:
+            out[pid] = total
+            cached_ids.add(pid)
+            if not all_fresh:
+                stale_ids.add(pid)
+    return out, cached_ids, stale_ids
+
+
+def _ads_refresh_hydrate_sync(store_list: list[str | None], product_ids: list[str], start: str, end: str, include: list[str], include_closed: bool = True, date_field: str = "processed") -> dict[str, dict]:
+    products: dict[str, dict] = {pid: {} for pid in product_ids}
+    ids = [pid for pid in product_ids if pid and pid.isdigit()]
+    if not ids:
+        return products
+
+    if "brief" in include:
+        for st in store_list:
+            try:
+                brief_map = get_products_brief(ids, store=st) or {}
+                for pid, data in (brief_map or {}).items():
+                    if not isinstance(data, dict):
+                        continue
+                    cur = products.setdefault(str(pid), {})
+                    if not cur.get("image") or data.get("image"):
+                        cur.update({
+                            "image": data.get("image"),
+                            "total_available": data.get("total_available"),
+                            "zero_variants": data.get("zero_variants"),
+                            "zero_sizes": data.get("zero_sizes"),
+                            "price": data.get("price"),
+                        })
+            except Exception as e:
+                shopify_logger.warning("ads_mgmt.hydrate_brief_failed store=%s ids=%s err=%s", st, len(ids), e)
+
+    if "orders" in include:
+        s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+        e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
+        for st in store_list:
+            counts: dict[str, int] = {}
+            try:
+                if date_field == "processed":
+                    counts = count_orders_by_product_or_variant_processed_batch(ids, s_date, e_date, store=st, include_closed=include_closed) or {}
+                else:
+                    for pid in ids:
+                        counts[pid] = count_orders_by_title(pid, start, end, store=st, include_closed=include_closed)
+            except Exception as e:
+                shopify_logger.warning("ads_mgmt.hydrate_orders_batch_failed store=%s ids=%s err=%s", st, len(ids), e)
+                counts = {}
+                for pid in ids:
+                    try:
+                        counts[pid] = count_orders_by_product_or_variant_processed(pid, s_date, e_date, store=st, include_closed=include_closed)
+                    except Exception:
+                        counts[pid] = 0
+            for pid in ids:
+                count = int((counts or {}).get(pid, 0) or 0)
+                _ads_set_orders_cache(st, pid, start, end, include_closed, date_field, count)
+                products.setdefault(pid, {})["orders"] = int(products.setdefault(pid, {}).get("orders") or 0) + count
+
+    return products
+
+
+class AdsManagementShopifyHydrateRequest(BaseModel):
+    store: Optional[str] = None
+    stores: Optional[list[str]] = None
+    start: str
+    end: str
+    product_ids: list[str]
+    include: Optional[list[str]] = None
+    cache_mode: Optional[str] = "stale_then_refresh"
+
+
+@app.post("/api/ads-management/shopify-hydrate")
+async def api_ads_management_shopify_hydrate(req: AdsManagementShopifyHydrateRequest, background_tasks: BackgroundTasks):
+    started = time.perf_counter()
+    try:
+        include = [str(x or "").strip().lower() for x in (req.include or ["brief", "orders"]) if str(x or "").strip()]
+        include = [x for x in include if x in {"brief", "orders"}] or ["brief", "orders"]
+        product_ids = []
+        seen: set[str] = set()
+        for raw in (req.product_ids or []):
+            pid = str(raw or "").strip()
+            if not pid or not pid.isdigit() or pid in seen:
+                continue
+            seen.add(pid)
+            product_ids.append(pid)
+            if len(product_ids) >= 25:
+                break
+        if not product_ids:
+            return {"data": {"products": {}}}
+
+        store_list = [_canonical_store_label(s) for s in (req.stores or []) if str(s or "").strip()]
+        if not store_list:
+            store_list = [_canonical_store_label(req.store) or "irrakids"]
+        include_closed = True
+        date_field = "processed"
+
+        products: dict[str, dict] = {pid: {"cached": False, "refreshing": False} for pid in product_ids}
+        stale_ids: set[str] = set()
+        missing_ids: set[str] = set(product_ids)
+
+        if "brief" in include:
+            briefs, cached_brief_ids, stale_brief_ids = _ads_cached_briefs_for_ids(store_list, product_ids)
+            stale_ids.update(stale_brief_ids)
+            for pid, data in briefs.items():
+                products.setdefault(pid, {"cached": False, "refreshing": False}).update(data)
+                products[pid]["cached"] = True
+            missing_ids -= cached_brief_ids
+
+        if "orders" in include:
+            counts, cached_order_ids, stale_order_ids = _ads_cached_order_counts_for_ids(store_list, product_ids, req.start, req.end, include_closed, date_field)
+            stale_ids.update(stale_order_ids)
+            for pid, count in counts.items():
+                products.setdefault(pid, {"cached": False, "refreshing": False})["orders"] = int(count or 0)
+                products[pid]["cached"] = True
+            if "brief" not in include:
+                missing_ids -= cached_order_ids
+            else:
+                missing_ids = {pid for pid in product_ids if not (pid in products and "orders" in products[pid] and ("image" in products[pid] or "total_available" in products[pid]))}
+
+        to_fetch = [pid for pid in product_ids if pid in missing_ids]
+        if to_fetch:
+            fresh = await asyncio.wait_for(
+                run_in_threadpool(_ads_refresh_hydrate_sync, store_list, to_fetch, req.start, req.end, include, include_closed, date_field),
+                timeout=35,
+            )
+            for pid, data in (fresh or {}).items():
+                products.setdefault(pid, {"cached": False, "refreshing": False}).update(data or {})
+                products[pid]["cached"] = False
+                products[pid]["refreshing"] = False
+
+        stale_to_refresh = [pid for pid in product_ids if pid in stale_ids and pid not in set(to_fetch)]
+        if stale_to_refresh and (req.cache_mode or "").lower() == "stale_then_refresh":
+            for pid in stale_to_refresh:
+                products.setdefault(pid, {"cached": True, "refreshing": True})["refreshing"] = True
+            background_tasks.add_task(_ads_refresh_hydrate_sync, store_list, stale_to_refresh, req.start, req.end, include, include_closed, date_field)
+
+        shopify_logger.info(
+            "ads_mgmt.shopify_hydrate stores=%s ids=%s cached=%s fetch=%s stale_refresh=%s elapsed_ms=%s",
+            ",".join([str(s or "") for s in store_list]),
+            len(product_ids),
+            sum(1 for v in products.values() if v.get("cached")),
+            len(to_fetch),
+            len(stale_to_refresh),
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"data": {"products": products}}
+    except asyncio.TimeoutError:
+        shopify_logger.warning("ads_mgmt.shopify_hydrate timeout ids=%s elapsed_ms=%s", len(getattr(req, "product_ids", []) or []), int((time.perf_counter() - started) * 1000))
+        return {"error": "ads_mgmt_shopify_hydrate_timeout", "data": {"products": {}}}
+    except Exception as e:
+        return {"error": str(e), "data": {"products": {}}}
+
+
+class AdsManagementUtmWarmRequest(BaseModel):
+    store: Optional[str] = None
+    stores: Optional[list[str]] = None
+    start: str
+    end: str
+
+
+def _ads_warm_utm_orders_sync(store_list: list[str | None], start: str, end: str) -> None:
+    for st in store_list:
+        try:
+            list_orders_with_utms_processed(start, end, store=st, include_closed=True)
+        except Exception as e:
+            shopify_logger.warning("ads_mgmt.utm_warm_failed store=%s err=%s", st, e)
+
+
+@app.post("/api/ads-management/utm-orders/warm")
+async def api_ads_management_utm_orders_warm(req: AdsManagementUtmWarmRequest, background_tasks: BackgroundTasks):
+    try:
+        store_list = [_canonical_store_label(s) for s in (req.stores or []) if str(s or "").strip()]
+        if not store_list:
+            store_list = [_canonical_store_label(req.store) or "irrakids"]
+        background_tasks.add_task(_ads_warm_utm_orders_sync, store_list, req.start, req.end)
+        return {"ok": True, "queued": True, "stores": store_list}
+    except Exception as e:
+        return {"error": str(e), "queued": False}
+
+
 class ProductVariantsInventoryRequest(BaseModel):
     product_id: str
     store: Optional[str] = None

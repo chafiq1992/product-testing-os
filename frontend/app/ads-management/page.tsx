@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -27,6 +27,8 @@ function normalizeStoreList(values?: string[]): string[]{
 type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
+const SHOPIFY_HYDRATE_BATCH_SIZE = 5
+const SHOPIFY_HYDRATE_CONCURRENCY = 2
 
 function MultiCheckDropdown({ label, options, selected, onChange, className }: {
   label: string,
@@ -135,6 +137,21 @@ export default function AdsManagementPage(){
   const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, price?: number|null }>>({})
+  const [productHydrating, setProductHydrating] = useState<Record<string, { brief?: boolean, orders?: boolean }>>({})
+  const [visibleProductIds, setVisibleProductIds] = useState<Record<string, true>>({})
+  const hydratedProductIdsRef = useRef<Set<string>>(new Set())
+  const hydratingProductIdsRef = useRef<Set<string>>(new Set())
+  const hydrateContextRef = useRef<{
+    token: number,
+    start: string,
+    end: string,
+    storeList: string[],
+    primaryStore: string,
+    campaigns: MetaCampaignRow[],
+    mappings: Record<string, CampaignMapping>,
+    profitOnly: boolean,
+  } | null>(null)
+  const rowObserverRef = useRef<IntersectionObserver|null>(null)
   const [adAccountName, setAdAccountName] = useState<string>('')
   const [notes, setNotes] = useState<Record<string, string>>(()=>{
     try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
@@ -609,6 +626,105 @@ export default function AdsManagementPage(){
     return mergedBriefs
   }
 
+  function mergeHydratedProducts(products: Record<string, any>, campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>){
+    const nextBriefs: Record<string, any> = {}
+    const nextCounts: Record<string, number> = {}
+    for(const [pid, data] of Object.entries(products || {})){
+      if(!data || typeof data !== 'object') continue
+      if('image' in data || 'total_available' in data || 'zero_variants' in data || 'zero_sizes' in data || 'price' in data){
+        nextBriefs[pid] = {
+          image: data.image ?? null,
+          total_available: Number(data.total_available ?? 0),
+          zero_variants: Number(data.zero_variants ?? 0),
+          zero_sizes: typeof data.zero_sizes === 'number' ? Number(data.zero_sizes || 0) : undefined,
+          price: data.price ?? null,
+        }
+      }
+      if(typeof data.orders === 'number') nextCounts[pid] = Number(data.orders || 0)
+    }
+    if(Object.keys(nextBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...nextBriefs }))
+    if(Object.keys(nextCounts).length > 0){
+      setShopifyCounts(prev => ({ ...prev, ...nextCounts }))
+      const manualNext: Record<string, number> = {}
+      for(const row of campaigns || []){
+        const rowKey = String(row.campaign_id || row.name || '')
+        const manual = mappings[rowKey]
+        if(manual && manual.kind === 'product' && nextCounts[String(manual.id)] != null){
+          manualNext[rowKey] = nextCounts[String(manual.id)]
+        }
+      }
+      if(Object.keys(manualNext).length > 0) setManualCounts(prev => ({ ...prev, ...manualNext }))
+    }
+    return nextCounts
+  }
+
+  function markProductsHydrating(ids: string[], loading: boolean){
+    setProductHydrating(prev => {
+      const next = { ...prev }
+      for(const id of ids){
+        if(loading) next[id] = { brief: true, orders: true }
+        else delete next[id]
+      }
+      return next
+    })
+  }
+
+  async function runProductHydrationQueue(
+    idsInput: string[],
+    context: NonNullable<typeof hydrateContextRef.current>,
+    revealZeroSpendCampaigns?: (countsById: Record<string, number>) => void,
+    countsById?: Record<string, number>,
+  ){
+    const token = context.token
+    const ids = idsInput
+      .map(id => String(id || '').trim())
+      .filter((id, idx, arr) => id && /^\d+$/.test(id) && arr.indexOf(id) === idx)
+      .filter(id => !hydratedProductIdsRef.current.has(id) && !hydratingProductIdsRef.current.has(id))
+    if(ids.length === 0) return
+
+    let cursor = 0
+    const nextChunk = () => {
+      const chunk = ids.slice(cursor, cursor + SHOPIFY_HYDRATE_BATCH_SIZE)
+      cursor += SHOPIFY_HYDRATE_BATCH_SIZE
+      for(const id of chunk) hydratingProductIdsRef.current.add(id)
+      return chunk
+    }
+
+    const worker = async () => {
+      while(token === ordersSeqToken.current){
+        const chunk = nextChunk()
+        if(chunk.length === 0) break
+        markProductsHydrating(chunk, true)
+        try{
+          const res = await shopifyHydrateProducts({
+            product_ids: chunk,
+            start: context.start,
+            end: context.end,
+            store: context.primaryStore,
+            stores: context.storeList,
+            include: ['brief', 'orders'],
+            cache_mode: 'stale_then_refresh',
+          })
+          if(token !== ordersSeqToken.current) break
+          const products = ((res as any)?.data || {}).products || {}
+          const nextCounts = mergeHydratedProducts(products, context.campaigns, context.mappings)
+          for(const [pid, count] of Object.entries(nextCounts)){
+            if(countsById) countsById[pid] = Number(count || 0)
+          }
+          if(revealZeroSpendCampaigns && countsById) revealZeroSpendCampaigns(countsById)
+          for(const id of chunk) hydratedProductIdsRef.current.add(id)
+        }catch{
+          // Keep the row skeletons isolated; one failed batch should not block the table.
+        }finally{
+          for(const id of chunk) hydratingProductIdsRef.current.delete(id)
+          markProductsHydrating(chunk, false)
+        }
+      }
+    }
+
+    await Promise.all(Array.from({ length: SHOPIFY_HYDRATE_CONCURRENCY }, () => worker()))
+  }
+
   async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
@@ -728,6 +844,10 @@ export default function AdsManagementPage(){
       setAdsetOrdersByCampaign({})
       setAdsetOrdersLoading({})
       setAdsetOrdersExpanded({})
+      setProductHydrating({})
+      setVisibleProductIds({})
+      hydratedProductIdsRef.current = new Set()
+      hydratingProductIdsRef.current = new Set()
 
       setLoading(false)
 
@@ -738,106 +858,92 @@ export default function AdsManagementPage(){
         ...spendingProductIds,
         ...allProductIds.filter(id => !spendingProductIdSet.has(id)),
       ]
-      const chunkSize = 4
+      const storeList = (effStores.length ? effStores : [primaryStore]).map(normalizeStoreValue).filter(Boolean)
+      const ordersToken = ++ordersSeqToken.current
+      const { start, end } = effectiveYmdRange(effPreset)
+      const hydrationContext = {
+        token: ordersToken,
+        start,
+        end,
+        storeList: storeList.length ? storeList : [primaryStore],
+        primaryStore,
+        campaigns: rankedAllCampaigns,
+        mappings: shaped,
+        profitOnly,
+      }
+      hydrateContextRef.current = hydrationContext
+
+      // Fire store-total in background for each store
+      if(!profitOnly){
+        ;(async()=>{
+          try{
+            const totals = await Promise.allSettled(
+              (storeList.length ? storeList : ['irrakids']).map(st =>
+                shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
+              )
+            )
+            if(ordersToken !== ordersSeqToken.current) return
+            let sum = 0
+            for(const t of totals){
+              if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
+            }
+            setStoreOrdersTotal(sum)
+          }catch{
+            if(ordersToken !== ordersSeqToken.current) return
+            setStoreOrdersTotal(0)
+          }
+        })()
+      }
 
       if(profitOnly){
-        const briefToken = ++ordersSeqToken.current
         ;(async()=>{
-          const storeList = uniqueStores([...(effStores.length ? effStores : [primaryStore]), ...ALL_STORES.map(s => s.value)])
-          for(let i = 0; i < spendingProductIds.length; i += chunkSize){
-            if(briefToken !== ordersSeqToken.current) break
-            const chunk = spendingProductIds.slice(i, i + chunkSize)
-            const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: chunk, store: st })))
-            if(briefToken !== ordersSeqToken.current) break
-            const mergedBriefs = mergeBriefResults(pbResults)
-            if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
+          for(let i = 0; i < spendingProductIds.length; i += SHOPIFY_HYDRATE_BATCH_SIZE){
+            if(ordersToken !== ordersSeqToken.current) break
+            const chunk = spendingProductIds.slice(i, i + SHOPIFY_HYDRATE_BATCH_SIZE)
+            markProductsHydrating(chunk, true)
+            try{
+              const res = await shopifyHydrateProducts({ product_ids: chunk, start, end, store: primaryStore, stores: hydrationContext.storeList, include: ['brief'], cache_mode: 'stale_then_refresh' })
+              if(ordersToken !== ordersSeqToken.current) break
+              mergeHydratedProducts((((res as any)?.data || {}).products || {}), rankedAllCampaigns, shaped)
+            }catch{} finally {
+              markProductsHydrating(chunk, false)
+            }
           }
         })()
         return
       }
 
-      // Phase 2: Progressive Shopify data loading in chunks of 4
-      const ordersToken = ++ordersSeqToken.current
-      const { start, end } = effectiveYmdRange(effPreset)
+      warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
 
-      // Fire store-total in background for each store
-      ;(async()=>{
-        try{
-          const totals = await Promise.allSettled(
-            (effStores.length ? effStores : ['irrakids']).map(st =>
-              shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
-            )
-          )
-          if(ordersToken !== ordersSeqToken.current) return
-          let sum = 0
-          for(const t of totals){
-            if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
-          }
-          setStoreOrdersTotal(sum)
-        }catch{
-          if(ordersToken !== ordersSeqToken.current) return
-          setStoreOrdersTotal(0)
-        }
-      })()
-
-      // Load product briefs + order counts in parallel chunks of 4
+      // Phase 2: Progressive Shopify hydration. Visible/high-spend rows go first.
       const countsById: Record<string, number> = {}
+      const priorityIds = [
+        ...Object.keys(visibleProductIds || {}),
+        ...spendingProductIds.slice(0, 10),
+        ...idsOrdered,
+      ]
+      runProductHydrationQueue(priorityIds, hydrationContext, revealZeroSpendCampaigns, countsById).catch(()=>{})
 
-      for(let i = 0; i < idsOrdered.length; i += chunkSize){
-        if(ordersToken !== ordersSeqToken.current) break
-        const chunk = idsOrdered.slice(i, i + chunkSize)
-
-        // Fetch counts first. Product briefs are only loaded for campaigns with spend,
-        // or zero-spend campaigns once Shopify confirms at least one order.
-        const storeList = effStores.length ? effStores : [primaryStore]
-        const ocResults = await Promise.allSettled(storeList.map(st => shopifyOrdersCountByTitle({ names: chunk, start, end, store: st, include_closed: true, date_field: 'processed' })))
-        if(ordersToken !== ordersSeqToken.current) break
-
-        // Merge order counts (sum across stores)
-        const next: Record<string, number> = {}
-        for(const id of chunk) next[id] = 0
-        for(const ocRes of ocResults){
-          if(ocRes.status === 'fulfilled'){
-            const map = ((ocRes.value as any)?.data) || {}
-            for(const id of chunk) next[id] = (next[id] || 0) + (Number(map[id] ?? 0) || 0)
-          }
-        }
-        for(const id of chunk) countsById[id] = next[id]
-        setShopifyCounts(prev => ({ ...prev, ...next }))
-        revealZeroSpendCampaigns(countsById)
-
-        const briefChunk = chunk.filter(id => spendingProductIdSet.has(id) || Number(next[id] || 0) > 0)
-        if(briefChunk.length > 0){
-          const pbResults = await Promise.allSettled(storeList.map(st => shopifyProductsBrief({ ids: briefChunk, store: st })))
+      // Phase 3: Manual mapped collection rows stay in a background lane.
+      ;(async()=>{
+        for(const row of rankedAllCampaigns){
           if(ordersToken !== ordersSeqToken.current) break
-          const mergedBriefs = mergeBriefResults(pbResults)
-          if(Object.keys(mergedBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...mergedBriefs }))
-        }
-      }
-
-      // Phase 3: Manual mapped rows (collections)
-      for(const row of rankedAllCampaigns){
-        if(ordersToken !== ordersSeqToken.current) break
-        const rowKey = (row.campaign_id || row.name || '') as any
-        const rowStore = (row as any)._store || primaryStore
-        try{
-          const conf = shaped[rowKey]
-          if(!conf) continue
-          if(!conf.id || !/^\d+$/.test(conf.id)) continue
-          if(conf.kind === 'product'){
-            const count = Number(countsById[conf.id] ?? 0) || 0
-            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
-            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
-          } else {
+          const rowKey = (row.campaign_id || row.name || '') as any
+          const rowStore = (row as any)._store || primaryStore
+          try{
+            const conf = shaped[rowKey]
+            if(!conf || conf.kind !== 'collection') continue
+            if(!conf.id || !/^\d+$/.test(conf.id)) continue
             const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+            if(ordersToken !== ordersSeqToken.current) break
             const count = Number(((oc as any)?.data||{})?.count ?? 0)
             setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
             if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
+          }catch{
+            setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
           }
-        }catch{
-          setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
         }
-      }
+      })()
 
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
@@ -1211,6 +1317,38 @@ export default function AdsManagementPage(){
     }
     return out
   }, [sortedParents, groupExpanded, searchActive, profitMode])
+
+  useEffect(()=>{
+    if(typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries)=>{
+      const next: Record<string, true> = {}
+      for(const entry of entries){
+        if(!entry.isIntersecting) continue
+        const pid = (entry.target as HTMLElement).dataset.productId
+        if(pid) next[pid] = true
+      }
+      if(Object.keys(next).length > 0) setVisibleProductIds(prev => ({ ...prev, ...next }))
+    }, { root: null, rootMargin: '320px 0px', threshold: 0.01 })
+    rowObserverRef.current = observer
+    return () => {
+      observer.disconnect()
+      if(rowObserverRef.current === observer) rowObserverRef.current = null
+    }
+  }, [])
+
+  const registerProductRow = useCallback((pid?: string | null) => (el: HTMLTableRowElement | null) => {
+    if(!pid || !el) return
+    el.dataset.productId = String(pid)
+    rowObserverRef.current?.observe(el)
+  }, [])
+
+  useEffect(()=>{
+    const context = hydrateContextRef.current
+    if(!context || context.profitOnly) return
+    const ids = Object.keys(visibleProductIds || {})
+    if(ids.length === 0) return
+    runProductHydrationQueue(ids, context).catch(()=>{})
+  }, [visibleProductIds])
 
   const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
   function campaignKeysForRows(rows: MetaCampaignRow[]): string[]{
@@ -1994,6 +2132,9 @@ export default function AdsManagementPage(){
                   const img = brief? brief.image : null
                   const inv = m.inventory
                   const zeros = m.zero_variant
+                  const hydrating = productHydrating[pid] || {}
+                  const hydratingBrief = !!hydrating.brief
+                  const hydratingOrders = !!hydrating.orders
                   const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                   const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                   const active = Number((m as any).active||0)
@@ -2009,7 +2150,7 @@ export default function AdsManagementPage(){
                   const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
                   return (
                     <Fragment key={`group-${pid}`}>
-                      <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
+                      <tr ref={registerProductRow(pid)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
                         <td className="px-1.5 py-0.5">
                           <input
                             type="checkbox"
@@ -2024,7 +2165,7 @@ export default function AdsManagementPage(){
                             // eslint-disable-next-line @next/next/no-img-element
                             <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                           ) : (
-                            <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
+                            <span className={`inline-block w-[72px] h-[72px] rounded-lg border ${hydratingBrief ? 'bg-slate-100 animate-pulse' : 'bg-slate-50'}`} />
                           )}
                         </td>
                         <td className="px-1 py-0.5 whitespace-nowrap">
@@ -2104,7 +2245,7 @@ export default function AdsManagementPage(){
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrders} paid</span>
                             )
                           ) : orders==null ? (
-                            <span className="text-slate-400">—</span>
+                            hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                           ) : (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                           )}
@@ -2127,11 +2268,11 @@ export default function AdsManagementPage(){
                                 }}
                                 onMouseLeave={() => setInvHover(null)}
                               >
-                                {inv==null ? <span className="text-slate-400">—</span> : (
+                                {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
                                 )}
                                 <span className="text-slate-300">/</span>
-                                {zeros==null ? <span className="text-slate-400">—</span> : (
+                                {zeros==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
                                 )}
                               </div>
@@ -2341,6 +2482,9 @@ export default function AdsManagementPage(){
                 const inv = (invSelf==null || invSelf==undefined)? null : Number(invSelf||0)
                 const zeros = (zerosSelf==null || zerosSelf==undefined)? null : Number(zerosSelf||0)
                 const hasAnyPid = !!pidSelf
+                const hydrating = pidSelf ? (productHydrating[pidSelf] || {}) : {}
+                const hydratingBrief = !!hydrating.brief
+                const hydratingOrders = !!hydrating.orders
                 const paidOrdersSelf = pidSelf ? profitPaidCounts[pidSelf] : undefined
                 const profitResultSelf = pidSelf ? profitResults[pidSelf] : undefined
                 const productPriceSelf = Number((briefSelf as any)?.price || profitResultSelf?.productPrice || 0)
@@ -2350,7 +2494,7 @@ export default function AdsManagementPage(){
                 const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 return (
                   <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
-                  <tr className={`border-b last:border-b-0 ${colorClass} ${severityAccent} ${isChild? 'opacity-95' : ''}`}>
+                  <tr ref={registerProductRow(pidSelf)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent} ${isChild? 'opacity-95' : ''}`}>
                     <td className="px-1.5 py-0.5">
                       <input
                         type="checkbox"
@@ -2379,13 +2523,18 @@ export default function AdsManagementPage(){
                             const open = !adsetsExpanded[cid]
                             setAdsetsExpanded(prev=> ({ ...prev, [cid]: open }))
                             if(open && !adsetsByCampaign[cid]){
+                              setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
                               try{
-                                setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
                                 const m = metaRangeParams(datePreset)
                                 const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
                                 const items = ((res as any)?.data)||[]
                                 setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
-                                // Load Shopify-attributed orders per ad set for this campaign
+                              }catch{
+                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
+                              }finally{
+                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
+                              }
+                              ;(async()=>{
                                 try{
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
@@ -2398,11 +2547,7 @@ export default function AdsManagementPage(){
                                 }finally{
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
                                 }
-                              }catch{
-                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
-                              }finally{
-                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
-                              }
+                              })()
                             }
                           }}
                           className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
@@ -2605,7 +2750,7 @@ export default function AdsManagementPage(){
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrdersSelf} paid</span>
                         )
                       ) : orders==null ? (
-                        <span className="text-slate-400">—</span>
+                        hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                       ) : (
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
                       )}
