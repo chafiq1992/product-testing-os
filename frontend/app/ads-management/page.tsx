@@ -7,8 +7,23 @@ import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, sh
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
   { value: 'irranova', label: 'irranova' },
-  { value: 'nouralibas', label: 'nouralibas' },
 ]
+function normalizeStoreValue(value?: string | null): string{
+  const v = String(value || '').trim().toLowerCase()
+  return v === 'nouralibas' ? 'irrakids' : v
+}
+function normalizeStoreList(values?: string[]): string[]{
+  const allowed = new Set(ALL_STORES.map(s => s.value))
+  const seen = new Set<string>()
+  const out: string[] = []
+  for(const raw of values || []){
+    const v = normalizeStoreValue(raw)
+    if(!v || !allowed.has(v) || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+  }
+  return out
+}
 type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
@@ -86,9 +101,18 @@ export default function AdsManagementPage(){
   const [selectedStores, setSelectedStores] = useState<string[]>(()=>{
     try{
       const saved = localStorage.getItem('ptos_stores_multi')
-      if(saved){ const parsed = JSON.parse(saved); if(Array.isArray(parsed) && parsed.length) return parsed }
+      if(saved){
+        const parsed = JSON.parse(saved)
+        if(Array.isArray(parsed) && parsed.length){
+          const normalized = normalizeStoreList(parsed)
+          if(normalized.length) return normalized
+        }
+      }
     }catch{}
-    try{ const s = localStorage.getItem('ptos_store'); if(s) return [s] }catch{}
+    try{
+      const s = normalizeStoreValue(localStorage.getItem('ptos_store'))
+      if(s) return normalizeStoreList([s])
+    }catch{}
     return ['irrakids']
   })
   const [selectedAdAccounts, setSelectedAdAccounts] = useState<string[]>(()=>{
@@ -100,9 +124,14 @@ export default function AdsManagementPage(){
     return []
   })
   // Keep legacy single-value for backward compat with other parts of the code
-  const store = selectedStores[0] || 'irrakids'
+  const store = normalizeStoreValue(selectedStores[0]) || 'irrakids'
   const adAccount = selectedAdAccounts[0] || ''
-  const setStore = (v: string) => { setSelectedStores([v]); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify([v])); localStorage.setItem('ptos_store', v) }catch{} }
+  const setStore = (v: string) => {
+    const next = normalizeStoreList([v])
+    const finalStores = next.length ? next : ['irrakids']
+    setSelectedStores(finalStores)
+    try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
+  }
   const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
   const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, price?: number|null }>>({})
@@ -393,9 +422,9 @@ export default function AdsManagementPage(){
   }
 
   function performanceOrderStores(rowStore?: string | null): Array<string | undefined>{
-    const stores = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
+    const stores = normalizeStoreList(selectedStores||[])
     if(stores.length>0) return Array.from(new Set(stores))
-    const fallback = String(rowStore || store || '').trim()
+    const fallback = normalizeStoreValue(rowStore || store || '')
     return fallback ? [fallback] : [undefined]
   }
 
@@ -437,7 +466,7 @@ export default function AdsManagementPage(){
     const out: Array<string | undefined> = []
     const seen = new Set<string>()
     for(const raw of values){
-      const val = String(raw || '').trim()
+      const val = normalizeStoreValue(raw || '')
       const key = val || '__default__'
       if(seen.has(key)) continue
       seen.add(key)
@@ -450,8 +479,8 @@ export default function AdsManagementPage(){
     const pid = String(productId || '').trim()
     const mappedStores = Object.values(manualIds || {})
       .filter(m => m && m.kind === 'product' && String(m.id || '') === pid && String(m.store || '').trim())
-      .map(m => String(m.store || '').trim())
-    const selected = (selectedStores||[]).map(s=> String(s||'').trim()).filter(Boolean)
+      .map(m => normalizeStoreValue(m.store))
+    const selected = normalizeStoreList(selectedStores||[])
     const known = includeKnownFallback ? ALL_STORES.map(s => s.value) : []
     const stores = uniqueStores([...mappedStores, ...selected, store, ...known])
     return stores.length ? stores : [store || undefined]
@@ -1364,7 +1393,12 @@ export default function AdsManagementPage(){
             label="Stores"
             options={ALL_STORES}
             selected={selectedStores}
-            onChange={(next) => { setSelectedStores(next); try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(next)); if(next.length) localStorage.setItem('ptos_store', next[0]) }catch{} }}
+            onChange={(next) => {
+              const normalized = normalizeStoreList(next)
+              const finalStores = normalized.length ? normalized : ['irrakids']
+              setSelectedStores(finalStores)
+              try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
+            }}
           />
           <MultiCheckDropdown
             label="Ad accounts"

@@ -81,6 +81,12 @@ if _oauth_stores:
 else:
     os.environ["SHOPIFY_OAUTH_STORES"] = ",".join(_default_oauth_stores)
 
+def _canonical_store_label(store: str | None) -> str | None:
+    s = (store or "").strip().lower()
+    if not s:
+        return None
+    return "irrakids" if s == "nouralibas" else s
+
 # Optional ChatKit server-mode support
 try:
     from chatkit.server import StreamingResult as _CKStreamingResult  # type: ignore
@@ -107,6 +113,10 @@ logger = logging.getLogger("app.chatkit")
 if not logger.handlers:
     logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
+shopify_logger = logging.getLogger("app.shopify")
+if not shopify_logger.handlers:
+    shopify_logger.addHandler(logging.StreamHandler())
+shopify_logger.setLevel(logging.INFO)
 
 # ---------------- Small in-memory TTL cache (per Cloud Run instance) ----------------
 # Avoid duplicate expensive Meta/Shopify calls when the UI triggers the same request multiple
@@ -168,13 +178,17 @@ async def _cached(key: str, ttl_s: int, compute):
     if hit is not None:
         return hit
 
+    owner = False
     async with _API_INFLIGHT_LOCK:
         fut = _API_INFLIGHT.get(key)
-        if fut is not None:
-            return await fut
-        loop = asyncio.get_running_loop()
-        fut = loop.create_future()
-        _API_INFLIGHT[key] = fut
+        if fut is None:
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            _API_INFLIGHT[key] = fut
+            owner = True
+
+    if not owner:
+        return await asyncio.shield(fut)
 
     try:
         val = await compute()
@@ -184,7 +198,7 @@ async def _cached(key: str, ttl_s: int, compute):
         except Exception:
             pass
         return val
-    except Exception as e:
+    except BaseException as e:
         try:
             fut.set_exception(e)
         except Exception:
@@ -469,6 +483,7 @@ async def favicon():
 async def api_shopify_oauth_status(request: Request, store: str | None = None):
     """Return whether we have a stored OAuth token for this store label."""
     try:
+        store = _canonical_store_label(store)
         rec = db.get_app_setting(store, "shopify_oauth") or {}
         if not isinstance(rec, dict):
             rec = {}
@@ -486,6 +501,79 @@ async def api_shopify_oauth_status(request: Request, store: str | None = None):
         }
     except Exception as e:
         return {"error": str(e), "data": {"connected": False}}
+
+
+@app.get("/api/shopify/debug/status")
+async def api_shopify_debug_status(store: str | None = None):
+    """Safe Shopify health probe for debugging store/token/API latency.
+
+    Does not return access tokens or secrets.
+    """
+    store = _canonical_store_label(store)
+    started = time.perf_counter()
+    data: dict[str, Any] = {
+        "store": store,
+        "oauth_connected": False,
+        "oauth_shop": None,
+        "oauth_scopes": None,
+        "resolved_shop": None,
+        "api_version": None,
+        "has_token": False,
+        "shop_probe": None,
+        "elapsed_ms": None,
+    }
+    try:
+        rec = db.get_app_setting(store, "shopify_oauth") or {}
+        if isinstance(rec, dict):
+            tok = str(rec.get("access_token") or "").strip()
+            shop = str(rec.get("shop") or "").strip()
+            data["oauth_connected"] = bool(tok and shop)
+            data["oauth_shop"] = shop or None
+            data["oauth_scopes"] = rec.get("scopes")
+    except Exception as e:
+        data["oauth_error"] = str(e)
+
+    try:
+        from app.integrations.shopify_client import _get_store_config
+        cfg = _get_store_config(store)
+        data["resolved_shop"] = cfg.get("SHOP")
+        data["api_version"] = cfg.get("API_VERSION")
+        data["has_token"] = bool(cfg.get("TOKEN"))
+        auth = None
+        if not cfg.get("TOKEN") and cfg.get("API_KEY") and cfg.get("PASSWORD"):
+            auth = (cfg.get("API_KEY"), cfg.get("PASSWORD"))
+        probe_started = time.perf_counter()
+        resp = requests.get(
+            f"{cfg.get('BASE')}/shop.json",
+            headers=cfg.get("HEADERS") or {},
+            timeout=8,
+            auth=auth,
+        )
+        probe_ms = int((time.perf_counter() - probe_started) * 1000)
+        body: dict[str, Any] = {}
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {}
+        shop_info = (body or {}).get("shop") or {}
+        data["shop_probe"] = {
+            "ok": 200 <= int(resp.status_code) < 300,
+            "status": int(resp.status_code),
+            "elapsed_ms": probe_ms,
+            "call_limit": resp.headers.get("X-Shopify-Shop-Api-Call-Limit"),
+            "retry_after": resp.headers.get("Retry-After"),
+            "shop_name": shop_info.get("name"),
+            "myshopify_domain": shop_info.get("myshopify_domain"),
+            "iana_timezone": shop_info.get("iana_timezone"),
+        }
+    except Exception as e:
+        data["shop_probe"] = {
+            "ok": False,
+            "error": str(e),
+        }
+    finally:
+        data["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+    return {"data": data}
 
 def _oauth_enabled_store_labels() -> set[str]:
     raw = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
@@ -990,10 +1078,11 @@ class OrdersCountRequest(BaseModel):
 
 @app.post("/api/shopify/orders_count_by_title")
 async def api_orders_count_by_title(req: OrdersCountRequest):
+    started = time.perf_counter()
     try:
         start = req.start
         end = req.end
-        store = req.store
+        store = _canonical_store_label(req.store)
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         raw_names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
         # Guardrails: keep requests bounded even if UI sends a lot
@@ -1001,6 +1090,8 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
             raw_names = raw_names[:400]
         # Normalize for cache hit rate: de-duplicate + stable sort
         names = sorted(set(raw_names))
+        if not names:
+            return {"data": {}}
 
         df = (req.date_field or "processed").lower()
         key = _cache_key("shopify_orders_count_by_title", {
@@ -1048,12 +1139,27 @@ async def api_orders_count_by_title(req: OrdersCountRequest):
         async def _compute():
             return await run_in_threadpool(_compute_sync)
 
-        out = await _cached(key, 60, _compute)
+        out = await asyncio.wait_for(_cached(key, 60, _compute), timeout=28)
+        shopify_logger.info(
+            "shopify.orders_count_by_title store=%s ids=%s date_field=%s elapsed_ms=%s",
+            store,
+            len(names),
+            df,
+            int((time.perf_counter() - started) * 1000),
+        )
         # Ensure any original names get a value (including duplicates/truncation)
         shaped: dict[str, int] = {}
         for n in raw_names:
             shaped[n] = int((out or {}).get(n, 0) or 0)
         return {"data": shaped}
+    except asyncio.TimeoutError:
+        shopify_logger.warning(
+            "shopify.orders_count_by_title timeout store=%s names=%s elapsed_ms=%s",
+            getattr(req, "store", None),
+            len(getattr(req, "names", []) or []),
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"error": "shopify_orders_count_timeout", "data": {}}
     except Exception as e:
         return {"error": str(e), "data": {}}
 
@@ -1067,7 +1173,7 @@ async def api_orders_count_paid_by_title(req: OrdersCountRequest):
     try:
         start = req.start
         end = req.end
-        store = req.store
+        store = _canonical_store_label(req.store)
         include_closed = bool(req.include_closed) if req.include_closed is not None else True
         raw_names = [str(x or "").strip() for x in (req.names or []) if str(x or "").strip()]
         if len(raw_names) > 400:
@@ -1135,16 +1241,34 @@ class ProductsBriefRequest(BaseModel):
 
 @app.post("/api/shopify/products_brief")
 async def api_products_brief(req: ProductsBriefRequest):
+    started = time.perf_counter()
     try:
         ids_raw = [str(x or "").strip() for x in (req.ids or []) if str(x or "").strip()]
         ids = sorted(set(ids_raw))
-        key = _cache_key("shopify_products_brief", {"store": req.store or None, "ids": ids})
+        if not ids:
+            return {"data": {}}
+        store = _canonical_store_label(req.store)
+        key = _cache_key("shopify_products_brief", {"store": store or None, "ids": ids})
 
         async def _compute():
-            return await run_in_threadpool(get_products_brief, ids, store=req.store)
+            return await run_in_threadpool(get_products_brief, ids, store=store)
 
-        data = await _cached(key, 300, _compute)
+        data = await asyncio.wait_for(_cached(key, 300, _compute), timeout=28)
+        shopify_logger.info(
+            "shopify.products_brief store=%s ids=%s elapsed_ms=%s",
+            store,
+            len(ids),
+            int((time.perf_counter() - started) * 1000),
+        )
         return {"data": data}
+    except asyncio.TimeoutError:
+        shopify_logger.warning(
+            "shopify.products_brief timeout store=%s ids=%s elapsed_ms=%s",
+            getattr(req, "store", None),
+            len(getattr(req, "ids", []) or []),
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"error": "shopify_products_brief_timeout", "data": {}}
     except Exception as e:
         return {"error": str(e), "data": {}}
 
@@ -1161,11 +1285,12 @@ async def api_product_variants_inventory(req: ProductVariantsInventoryRequest):
         pid = (req.product_id or "").strip()
         if not pid or not pid.isdigit():
             return {"data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
-        key = _cache_key("shopify_product_variants_inv", {"store": req.store or None, "id": pid})
+        store = _canonical_store_label(req.store)
+        key = _cache_key("shopify_product_variants_inv", {"store": store or None, "id": pid})
 
         async def _compute():
             from app.integrations.shopify_client import get_product_variants_inventory
-            return await run_in_threadpool(get_product_variants_inventory, pid, store=req.store)
+            return await run_in_threadpool(get_product_variants_inventory, pid, store=store)
 
         data = await _cached(key, 300, _compute)
         return {"data": data}
@@ -1188,12 +1313,13 @@ async def api_orders_count_total(req: OrdersTotalCountRequest):
         e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in (req.end or "") else (req.end or "")
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         df = (req.date_field or "processed").lower()
-        key = _cache_key("shopify_orders_count_total", {"store": req.store or None, "start": s_date, "end": e_date, "include_closed": include_closed, "date_field": df})
+        store = _canonical_store_label(req.store)
+        key = _cache_key("shopify_orders_count_total", {"store": store or None, "start": s_date, "end": e_date, "include_closed": include_closed, "date_field": df})
 
         async def _compute():
             if df == "created":
-                return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=req.store, include_closed=include_closed)
-            return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=req.store, include_closed=include_closed)
+                return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=store, include_closed=include_closed)
+            return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=store, include_closed=include_closed)
 
         cnt = await _cached(key, 60, _compute)
         return {"data": {"count": int(cnt or 0)}}
@@ -1216,7 +1342,8 @@ async def api_collection_products(req: CollectionProductsRequest):
         # Only numeric collection_id supported via REST collects in current implementation
         if not cid.isdigit():
             return {"data": {"product_ids": []}}
-        ids = list_product_ids_in_collection(cid, store=req.store)
+        store = _canonical_store_label(req.store)
+        ids = list_product_ids_in_collection(cid, store=store)
         return {"data": {"product_ids": [str(i) for i in (ids or [])]}}
     except Exception as e:
         return {"error": str(e), "data": {"product_ids": []}}
@@ -2954,9 +3081,10 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         agg = (req.aggregate or "orders").lower()
         df = (req.date_field or "processed").lower()
+        store = _canonical_store_label(req.store)
 
         key = _cache_key("shopify_orders_count_by_collection", {
-            "store": req.store or None,
+            "store": store or None,
             "collection_id": cid,
             "start": s_date,
             "end": e_date,
@@ -2967,12 +3095,12 @@ async def api_orders_count_by_collection(req: OrdersCountByCollectionRequest):
 
         async def _compute():
             if agg == "items":
-                return await run_in_threadpool(count_items_by_collection_processed, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+                return await run_in_threadpool(count_items_by_collection_processed, cid, s_date, e_date, store=store, include_closed=include_closed)
             if agg == "sum_product_orders":
                 if df == "created":
-                    return await run_in_threadpool(sum_product_order_counts_for_collection_created, cid, s_date, e_date, store=req.store, include_closed=include_closed)
-                return await run_in_threadpool(sum_product_order_counts_for_collection, cid, s_date, e_date, store=req.store, include_closed=include_closed)
-            return await run_in_threadpool(count_orders_by_collection_processed, cid, s_date, e_date, store=req.store, include_closed=include_closed)
+                    return await run_in_threadpool(sum_product_order_counts_for_collection_created, cid, s_date, e_date, store=store, include_closed=include_closed)
+                return await run_in_threadpool(sum_product_order_counts_for_collection, cid, s_date, e_date, store=store, include_closed=include_closed)
+            return await run_in_threadpool(count_orders_by_collection_processed, cid, s_date, e_date, store=store, include_closed=include_closed)
 
         cnt = await _cached(key, 60, _compute)
         return {"data": {"count": int(cnt or 0)}}

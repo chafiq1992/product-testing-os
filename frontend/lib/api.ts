@@ -33,15 +33,20 @@ function __dedupe<T>(key: string, fn: ()=>Promise<T>): Promise<T> {
   __inflight.set(key, p as any)
   return p
 }
+function normalizeStoreValue(value?: string | null): string | undefined {
+  const v = String(value || '').trim().toLowerCase()
+  if(!v) return undefined
+  return v === 'nouralibas' ? 'irrakids' : v
+}
 function selectedStore(){
   try{
     if(typeof window==='undefined') return undefined
     // Check multi-store key first, fall back to legacy single key
     const multi = localStorage.getItem('ptos_stores_multi')
     if(multi){
-      try{ const arr = JSON.parse(multi); if(Array.isArray(arr) && arr.length) return arr[0] }catch{}
+      try{ const arr = JSON.parse(multi); if(Array.isArray(arr) && arr.length) return normalizeStoreValue(arr[0]) }catch{}
     }
-    return localStorage.getItem('ptos_store') || undefined
+    return normalizeStoreValue(localStorage.getItem('ptos_store'))
   }catch{ return undefined }
 }
 function confirmationToken(){

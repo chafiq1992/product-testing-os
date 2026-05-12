@@ -16,6 +16,12 @@ _PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900
 _PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
 _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
 
+def _canonical_store_label(store: str | None) -> str | None:
+    s = (store or "").strip().lower()
+    if not s:
+        return None
+    return "irrakids" if s == "nouralibas" else s
+
 def _oauth_enabled_for_store(store: str | None) -> bool:
     """Whether DB-backed OAuth tokens are allowed for this store label.
 
@@ -26,7 +32,7 @@ def _oauth_enabled_for_store(store: str | None) -> bool:
       SHOPIFY_OAUTH_STORES=irrakids,irranova,anotherstore
     """
     try:
-        s = (store or "").strip().lower()
+        s = _canonical_store_label(store) or ""
         if not s:
             return False
         allowed = (os.getenv("SHOPIFY_OAUTH_STORES", "") or "").strip()
@@ -65,6 +71,7 @@ def _env_with_suffix(base: str, suffix: str) -> str:
     return os.getenv(f"{base}{suffix}", "")
 
 def _store_suffix(store: str | None) -> str:
+    store = _canonical_store_label(store)
     if not store:
         return ""
     s = (store or "").strip()
@@ -87,6 +94,7 @@ def _get_store_config(store: str | None) -> dict:
         from app import db as _db  # type: ignore
     except Exception:
         _db = None
+    store = _canonical_store_label(store)
 
     if store:
         suf = _store_suffix(store)
