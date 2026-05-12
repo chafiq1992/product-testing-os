@@ -1302,7 +1302,7 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
 
 def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
     closed = "all" if include_closed else "open"
-    return f"shopify_utm_orders_v2:{processed_min_date}:{processed_max_date}:{closed}"
+    return f"shopify_utm_orders_v3:{processed_min_date}:{processed_max_date}:{closed}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
@@ -1394,39 +1394,62 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
     total_pages = 0
     started = time.time()
     days = _ymd_days_desc(processed_min_date, processed_max_date)
-    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
+    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "1")) or "1"))
     max_total_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_TOTAL_PAGES", str(max_pages_per_day * max(1, len(days)))) or str(max_pages_per_day * max(1, len(days)))))
     first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
     timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
+    workers = max(1, min(4, int(os.getenv("PTOS_UTM_ORDERS_GQL_DAY_WORKERS", "3") or "3")))
+    day_jobs: list[tuple[str, int]] = []
+    remaining_pages = max_total_pages
     for day in days:
-        if total_pages >= max_total_pages:
+        if remaining_pages <= 0:
             break
+        page_limit = min(max_pages_per_day, remaining_pages)
+        day_jobs.append((day, page_limit))
+        remaining_pages -= page_limit
+
+    def _fetch_day(day: str, page_limit: int) -> tuple[str, int, list[dict]]:
         query = f'(processed_at:>="{day}" AND processed_at:<="{day}")'
         if not include_closed:
             query = f"{query} status:open"
         after = None
         pages_for_day = 0
-        while pages_for_day < max_pages_per_day and total_pages < max_total_pages:
+        rows_for_day: list[dict] = []
+        while pages_for_day < page_limit:
             data = _gql_store_once(store, gql, {"query": query, "first": first, "after": after}, timeout=timeout_s)
             conn = (data or {}).get("orders") or {}
             pages_for_day += 1
-            total_pages += 1
             for edge in (conn.get("edges") or []):
                 row = _order_row_from_graphql_node((edge or {}).get("node") or {}, store=store)
-                if not row:
-                    continue
-                oid = str(row.get("order_id") or row.get("name") or "")
-                if oid and oid in seen_orders:
-                    continue
-                if oid:
-                    seen_orders.add(oid)
-                out.append(row)
+                if row:
+                    rows_for_day.append(row)
             page_info = conn.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
                 break
             after = page_info.get("endCursor")
             if not after:
                 break
+        return day, pages_for_day, rows_for_day
+
+    day_results: list[tuple[str, int, list[dict]]] = []
+    if len(day_jobs) <= 1:
+        day_results = [_fetch_day(day, page_limit) for day, page_limit in day_jobs]
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(day_jobs))) as ex:
+            futures = [ex.submit(_fetch_day, day, page_limit) for day, page_limit in day_jobs]
+            for fut in as_completed(futures):
+                day_results.append(fut.result())
+
+    day_results.sort(key=lambda item: item[0], reverse=True)
+    for _day, pages_for_day, rows_for_day in day_results:
+        total_pages += pages_for_day
+        for row in rows_for_day:
+            oid = str(row.get("order_id") or row.get("name") or "")
+            if oid and oid in seen_orders:
+                continue
+            if oid:
+                seen_orders.add(oid)
+            out.append(row)
     _perf_log.info(
         "utm_orders.graphql store=%s days=%d pages=%d rows=%d elapsed_ms=%d",
         store,
