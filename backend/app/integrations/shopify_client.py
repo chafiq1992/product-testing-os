@@ -1302,7 +1302,7 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
 
 def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
     closed = "all" if include_closed else "open"
-    return f"shopify_utm_orders:{processed_min_date}:{processed_max_date}:{closed}"
+    return f"shopify_utm_orders_v2:{processed_min_date}:{processed_max_date}:{closed}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
@@ -1337,12 +1337,23 @@ def _set_utm_orders_cache(store: str | None, processed_min_date: str, processed_
         pass
 
 
+def _ymd_days_desc(processed_min_date: str, processed_max_date: str) -> list[str]:
+    try:
+        start = datetime.strptime(str(processed_min_date or "").split("T")[0], "%Y-%m-%d").date()
+        end = datetime.strptime(str(processed_max_date or "").split("T")[0], "%Y-%m-%d").date()
+        if end < start:
+            start, end = end, start
+        days: list[str] = []
+        cur = end
+        while cur >= start:
+            days.append(cur.isoformat())
+            cur = cur - timedelta(days=1)
+        return days or [str(processed_max_date or processed_min_date)]
+    except Exception:
+        return [str(processed_max_date or processed_min_date)]
+
+
 def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
-    query = (
-        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
-    )
-    if not include_closed:
-        query = f"{query} status:open"
     gql = """
     query OrdersWithUtms($query: String!, $first: Int!, $after: String) {
       orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT, reverse: true) {
@@ -1379,30 +1390,48 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
     }
     """
     out: list[dict] = []
-    after = None
-    pages = 0
+    seen_orders: set[str] = set()
+    total_pages = 0
     started = time.time()
-    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2") or "2"))
-    first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "75") or "75")))
+    days = _ymd_days_desc(processed_min_date, processed_max_date)
+    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
+    max_total_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_TOTAL_PAGES", str(max_pages_per_day * max(1, len(days)))) or str(max_pages_per_day * max(1, len(days)))))
+    first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
     timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
-    while pages < max_pages:
-        data = _gql_store_once(store, gql, {"query": query, "first": first, "after": after}, timeout=timeout_s)
-        conn = (data or {}).get("orders") or {}
-        pages += 1
-        for edge in (conn.get("edges") or []):
-            row = _order_row_from_graphql_node((edge or {}).get("node") or {}, store=store)
-            if row:
+    for day in days:
+        if total_pages >= max_total_pages:
+            break
+        query = f'(processed_at:>="{day}" AND processed_at:<="{day}")'
+        if not include_closed:
+            query = f"{query} status:open"
+        after = None
+        pages_for_day = 0
+        while pages_for_day < max_pages_per_day and total_pages < max_total_pages:
+            data = _gql_store_once(store, gql, {"query": query, "first": first, "after": after}, timeout=timeout_s)
+            conn = (data or {}).get("orders") or {}
+            pages_for_day += 1
+            total_pages += 1
+            for edge in (conn.get("edges") or []):
+                row = _order_row_from_graphql_node((edge or {}).get("node") or {}, store=store)
+                if not row:
+                    continue
+                oid = str(row.get("order_id") or row.get("name") or "")
+                if oid and oid in seen_orders:
+                    continue
+                if oid:
+                    seen_orders.add(oid)
                 out.append(row)
-        page_info = conn.get("pageInfo") or {}
-        if not page_info.get("hasNextPage"):
-            break
-        after = page_info.get("endCursor")
-        if not after:
-            break
+            page_info = conn.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                break
     _perf_log.info(
-        "utm_orders.graphql store=%s pages=%d rows=%d elapsed_ms=%d",
+        "utm_orders.graphql store=%s days=%d pages=%d rows=%d elapsed_ms=%d",
         store,
-        pages,
+        len(days),
+        total_pages,
         len(out),
         int((time.time() - started) * 1000),
     )
