@@ -5171,12 +5171,12 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     if store_list and len(store_list) > 1:
                         return await asyncio.wait_for(
                             run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True),
-                            timeout=32,
+                            timeout=55,
                         )
                     single = store_list[0] if store_list else store
                     return await asyncio.wait_for(
                         run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True),
-                        timeout=32,
+                        timeout=55,
                     )
                 except Exception:
                     return []
@@ -5219,6 +5219,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     "landing_site": o.get("landing_site"),
                     "utm": o.get("utm") or {},
                     "ad_id": ad_id_used or o.get("ad_id"),
+                    "adset_id": adset_id,
                     "campaign_id": o.get("campaign_id"),
                     "store": o.get("store"),
                 })
@@ -5274,7 +5275,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     # ===== STRATEGY 0: Direct adset_id from URL =====
                     # Meta auto-tagging puts adset_id in utm_medium/utm_term
                     # Our parser extracts it as order.adset_id — most reliable match
-                    if o_adset_id_direct and o_adset_id_direct in adset_ids_set:
+                    if o_adset_id_direct and (not adset_ids_set or o_adset_id_direct in adset_ids_set):
                         _add_order(o_adset_id_direct, o, o_ad_id or None)
                         attributed = True
 
@@ -5283,8 +5284,11 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                         target_adset = None
 
                         # A1: Explicit adset_id in UTM query param (our new ad creation includes this)
-                        if o_adset_id_utm and o_adset_id_utm in adset_ids_set:
+                        if o_adset_id_utm and (not adset_ids_set or o_adset_id_utm in adset_ids_set):
                             target_adset = o_adset_id_utm
+                        # A1b: Parsed adset_id from Shopify landing page/referrer.
+                        elif o_adset_id_direct and (not adset_ids_set or o_adset_id_direct in adset_ids_set):
+                            target_adset = o_adset_id_direct
                         # A2: ad_id maps to a known ad -> adset
                         elif o_ad_id and o_ad_id in ad_to_adset:
                             target_adset = ad_to_adset[o_ad_id]
@@ -5337,7 +5341,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     continue
             return result
 
-        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=45)
+        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=75)
         if result:
             try:
                 db.set_app_setting((store_list or [store or ""])[0], db_cache_key, {"ts": time.time(), "data": result or {}})
