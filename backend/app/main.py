@@ -5094,14 +5094,25 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
 
             # 1) List ad sets for campaign and their ads — run in parallel
             async def _fetch_adsets():
-                return await run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d")
+                try:
+                    return await asyncio.wait_for(run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
+                except Exception:
+                    return []
 
             async def _fetch_orders():
-                if store_list and len(store_list) > 1:
-                    return await run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True)
-                else:
+                try:
+                    if store_list and len(store_list) > 1:
+                        return await asyncio.wait_for(
+                            run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True),
+                            timeout=32,
+                        )
                     single = store_list[0] if store_list else store
-                    return await run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True)
+                    return await asyncio.wait_for(
+                        run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True),
+                        timeout=32,
+                    )
+                except Exception:
+                    return []
 
             adsets, orders = await asyncio.gather(_fetch_adsets(), _fetch_orders())
 
