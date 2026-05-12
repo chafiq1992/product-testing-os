@@ -394,6 +394,21 @@ def _gql_store(store: str | None, query: str, variables: dict):
         raise RuntimeError(f"GraphQL userErrors: {ue}")
     return data
 
+def _gql_store_once(store: str | None, query: str, variables: dict, *, timeout: int = 60):
+    cfg = _get_store_config(store)
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = requests.post(cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=timeout, auth=auth)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(f"GraphQL errors: {j['errors']}")
+    return j.get("data")
+
 def _rest_post_store(store: str | None, path: str, payload: dict):
     cfg = _get_store_config(store)
     url = f"{cfg['BASE']}{path}"
@@ -933,7 +948,8 @@ def count_orders_by_product_or_variant_processed_batch(
                     store=store,
                     include_closed=include_closed,
                 ) or 0), True)
-            except Exception:
+            except Exception as e:
+                _perf_log.warning("orders_search.one_failed store=%s pid=%s err=%s", store, k, e)
                 return (k, 0, False)
 
         searched: dict[str, int] = {}
@@ -962,8 +978,18 @@ def count_orders_by_product_or_variant_processed_batch(
         )
         if failed == 0 and searched and all(k in searched for k in keys):
             return out
+        if os.getenv("PTOS_ORDERS_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            _perf_log.warning(
+                "orders_search.skip_rest_fallback store=%s ids=%d failed=%d",
+                store,
+                len(keys),
+                failed,
+            )
+            return out
     except Exception as e:
         _perf_log.warning("orders_search.batch_failed store=%s err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return out
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
     from urllib.parse import urlencode
@@ -2031,19 +2057,14 @@ def _count_orders_by_product_search(
     ident = str(numeric_id or "").strip()
     if not ident.isdigit():
         return 0
-    parts = [
-        f'product_id:"{ident}"',
-        f'processed_at:>="{processed_min_date}"',
-        f'processed_at:<="{processed_max_date}"',
-        "-cancelled_at:*",
-    ]
-    if not include_closed:
-        parts.append("status:open")
-    query = " ".join(parts)
+    query = (
+        f'product_id:"{ident}" '
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+    )
     gql = """
     query OrdersForProduct($query: String!, $first: Int!, $after: String) {
       orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
-        edges { cursor node { id } }
+        edges { cursor node { id cancelledAt closedAt } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -2053,13 +2074,19 @@ def _count_orders_by_product_search(
     seen: set[str] = set()
     started = time.time()
     pages = 0
+    timeout_s = max(3, int(os.getenv("PTOS_ORDERS_SEARCH_TIMEOUT_S", "12") or "12"))
     while True:
-        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
+        data = _gql_store_once(store, gql, {"query": query, "first": 250, "after": after}, timeout=timeout_s)
         conn = (data or {}).get("orders") or {}
         edges = conn.get("edges") or []
         pages += 1
         for edge in edges:
-            oid = str(((edge or {}).get("node") or {}).get("id") or "")
+            node = ((edge or {}).get("node") or {})
+            if node.get("cancelledAt"):
+                continue
+            if not include_closed and node.get("closedAt"):
+                continue
+            oid = str(node.get("id") or "")
             if oid and oid not in seen:
                 seen.add(oid)
                 total += 1

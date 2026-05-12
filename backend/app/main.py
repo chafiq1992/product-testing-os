@@ -575,6 +575,167 @@ async def api_shopify_debug_status(store: str | None = None):
         data["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
     return {"data": data}
 
+
+@app.get("/api/shopify/debug/order_search")
+async def api_shopify_debug_order_search(
+    store: str | None = None,
+    product_id: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+):
+    """Safe Shopify order-search probe for product/date query debugging.
+
+    Returns status, latency, and small order samples. Does not return tokens.
+    """
+    store = _canonical_store_label(store)
+    pid = str(product_id or "").strip()
+    if not pid.isdigit():
+        return {"error": "product_id must be a numeric Shopify product or variant id", "data": {}}
+    try:
+        from datetime import timedelta
+        today = datetime.utcnow().date()
+        s_date = (start or str(today - timedelta(days=7))).split("T")[0]
+        e_date = (end or str(today)).split("T")[0]
+    except Exception:
+        s_date = (start or "").split("T")[0]
+        e_date = (end or "").split("T")[0]
+
+    def _run_probe():
+        from app.integrations.shopify_client import _get_store_config
+        cfg = _get_store_config(store)
+        auth = None
+        if not cfg.get("TOKEN") and cfg.get("API_KEY") and cfg.get("PASSWORD"):
+            auth = (cfg.get("API_KEY"), cfg.get("PASSWORD"))
+
+        gql = """
+        query DebugOrdersForProduct($query: String!, $first: Int!, $after: String) {
+          orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+            edges {
+              cursor
+              node { id name processedAt cancelledAt closedAt displayFinancialStatus }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        """
+        variants = [
+            {
+                "label": "current_grouped_dates",
+                "query": f'product_id:"{pid}" (processed_at:>="{s_date}" AND processed_at:<="{e_date}")',
+            },
+            {
+                "label": "separate_quoted_dates",
+                "query": f'product_id:"{pid}" processed_at:>="{s_date}" processed_at:<="{e_date}"',
+            },
+            {
+                "label": "separate_unquoted_dates",
+                "query": f"product_id:{pid} processed_at:>={s_date} processed_at:<={e_date}",
+            },
+            {
+                "label": "paid_grouped_dates",
+                "query": f'product_id:"{pid}" (processed_at:>="{s_date}" AND processed_at:<="{e_date}") financial_status:"paid"',
+            },
+            {
+                "label": "date_window_only",
+                "query": f'(processed_at:>="{s_date}" AND processed_at:<="{e_date}")',
+            },
+        ]
+
+        def _one_variant(item: dict[str, str]) -> dict[str, Any]:
+            started = time.perf_counter()
+            after = None
+            pages = 0
+            total = 0
+            sample: list[dict[str, Any]] = []
+            call_limit = None
+            try:
+                while pages < 3:
+                    resp = requests.post(
+                        cfg.get("GQL"),
+                        headers=cfg.get("HEADERS") or {},
+                        json={"query": gql, "variables": {"query": item["query"], "first": 50, "after": after}},
+                        timeout=12,
+                        auth=auth,
+                    )
+                    call_limit = resp.headers.get("X-Shopify-Shop-Api-Call-Limit") or resp.headers.get("x-shopify-shop-api-call-limit")
+                    if resp.status_code >= 400:
+                        return {
+                            "label": item["label"],
+                            "ok": False,
+                            "status": resp.status_code,
+                            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                            "call_limit": call_limit,
+                            "error": (resp.text or "")[:500],
+                        }
+                    payload = resp.json() if resp.content else {}
+                    if payload.get("errors"):
+                        return {
+                            "label": item["label"],
+                            "ok": False,
+                            "status": resp.status_code,
+                            "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                            "call_limit": call_limit,
+                            "error": payload.get("errors"),
+                        }
+                    conn = ((payload.get("data") or {}).get("orders") or {})
+                    edges = conn.get("edges") or []
+                    pages += 1
+                    for edge in edges:
+                        node = ((edge or {}).get("node") or {})
+                        if node.get("cancelledAt"):
+                            continue
+                        total += 1
+                        if len(sample) < 5:
+                            sample.append({
+                                "id": node.get("id"),
+                                "name": node.get("name"),
+                                "processed_at": node.get("processedAt"),
+                                "closed_at": node.get("closedAt"),
+                                "financial_status": node.get("displayFinancialStatus"),
+                            })
+                    page_info = conn.get("pageInfo") or {}
+                    if not page_info.get("hasNextPage"):
+                        break
+                    after = page_info.get("endCursor")
+                    if not after:
+                        break
+                return {
+                    "label": item["label"],
+                    "ok": True,
+                    "status": 200,
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "call_limit": call_limit,
+                    "pages_checked": pages,
+                    "partial_count": total,
+                    "has_more": bool(after),
+                    "sample": sample,
+                }
+            except Exception as e:
+                return {
+                    "label": item["label"],
+                    "ok": False,
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                    "call_limit": call_limit,
+                    "error": str(e),
+                }
+
+        return {
+            "store": store,
+            "resolved_shop": cfg.get("SHOP"),
+            "api_version": cfg.get("API_VERSION"),
+            "product_id": pid,
+            "start": s_date,
+            "end": e_date,
+            "results": [_one_variant(v) for v in variants],
+        }
+
+    try:
+        data = await run_in_threadpool(_run_probe)
+        return {"data": data}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 def _oauth_enabled_store_labels() -> set[str]:
     raw = (os.getenv("SHOPIFY_OAUTH_STORES") or "").strip()
     if not raw:
