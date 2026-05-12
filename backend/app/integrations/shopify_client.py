@@ -13,6 +13,7 @@ load_dotenv()
 # NOTE: Best-effort only; resets on cold start and deploy.
 _PRODUCT_BRIEF_CACHE: dict[str, tuple[float, dict]] = {}
 _PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900")  # 15 minutes
+_PRODUCT_BRIEF_DB_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_DB_TTL_S", "1800") or "1800")  # 30 minutes
 _PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
 _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
 _perf_log = logging.getLogger("shopify_client.perf")
@@ -1259,8 +1260,8 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
     page_info = None
     pages = 0
     started = time.time()
-    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "20") or "20"))
-    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "8") or "8"))
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "12") or "12"))
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "5") or "5"))
     while True:
         q = params.copy()
         if page_info:
@@ -1784,6 +1785,34 @@ def _product_first_image_url(numeric_product_id: str, *, store: str | None = Non
     return None
 
 
+def _product_cache_key(kind: str, pid: str) -> str:
+    return f"shopify_{kind}:{str(pid or '').strip()}"
+
+
+def _get_product_cache(store: str | None, kind: str, pid: str, ttl_s: int | None = None) -> dict | None:
+    try:
+        from app import db as _db  # type: ignore
+        rec = _db.get_app_setting(_canonical_store_label(store), _product_cache_key(kind, pid)) or {}
+        if not isinstance(rec, dict):
+            return None
+        ts = float(rec.get("ts") or 0)
+        ttl = int(ttl_s if ttl_s is not None else _PRODUCT_BRIEF_DB_TTL_S)
+        if ts > 0 and ttl > 0 and (time.time() - ts) <= ttl:
+            data = rec.get("data")
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _set_product_cache(store: str | None, kind: str, pid: str, data: dict) -> None:
+    try:
+        from app import db as _db  # type: ignore
+        _db.set_app_setting(_canonical_store_label(store), _product_cache_key(kind, pid), {"ts": time.time(), "data": data or {}})
+    except Exception:
+        pass
+
+
 def _is_size_like_value(value: str) -> bool:
     t = str(value or "").strip().lower()
     if not t:
@@ -1951,6 +1980,9 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
     - Counts how many sizes have all color variants at 0 or less
     - Picks the first product image as thumbnail
     """
+    cached = _get_product_cache(store, "brief", str(numeric_product_id), _PRODUCT_BRIEF_DB_TTL_S)
+    if cached is not None:
+        return cached
     try:
         query = """
         query ProductBrief($id: ID!) {
@@ -1972,13 +2004,21 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
         timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_INVENTORY_GRAPHQL_TIMEOUT_S", "24") or "24"))
         data = _gql_store_once(store, query, {"id": f"gid://shopify/Product/{numeric_product_id}"}, timeout=timeout_s)
         summary = _inventory_summary_from_graphql_product((data or {}).get("node") or {})
-        return {
+        brief = {
             "image": summary.get("image"),
             "total_available": int(summary.get("total_available") or 0),
             "zero_variants": int(summary.get("zero_variants") or 0),
             "zero_sizes": int(summary.get("zero_sizes") or 0),
             "price": summary.get("price"),
         }
+        _set_product_cache(store, "brief", str(numeric_product_id), brief)
+        _set_product_cache(store, "inventory", str(numeric_product_id), {
+            "sizes": summary.get("sizes") or [],
+            "colors": summary.get("colors") or [],
+            "matrix": summary.get("matrix") or {},
+            "total_available": int(summary.get("total_available") or 0),
+        })
+        return brief
     except Exception as e:
         _perf_log.warning("product_brief.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
         if os.getenv("PTOS_PRODUCTS_BRIEF_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
@@ -2163,8 +2203,18 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
         "total_available": int
       }
     """
+    cached = _get_product_cache(store, "inventory", str(numeric_product_id), _PRODUCT_BRIEF_DB_TTL_S)
+    if cached is not None:
+        return {
+            "sizes": cached.get("sizes") or [],
+            "colors": cached.get("colors") or [],
+            "matrix": cached.get("matrix") or {},
+            "total_available": int(cached.get("total_available") or 0),
+        }
     try:
-        return _get_product_inventory_graphql(numeric_product_id, store=store)
+        data = _get_product_inventory_graphql(numeric_product_id, store=store)
+        _set_product_cache(store, "inventory", str(numeric_product_id), data)
+        return data
     except Exception as e:
         _perf_log.warning("product_variants_inventory.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
         if os.getenv("PTOS_PRODUCTS_INVENTORY_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
@@ -2679,6 +2729,9 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
             "zero_variants": int(summary.get("zero_variants") or 0),
             "zero_sizes": int(summary.get("zero_sizes") or 0),
             "price": summary.get("price"),
+            "sizes": summary.get("sizes") or [],
+            "colors": summary.get("colors") or [],
+            "matrix": summary.get("matrix") or {},
         }
     return out
 
@@ -2704,7 +2757,15 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
         if hit and (now - float(hit[0])) <= float(_PRODUCT_BRIEF_TTL_S):
             out[pid] = hit[1]
         else:
-            missing.append(pid)
+            db_hit = _get_product_cache(store, "brief", pid, _PRODUCT_BRIEF_DB_TTL_S)
+            if db_hit is not None:
+                out[pid] = db_hit
+                try:
+                    _PRODUCT_BRIEF_CACHE[k] = (now, db_hit)
+                except Exception:
+                    pass
+            else:
+                missing.append(pid)
 
     if not missing:
         return out
@@ -2717,6 +2778,17 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
             out[pid] = data
             try:
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+            except Exception:
+                pass
+            _set_product_cache(store, "brief", pid, data)
+            try:
+                inv_data = {
+                    "sizes": (data or {}).get("sizes") or [],
+                    "colors": (data or {}).get("colors") or [],
+                    "matrix": (data or {}).get("matrix") or {},
+                    "total_available": int((data or {}).get("total_available") or 0),
+                }
+                _set_product_cache(store, "inventory", pid, inv_data)
             except Exception:
                 pass
         _perf_log.info(
@@ -2755,6 +2827,7 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
             except Exception:
                 pass
+            _set_product_cache(store, "brief", pid, data)
     return out
 
 
