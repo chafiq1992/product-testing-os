@@ -1344,7 +1344,7 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
     after = None
     pages = 0
     started = time.time()
-    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "8") or "8"))
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2") or "2"))
     first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "75") or "75")))
     timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
     while pages < max_pages:
