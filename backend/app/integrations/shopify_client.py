@@ -1217,12 +1217,179 @@ def _parse_utm_from_url(url: str | None) -> tuple[dict, str | None, str | None, 
         return ({}, None, None, None)
 
 
+def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None) -> dict | None:
+    try:
+        node = node or {}
+        if node.get("cancelledAt"):
+            return None
+        landing = str(node.get("landingPageUrl") or "").strip()
+        referring = str(node.get("referrerUrl") or "").strip()
+        utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(landing)
+        if not utm and referring:
+            utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
+
+        journey = (node.get("customerJourneySummary") or {}) if isinstance(node.get("customerJourneySummary"), dict) else {}
+        for visit_key in ("lastVisit", "firstVisit"):
+            visit = (journey.get(visit_key) or {}) if isinstance(journey.get(visit_key), dict) else {}
+            if not landing:
+                landing = str(visit.get("landingPage") or "").strip()
+            if not referring:
+                referring = str(visit.get("referrerUrl") or "").strip()
+            vu = (visit.get("utmParameters") or {}) if isinstance(visit.get("utmParameters"), dict) else {}
+            if vu:
+                mapped = {
+                    "utm_source": vu.get("source"),
+                    "utm_medium": vu.get("medium"),
+                    "utm_campaign": vu.get("campaign"),
+                    "utm_content": vu.get("content"),
+                    "utm_term": vu.get("term"),
+                }
+                for k, v in mapped.items():
+                    if v and not utm.get(k):
+                        utm[k] = str(v)
+
+        attrs: dict[str, str] = {}
+        for attr in (node.get("customAttributes") or []):
+            try:
+                k = str((attr or {}).get("key") or "").strip()
+                v = str((attr or {}).get("value") or "").strip()
+                if k and v:
+                    attrs[k] = v
+            except Exception:
+                continue
+        for k in ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id"):
+            v = attrs.get(k)
+            if v and not utm.get(k):
+                utm[k] = v
+        if not ad_id:
+            ad_id = attrs.get("ad_id") or None
+        if not campaign_id:
+            campaign_id = attrs.get("campaign_id") or attrs.get("utm_campaign") or utm.get("utm_campaign") or None
+        if not adset_id:
+            adset_id = attrs.get("adset_id") or None
+        if not adset_id:
+            for candidate_key in ("utm_medium", "utm_term"):
+                candidate = utm.get(candidate_key)
+                if candidate and str(candidate).isdigit() and len(str(candidate)) >= 15:
+                    adset_id = str(candidate)
+                    break
+        if not ad_id:
+            candidate = utm.get("utm_content")
+            if candidate and str(candidate).isdigit() and len(str(candidate)) >= 15:
+                ad_id = str(candidate)
+
+        total = (((node.get("currentTotalPriceSet") or {}).get("shopMoney") or {}) if isinstance(node.get("currentTotalPriceSet"), dict) else {})
+        oid = str(node.get("id") or "")
+        return {
+            "order_id": oid.split("/")[-1] if "/" in oid else oid,
+            "name": node.get("name"),
+            "processed_at": node.get("processedAt"),
+            "total_price": float(total.get("amount") or 0),
+            "currency": total.get("currencyCode"),
+            "source_name": node.get("sourceName"),
+            "landing_site": landing or None,
+            "referring_site": referring or None,
+            "utm": utm,
+            "ad_id": ad_id,
+            "campaign_id": campaign_id,
+            "adset_id": adset_id,
+            "store": store,
+        }
+    except Exception:
+        return None
+
+
+def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    query = (
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+    )
+    if not include_closed:
+        query = f"{query} status:open"
+    gql = """
+    query OrdersWithUtms($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT, reverse: true) {
+        edges {
+          cursor
+          node {
+            id
+            name
+            processedAt
+            cancelledAt
+            sourceName
+            landingPageUrl
+            referrerUrl
+            customAttributes { key value }
+            currentTotalPriceSet { shopMoney { amount currencyCode } }
+            customerJourneySummary {
+              firstVisit {
+                landingPage
+                referrerUrl
+                source
+                utmParameters { source medium campaign content term }
+              }
+              lastVisit {
+                landingPage
+                referrerUrl
+                source
+                utmParameters { source medium campaign content term }
+              }
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    out: list[dict] = []
+    after = None
+    pages = 0
+    started = time.time()
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "8") or "8"))
+    first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "75") or "75")))
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
+    while pages < max_pages:
+        data = _gql_store_once(store, gql, {"query": query, "first": first, "after": after}, timeout=timeout_s)
+        conn = (data or {}).get("orders") or {}
+        pages += 1
+        for edge in (conn.get("edges") or []):
+            row = _order_row_from_graphql_node((edge or {}).get("node") or {}, store=store)
+            if row:
+                out.append(row)
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    _perf_log.info(
+        "utm_orders.graphql store=%s pages=%d rows=%d elapsed_ms=%d",
+        store,
+        pages,
+        len(out),
+        int((time.time() - started) * 1000),
+    )
+    return out
+
+
 def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
     """List orders within processed_at range and extract UTM/ad identifiers from landing URLs.
 
     Output rows include: order_id, name, processed_at, total_price, currency, source_name,
     landing_site, utm (map), ad_id, campaign_id.
     """
+    if os.getenv("PTOS_UTM_ORDERS_GRAPHQL", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            rows = list_orders_with_utms_processed_graphql(
+                processed_min_date,
+                processed_max_date,
+                store=store,
+                include_closed=include_closed,
+            )
+            if rows:
+                return rows
+        except Exception as e:
+            _perf_log.warning("utm_orders.graphql_failed store=%s err=%s", store, e)
+
     from urllib.parse import urlencode
     base_path = "/orders.json"
     # Normalize processed_at window to store timezone bounds
