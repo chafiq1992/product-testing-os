@@ -16,6 +16,7 @@ _PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900
 _PRODUCT_BRIEF_DB_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_DB_TTL_S", "1800") or "1800")  # 30 minutes
 _PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
 _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
+_UTM_ORDERS_DB_TTL_S = int(os.getenv("PTOS_UTM_ORDERS_DB_TTL_S", "300") or "300")  # 5 minutes
 _perf_log = logging.getLogger("shopify_client.perf")
 
 def _canonical_store_label(store: str | None) -> str | None:
@@ -1299,6 +1300,43 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
         return None
 
 
+def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
+    closed = "all" if include_closed else "open"
+    return f"shopify_utm_orders:{processed_min_date}:{processed_max_date}:{closed}"
+
+
+def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
+    try:
+        from app import db as _db  # type: ignore
+        rec = _db.get_app_setting(
+            _canonical_store_label(store),
+            _utm_orders_cache_key(processed_min_date, processed_max_date, include_closed),
+        ) or {}
+        if not isinstance(rec, dict):
+            return None
+        ts = float(rec.get("ts") or 0)
+        if ts > 0 and _UTM_ORDERS_DB_TTL_S > 0 and (time.time() - ts) <= _UTM_ORDERS_DB_TTL_S:
+            data = rec.get("data")
+            return data if isinstance(data, list) else None
+    except Exception:
+        return None
+    return None
+
+
+def _set_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool, rows: list[dict]) -> None:
+    try:
+        from app import db as _db  # type: ignore
+        if not rows:
+            return
+        _db.set_app_setting(
+            _canonical_store_label(store),
+            _utm_orders_cache_key(processed_min_date, processed_max_date, include_closed),
+            {"ts": time.time(), "data": rows},
+        )
+    except Exception:
+        pass
+
+
 def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
     query = (
         f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
@@ -1377,6 +1415,11 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
     Output rows include: order_id, name, processed_at, total_price, currency, source_name,
     landing_site, utm (map), ad_id, campaign_id.
     """
+    cached_rows = _get_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed)
+    if cached_rows is not None:
+        _perf_log.info("utm_orders.cache_hit store=%s rows=%d", store, len(cached_rows))
+        return cached_rows
+
     if os.getenv("PTOS_UTM_ORDERS_GRAPHQL", "1").strip().lower() not in {"0", "false", "no", "off"}:
         try:
             rows = list_orders_with_utms_processed_graphql(
@@ -1386,6 +1429,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                 include_closed=include_closed,
             )
             if rows:
+                _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
                 return rows
         except Exception as e:
             _perf_log.warning("utm_orders.graphql_failed store=%s err=%s", store, e)
@@ -1553,6 +1597,7 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         len(out),
         int((time.time() - started) * 1000),
     )
+    _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, out)
     return out
 
 
