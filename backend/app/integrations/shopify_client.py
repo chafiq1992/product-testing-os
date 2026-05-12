@@ -1,4 +1,4 @@
-import os, requests, base64, re, time
+import os, requests, base64, re, time, logging
 from datetime import datetime, timedelta
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
@@ -15,6 +15,7 @@ _PRODUCT_BRIEF_CACHE: dict[str, tuple[float, dict]] = {}
 _PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900")  # 15 minutes
 _PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
 _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
+_perf_log = logging.getLogger("shopify_client.perf")
 
 def _canonical_store_label(store: str | None) -> str | None:
     s = (store or "").strip().lower()
@@ -916,6 +917,53 @@ def count_orders_by_product_or_variant_processed_batch(
     out: dict[str, int] = {v: 0 for v in targets.values()}
     if not targets:
         return out
+
+    # Fast path: Shopify's indexed order search filters by product_id server-side.
+    # This avoids scanning every order page in the selected date window.
+    try:
+        keys = list(targets.values())
+        workers = max(1, min(len(keys), int(os.getenv("PTOS_ORDERS_SEARCH_WORKERS", "8") or "8")))
+
+        def _one(k: str) -> tuple[str, int, bool]:
+            try:
+                return (k, int(_count_orders_by_product_search(
+                    k,
+                    processed_min_date,
+                    processed_max_date,
+                    store=store,
+                    include_closed=include_closed,
+                ) or 0), True)
+            except Exception:
+                return (k, 0, False)
+
+        searched: dict[str, int] = {}
+        failed = 0
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_one, k) for k in keys]
+            for fut in as_completed(futs):
+                try:
+                    k, v, ok = fut.result()
+                    if not ok:
+                        failed += 1
+                    searched[k] = v
+                except Exception:
+                    failed += 1
+        for key, val in searched.items():
+            out[key] = int(val or 0)
+        _perf_log.info(
+            "orders_search.batch store=%s ids=%d workers=%d elapsed_ms=%d nonzero=%d failed=%d",
+            store,
+            len(keys),
+            workers,
+            int((time.time() - started) * 1000),
+            sum(1 for v in searched.values() if int(v or 0) > 0),
+            failed,
+        )
+        if failed == 0 and searched and all(k in searched for k in keys):
+            return out
+    except Exception as e:
+        _perf_log.warning("orders_search.batch_failed store=%s err=%s", store, e)
 
     processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
     from urllib.parse import urlencode
@@ -1971,6 +2019,67 @@ def count_paid_orders_by_title(title_contains: str, created_at_min: str, created
     return total
 
 
+def _count_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+) -> int:
+    """Count orders matching product_id using Shopify Admin GraphQL search."""
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return 0
+    parts = [
+        f'product_id:"{ident}"',
+        f'processed_at:>="{processed_min_date}"',
+        f'processed_at:<="{processed_max_date}"',
+        "-cancelled_at:*",
+    ]
+    if not include_closed:
+        parts.append("status:open")
+    query = " ".join(parts)
+    gql = """
+    query OrdersForProduct($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+        edges { cursor node { id } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    total = 0
+    after = None
+    seen: set[str] = set()
+    started = time.time()
+    pages = 0
+    while True:
+        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
+        conn = (data or {}).get("orders") or {}
+        edges = conn.get("edges") or []
+        pages += 1
+        for edge in edges:
+            oid = str(((edge or {}).get("node") or {}).get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                total += 1
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    _perf_log.info(
+        "orders_search.one store=%s pid=%s pages=%d total=%d elapsed_ms=%d",
+        store,
+        ident,
+        pages,
+        total,
+        int((time.time() - started) * 1000),
+    )
+    return total
+
+
 def count_paid_orders_by_product_search(
     numeric_id: str,
     processed_min_date: str,
@@ -2211,6 +2320,57 @@ def count_orders_and_paid_by_product_or_variant_processed_batch(
     return out
 
 
+def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+    """Fast product-card data for ads management.
+
+    Returns image and first variant price without the heavy REST inventory chain.
+    """
+    ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip().isdigit()]
+    if not ids:
+        return {}
+    query = """
+    query ProductBriefNodes($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          featuredImage { url }
+          variants(first: 1) {
+            nodes { price }
+          }
+        }
+      }
+    }
+    """
+    gid_ids = [f"gid://shopify/Product/{pid}" for pid in ids]
+    data = _gql_store(store, query, {"ids": gid_ids})
+    out: dict[str, dict] = {}
+    for node in ((data or {}).get("nodes") or []):
+        if not node:
+            continue
+        gid = str((node or {}).get("id") or "")
+        pid = gid.split("/")[-1] if "/" in gid else gid
+        if not pid:
+            continue
+        image = ((node or {}).get("featuredImage") or {}).get("url")
+        price = None
+        try:
+            variants = (((node or {}).get("variants") or {}).get("nodes") or [])
+            if variants:
+                raw_price = (variants[0] or {}).get("price")
+                if raw_price is not None:
+                    price = float(str(raw_price))
+        except Exception:
+            price = None
+        out[str(pid)] = {
+            "image": image,
+            "total_available": 0,
+            "zero_variants": 0,
+            "zero_sizes": 0,
+            "price": price,
+        }
+    return out
+
+
 def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
     """Return product briefs for a list of numeric product IDs.
 
@@ -2236,6 +2396,36 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
 
     if not missing:
         return out
+
+    try:
+        started = time.time()
+        brief_map = _get_products_brief_graphql(missing, store=store)
+        for pid in missing:
+            data = (brief_map or {}).get(pid) or {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+            out[pid] = data
+            try:
+                _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+            except Exception:
+                pass
+        _perf_log.info(
+            "products_brief.graphql store=%s ids=%d found=%d elapsed_ms=%d",
+            store,
+            len(missing),
+            len(brief_map or {}),
+            int((time.time() - started) * 1000),
+        )
+        return out
+    except Exception as e:
+        _perf_log.warning("products_brief.graphql_failed store=%s ids=%d err=%s", store, len(missing), e)
+        if (os.getenv("PTOS_PRODUCTS_BRIEF_REST_FALLBACK", "") or "").strip().lower() not in ("1", "true", "yes"):
+            for pid in missing:
+                data = {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+                out[pid] = data
+                try:
+                    _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+                except Exception:
+                    pass
+            return out
 
     def _fetch_one(pid: str) -> tuple[str, dict]:
         try:

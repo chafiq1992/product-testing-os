@@ -1308,6 +1308,7 @@ class OrdersTotalCountRequest(BaseModel):
 
 @app.post("/api/shopify/orders_count_total")
 async def api_orders_count_total(req: OrdersTotalCountRequest):
+    started = time.perf_counter()
     try:
         s_date = (req.start or "").split("T")[0] if isinstance(req.start, str) and "-" in (req.start or "") else (req.start or "")
         e_date = (req.end or "").split("T")[0] if isinstance(req.end, str) and "-" in (req.end or "") else (req.end or "")
@@ -1321,8 +1322,15 @@ async def api_orders_count_total(req: OrdersTotalCountRequest):
                 return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=store, include_closed=include_closed)
             return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=store, include_closed=include_closed)
 
-        cnt = await _cached(key, 60, _compute)
+        cnt = await asyncio.wait_for(_cached(key, 60, _compute), timeout=28)
         return {"data": {"count": int(cnt or 0)}}
+    except asyncio.TimeoutError:
+        shopify_logger.warning(
+            "shopify.orders_count_total timeout store=%s elapsed_ms=%s",
+            getattr(req, "store", None),
+            int((time.perf_counter() - started) * 1000),
+        )
+        return {"error": "shopify_orders_total_timeout", "data": {"count": 0}}
     except Exception as e:
         return {"error": str(e), "data": {"count": 0}}
 
