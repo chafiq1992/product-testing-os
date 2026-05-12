@@ -1225,17 +1225,38 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
             return None
         landing = str(node.get("landingPageUrl") or "").strip()
         referring = str(node.get("referrerUrl") or "").strip()
-        utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(landing)
-        if not utm and referring:
-            utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
+        utm: dict = {}
+        ad_id: str | None = None
+        campaign_id: str | None = None
+        adset_id: str | None = None
+
+        def _merge_url_attribution(url: str | None) -> None:
+            nonlocal ad_id, campaign_id, adset_id
+            parsed_utm, parsed_ad_id, parsed_campaign_id, parsed_adset_id = _parse_utm_from_url(url)
+            for key, value in (parsed_utm or {}).items():
+                if value and not utm.get(key):
+                    utm[key] = value
+            if not ad_id and parsed_ad_id:
+                ad_id = parsed_ad_id
+            if not campaign_id and parsed_campaign_id:
+                campaign_id = parsed_campaign_id
+            if not adset_id and parsed_adset_id:
+                adset_id = parsed_adset_id
+
+        _merge_url_attribution(landing)
+        _merge_url_attribution(referring)
 
         journey = (node.get("customerJourneySummary") or {}) if isinstance(node.get("customerJourneySummary"), dict) else {}
         for visit_key in ("lastVisit", "firstVisit"):
             visit = (journey.get(visit_key) or {}) if isinstance(journey.get(visit_key), dict) else {}
+            visit_landing = str(visit.get("landingPage") or "").strip()
+            visit_referring = str(visit.get("referrerUrl") or "").strip()
             if not landing:
-                landing = str(visit.get("landingPage") or "").strip()
+                landing = visit_landing
             if not referring:
-                referring = str(visit.get("referrerUrl") or "").strip()
+                referring = visit_referring
+            _merge_url_attribution(visit_landing)
+            _merge_url_attribution(visit_referring)
             vu = (visit.get("utmParameters") or {}) if isinstance(visit.get("utmParameters"), dict) else {}
             if vu:
                 mapped = {
@@ -1252,12 +1273,17 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
         attrs: dict[str, str] = {}
         for attr in (node.get("customAttributes") or []):
             try:
-                k = str((attr or {}).get("key") or "").strip()
+                k = str((attr or {}).get("key") or "").strip().lower()
                 v = str((attr or {}).get("value") or "").strip()
                 if k and v:
                     attrs[k] = v
             except Exception:
                 continue
+        full_url = attrs.get("full_url") or attrs.get("landing_site") or attrs.get("landing_page") or attrs.get("url")
+        if full_url:
+            if not landing:
+                landing = full_url
+            _merge_url_attribution(full_url)
         for k in ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id"):
             v = attrs.get(k)
             if v and not utm.get(k):
@@ -1302,7 +1328,7 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
 
 def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
     closed = "all" if include_closed else "open"
-    return f"shopify_utm_orders_v3:{processed_min_date}:{processed_max_date}:{closed}"
+    return f"shopify_utm_orders_v4:{processed_min_date}:{processed_max_date}:{closed}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
@@ -1394,7 +1420,7 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
     total_pages = 0
     started = time.time()
     days = _ymd_days_desc(processed_min_date, processed_max_date)
-    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "1")) or "1"))
+    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
     max_total_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_TOTAL_PAGES", str(max_pages_per_day * max(1, len(days)))) or str(max_pages_per_day * max(1, len(days)))))
     first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
     timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
@@ -1461,31 +1487,7 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
     return out
 
 
-def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
-    """List orders within processed_at range and extract UTM/ad identifiers from landing URLs.
-
-    Output rows include: order_id, name, processed_at, total_price, currency, source_name,
-    landing_site, utm (map), ad_id, campaign_id.
-    """
-    cached_rows = _get_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed)
-    if cached_rows is not None:
-        _perf_log.info("utm_orders.cache_hit store=%s rows=%d", store, len(cached_rows))
-        return cached_rows
-
-    if os.getenv("PTOS_UTM_ORDERS_GRAPHQL", "1").strip().lower() not in {"0", "false", "no", "off"}:
-        try:
-            rows = list_orders_with_utms_processed_graphql(
-                processed_min_date,
-                processed_max_date,
-                store=store,
-                include_closed=include_closed,
-            )
-            if rows:
-                _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
-                return rows
-        except Exception as e:
-            _perf_log.warning("utm_orders.graphql_failed store=%s err=%s", store, e)
-
+def _list_orders_with_utms_processed_rest(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
     from urllib.parse import urlencode
     base_path = "/orders.json"
     # Normalize processed_at window to store timezone bounds
@@ -1551,16 +1553,20 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                     continue
                 landing = (o.get("landing_site") or "").strip()
                 note_attrs = o.get("note_attributes") or []
+                na_all: dict[str, str] = {}
+                try:
+                    for na in (note_attrs or []):
+                        na_name = str((na or {}).get("name") or "").strip().lower()
+                        na_val = str((na or {}).get("value") or "").strip()
+                        if na_name and na_val:
+                            na_all[na_name] = na_val
+                except Exception:
+                    na_all = {}
 
                 # Fallbacks: some shops store full URL in a note_attribute named full_url
-                if not landing:
-                    try:
-                        for na in (note_attrs or []):
-                            if (na or {}).get("name") == "full_url" and (na or {}).get("value"):
-                                landing = str((na or {}).get("value"))
-                                break
-                    except Exception:
-                        pass
+                full_url = na_all.get("full_url") or na_all.get("landing_site") or na_all.get("landing_page") or na_all.get("url")
+                if not landing and full_url:
+                    landing = full_url
 
                 # Also try referring_site as a UTM source
                 referring = (o.get("referring_site") or "").strip()
@@ -1568,6 +1574,17 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                 # If landing_site didn't yield UTM params, try referring_site
                 if not utm and referring:
                     utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
+                if full_url:
+                    full_utm, full_ad_id, full_campaign_id, full_adset_id = _parse_utm_from_url(full_url)
+                    for k, v in (full_utm or {}).items():
+                        if v and not utm.get(k):
+                            utm[k] = v
+                    if not ad_id and full_ad_id:
+                        ad_id = full_ad_id
+                    if not campaign_id and full_campaign_id:
+                        campaign_id = full_campaign_id
+                    if not adset_id and full_adset_id:
+                        adset_id = full_adset_id
 
                 # === KEY FIX: Extract UTM data from individual note_attributes ===
                 # COD/WhatsApp orders often store UTMs as separate note_attributes
@@ -1577,10 +1594,9 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
                                "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id")
                 na_map: dict[str, str] = {}
                 try:
-                    for na in (note_attrs or []):
-                        na_name = str((na or {}).get("name") or "").strip()
-                        na_val = str((na or {}).get("value") or "").strip()
-                        if na_name in na_utm_keys and na_val:
+                    for na_name in na_utm_keys:
+                        na_val = na_all.get(na_name)
+                        if na_val:
                             na_map[na_name] = na_val
                 except Exception:
                     pass
@@ -1649,8 +1665,88 @@ def list_orders_with_utms_processed(processed_min_date: str, processed_max_date:
         len(out),
         int((time.time() - started) * 1000),
     )
-    _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, out)
     return out
+
+
+def _merge_utm_order_rows(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in list(primary or []) + list(secondary or []):
+        oid = str((row or {}).get("order_id") or (row or {}).get("name") or "")
+        if oid and oid in seen:
+            continue
+        if oid:
+            seen.add(oid)
+        out.append(row)
+    return out
+
+
+def _graphql_utm_rows_may_be_capped(rows: list[dict], processed_min_date: str, processed_max_date: str) -> bool:
+    try:
+        days = _ymd_days_desc(processed_min_date, processed_max_date)
+        max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
+        first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
+        day_cap = max_pages_per_day * first
+        if day_cap <= 0:
+            return False
+        counts: dict[str, int] = {}
+        for row in rows or []:
+            day = str((row or {}).get("processed_at") or "").split("T")[0]
+            if day:
+                counts[day] = counts.get(day, 0) + 1
+        return any(counts.get(day, 0) >= day_cap for day in days)
+    except Exception:
+        return False
+
+
+def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    """List orders within processed_at range and extract UTM/ad identifiers from landing URLs.
+
+    Output rows include: order_id, name, processed_at, total_price, currency, source_name,
+    landing_site, utm (map), ad_id, campaign_id.
+    """
+    cached_rows = _get_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed)
+    if cached_rows is not None:
+        _perf_log.info("utm_orders.cache_hit store=%s rows=%d", store, len(cached_rows))
+        return cached_rows
+
+    if os.getenv("PTOS_UTM_ORDERS_GRAPHQL", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            rows = list_orders_with_utms_processed_graphql(
+                processed_min_date,
+                processed_max_date,
+                store=store,
+                include_closed=include_closed,
+            )
+            if rows:
+                if (
+                    os.getenv("PTOS_UTM_ORDERS_REST_SUPPLEMENT", "1").strip().lower() not in {"0", "false", "no", "off"}
+                    and _graphql_utm_rows_may_be_capped(rows, processed_min_date, processed_max_date)
+                ):
+                    try:
+                        rest_rows = _list_orders_with_utms_processed_rest(
+                            processed_min_date,
+                            processed_max_date,
+                            store=store,
+                            include_closed=include_closed,
+                        )
+                        rows = _merge_utm_order_rows(rows, rest_rows)
+                        _perf_log.info("utm_orders.rest_supplement store=%s rows=%d", store, len(rows))
+                    except Exception as e:
+                        _perf_log.warning("utm_orders.rest_supplement_failed store=%s err=%s", store, e)
+                _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
+                return rows
+        except Exception as e:
+            _perf_log.warning("utm_orders.graphql_failed store=%s err=%s", store, e)
+
+    rows = _list_orders_with_utms_processed_rest(
+        processed_min_date,
+        processed_max_date,
+        store=store,
+        include_closed=include_closed,
+    )
+    _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
+    return rows
 
 
 def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max_date: str, *, stores: list[str] | None = None, include_closed: bool = True) -> list[dict]:
