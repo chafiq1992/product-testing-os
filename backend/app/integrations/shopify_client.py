@@ -1047,6 +1047,28 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
 
     Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
     """
+    try:
+        query = (
+            f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+        )
+        if not include_closed:
+            query = f"{query} status:open"
+        gql = """
+        query OrdersCount($query: String!, $limit: Int) {
+          ordersCount(query: $query, limit: $limit) {
+            count
+            precision
+          }
+        }
+        """
+        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        count_obj = (data or {}).get("ordersCount") or {}
+        return int(count_obj.get("count") or 0)
+    except Exception as e:
+        _perf_log.warning("orders_count.graphql_failed store=%s field=processed err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return 0
+
     from urllib.parse import urlencode
     base_path = "/orders.json"
     # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
@@ -1344,6 +1366,28 @@ def count_orders_total_created(created_min_date: str, created_max_date: str, *, 
 
     Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
     """
+    try:
+        query = (
+            f'(created_at:>="{created_min_date}" AND created_at:<="{created_max_date}")'
+        )
+        if not include_closed:
+            query = f"{query} status:open"
+        gql = """
+        query OrdersCount($query: String!, $limit: Int) {
+          ordersCount(query: $query, limit: $limit) {
+            count
+            precision
+          }
+        }
+        """
+        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        count_obj = (data or {}).get("ordersCount") or {}
+        return int(count_obj.get("count") or 0)
+    except Exception as e:
+        _perf_log.warning("orders_count.graphql_failed store=%s field=created err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return 0
+
     from urllib.parse import urlencode
     base_path = "/orders.json"
     # Build inclusive day bounds
@@ -2369,7 +2413,8 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
     }
     """
     gid_ids = [f"gid://shopify/Product/{pid}" for pid in ids]
-    data = _gql_store(store, query, {"ids": gid_ids})
+    timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_BRIEF_GRAPHQL_TIMEOUT_S", "24") or "24"))
+    data = _gql_store_once(store, query, {"ids": gid_ids}, timeout=timeout_s)
     out: dict[str, dict] = {}
     for node in ((data or {}).get("nodes") or []):
         if not node:
@@ -2448,10 +2493,6 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
             for pid in missing:
                 data = {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
                 out[pid] = data
-                try:
-                    _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
-                except Exception:
-                    pass
             return out
 
     def _fetch_one(pid: str) -> tuple[str, dict]:

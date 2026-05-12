@@ -612,7 +612,22 @@ async def api_shopify_debug_order_search(
           orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
             edges {
               cursor
-              node { id name processedAt cancelledAt closedAt displayFinancialStatus }
+              node {
+                id
+                name
+                processedAt
+                cancelledAt
+                closedAt
+                displayFinancialStatus
+                lineItems(first: 20) {
+                  nodes {
+                    name
+                    quantity
+                    product { id }
+                    variant { id }
+                  }
+                }
+              }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -686,12 +701,26 @@ async def api_shopify_debug_order_search(
                             continue
                         total += 1
                         if len(sample) < 5:
+                            line_items: list[dict[str, Any]] = []
+                            try:
+                                for li in ((((node.get("lineItems") or {}).get("nodes") or []))[:20]):
+                                    product_gid = (((li or {}).get("product") or {}).get("id") or "")
+                                    variant_gid = (((li or {}).get("variant") or {}).get("id") or "")
+                                    line_items.append({
+                                        "name": (li or {}).get("name"),
+                                        "quantity": (li or {}).get("quantity"),
+                                        "product_id": str(product_gid).split("/")[-1] if product_gid else None,
+                                        "variant_id": str(variant_gid).split("/")[-1] if variant_gid else None,
+                                    })
+                            except Exception:
+                                line_items = []
                             sample.append({
                                 "id": node.get("id"),
                                 "name": node.get("name"),
                                 "processed_at": node.get("processedAt"),
                                 "closed_at": node.get("closedAt"),
                                 "financial_status": node.get("displayFinancialStatus"),
+                                "line_items": line_items,
                             })
                     page_info = conn.get("pageInfo") or {}
                     if not page_info.get("hasNextPage"):
