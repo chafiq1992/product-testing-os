@@ -1,0 +1,4909 @@
+import os, requests, base64, re, time, logging
+from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from dotenv import load_dotenv
+load_dotenv()
+
+# -------- lightweight in-memory caches (per Cloud Run instance) --------
+# NOTE: Best-effort only; resets on cold start and deploy.
+_PRODUCT_BRIEF_CACHE: dict[str, tuple[float, dict]] = {}
+_PRODUCT_BRIEF_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_TTL_S", "900") or "900")  # 15 minutes
+_PRODUCT_BRIEF_DB_TTL_S = int(os.getenv("PTOS_PRODUCTS_BRIEF_DB_TTL_S", "1800") or "1800")  # 30 minutes
+_PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or "250")  # safety cap
+_PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
+_UTM_ORDERS_DB_TTL_S = int(os.getenv("PTOS_UTM_ORDERS_DB_TTL_S", "300") or "300")  # 5 minutes
+_perf_log = logging.getLogger("shopify_client.perf")
+
+
+def _timed_request(method: str, url: str, **kw):
+    """Drop-in replacement for ``requests.<verb>`` that records a system_health sample.
+
+    Op label is the calling helper's function name (e.g. ``_gql_store``,
+    ``_rest_get_store_raw``). Status >= 500 counts as an error sample.
+    Network exceptions count as errors. Pure-additive: any failure inside
+    recording is swallowed so it can never break the request.
+    """
+    import inspect as _inspect
+    try:
+        from app.system_health import record as _sh_record
+    except Exception:
+        _sh_record = None  # type: ignore
+
+    op_name = method
+    try:
+        frame = _inspect.currentframe()
+        if frame and frame.f_back:
+            op_name = frame.f_back.f_code.co_name or method
+    except Exception:
+        op_name = method
+
+    started = time.perf_counter()
+    ok = True
+    err = None
+    status_code = None
+    try:
+        r = requests.request(method, url, **kw)
+        try:
+            status_code = int(getattr(r, "status_code", 0) or 0)
+            if status_code >= 500:
+                ok = False
+                err = f"HTTP {status_code}"
+            elif status_code == 429:
+                # Surface rate-limit as a soft error so the dashboard catches it
+                ok = False
+                err = "HTTP 429 (rate-limited)"
+        except Exception:
+            pass
+        return r
+    except BaseException as e:
+        ok = False
+        err = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        if _sh_record is not None:
+            try:
+                ms = (time.perf_counter() - started) * 1000.0
+                _sh_record("shopify", op_name, ms, ok, error=err)
+            except Exception:
+                pass
+
+def _canonical_store_label(store: str | None) -> str | None:
+    s = (store or "").strip().lower()
+    if not s:
+        return None
+    return "irrakids" if s == "nouralibas" else s
+
+def _oauth_enabled_for_store(store: str | None) -> bool:
+    """Whether DB-backed OAuth tokens are allowed for this store label.
+
+    Default behavior (to support mixed-mode setups):
+      - Enable for 'irrakids', 'irranova', and 'mmd'
+
+    Override via env SHOPIFY_OAUTH_STORES (comma-separated store labels), e.g.:
+      SHOPIFY_OAUTH_STORES=irrakids,irranova,anotherstore
+    """
+    try:
+        s = _canonical_store_label(store) or ""
+        if not s:
+            return False
+        allowed = (os.getenv("SHOPIFY_OAUTH_STORES", "") or "").strip()
+        if allowed:
+            parts = [p.strip().lower() for p in allowed.split(",") if p.strip()]
+            return s in set(parts)
+        return s in {"irrakids", "irranova", "mmd"}
+    except Exception:
+        return False
+
+def _normalize_shop_domain(val: str) -> str:
+    v = (val or "").strip()
+    # remove protocol if provided and any stray whitespace or slashes
+    if v.lower().startswith("https://"):
+        v = v[8:]
+    elif v.lower().startswith("http://"):
+        v = v[7:]
+    v = v.strip().strip("/\t\n\r ")
+    return v
+
+SHOP = _normalize_shop_domain(os.getenv("SHOPIFY_SHOP_DOMAIN", ""))  # your-store.myshopify.com
+TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+API_KEY = os.getenv("SHOPIFY_API_KEY", "")
+PASSWORD = os.getenv("SHOPIFY_PASSWORD", "")
+API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-07")
+GQL = f"https://{SHOP}/admin/api/{API_VERSION}/graphql.json"
+
+headers = {
+    "Content-Type": "application/json"
+}
+if TOKEN:
+    headers["X-Shopify-Access-Token"] = TOKEN
+
+# -------- Multi-store helpers --------
+def _env_with_suffix(base: str, suffix: str) -> str:
+    return os.getenv(f"{base}{suffix}", "")
+
+def _store_suffix(store: str | None) -> str:
+    store = _canonical_store_label(store)
+    if not store:
+        return ""
+    s = (store or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"[^A-Za-z0-9]", "_", s.upper())
+    return f"_{s}"
+
+def _get_store_config(store: str | None) -> dict:
+    """Resolve credentials and endpoints for the given store (env-suffixed values).
+
+    Precedence:
+      - If store provided, read SHOPIFY_*_{STORE} vars; fallback to base SHOPIFY_* when missing
+      - If no store provided, use base SHOPIFY_* values
+    """
+    # Optional DB-backed OAuth token store (for Dev Dashboard public apps).
+    # This repo can persist per-store {shop, access_token} under AppSetting(store, "shopify_oauth").
+    _db = None
+    try:
+        from app import db as _db  # type: ignore
+    except Exception:
+        _db = None
+    store = _canonical_store_label(store)
+
+    if store:
+        suf = _store_suffix(store)
+        # First: try store-specific env vars (e.g. SHOPIFY_SHOP_DOMAIN_MMD)
+        shop_raw = _env_with_suffix("SHOPIFY_SHOP_DOMAIN", suf)
+        token = _env_with_suffix("SHOPIFY_ACCESS_TOKEN", suf)
+        api_key = _env_with_suffix("SHOPIFY_API_KEY", suf) or os.getenv("SHOPIFY_API_KEY", "")
+        password = _env_with_suffix("SHOPIFY_PASSWORD", suf) or os.getenv("SHOPIFY_PASSWORD", "")
+        version = _env_with_suffix("SHOPIFY_API_VERSION", suf) or os.getenv("SHOPIFY_API_VERSION", "2025-07")
+        # Second: for OAuth-enabled stores, check DB-stored OAuth credentials
+        # (these are stored during the Shopify OAuth flow on /shopify-connect)
+        if _db and _oauth_enabled_for_store(store) and (not token or not shop_raw):
+            try:
+                rec = _db.get_app_setting(store, "shopify_oauth") or {}
+                if isinstance(rec, dict):
+                    if not shop_raw:
+                        shop_raw = str(rec.get("shop") or "")
+                    if not token:
+                        token = str(rec.get("access_token") or "")
+            except Exception:
+                pass
+        # Third: only fall back to base env vars if STILL empty
+        if not shop_raw:
+            shop_raw = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        if not token:
+            token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+    else:
+        shop_raw = os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+        api_key = os.getenv("SHOPIFY_API_KEY", "")
+        password = os.getenv("SHOPIFY_PASSWORD", "")
+        version = os.getenv("SHOPIFY_API_VERSION", "2025-07")
+    shop = _normalize_shop_domain(shop_raw)
+    if not shop:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    gql = f"https://{shop}/admin/api/{version}/graphql.json"
+    base = f"https://{shop}/admin/api/{version}"
+    hdrs = {"Content-Type": "application/json"}
+    if token:
+        hdrs["X-Shopify-Access-Token"] = token
+    return {
+        "SHOP": shop,
+        "TOKEN": token,
+        "API_KEY": api_key,
+        "PASSWORD": password,
+        "API_VERSION": version,
+        "GQL": gql,
+        "BASE": base,
+        "HEADERS": hdrs,
+    }
+
+PRODUCT_CREATE = """
+mutation CreateProduct($input: ProductInput!) {
+  productCreate(input: $input) {
+    product {
+      id
+      handle
+      onlineStoreUrl
+      title
+      status
+      options { name values }
+      variants(first: 100) {
+        nodes { id inventoryItem { id } }
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+PAGE_CREATE = """
+mutation CreatePage($page: PageCreateInput!) {
+  pageCreate(page: $page) {
+    page { id handle title }
+    userErrors { field message }
+  }
+}
+"""
+
+PRODUCT_UPDATE = """
+mutation UpdateProduct($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product { id handle onlineStoreUrl title status }
+    userErrors { field message }
+  }
+}
+"""
+
+PUBLICATIONS_QUERY = """
+query ListPublications {
+  publications(first: 20) { nodes { id name } }
+}
+"""
+
+PUBLISH_PRODUCT = """
+mutation PublishProduct($id: ID!, $publicationIds: [ID!]!) {
+  publishablePublish(id: $id, input: { publicationIds: $publicationIds }) {
+    publishable { id }
+    userErrors { field message }
+  }
+}
+"""
+
+# Set metafields on owners (e.g., product)
+METAFIELDS_SET = """
+mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+  metafieldsSet(metafields: $metafields) {
+    metafields { id key namespace }
+    userErrors { field message }
+  }
+}
+"""
+
+# Create a metafield definition so it appears in Admin UI
+METAFIELD_DEFINITION_CREATE = """
+mutation MetafieldDefinitionCreate($definition: MetafieldDefinitionInput!) {
+  metafieldDefinitionCreate(definition: $definition) {
+    createdDefinition { id name namespace key type ownerType }
+    userErrors { field message }
+  }
+}
+"""
+
+FILE_CREATE = """
+mutation FileCreate($files: [FileCreateInput!]!) {
+  fileCreate(files: $files) {
+    files {
+      id
+      alt
+      createdAt
+      fileStatus
+      ... on MediaImage {
+        image { url }
+      }
+      ... on GenericFile {
+        url
+      }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+FILE_NODE = """
+query FileNode($id: ID!) {
+  node(id: $id) {
+    ... on MediaImage {
+      id
+      fileStatus
+      image { url }
+    }
+    ... on GenericFile {
+      id
+      fileStatus
+      url
+    }
+  }
+}
+"""
+
+TRANSLATABLE_RESOURCES_BY_IDS = """
+query TranslatableResourcesByIds($resourceIds: [ID!]!, $first: Int!, $locale: String!) {
+  translatableResourcesByIds(first: $first, resourceIds: $resourceIds) {
+    nodes {
+      resourceId
+      translations(locale: $locale) {
+        key
+        value
+        locale
+        outdated
+      }
+    }
+  }
+}
+"""
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
+def _gql(query: str, variables: dict):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    # Choose auth: prefer Bearer token; else fallback to Basic auth with API key/password
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = _timed_request("POST",GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60, auth=auth)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(f"GraphQL errors: {j['errors']}")
+    data = j.get("data")
+    ue = (
+        (data or {}).get("productCreate", {}).get("userErrors")
+        or (data or {}).get("pageCreate", {}).get("userErrors")
+        or (data or {}).get("productUpdate", {}).get("userErrors")
+        or (data or {}).get("publishablePublish", {}).get("userErrors")
+    )
+    if ue:
+        raise RuntimeError(f"GraphQL userErrors: {ue}")
+    return data
+
+
+def _rest_post(path: str, payload: dict):
+    """Minimal REST helper for endpoints not covered by GraphQL (e.g., product images)."""
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = _timed_request("POST",url, headers=headers, json=payload, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
+def _rest_get(path: str):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = _timed_request("GET",url, headers=headers, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+def _rest_put(path: str, payload: dict):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = _timed_request("PUT",url, headers=headers, json=payload, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+def _rest_delete(path: str):
+    if not SHOP:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
+    base = f"https://{SHOP}/admin/api/{API_VERSION}"
+    url = f"{base}{path}"
+    auth = None
+    if not TOKEN:
+        if API_KEY and PASSWORD:
+            auth = (API_KEY, PASSWORD)
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
+    r = _timed_request("DELETE",url, headers=headers, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+# Store-scoped request helpers
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
+def _gql_store(store: str | None, query: str, variables: dict):
+    cfg = _get_store_config(store)
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("POST",cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=60, auth=auth)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(f"GraphQL errors: {j['errors']}")
+    data = j.get("data")
+    ue = (
+        (data or {}).get("productCreate", {}).get("userErrors")
+        or (data or {}).get("pageCreate", {}).get("userErrors")
+        or (data or {}).get("productUpdate", {}).get("userErrors")
+        or (data or {}).get("publishablePublish", {}).get("userErrors")
+        or (data or {}).get("metafieldsSet", {}).get("userErrors")
+        or (data or {}).get("metafieldDefinitionCreate", {}).get("userErrors")
+        or (data or {}).get("fileCreate", {}).get("userErrors")
+    )
+    if ue:
+        raise RuntimeError(f"GraphQL userErrors: {ue}")
+    return data
+
+def _gql_store_once(store: str | None, query: str, variables: dict, *, timeout: int = 60):
+    cfg = _get_store_config(store)
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("POST",cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=timeout, auth=auth)
+    r.raise_for_status()
+    j = r.json()
+    if "errors" in j:
+        raise RuntimeError(f"GraphQL errors: {j['errors']}")
+    return j.get("data")
+
+def _rest_post_store(store: str | None, path: str, payload: dict):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("POST",url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
+def _rest_get_store(store: str | None, path: str):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
+def _rest_get_store_raw(store: str | None, path: str):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=60, auth=auth, allow_redirects=False)
+    r.raise_for_status()
+    return r
+
+
+def _rest_get_store_raw_once(store: str | None, path: str, *, timeout: int = 20):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=timeout, auth=auth, allow_redirects=False)
+    r.raise_for_status()
+    return r
+
+
+def _processed_window_iso(store: str | None, processed_min_date: str, processed_max_date: str) -> tuple[str, str]:
+    """Return (processed_at_min_iso, processed_at_max_iso) aligned to the shop's timezone day bounds."""
+    try:
+        try:
+            tzname = get_shop_timezone(store)
+        except Exception:
+            tzname = "UTC"
+        try:
+            tz = ZoneInfo(tzname) if ZoneInfo else None
+        except Exception:
+            tz = None
+        start_local = datetime.fromisoformat(f"{processed_min_date}T00:00:00")
+        end_local = datetime.fromisoformat(f"{processed_max_date}T23:59:59")
+        if tz:
+            start_local = start_local.replace(tzinfo=tz)
+            end_local = end_local.replace(tzinfo=tz)
+        end_local = end_local + timedelta(milliseconds=999)
+        utc = ZoneInfo("UTC") if ZoneInfo else None
+        processed_min_iso = start_local.astimezone(utc).isoformat() if utc else f"{processed_min_date}T00:00:00Z"
+        processed_max_iso = end_local.astimezone(utc).isoformat() if utc else f"{processed_max_date}T23:59:59Z"
+        return (processed_min_iso, processed_max_iso)
+    except Exception:
+        return (f"{processed_min_date}T00:00:00", f"{processed_max_date}T23:59:59")
+
+
+def get_shop_timezone(store: str | None = None) -> str:
+    try:
+        data = _rest_get_store(store, "/shop.json")
+        tz = ((data or {}).get("shop") or {}).get("iana_timezone") or ((data or {}).get("shop") or {}).get("timezone")
+        if isinstance(tz, str) and tz.strip():
+            return tz.strip()
+    except Exception:
+        pass
+    return "UTC"
+
+def _rest_put_store(store: str | None, path: str, payload: dict):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("PUT",url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+def _rest_delete_store(store: str | None, path: str):
+    cfg = _get_store_config(store)
+    url = f"{cfg['BASE']}{path}"
+    auth = None
+    if not cfg["TOKEN"]:
+        if cfg["API_KEY"] and cfg["PASSWORD"]:
+            auth = (cfg["API_KEY"], cfg["PASSWORD"])
+        else:
+            raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
+    r = _timed_request("DELETE",url, headers=cfg["HEADERS"], timeout=60, auth=auth)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+def count_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count orders created within [created_at_min, created_at_max].
+
+    Behavior:
+      - If title_contains is numeric (e.g., "123456789"), treat it as Shopify product_id and count
+        orders where any line_item.product_id equals that ID.
+      - Otherwise (textual campaign name), ignore and return 0 as requested.
+
+    Includes orders with any financial_status; excludes canceled orders.
+    """
+    # Ignore textual names entirely per requirement
+    ident = (title_contains or "").strip()
+    if not ident or not ident.isdigit():
+        return 0
+    target_pid = int(ident)
+    # Paginate REST orders endpoint using created_at range and status filters
+    # Shopify REST: /orders.json?status=any&created_at_min=...&created_at_max=...&limit=250
+    from urllib.parse import urlencode
+    total = 0
+    page_info = None
+    base_path = "/orders.json"
+    # Normalize date window to store's timezone (inclusive day bounds)
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        start_dt = datetime.fromisoformat(created_at_min.replace("Z","+00:00"))
+        end_dt = datetime.fromisoformat(created_at_max.replace("Z","+00:00"))
+        if tz:
+            start_dt = start_dt.astimezone(tz)
+            end_dt = end_dt.astimezone(tz)
+        # Expand end to end-of-second inclusive to avoid off-by-one truncation
+        end_dt = end_dt + timedelta(milliseconds=999)
+        created_min = start_dt.isoformat()
+        created_max = end_dt.isoformat()
+    except Exception:
+        created_min = created_at_min
+        created_max = created_at_max
+
+    qs = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "created_at_min": created_min,
+        "created_at_max": created_max,
+        # do not restrict fields to ensure line_items include product_id and variant_id
+    }
+    while True:
+        path = base_path + ("?" + urlencode(qs) if qs else "")
+        data = _rest_get_store(store, path)
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                # financial_status can be null; accept any (paid, pending, authorized, etc.)
+                items = o.get("line_items") or []
+                found = False
+                for li in items:
+                    pid = (li or {}).get("product_id")
+                    vid = (li or {}).get("variant_id")
+                    try:
+                        if pid is not None and int(pid) == target_pid:
+                            found = True
+                            break
+                        if vid is not None and int(vid) == target_pid:
+                            found = True
+                            break
+                    except Exception:
+                        continue
+                if found:
+                    total += 1
+            except Exception:
+                continue
+        # Basic pagination by page number (fallback when Link headers not available via helper)
+        if len(orders) < int(qs["limit"]):
+            break
+        # Advance page using since_id to avoid overlaps
+        try:
+            last_id = orders[-1].get("id")
+            if not last_id:
+                break
+            qs["since_id"] = last_id
+        except Exception:
+            break
+    return total
+
+
+def _parse_link_next(link: str | None) -> str | None:
+    if not link:
+        return None
+    try:
+        parts = [p.strip() for p in link.split(",")]
+        for p in parts:
+            if 'rel="next"' in p:
+                seg = p.split(";")[0].strip()
+                if seg.startswith("<") and seg.endswith(">"):
+                    from urllib.parse import urlparse, parse_qs
+                    url = seg[1:-1]
+                    q = parse_qs(urlparse(url).query)
+                    pi = q.get("page_info", [None])[0]
+                    return pi
+    except Exception:
+        return None
+    return None
+
+
+def _parse_link_rel(link: str | None, rel: str) -> str | None:
+    """Parse a page_info token from a Shopify REST Link header for the given rel (next|previous)."""
+    if not link or not rel:
+        return None
+    try:
+        rel = rel.strip().lower()
+        parts = [p.strip() for p in link.split(",")]
+        for p in parts:
+            if f'rel="{rel}"' in p:
+                seg = p.split(";")[0].strip()
+                if seg.startswith("<") and seg.endswith(">"):
+                    from urllib.parse import urlparse, parse_qs
+                    url = seg[1:-1]
+                    q = parse_qs(urlparse(url).query)
+                    return (q.get("page_info", [None]) or [None])[0]
+    except Exception:
+        return None
+    return None
+
+
+def _tags_to_list(tags: str | None) -> list[str]:
+    try:
+        if not tags:
+            return []
+        # Shopify REST returns a comma-separated string
+        out = []
+        for t in str(tags).split(","):
+            s = t.strip()
+            if s:
+                out.append(s)
+        return out
+    except Exception:
+        return []
+
+
+def _tags_to_string(tags: list[str] | None) -> str:
+    try:
+        items = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        # Shopify expects a comma-separated string
+        return ", ".join(items)
+    except Exception:
+        return ""
+
+
+def _is_cod_tag(tag: str) -> bool:
+    """Match tags like: 'cod 23/12/25' (dd/mm/yy)."""
+    try:
+        t = (tag or "").strip()
+        return bool(re.match(r"^cod\s+\d{2}/\d{2}/\d{2}$", t, flags=re.IGNORECASE))
+    except Exception:
+        return False
+
+
+def list_orders_open_unfulfilled(
+    *,
+    store: str | None = None,
+    limit: int = 50,
+    page_info: str | None = None,
+    fields: str | None = None,
+) -> dict:
+    """List newest->oldest open & unfulfilled orders using Shopify REST cursor pagination (page_info).
+
+    Returns: { orders: [...], next_page_info?, prev_page_info? }
+    """
+    from urllib.parse import urlencode
+    try:
+        limit = int(limit or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 250))
+    base_path = "/orders.json"
+    if page_info:
+        # With page_info, Shopify only allows page_info + limit (+ fields)
+        q: dict = {"page_info": str(page_info), "limit": limit}
+        if fields:
+            q["fields"] = fields
+    else:
+        q = {
+            "status": "open",
+            "fulfillment_status": "unfulfilled",
+            "limit": limit,
+            "order": "created_at desc",
+        }
+        if fields:
+            q["fields"] = fields
+    path = base_path + "?" + urlencode(q)
+    resp = _rest_get_store_raw(store, path)
+    data = resp.json() if resp.content else {}
+    orders = (data or {}).get("orders") or []
+    link = resp.headers.get("Link")
+    return {
+        "orders": orders,
+        "next_page_info": _parse_link_rel(link, "next"),
+        "prev_page_info": _parse_link_rel(link, "previous"),
+    }
+
+
+def get_order_tags(order_id: str | int, *, store: str | None = None) -> list[str]:
+    try:
+        oid = str(order_id).strip()
+        if not oid.isdigit():
+            return []
+        data = _rest_get_store(store, f"/orders/{oid}.json?fields=id,tags")
+        tags = ((data or {}).get("order") or {}).get("tags")
+        return _tags_to_list(tags)
+    except Exception:
+        return []
+
+
+def set_order_tags(order_id: str | int, tags: list[str], *, store: str | None = None) -> list[str]:
+    """Set order tags exactly to the provided list. Returns resulting list (best-effort)."""
+    oid = str(order_id).strip()
+    if not oid.isdigit():
+        return []
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in (tags or []):
+        s = str(t).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    payload = {"order": {"id": int(oid), "tags": _tags_to_string(out)}}
+    _rest_put_store(store, f"/orders/{oid}.json", payload)
+    return out
+
+
+def cycle_tag(order_id: str | int, prefix: str, *, store: str | None = None, max_n: int = 3) -> list[str]:
+    """Cycle tags like n1->n2->n3 (prefix='n') or wtp1->wtp2->wtp3 (prefix='wtp')."""
+    pfx = (prefix or "").strip()
+    if not pfx:
+        return get_order_tags(order_id, store=store)
+    try:
+        max_n = int(max_n or 3)
+    except Exception:
+        max_n = 3
+    max_n = max(1, min(max_n, 9))
+    tags = get_order_tags(order_id, store=store)
+    # Remove any existing tags for this prefix
+    current_n: int | None = None
+    keep: list[str] = []
+    for t in (tags or []):
+        if re.match(rf"^{re.escape(pfx)}\d+$", t, flags=re.IGNORECASE):
+            try:
+                current_n = int(re.sub(rf"^{re.escape(pfx)}", "", t, flags=re.IGNORECASE))
+            except Exception:
+                current_n = current_n
+            continue
+        keep.append(t)
+    if current_n is None:
+        nxt = 1
+    else:
+        nxt = min(max_n, current_n + 1)
+    keep.append(f"{pfx}{nxt}")
+    return set_order_tags(order_id, keep, store=store)
+
+
+def set_cod_tag(order_id: str | int, date_ddmmyy: str, *, store: str | None = None) -> list[str]:
+    """Set/replace cod tag to 'cod dd/mm/yy' (removes any existing cod dd/mm/yy tags first)."""
+    d = (date_ddmmyy or "").strip()
+    if not re.match(r"^\d{2}/\d{2}/\d{2}$", d):
+        raise ValueError("invalid_date_ddmmyy")
+    tags = get_order_tags(order_id, store=store)
+    keep = [t for t in (tags or []) if not _is_cod_tag(t)]
+    keep.append(f"cod {d}")
+    return set_order_tags(order_id, keep, store=store)
+
+
+def has_cod_tag(tags: str | list[str] | None) -> bool:
+    try:
+        if tags is None:
+            return False
+        if isinstance(tags, str):
+            items = _tags_to_list(tags)
+        else:
+            items = [str(x).strip() for x in (tags or [])]
+        return any(_is_cod_tag(t) for t in items)
+    except Exception:
+        return False
+
+
+def count_orders_by_product_processed(product_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count open orders filtered by processed_at date (YYYY-MM-DD) and product_id, matching Shopify Admin behavior.
+
+    Uses page_info pagination.
+    """
+    if not (product_id and product_id.isdigit()):
+        return 0
+    pid = int(product_id)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": f"{processed_min_date}T00:00:00",
+        "processed_at_max": f"{processed_max_date}T23:59:59",
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                for li in (o.get("line_items") or []):
+                    try:
+                        if int((li or {}).get("product_id") or 0) == pid:
+                            total += 1
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def count_orders_by_product_or_variant_processed(numeric_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count open/any orders filtered by processed_at date (YYYY-MM-DD), matching either product_id OR variant_id.
+
+    This handles cases where a numeric identifier refers to a variant rather than a product.
+    Uses page_info pagination.
+    """
+    if not (numeric_id and numeric_id.isdigit()):
+        return 0
+    target = int(numeric_id)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                matched = False
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid == target or vid == target:
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+                if matched:
+                    total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def count_orders_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+) -> dict[str, int]:
+    """Count orders for many numeric product/variant IDs in one scan of orders.
+
+    Returns a mapping { id_str: count } for every numeric id in `numeric_ids`.
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            s = str(raw or "").strip()
+            if s.isdigit():
+                targets[int(s)] = s
+        except Exception:
+            continue
+    out: dict[str, int] = {v: 0 for v in targets.values()}
+    if not targets:
+        return out
+
+    # Fast path: Shopify's indexed order search filters by product_id server-side.
+    # This avoids scanning every order page in the selected date window.
+    try:
+        keys = list(targets.values())
+        workers = max(1, min(len(keys), int(os.getenv("PTOS_ORDERS_SEARCH_WORKERS", "8") or "8")))
+
+        def _one(k: str) -> tuple[str, int, bool]:
+            try:
+                return (k, int(_count_orders_by_product_search(
+                    k,
+                    processed_min_date,
+                    processed_max_date,
+                    store=store,
+                    include_closed=include_closed,
+                ) or 0), True)
+            except Exception as e:
+                _perf_log.warning("orders_search.one_failed store=%s pid=%s err=%s", store, k, e)
+                return (k, 0, False)
+
+        searched: dict[str, int] = {}
+        failed = 0
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_one, k) for k in keys]
+            for fut in as_completed(futs):
+                try:
+                    k, v, ok = fut.result()
+                    if not ok:
+                        failed += 1
+                    searched[k] = v
+                except Exception:
+                    failed += 1
+        for key, val in searched.items():
+            out[key] = int(val or 0)
+        _perf_log.info(
+            "orders_search.batch store=%s ids=%d workers=%d elapsed_ms=%d nonzero=%d failed=%d",
+            store,
+            len(keys),
+            workers,
+            int((time.time() - started) * 1000),
+            sum(1 for v in searched.values() if int(v or 0) > 0),
+            failed,
+        )
+        if failed == 0 and searched and all(k in searched for k in keys):
+            return out
+        if os.getenv("PTOS_ORDERS_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            _perf_log.warning(
+                "orders_search.skip_rest_fallback store=%s ids=%d failed=%d",
+                store,
+                len(keys),
+                failed,
+            )
+            return out
+    except Exception as e:
+        _perf_log.warning("orders_search.batch_failed store=%s err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return out
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+    }
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                matched: set[int] = set()
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid in targets:
+                            matched.add(pid)
+                        if vid in targets:
+                            matched.add(vid)
+                    except Exception:
+                        continue
+                if matched:
+                    for tid in matched:
+                        key = targets.get(tid)
+                        if key:
+                            out[key] = int(out.get(key, 0) or 0) + 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
+
+
+def count_orders_total_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count total unique orders within a processed_at date range (YYYY-MM-DD).
+
+    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    """
+    try:
+        query = (
+            f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+        )
+        if not include_closed:
+            query = f"{query} status:open"
+        gql = """
+        query OrdersCount($query: String!, $limit: Int) {
+          ordersCount(query: $query, limit: $limit) {
+            count
+            precision
+          }
+        }
+        """
+        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        count_obj = (data or {}).get("ordersCount") or {}
+        return int(count_obj.get("count") or 0)
+    except Exception as e:
+        _perf_log.warning("orders_count.graphql_failed store=%s field=processed err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return 0
+
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def _parse_utm_from_url(url: str | None) -> tuple[dict, str | None, str | None, str | None]:
+    """Extract UTM parameters and explicit ad/campaign/adset IDs from a URL.
+
+    Returns (utm_map, ad_id, campaign_id, adset_id).
+
+    Meta's automatic URL parameters use this structure:
+      utm_source    = campaign_id
+      utm_medium    = adset_id
+      utm_content   = ad_id
+      utm_term      = adset_id
+      utm_campaign  = campaign_id
+      ad_id         = ad_id      (explicit)
+      campaign_id   = campaign_id (explicit)
+
+    For manually-set UTMs (e.g., from our ad creation flow):
+      utm_source    = "meta"
+      utm_medium    = "cpc"
+      utm_content   = angle_name or ad_id
+      utm_campaign  = campaign_id
+      adset_id      = adset_id   (explicit, new ads)
+      ad_id         = ad_id      (explicit, new ads)
+    """
+    try:
+        if not url:
+            return ({}, None, None, None)
+        from urllib.parse import urlparse, parse_qs
+        pr = urlparse(url)
+        q = parse_qs(pr.query or "")
+        # Flatten single values
+        utm: dict = {}
+        for k in ("utm_source","utm_medium","utm_campaign","utm_content","utm_term","utm_id","fbclid","gclid","ad_id","adset_id","campaign_id"):
+            vals = q.get(k) or []
+            if vals:
+                utm[k] = vals[0]
+
+        def _is_meta_id(val: str | None) -> bool:
+            """Check if value looks like a numeric Meta ID (15+ digit number)."""
+            if not val:
+                return False
+            v = str(val).strip()
+            return v.isdigit() and len(v) >= 15
+
+        # --- ad_id ---
+        ad_id = (q.get("ad_id") or [None])[0]
+        if not ad_id:
+            # Meta auto-tagging puts ad_id in utm_content
+            candidate = utm.get("utm_content")
+            if _is_meta_id(candidate):
+                ad_id = str(candidate).strip()
+
+        # --- campaign_id ---
+        campaign_id = (q.get("campaign_id") or [None])[0]
+        if not campaign_id:
+            campaign_id = utm.get("utm_campaign")
+        # Fallback: utm_source often = campaign_id in Meta auto-tagging
+        if not campaign_id:
+            candidate = utm.get("utm_source")
+            if _is_meta_id(candidate):
+                campaign_id = str(candidate).strip()
+
+        # --- adset_id --- (the key extraction for ad-set level attribution)
+        adset_id = (q.get("adset_id") or [None])[0]
+        if not adset_id:
+            # Meta auto-tagging puts adset_id in utm_medium AND utm_term
+            for candidate_key in ("utm_medium", "utm_term"):
+                candidate = utm.get(candidate_key)
+                if _is_meta_id(candidate):
+                    adset_id = str(candidate).strip()
+                    break
+
+        return (utm, ad_id, campaign_id, adset_id)
+    except Exception:
+        return ({}, None, None, None)
+
+
+def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None) -> dict | None:
+    try:
+        node = node or {}
+        if node.get("cancelledAt"):
+            return None
+        landing = str(node.get("landingPageUrl") or "").strip()
+        referring = str(node.get("referrerUrl") or "").strip()
+        utm: dict = {}
+        ad_id: str | None = None
+        campaign_id: str | None = None
+        adset_id: str | None = None
+
+        def _merge_url_attribution(url: str | None) -> None:
+            nonlocal ad_id, campaign_id, adset_id
+            parsed_utm, parsed_ad_id, parsed_campaign_id, parsed_adset_id = _parse_utm_from_url(url)
+            for key, value in (parsed_utm or {}).items():
+                if value and not utm.get(key):
+                    utm[key] = value
+            if not ad_id and parsed_ad_id:
+                ad_id = parsed_ad_id
+            if not campaign_id and parsed_campaign_id:
+                campaign_id = parsed_campaign_id
+            if not adset_id and parsed_adset_id:
+                adset_id = parsed_adset_id
+
+        _merge_url_attribution(landing)
+        _merge_url_attribution(referring)
+
+        journey = (node.get("customerJourneySummary") or {}) if isinstance(node.get("customerJourneySummary"), dict) else {}
+        for visit_key in ("lastVisit", "firstVisit"):
+            visit = (journey.get(visit_key) or {}) if isinstance(journey.get(visit_key), dict) else {}
+            visit_landing = str(visit.get("landingPage") or "").strip()
+            visit_referring = str(visit.get("referrerUrl") or "").strip()
+            if not landing:
+                landing = visit_landing
+            if not referring:
+                referring = visit_referring
+            _merge_url_attribution(visit_landing)
+            _merge_url_attribution(visit_referring)
+            vu = (visit.get("utmParameters") or {}) if isinstance(visit.get("utmParameters"), dict) else {}
+            if vu:
+                mapped = {
+                    "utm_source": vu.get("source"),
+                    "utm_medium": vu.get("medium"),
+                    "utm_campaign": vu.get("campaign"),
+                    "utm_content": vu.get("content"),
+                    "utm_term": vu.get("term"),
+                }
+                for k, v in mapped.items():
+                    if v and not utm.get(k):
+                        utm[k] = str(v)
+
+        attrs: dict[str, str] = {}
+        for attr in (node.get("customAttributes") or []):
+            try:
+                k = str((attr or {}).get("key") or "").strip().lower()
+                v = str((attr or {}).get("value") or "").strip()
+                if k and v:
+                    attrs[k] = v
+            except Exception:
+                continue
+        full_url = attrs.get("full_url") or attrs.get("landing_site") or attrs.get("landing_page") or attrs.get("url")
+        if full_url:
+            if not landing:
+                landing = full_url
+            _merge_url_attribution(full_url)
+        for k in ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id"):
+            v = attrs.get(k)
+            if v and not utm.get(k):
+                utm[k] = v
+        if not ad_id:
+            ad_id = attrs.get("ad_id") or None
+        if not campaign_id:
+            campaign_id = attrs.get("campaign_id") or attrs.get("utm_campaign") or utm.get("utm_campaign") or None
+        if not adset_id:
+            adset_id = attrs.get("adset_id") or None
+        if not adset_id:
+            for candidate_key in ("utm_medium", "utm_term"):
+                candidate = utm.get(candidate_key)
+                if candidate and str(candidate).isdigit() and len(str(candidate)) >= 15:
+                    adset_id = str(candidate)
+                    break
+        if not ad_id:
+            candidate = utm.get("utm_content")
+            if candidate and str(candidate).isdigit() and len(str(candidate)) >= 15:
+                ad_id = str(candidate)
+
+        total = (((node.get("currentTotalPriceSet") or {}).get("shopMoney") or {}) if isinstance(node.get("currentTotalPriceSet"), dict) else {})
+        oid = str(node.get("id") or "")
+        return {
+            "order_id": oid.split("/")[-1] if "/" in oid else oid,
+            "name": node.get("name"),
+            "processed_at": node.get("processedAt"),
+            "total_price": float(total.get("amount") or 0),
+            "currency": total.get("currencyCode"),
+            "source_name": node.get("sourceName"),
+            "landing_site": landing or None,
+            "referring_site": referring or None,
+            "utm": utm,
+            "ad_id": ad_id,
+            "campaign_id": campaign_id,
+            "adset_id": adset_id,
+            "store": store,
+        }
+    except Exception:
+        return None
+
+
+def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
+    closed = "all" if include_closed else "open"
+    return f"shopify_utm_orders_v4:{processed_min_date}:{processed_max_date}:{closed}"
+
+
+def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
+    try:
+        from app import db as _db  # type: ignore
+        rec = _db.get_app_setting(
+            _canonical_store_label(store),
+            _utm_orders_cache_key(processed_min_date, processed_max_date, include_closed),
+        ) or {}
+        if not isinstance(rec, dict):
+            return None
+        ts = float(rec.get("ts") or 0)
+        if ts > 0 and _UTM_ORDERS_DB_TTL_S > 0 and (time.time() - ts) <= _UTM_ORDERS_DB_TTL_S:
+            data = rec.get("data")
+            return data if isinstance(data, list) else None
+    except Exception:
+        return None
+    return None
+
+
+def _set_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool, rows: list[dict]) -> None:
+    try:
+        from app import db as _db  # type: ignore
+        if not rows:
+            return
+        _db.set_app_setting(
+            _canonical_store_label(store),
+            _utm_orders_cache_key(processed_min_date, processed_max_date, include_closed),
+            {"ts": time.time(), "data": rows},
+        )
+    except Exception:
+        pass
+
+
+def _ymd_days_desc(processed_min_date: str, processed_max_date: str) -> list[str]:
+    try:
+        start = datetime.strptime(str(processed_min_date or "").split("T")[0], "%Y-%m-%d").date()
+        end = datetime.strptime(str(processed_max_date or "").split("T")[0], "%Y-%m-%d").date()
+        if end < start:
+            start, end = end, start
+        days: list[str] = []
+        cur = end
+        while cur >= start:
+            days.append(cur.isoformat())
+            cur = cur - timedelta(days=1)
+        return days or [str(processed_max_date or processed_min_date)]
+    except Exception:
+        return [str(processed_max_date or processed_min_date)]
+
+
+def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    gql = """
+    query OrdersWithUtms($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT, reverse: true) {
+        edges {
+          cursor
+          node {
+            id
+            name
+            processedAt
+            cancelledAt
+            sourceName
+            landingPageUrl
+            referrerUrl
+            customAttributes { key value }
+            currentTotalPriceSet { shopMoney { amount currencyCode } }
+            customerJourneySummary {
+              firstVisit {
+                landingPage
+                referrerUrl
+                source
+                utmParameters { source medium campaign content term }
+              }
+              lastVisit {
+                landingPage
+                referrerUrl
+                source
+                utmParameters { source medium campaign content term }
+              }
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    out: list[dict] = []
+    seen_orders: set[str] = set()
+    total_pages = 0
+    started = time.time()
+    days = _ymd_days_desc(processed_min_date, processed_max_date)
+    max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
+    max_total_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_TOTAL_PAGES", str(max_pages_per_day * max(1, len(days)))) or str(max_pages_per_day * max(1, len(days)))))
+    first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_GQL_TIMEOUT_S", "18") or "18"))
+    workers = max(1, min(4, int(os.getenv("PTOS_UTM_ORDERS_GQL_DAY_WORKERS", "3") or "3")))
+    day_jobs: list[tuple[str, int]] = []
+    remaining_pages = max_total_pages
+    for day in days:
+        if remaining_pages <= 0:
+            break
+        page_limit = min(max_pages_per_day, remaining_pages)
+        day_jobs.append((day, page_limit))
+        remaining_pages -= page_limit
+
+    def _fetch_day(day: str, page_limit: int) -> tuple[str, int, list[dict]]:
+        query = f'(processed_at:>="{day}" AND processed_at:<="{day}")'
+        if not include_closed:
+            query = f"{query} status:open"
+        after = None
+        pages_for_day = 0
+        rows_for_day: list[dict] = []
+        while pages_for_day < page_limit:
+            data = _gql_store_once(store, gql, {"query": query, "first": first, "after": after}, timeout=timeout_s)
+            conn = (data or {}).get("orders") or {}
+            pages_for_day += 1
+            for edge in (conn.get("edges") or []):
+                row = _order_row_from_graphql_node((edge or {}).get("node") or {}, store=store)
+                if row:
+                    rows_for_day.append(row)
+            page_info = conn.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                break
+        return day, pages_for_day, rows_for_day
+
+    day_results: list[tuple[str, int, list[dict]]] = []
+    if len(day_jobs) <= 1:
+        day_results = [_fetch_day(day, page_limit) for day, page_limit in day_jobs]
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(day_jobs))) as ex:
+            futures = [ex.submit(_fetch_day, day, page_limit) for day, page_limit in day_jobs]
+            for fut in as_completed(futures):
+                day_results.append(fut.result())
+
+    day_results.sort(key=lambda item: item[0], reverse=True)
+    for _day, pages_for_day, rows_for_day in day_results:
+        total_pages += pages_for_day
+        for row in rows_for_day:
+            oid = str(row.get("order_id") or row.get("name") or "")
+            if oid and oid in seen_orders:
+                continue
+            if oid:
+                seen_orders.add(oid)
+            out.append(row)
+    _perf_log.info(
+        "utm_orders.graphql store=%s days=%d pages=%d rows=%d elapsed_ms=%d",
+        store,
+        len(days),
+        total_pages,
+        len(out),
+        int((time.time() - started) * 1000),
+    )
+    return out
+
+
+def _list_orders_with_utms_processed_rest(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59, 999000)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at desc",
+        "fields": "id,name,processed_at,created_at,total_price,currency,source_name,landing_site,referring_site,note_attributes,cancelled_at",
+    }
+    out: list[dict] = []
+    page_info = None
+    pages = 0
+    started = time.time()
+    timeout_s = max(5, int(os.getenv("PTOS_UTM_ORDERS_REST_TIMEOUT_S", "10") or "10"))
+    max_pages = max(1, int(os.getenv("PTOS_UTM_ORDERS_MAX_PAGES", "3") or "3"))
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        try:
+            resp = _rest_get_store_raw_once(store, path, timeout=timeout_s)
+        except Exception as e:
+            _perf_log.warning(
+                "utm_orders.rest_page_failed store=%s pages=%d rows=%d elapsed_ms=%d err=%s",
+                store,
+                pages,
+                len(out),
+                int((time.time() - started) * 1000),
+                e,
+            )
+            break
+        data = resp.json() if resp.content else {}
+        orders = (data or {}).get("orders") or []
+        pages += 1
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                landing = (o.get("landing_site") or "").strip()
+                note_attrs = o.get("note_attributes") or []
+                na_all: dict[str, str] = {}
+                try:
+                    for na in (note_attrs or []):
+                        na_name = str((na or {}).get("name") or "").strip().lower()
+                        na_val = str((na or {}).get("value") or "").strip()
+                        if na_name and na_val:
+                            na_all[na_name] = na_val
+                except Exception:
+                    na_all = {}
+
+                # Fallbacks: some shops store full URL in a note_attribute named full_url
+                full_url = na_all.get("full_url") or na_all.get("landing_site") or na_all.get("landing_page") or na_all.get("url")
+                if not landing and full_url:
+                    landing = full_url
+
+                # Also try referring_site as a UTM source
+                referring = (o.get("referring_site") or "").strip()
+                utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(landing)
+                # If landing_site didn't yield UTM params, try referring_site
+                if not utm and referring:
+                    utm, ad_id, campaign_id, adset_id = _parse_utm_from_url(referring)
+                if full_url:
+                    full_utm, full_ad_id, full_campaign_id, full_adset_id = _parse_utm_from_url(full_url)
+                    for k, v in (full_utm or {}).items():
+                        if v and not utm.get(k):
+                            utm[k] = v
+                    if not ad_id and full_ad_id:
+                        ad_id = full_ad_id
+                    if not campaign_id and full_campaign_id:
+                        campaign_id = full_campaign_id
+                    if not adset_id and full_adset_id:
+                        adset_id = full_adset_id
+
+                # === KEY FIX: Extract UTM data from individual note_attributes ===
+                # COD/WhatsApp orders often store UTMs as separate note_attributes
+                # (e.g., utm_source, utm_medium, utm_content, campaign_id, ad_id, etc.)
+                # rather than as query params in the full_url
+                na_utm_keys = ("utm_source", "utm_medium", "utm_campaign", "utm_content",
+                               "utm_term", "utm_id", "fbclid", "campaign_id", "ad_id", "adset_id")
+                na_map: dict[str, str] = {}
+                try:
+                    for na_name in na_utm_keys:
+                        na_val = na_all.get(na_name)
+                        if na_val:
+                            na_map[na_name] = na_val
+                except Exception:
+                    pass
+
+                if na_map:
+                    # Merge note_attribute UTMs into utm map (note attrs take priority
+                    # since they're explicitly set during order creation)
+                    for k, v in na_map.items():
+                        if v and (k not in utm or not utm[k]):
+                            utm[k] = v
+
+                    # Extract IDs from note_attributes if not already found from URL
+                    if not ad_id:
+                        ad_id = na_map.get("ad_id") or None
+                    if not campaign_id:
+                        campaign_id = na_map.get("campaign_id") or na_map.get("utm_campaign") or None
+                    if not adset_id:
+                        adset_id = na_map.get("adset_id") or None
+                        # Meta auto-tagging: utm_medium and utm_term = adset_id
+                        if not adset_id:
+                            for candidate_key in ("utm_medium", "utm_term"):
+                                candidate = na_map.get(candidate_key)
+                                if candidate and candidate.isdigit() and len(candidate) >= 15:
+                                    adset_id = candidate
+                                    break
+                    # Also extract ad_id from utm_content if numeric
+                    if not ad_id:
+                        candidate = na_map.get("utm_content")
+                        if candidate and candidate.isdigit() and len(candidate) >= 15:
+                            ad_id = candidate
+
+                # Build output row
+                row = {
+                    "order_id": o.get("id"),
+                    "name": o.get("name"),
+                    "processed_at": o.get("processed_at") or o.get("created_at"),
+                    "total_price": float(o.get("total_price") or 0),
+                    "currency": o.get("currency"),
+                    "source_name": o.get("source_name"),
+                    "landing_site": landing or None,
+                    "utm": utm,
+                    "ad_id": ad_id,
+                    "campaign_id": campaign_id,
+                    "adset_id": adset_id,
+                }
+                out.append(row)
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+        if pages >= max_pages:
+            _perf_log.warning(
+                "utm_orders.max_pages store=%s pages=%d rows=%d elapsed_ms=%d",
+                store,
+                pages,
+                len(out),
+                int((time.time() - started) * 1000),
+            )
+            break
+    _perf_log.info(
+        "utm_orders.list store=%s pages=%d rows=%d elapsed_ms=%d",
+        store,
+        pages,
+        len(out),
+        int((time.time() - started) * 1000),
+    )
+    return out
+
+
+def _merge_utm_order_rows(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in list(primary or []) + list(secondary or []):
+        oid = str((row or {}).get("order_id") or (row or {}).get("name") or "")
+        if oid and oid in seen:
+            continue
+        if oid:
+            seen.add(oid)
+        out.append(row)
+    return out
+
+
+def _graphql_utm_rows_may_be_capped(rows: list[dict], processed_min_date: str, processed_max_date: str) -> bool:
+    try:
+        days = _ymd_days_desc(processed_min_date, processed_max_date)
+        max_pages_per_day = max(1, int(os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES_PER_DAY", os.getenv("PTOS_UTM_ORDERS_GQL_MAX_PAGES", "2")) or "2"))
+        first = max(10, min(100, int(os.getenv("PTOS_UTM_ORDERS_GQL_PAGE_SIZE", "100") or "100")))
+        day_cap = max_pages_per_day * first
+        if day_cap <= 0:
+            return False
+        counts: dict[str, int] = {}
+        for row in rows or []:
+            day = str((row or {}).get("processed_at") or "").split("T")[0]
+            if day:
+                counts[day] = counts.get(day, 0) + 1
+        return any(counts.get(day, 0) >= day_cap for day in days)
+    except Exception:
+        return False
+
+
+def list_orders_with_utms_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = True) -> list[dict]:
+    """List orders within processed_at range and extract UTM/ad identifiers from landing URLs.
+
+    Output rows include: order_id, name, processed_at, total_price, currency, source_name,
+    landing_site, utm (map), ad_id, campaign_id.
+    """
+    cached_rows = _get_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed)
+    if cached_rows is not None:
+        _perf_log.info("utm_orders.cache_hit store=%s rows=%d", store, len(cached_rows))
+        return cached_rows
+
+    if os.getenv("PTOS_UTM_ORDERS_GRAPHQL", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            rows = list_orders_with_utms_processed_graphql(
+                processed_min_date,
+                processed_max_date,
+                store=store,
+                include_closed=include_closed,
+            )
+            if rows:
+                if (
+                    os.getenv("PTOS_UTM_ORDERS_REST_SUPPLEMENT", "1").strip().lower() not in {"0", "false", "no", "off"}
+                    and _graphql_utm_rows_may_be_capped(rows, processed_min_date, processed_max_date)
+                ):
+                    try:
+                        rest_rows = _list_orders_with_utms_processed_rest(
+                            processed_min_date,
+                            processed_max_date,
+                            store=store,
+                            include_closed=include_closed,
+                        )
+                        rows = _merge_utm_order_rows(rows, rest_rows)
+                        _perf_log.info("utm_orders.rest_supplement store=%s rows=%d", store, len(rows))
+                    except Exception as e:
+                        _perf_log.warning("utm_orders.rest_supplement_failed store=%s err=%s", store, e)
+                _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
+                return rows
+        except Exception as e:
+            _perf_log.warning("utm_orders.graphql_failed store=%s err=%s", store, e)
+
+    rows = _list_orders_with_utms_processed_rest(
+        processed_min_date,
+        processed_max_date,
+        store=store,
+        include_closed=include_closed,
+    )
+    _set_utm_orders_cache(store, processed_min_date, processed_max_date, include_closed, rows)
+    return rows
+
+
+def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max_date: str, *, stores: list[str] | None = None, include_closed: bool = True) -> list[dict]:
+    """Aggregate UTM-tagged orders across multiple stores.
+
+    Each returned row includes a `store` field indicating the source store.
+    Orders are deduplicated within each store but not across stores (different stores have different order IDs).
+    """
+    store_list = stores or [None]  # type: ignore
+    out: list[dict] = []
+    for st in store_list:
+        try:
+            orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
+            for o in (orders or []):
+                o["store"] = st or "default"
+            out.extend(orders)
+        except Exception:
+            continue
+    return out
+
+
+def count_orders_total_created(created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count total unique orders within a created_at date range (YYYY-MM-DD).
+
+    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    """
+    try:
+        query = (
+            f'(created_at:>="{created_min_date}" AND created_at:<="{created_max_date}")'
+        )
+        if not include_closed:
+            query = f"{query} status:open"
+        gql = """
+        query OrdersCount($query: String!, $limit: Int) {
+          ordersCount(query: $query, limit: $limit) {
+            count
+            precision
+          }
+        }
+        """
+        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        count_obj = (data or {}).get("ordersCount") or {}
+        return int(count_obj.get("count") or 0)
+    except Exception as e:
+        _perf_log.warning("orders_count.graphql_failed store=%s field=created err=%s", store, e)
+        if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return 0
+
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Build inclusive day bounds
+    try:
+        y1, m1, d1 = [int(x) for x in (created_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (created_max_date or "").split("-")]
+        created_min = f"{y1:04d}-{m1:02d}-{d1:02d}T00:00:00"
+        created_max = f"{y2:04d}-{m2:02d}-{d2:02d}T23:59:59"
+    except Exception:
+        created_min = f"{created_min_date}T00:00:00"
+        created_max = f"{created_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "created_at_min": created_min,
+        "created_at_max": created_max,
+        "order": "created_at asc",
+    }
+    total = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def list_product_ids_in_collection(collection_id: str, *, store: str | None = None) -> list[int]:
+    """Return product IDs for a given collection.
+
+    Strategy:
+      1) Try GraphQL collection(id) pagination (works for custom and smart collections)
+      2) Fallback to REST products.json?collection_id=... (current membership)
+      3) Fallback to REST collects.json (custom collections only)
+    """
+    # 1) GraphQL
+    out_ids: set[int] = set()
+    try:
+        gid = f"gid://shopify/Collection/{collection_id}"
+        cursor = None
+        while True:
+            q = (
+                "query($id:ID!,$cursor:String){ collection(id:$id){ products(first:250, after:$cursor){ pageInfo{hasNextPage,endCursor} nodes{ id } } } }"
+            )
+            data = _gql_store(store, q, {"id": gid, "cursor": cursor})
+            nodes = (((data or {}).get("collection") or {}).get("products") or {}).get("nodes") or []
+            for n in nodes:
+                try:
+                    gid_prod = (n or {}).get("id") or ""
+                    num = _extract_numeric_id_from_gid(gid_prod)
+                    if num and num.isdigit():
+                        out_ids.add(int(num))
+                except Exception:
+                    continue
+            pi = (((data or {}).get("collection") or {}).get("products") or {}).get("pageInfo") or {}
+            if not bool(pi.get("hasNextPage")):
+                break
+            cursor = (((data or {}).get("collection") or {}).get("products") or {}).get("pageInfo", {}).get("endCursor")
+            if not cursor:
+                break
+    except Exception:
+        pass
+    # 2) REST products.json fallback
+    try:
+        since_id = None
+        limit = 250
+        while True:
+            qs = f"limit={limit}&fields=id" + (f"&since_id={since_id}" if since_id else "")
+            data = _rest_get_store(store, f"/products.json?collection_id={collection_id}&{qs}")
+            products = (data or {}).get("products") or []
+            for p in products:
+                try:
+                    pid = int((p or {}).get("id"))
+                    out_ids.add(pid)
+                except Exception:
+                    continue
+            if len(products) < limit:
+                break
+            try:
+                since_id = (products[-1] or {}).get("id")
+                if not since_id:
+                    break
+            except Exception:
+                break
+    except Exception:
+        pass
+    # 3) REST collects.json fallback (custom collections only)
+    try:
+        since_id = None
+        limit = 250
+        while True:
+            qs = f"limit={limit}&fields=product_id" + (f"&since_id={since_id}" if since_id else "")
+            data = _rest_get_store(store, f"/collects.json?collection_id={collection_id}&{qs}")
+            collects = (data or {}).get("collects") or []
+            for c in collects:
+                try:
+                    pid = int((c or {}).get("product_id"))
+                    out_ids.add(pid)
+                except Exception:
+                    continue
+            if len(collects) < limit:
+                break
+            try:
+                since_id = (collects[-1] or {}).get("id")
+                if not since_id:
+                    break
+            except Exception:
+                break
+    except Exception:
+        pass
+    return list(out_ids)
+
+
+def count_orders_by_collection_processed(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Count unique orders whose line_items include any product in the collection within processed_at range (YYYY-MM-DD).
+
+    Notes:
+      - Uses product_id match only (variant_id also implies product match)
+      - Dedupes orders so one order with multiple collection products counts once
+      - Respects include_closed by using status=any
+    """
+    try:
+        product_ids = set(list_product_ids_in_collection(collection_id, store=store))
+    except Exception:
+        product_ids = set()
+    if not product_ids:
+        return 0
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    total = 0
+    seen_order_ids: set[int] = set()
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                oid = int(o.get("id")) if o.get("id") else None
+                if oid is not None and oid in seen_order_ids:
+                    continue
+                found = False
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int((li or {}).get("product_id") or 0)
+                        if pid in product_ids:
+                            found = True
+                            break
+                    except Exception:
+                        continue
+                if found:
+                    if oid is not None:
+                        seen_order_ids.add(oid)
+                    total += 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total
+
+
+def count_items_by_collection_processed(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Sum line item quantities for products in the collection within processed_at range (YYYY-MM-DD).
+
+    Differences from count_orders_by_collection_processed:
+      - Sums quantities across line items; does not dedupe per order
+      - If an order has multiple items from the collection, all are counted
+    """
+    try:
+        product_ids = set(list_product_ids_in_collection(collection_id, store=store))
+    except Exception:
+        product_ids = set()
+    if not product_ids:
+        return 0
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Normalize processed_at window to store timezone to mirror Shopify Admin day bounds
+    try:
+        tzname = get_shop_timezone(store)
+    except Exception:
+        tzname = "UTC"
+    try:
+        tz = ZoneInfo(tzname) if ZoneInfo else None
+    except Exception:
+        tz = None
+    try:
+        y1, m1, d1 = [int(x) for x in (processed_min_date or "").split("-")]
+        y2, m2, d2 = [int(x) for x in (processed_max_date or "").split("-")]
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        if tz:
+            start_dt = start_dt.replace(tzinfo=tz)
+            end_dt = end_dt.replace(tzinfo=tz)
+        processed_min = start_dt.isoformat()
+        processed_max = end_dt.isoformat()
+    except Exception:
+        processed_min = f"{processed_min_date}T00:00:00"
+        processed_max = f"{processed_max_date}T23:59:59"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min,
+        "processed_at_max": processed_max,
+        "order": "processed_at asc",
+    }
+    total_qty = 0
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int((li or {}).get("product_id") or 0)
+                        if pid in product_ids:
+                            qty = int((li or {}).get("quantity") or 0)
+                            total_qty += max(0, qty)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return total_qty
+
+
+def sum_product_order_counts_for_collection(collection_id: str, processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Sum per-product unique order counts across all products currently in the collection.
+
+    Notes:
+      - For each product_id in the collection, count unique orders containing that product (processed_at range)
+      - Sums across products; an order containing multiple products from the collection will be counted multiple times
+      - This matches a "count per product then sum" aggregation.
+    """
+    try:
+        product_ids = list_product_ids_in_collection(collection_id, store=store)
+    except Exception:
+        product_ids = []
+    if not product_ids:
+        return 0
+    total = 0
+    for pid in product_ids:
+        try:
+            total += count_orders_by_product_processed(str(pid), processed_min_date, processed_max_date, store=store, include_closed=include_closed)
+        except Exception:
+            continue
+    return total
+
+
+def sum_product_order_counts_for_collection_created(collection_id: str, created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
+    """Sum per-product unique order counts across all products in the collection using created_at range.
+
+    Uses count_orders_by_title for numeric product ids which filters by created_at.
+    """
+    try:
+        product_ids = list_product_ids_in_collection(collection_id, store=store)
+    except Exception:
+        product_ids = []
+    if not product_ids:
+        return 0
+    total = 0
+    for pid in product_ids:
+        try:
+            total += count_orders_by_title(str(pid), created_min_date, created_max_date, store=store, include_closed=include_closed)
+        except Exception:
+            continue
+    return total
+
+def _product_first_image_url(numeric_product_id: str, *, store: str | None = None) -> str | None:
+    try:
+        data = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        imgs = ((data or {}).get("product") or {}).get("images") or []
+        if imgs:
+            return (imgs[0] or {}).get("src")
+    except Exception:
+        return None
+    return None
+
+
+def _product_cache_key(kind: str, pid: str) -> str:
+    return f"shopify_{kind}:{str(pid or '').strip()}"
+
+
+def _get_product_cache(store: str | None, kind: str, pid: str, ttl_s: int | None = None) -> dict | None:
+    try:
+        from app import db as _db  # type: ignore
+        rec = _db.get_app_setting(_canonical_store_label(store), _product_cache_key(kind, pid)) or {}
+        if not isinstance(rec, dict):
+            return None
+        ts = float(rec.get("ts") or 0)
+        ttl = int(ttl_s if ttl_s is not None else _PRODUCT_BRIEF_DB_TTL_S)
+        if ts > 0 and ttl > 0 and (time.time() - ts) <= ttl:
+            data = rec.get("data")
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def _set_product_cache(store: str | None, kind: str, pid: str, data: dict) -> None:
+    try:
+        from app import db as _db  # type: ignore
+        _db.set_app_setting(_canonical_store_label(store), _product_cache_key(kind, pid), {"ts": time.time(), "data": data or {}})
+    except Exception:
+        pass
+
+
+def _is_size_like_value(value: str) -> bool:
+    t = str(value or "").strip().lower()
+    if not t:
+        return False
+    common = {"xxs","xs","s","m","l","xl","xxl","xxxl","os","one size","2t","3t","4t","5t","6t","7t"}
+    if t in common:
+        return True
+    return bool(re.match(r"^\d+(?:[./-]\d+)?$", t))
+
+
+def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
+    node = node or {}
+    gid = str(node.get("id") or "")
+    pid = gid.split("/")[-1] if "/" in gid else gid
+    image = ((node.get("featuredImage") or {}).get("url")) if isinstance(node.get("featuredImage"), dict) else None
+    variants = (((node.get("variants") or {}).get("nodes") or []) if isinstance(node.get("variants"), dict) else [])
+
+    option_names: list[str] = []
+    option_values_by_name: dict[str, set[str]] = {}
+    normalized_by_name: dict[str, str] = {}
+    for v in variants:
+        for opt in ((v or {}).get("selectedOptions") or []):
+            name = str((opt or {}).get("name") or "").strip()
+            val = str((opt or {}).get("value") or "").strip()
+            if not name:
+                continue
+            lname = name.lower()
+            if name not in option_names:
+                option_names.append(name)
+            normalized_by_name[name] = lname
+            if val:
+                option_values_by_name.setdefault(name, set()).add(val)
+
+    size_name = None
+    color_name = None
+    for name in option_names:
+        lname = normalized_by_name.get(name, "").lower()
+        if size_name is None and ("size" in lname or "taille" in lname):
+            size_name = name
+        if color_name is None and ("color" in lname or "colour" in lname or "couleur" in lname):
+            color_name = name
+
+    if size_name is None and option_names:
+        scored = []
+        for name in option_names:
+            vals = option_values_by_name.get(name) or set()
+            if not vals:
+                score = 0.0
+            else:
+                score = sum(1 for val in vals if _is_size_like_value(val)) / max(1, len(vals))
+            scored.append((name, score, len(vals)))
+        best = max(scored, key=lambda x: (x[1], x[2]))
+        if best[1] >= 0.5:
+            size_name = best[0]
+        else:
+            size_name = max(scored, key=lambda x: x[2])[0]
+    if color_name is None:
+        for name in option_names:
+            if name != size_name:
+                color_name = name
+                break
+
+    def _selected(v: dict, opt_name: str | None, fallback: str) -> str:
+        if not opt_name:
+            return fallback
+        for opt in ((v or {}).get("selectedOptions") or []):
+            if str((opt or {}).get("name") or "").strip() == opt_name:
+                val = str((opt or {}).get("value") or "").strip()
+                return val or fallback
+        return fallback
+
+    sizes_set: list[str] = []
+    colors_set: list[str] = []
+    matrix: dict[str, dict[str, int]] = {}
+    size_to_avails: dict[str, list[int]] = {}
+    total_available = 0
+    zero_variants = 0
+    min_price = None
+
+    for v in variants:
+        try:
+            raw_qty = (v or {}).get("inventoryQuantity")
+            avail = int(raw_qty if raw_qty is not None else 0)
+        except Exception:
+            avail = 0
+        total_available += max(0, avail)
+        if avail <= 0:
+            zero_variants += 1
+        try:
+            raw_price = (v or {}).get("price")
+            if raw_price is not None:
+                price = float(str(raw_price))
+                if min_price is None or price < min_price:
+                    min_price = price
+        except Exception:
+            pass
+
+        size_val = _selected(v or {}, size_name, "Default")
+        color_val = _selected(v or {}, color_name, "Default")
+        if size_val not in sizes_set:
+            sizes_set.append(size_val)
+        if color_val not in colors_set:
+            colors_set.append(color_val)
+        matrix.setdefault(color_val, {})
+        matrix[color_val][size_val] = int(matrix[color_val].get(size_val, 0) or 0) + avail
+        size_to_avails.setdefault(size_val, []).append(avail)
+
+    try:
+        zero_sizes = sum(1 for avs in size_to_avails.values() if all(int(a) <= 0 for a in (avs or [0])))
+    except Exception:
+        zero_sizes = 0
+
+    return {
+        "id": pid,
+        "image": image,
+        "total_available": int(total_available),
+        "zero_variants": int(zero_variants),
+        "zero_sizes": int(zero_sizes),
+        "price": float(min_price) if min_price is not None else None,
+        "sizes": sizes_set,
+        "colors": colors_set,
+        "matrix": matrix,
+    }
+
+
+def _get_product_inventory_graphql(numeric_product_id: str, *, store: str | None = None) -> dict:
+    pid = str(numeric_product_id or "").strip()
+    if not pid.isdigit():
+        return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+    query = """
+    query ProductInventory($id: ID!) {
+      node(id: $id) {
+        ... on Product {
+          id
+          featuredImage { url }
+          variants(first: 250) {
+            nodes {
+              id
+              price
+              inventoryQuantity
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
+    """
+    timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_INVENTORY_GRAPHQL_TIMEOUT_S", "24") or "24"))
+    data = _gql_store_once(store, query, {"id": f"gid://shopify/Product/{pid}"}, timeout=timeout_s)
+    node = (data or {}).get("node") or {}
+    summary = _inventory_summary_from_graphql_product(node)
+    return {
+        "sizes": summary.get("sizes") or [],
+        "colors": summary.get("colors") or [],
+        "matrix": summary.get("matrix") or {},
+        "total_available": int(summary.get("total_available") or 0),
+    }
+
+
+def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> dict:
+    """Return a brief for a product: image, total_available, zero_variants, zero_sizes.
+
+    - Sums inventory across all inventory levels per variant
+    - Counts how many variants have 0 available
+    - Counts how many sizes have all color variants at 0 or less
+    - Picks the first product image as thumbnail
+    """
+    cached = _get_product_cache(store, "brief", str(numeric_product_id), _PRODUCT_BRIEF_DB_TTL_S)
+    if cached is not None:
+        return cached
+    try:
+        query = """
+        query ProductBrief($id: ID!) {
+          node(id: $id) {
+            ... on Product {
+              id
+              featuredImage { url }
+              variants(first: 250) {
+                nodes {
+                  price
+                  inventoryQuantity
+                  selectedOptions { name value }
+                }
+              }
+            }
+          }
+        }
+        """
+        timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_INVENTORY_GRAPHQL_TIMEOUT_S", "24") or "24"))
+        data = _gql_store_once(store, query, {"id": f"gid://shopify/Product/{numeric_product_id}"}, timeout=timeout_s)
+        summary = _inventory_summary_from_graphql_product((data or {}).get("node") or {})
+        brief = {
+            "image": summary.get("image"),
+            "total_available": int(summary.get("total_available") or 0),
+            "zero_variants": int(summary.get("zero_variants") or 0),
+            "zero_sizes": int(summary.get("zero_sizes") or 0),
+            "price": summary.get("price"),
+        }
+        _set_product_cache(store, "brief", str(numeric_product_id), brief)
+        _set_product_cache(store, "inventory", str(numeric_product_id), {
+            "sizes": summary.get("sizes") or [],
+            "colors": summary.get("colors") or [],
+            "matrix": summary.get("matrix") or {},
+            "total_available": int(summary.get("total_available") or 0),
+        })
+        return brief
+    except Exception as e:
+        _perf_log.warning("product_brief.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
+        if os.getenv("PTOS_PRODUCTS_BRIEF_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+
+    total_available = 0
+    zero_variants = 0
+    zero_sizes = 0
+    image = None
+    price = None
+    size_option_index = 1  # default to option1
+    try:
+        # Fetch product once to determine options (to identify which option is Size) and first image
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        p = (pdata or {}).get("product") or {}
+        # First image
+        try:
+            imgs = (p.get("images") or [])
+            if imgs:
+                image = (imgs[0] or {}).get("src")
+        except Exception:
+            image = None
+        # Determine which option represents size
+        try:
+            opts = p.get("options") or []
+            for idx, opt in enumerate(opts, start=1):
+                try:
+                    name = str((opt or {}).get("name") or "").strip().lower()
+                    if name == "size" or "size" in name:
+                        size_option_index = idx  # 1..3
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            size_option_index = 1
+    except Exception:
+        image = None
+        size_option_index = 1
+    try:
+        variants = _list_variants(numeric_product_id, store=store)
+    except Exception:
+        variants = []
+    # Extract min variant price (Shopify REST returns variant.price as string)
+    try:
+        min_price = None
+        for v in (variants or []):
+            try:
+                pv = (v or {}).get("price")
+                if pv is None:
+                    continue
+                p = float(str(pv).strip())
+                if min_price is None or p < min_price:
+                    min_price = p
+            except Exception:
+                continue
+        price = float(min_price) if min_price is not None else None
+    except Exception:
+        price = None
+    inv_map: dict[str, int] = {}
+    # Track per-size inventory across variants (assumes option1 is Size)
+    size_to_avails: dict[str, list[int]] = {}
+    # Collect inventory_item_ids
+    inv_ids: list[str] = []
+    for v in variants or []:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            if iid and iid != "None":
+                inv_ids.append(iid)
+        except Exception:
+            continue
+    if inv_ids:
+        # Query inventory levels in chunks (Shopify limit)
+        chunk = 50
+        for i in range(0, len(inv_ids), chunk):
+            ids = ",".join(inv_ids[i:i+chunk])
+            try:
+                data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={ids}")
+                levels = (data or {}).get("inventory_levels") or []
+                for lv in levels:
+                    try:
+                        iid = str(lv.get("inventory_item_id"))
+                        avail = int(lv.get("available") or 0)
+                        inv_map[iid] = inv_map.get(iid, 0) + avail
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    # Heuristic: if we couldn't confidently find the size option by name,
+    # infer it from variant values (numeric/S|M|L|XL-like values).
+    try:
+        # Build unique sets for each option
+        vals1 = set()
+        vals2 = set()
+        vals3 = set()
+        for v in variants or []:
+            try:
+                a = str((v or {}).get("option1") or "").strip().lower()
+                b = str((v or {}).get("option2") or "").strip().lower()
+                c = str((v or {}).get("option3") or "").strip().lower()
+                if a: vals1.add(a)
+                if b: vals2.add(b)
+                if c: vals3.add(c)
+            except Exception:
+                continue
+        def _is_size_like(s: str) -> bool:
+            if not s:
+                return False
+            t = s.strip().lower()
+            common = {"xxs","xs","s","m","l","xl","xxl","xxxl","os","one size","2t","3t","4t","5t","6t","7t"}
+            if t in common:
+                return True
+            # numeric-like (includes decimals or slash sizes)
+            import re
+            return bool(re.match(r"^\\d+(?:[./-]\\d+)?$", t))
+        def _score(values: set[str]) -> float:
+            if not values:
+                return 0.0
+            try:
+                good = sum(1 for x in values if _is_size_like(x))
+                return good / max(1, len(values))
+            except Exception:
+                return 0.0
+        scores = [
+            (1, _score(vals1), len(vals1)),
+            (2, _score(vals2), len(vals2)),
+            (3, _score(vals3), len(vals3)),
+        ]
+        # Prefer highest score; tie-break by larger unique count; final fallback keep previous
+        best = max(scores, key=lambda x: (x[1], x[2]))
+        if best[1] >= 0.5 and best[2] > 0:
+            size_option_index = best[0]
+        elif all(s[1] == 0 for s in scores):
+            # No size-like axis detected; pick axis with largest unique count (>1) to avoid over-counting
+            largest = max(scores, key=lambda x: x[2])
+            if largest[2] > 1:
+                size_option_index = largest[0]
+    except Exception:
+        pass
+
+    # Compute totals per variant
+    for v in variants or []:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            avail = inv_map.get(iid, 0)
+            total_available += max(0, int(avail))
+            if int(avail) <= 0:
+                zero_variants += 1
+            # Aggregate by size (prefer option1 as size)
+            try:
+                # Select size value from the detected option index
+                if size_option_index == 1:
+                    size = str((v or {}).get("option1") or "").strip()
+                elif size_option_index == 2:
+                    size = str((v or {}).get("option2") or "").strip()
+                else:
+                    size = str((v or {}).get("option3") or "").strip()
+                if not size:
+                    size = "Default"
+                if size not in size_to_avails:
+                    size_to_avails[size] = []
+                size_to_avails[size].append(int(avail))
+            except Exception:
+                pass
+        except Exception:
+            continue
+    # Count zero sizes: all color variants for that size have <= 0
+    try:
+        zero_sizes = sum(1 for sz, avs in size_to_avails.items() if all((int(a) <= 0) for a in (avs or [0])))
+    except Exception:
+        zero_sizes = 0
+    return {"image": image, "total_available": total_available, "zero_variants": zero_variants, "zero_sizes": zero_sizes, "price": price}
+
+
+def get_product_variants_inventory(numeric_product_id: str, *, store: str | None = None) -> dict:
+    """Return variant-level inventory breakdown for a product.
+
+    Returns:
+      {
+        "sizes": ["38", "39", ...],
+        "colors": ["Black", "Brown", ...],
+        "matrix": { "Black": { "38": 5, "39": 0, ... }, ... },
+        "total_available": int
+      }
+    """
+    cached = _get_product_cache(store, "inventory", str(numeric_product_id), _PRODUCT_BRIEF_DB_TTL_S)
+    if cached is not None:
+        return {
+            "sizes": cached.get("sizes") or [],
+            "colors": cached.get("colors") or [],
+            "matrix": cached.get("matrix") or {},
+            "total_available": int(cached.get("total_available") or 0),
+        }
+    try:
+        data = _get_product_inventory_graphql(numeric_product_id, store=store)
+        _set_product_cache(store, "inventory", str(numeric_product_id), data)
+        return data
+    except Exception as e:
+        _perf_log.warning("product_variants_inventory.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
+        if os.getenv("PTOS_PRODUCTS_INVENTORY_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+
+    try:
+        pdata = _rest_get_store(store, f"/products/{numeric_product_id}.json")
+        p = (pdata or {}).get("product") or {}
+    except Exception:
+        return {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}
+
+    variants = p.get("variants") or []
+    options = p.get("options") or []
+
+    # Determine which option index is Size and which is Color
+    size_idx = None
+    color_idx = None
+    for idx, opt in enumerate(options):
+        name = str((opt or {}).get("name") or "").strip().lower()
+        if "size" in name or "taille" in name:
+            size_idx = idx
+        elif "color" in name or "colour" in name or "couleur" in name:
+            color_idx = idx
+
+    # If only one option exists, treat it as Size (no color dimension)
+    if len(options) == 1:
+        size_idx = 0
+        color_idx = None
+    elif len(options) >= 2 and size_idx is None and color_idx is None:
+        # Heuristic: first option is Size, second is Color
+        size_idx = 0
+        color_idx = 1
+
+    # Collect inventory_item_ids to query levels
+    inv_ids: list[str] = []
+    for v in variants:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            if iid and iid != "None":
+                inv_ids.append(iid)
+        except Exception:
+            continue
+
+    inv_map: dict[str, int] = {}
+    if inv_ids:
+        chunk = 50
+        for i in range(0, len(inv_ids), chunk):
+            ids = ",".join(inv_ids[i:i + chunk])
+            try:
+                data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={ids}")
+                levels = (data or {}).get("inventory_levels") or []
+                for lv in levels:
+                    try:
+                        iid = str(lv.get("inventory_item_id"))
+                        avail = int(lv.get("available") or 0)
+                        inv_map[iid] = inv_map.get(iid, 0) + avail
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    # Build the matrix
+    sizes_set: list[str] = []
+    colors_set: list[str] = []
+    matrix: dict[str, dict[str, int]] = {}
+    total_available = 0
+
+    for v in variants:
+        try:
+            iid = str((v or {}).get("inventory_item_id"))
+            avail = inv_map.get(iid, 0)
+            total_available += max(0, avail)
+
+            opt_vals = [
+                str((v or {}).get("option1") or "").strip(),
+                str((v or {}).get("option2") or "").strip(),
+                str((v or {}).get("option3") or "").strip(),
+            ]
+
+            size_val = opt_vals[size_idx] if size_idx is not None and size_idx < len(opt_vals) else "Default"
+            color_val = opt_vals[color_idx] if color_idx is not None and color_idx < len(opt_vals) else "Default"
+
+            if not size_val:
+                size_val = "Default"
+            if not color_val:
+                color_val = "Default"
+
+            if size_val not in sizes_set:
+                sizes_set.append(size_val)
+            if color_val not in colors_set:
+                colors_set.append(color_val)
+
+            if color_val not in matrix:
+                matrix[color_val] = {}
+            matrix[color_val][size_val] = matrix[color_val].get(size_val, 0) + avail
+        except Exception:
+            continue
+
+    return {
+        "sizes": sizes_set,
+        "colors": colors_set,
+        "matrix": matrix,
+        "total_available": total_available,
+    }
+
+
+def count_paid_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None, include_closed: bool = True) -> int:
+    """Count PAID orders (financial_status == paid/partially_paid) created within [created_at_min, created_at_max]
+    that include the given numeric product/variant ID in line items.
+
+    Notes:
+      - Only numeric identifiers are supported (mirrors count_orders_by_title behavior).
+      - Excludes cancelled orders.
+    """
+    ident = (title_contains or "").strip()
+    if not ident or not ident.isdigit():
+        return 0
+    target_pid = int(ident)
+    from urllib.parse import urlencode
+    total = 0
+    base_path = "/orders.json"
+    qs = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "created_at_min": created_at_min,
+        "created_at_max": created_at_max,
+        # Do not restrict fields; need line_items + financial_status
+    }
+    while True:
+        path = base_path + ("?" + urlencode(qs) if qs else "")
+        data = _rest_get_store(store, path)
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                fs = str(o.get("financial_status") or "").strip().lower()
+                if fs not in ("paid", "partially_paid"):
+                    continue
+                items = o.get("line_items") or []
+                matched = False
+                for li in items:
+                    try:
+                        pid = (li or {}).get("product_id")
+                        vid = (li or {}).get("variant_id")
+                        if pid is not None and int(pid) == target_pid:
+                            matched = True
+                            break
+                        if vid is not None and int(vid) == target_pid:
+                            matched = True
+                            break
+                    except Exception:
+                        continue
+                if matched:
+                    total += 1
+            except Exception:
+                continue
+        if len(orders) < int(qs["limit"]):
+            break
+        try:
+            last_id = orders[-1].get("id")
+            if not last_id:
+                break
+            qs["since_id"] = last_id
+        except Exception:
+            break
+    return total
+
+
+def _count_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+) -> int:
+    """Count orders matching product_id using Shopify Admin GraphQL search."""
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return 0
+    query = (
+        f'product_id:"{ident}" '
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+    )
+    gql = """
+    query OrdersForProduct($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+        edges { cursor node { id cancelledAt closedAt } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    total = 0
+    after = None
+    seen: set[str] = set()
+    started = time.time()
+    pages = 0
+    timeout_s = max(3, int(os.getenv("PTOS_ORDERS_SEARCH_TIMEOUT_S", "12") or "12"))
+    while True:
+        data = _gql_store_once(store, gql, {"query": query, "first": 250, "after": after}, timeout=timeout_s)
+        conn = (data or {}).get("orders") or {}
+        edges = conn.get("edges") or []
+        pages += 1
+        for edge in edges:
+            node = ((edge or {}).get("node") or {})
+            if node.get("cancelledAt"):
+                continue
+            if not include_closed and node.get("closedAt"):
+                continue
+            oid = str(node.get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                total += 1
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    _perf_log.info(
+        "orders_search.one store=%s pid=%s pages=%d total=%d elapsed_ms=%d",
+        store,
+        ident,
+        pages,
+        total,
+        int((time.time() - started) * 1000),
+    )
+    return total
+
+
+def count_paid_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+) -> int:
+    """Count paid orders with Shopify's order search, matching Admin's product_id filter.
+
+    This mirrors Admin queries like:
+    product_id:"123" processed_at:>="YYYY-MM-DD" processed_at:<="YYYY-MM-DD" financial_status:"paid"
+    """
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return 0
+    query = (
+        f'product_id:"{ident}" '
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
+        'financial_status:"paid"'
+    )
+    gql = """
+    query PaidOrdersForProduct($query: String!, $first: Int!, $after: String) {
+      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
+        edges {
+          cursor
+          node { id }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+    total = 0
+    after = None
+    seen: set[str] = set()
+    while True:
+        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
+        conn = (data or {}).get("orders") or {}
+        edges = conn.get("edges") or []
+        for edge in edges:
+            oid = str(((edge or {}).get("node") or {}).get("id") or "")
+            if oid and oid not in seen:
+                seen.add(oid)
+                total += 1
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return total
+
+
+def count_paid_orders_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = True,
+) -> dict[str, int]:
+    """Count PAID orders (financial_status == paid/partially_paid) for many numeric product/variant IDs
+    in one scan of orders filtered by processed_at date range (YYYY-MM-DD).
+
+    Returns a mapping { id_str: count } for every numeric id in `numeric_ids`.
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            s = str(raw or "").strip()
+            if s.isdigit():
+                targets[int(s)] = s
+        except Exception:
+            continue
+    out: dict[str, int] = {v: 0 for v in targets.values()}
+    if not targets:
+        return out
+
+    # Prefer Shopify's own order-search query. It matches what the Admin UI uses
+    # for product_id + processed_at + financial_status filters and can find
+    # historical paid orders that the REST page scan may miss.
+    try:
+        searched: dict[str, int] = {}
+        for key in targets.values():
+            searched[key] = count_paid_orders_by_product_search(
+                key,
+                processed_min_date,
+                processed_max_date,
+                store=store,
+            )
+        for key, val in searched.items():
+            out[key] = int(val or 0)
+        if any(int(v or 0) > 0 for v in searched.values()):
+            targets = {tid: key for tid, key in targets.items() if int(out.get(key, 0) or 0) <= 0}
+            if not targets:
+                return out
+    except Exception:
+        pass
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+    }
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            q = {"page_info": page_info, "limit": 250}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                fs = str(o.get("financial_status") or "").strip().lower()
+                if fs not in ("paid", "partially_paid"):
+                    continue
+                matched: set[int] = set()
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid in targets:
+                            matched.add(pid)
+                        if vid in targets:
+                            matched.add(vid)
+                    except Exception:
+                        continue
+                if matched:
+                    for tid in matched:
+                        key = targets.get(tid)
+                        if key:
+                            out[key] = int(out.get(key, 0) or 0) + 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
+
+
+def count_orders_and_paid_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = True,
+) -> dict[str, dict]:
+    """Count (orders_total, paid_orders_total) for many numeric product/variant IDs in one scan.
+
+    Uses processed_at date range (YYYY-MM-DD) and counts:
+      - orders_total: any non-cancelled order that contains product_id or variant_id
+      - paid_orders_total: subset where financial_status in (paid, partially_paid)
+
+    Returns:
+      { id_str: { "orders_total": int, "paid_orders_total": int } }
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            s = str(raw or "").strip()
+            if s.isdigit():
+                targets[int(s)] = s
+        except Exception:
+            continue
+    out: dict[str, dict] = {v: {"orders_total": 0, "paid_orders_total": 0} for v in targets.values()}
+    if not targets:
+        return out
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    base_path = "/orders.json"
+    # Limit fields to reduce payload size (Shopify REST supports 'fields')
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+        "fields": "id,cancelled_at,financial_status,line_items",
+    }
+    page_info = None
+    while True:
+        q = params.copy()
+        if page_info:
+            # With page_info, Shopify only allows page_info + limit (+ fields)
+            q = {"page_info": page_info, "limit": 250, "fields": params["fields"]}
+        path = base_path + ("?" + urlencode(q))
+        resp = _rest_get_store_raw(store, path)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        orders = (data or {}).get("orders") or []
+        for o in orders:
+            try:
+                if o.get("cancelled_at"):
+                    continue
+                fs = str(o.get("financial_status") or "").strip().lower()
+                is_paid = fs in ("paid", "partially_paid")
+                matched: set[int] = set()
+                for li in (o.get("line_items") or []):
+                    try:
+                        pid = int(((li or {}).get("product_id") or 0))
+                        vid = int(((li or {}).get("variant_id") or 0))
+                        if pid in targets:
+                            matched.add(pid)
+                        if vid in targets:
+                            matched.add(vid)
+                    except Exception:
+                        continue
+                if matched:
+                    for tid in matched:
+                        key = targets.get(tid)
+                        if not key:
+                            continue
+                        out[key]["orders_total"] = int(out[key].get("orders_total", 0) or 0) + 1
+                        if is_paid:
+                            out[key]["paid_orders_total"] = int(out[key].get("paid_orders_total", 0) or 0) + 1
+            except Exception:
+                continue
+        link = resp.headers.get("Link")
+        page_info = _parse_link_next(link)
+        if not page_info:
+            break
+    return out
+
+
+def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+    """Fast product-card data for ads management.
+
+    Returns image, price, and inventory without the heavy REST inventory chain.
+    """
+    ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip().isdigit()]
+    if not ids:
+        return {}
+    query = """
+    query ProductBriefNodes($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          featuredImage { url }
+          variants(first: 250) {
+            nodes {
+              price
+              inventoryQuantity
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
+    """
+    gid_ids = [f"gid://shopify/Product/{pid}" for pid in ids]
+    timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_BRIEF_GRAPHQL_TIMEOUT_S", "24") or "24"))
+    data = _gql_store_once(store, query, {"ids": gid_ids}, timeout=timeout_s)
+    out: dict[str, dict] = {}
+    for node in ((data or {}).get("nodes") or []):
+        if not node:
+            continue
+        gid = str((node or {}).get("id") or "")
+        pid = gid.split("/")[-1] if "/" in gid else gid
+        if not pid:
+            continue
+        summary = _inventory_summary_from_graphql_product(node or {})
+        out[str(pid)] = {
+            "image": summary.get("image"),
+            "total_available": int(summary.get("total_available") or 0),
+            "zero_variants": int(summary.get("zero_variants") or 0),
+            "zero_sizes": int(summary.get("zero_sizes") or 0),
+            "price": summary.get("price"),
+            "sizes": summary.get("sizes") or [],
+            "colors": summary.get("colors") or [],
+            "matrix": summary.get("matrix") or {},
+        }
+    return out
+
+
+def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+    """Return product briefs for a list of numeric product IDs.
+
+    Performance:
+      - best-effort per-instance TTL cache
+      - bounded parallel fetch for cache misses
+    """
+    ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip()]
+    if len(ids) > _PRODUCT_BRIEF_MAX_IDS:
+        ids = ids[:_PRODUCT_BRIEF_MAX_IDS]
+
+    now = time.time()
+    out: dict[str, dict] = {}
+    missing: list[str] = []
+    store_key = (store or "").strip().lower()
+    for pid in ids:
+        k = f"{store_key}::{pid}"
+        hit = _PRODUCT_BRIEF_CACHE.get(k)
+        if hit and (now - float(hit[0])) <= float(_PRODUCT_BRIEF_TTL_S):
+            out[pid] = hit[1]
+        else:
+            db_hit = _get_product_cache(store, "brief", pid, _PRODUCT_BRIEF_DB_TTL_S)
+            if db_hit is not None:
+                out[pid] = db_hit
+                try:
+                    _PRODUCT_BRIEF_CACHE[k] = (now, db_hit)
+                except Exception:
+                    pass
+            else:
+                missing.append(pid)
+
+    if not missing:
+        return out
+
+    try:
+        started = time.time()
+        brief_map = _get_products_brief_graphql(missing, store=store)
+        for pid in missing:
+            data = (brief_map or {}).get(pid) or {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+            out[pid] = data
+            try:
+                _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+            except Exception:
+                pass
+            _set_product_cache(store, "brief", pid, data)
+            try:
+                inv_data = {
+                    "sizes": (data or {}).get("sizes") or [],
+                    "colors": (data or {}).get("colors") or [],
+                    "matrix": (data or {}).get("matrix") or {},
+                    "total_available": int((data or {}).get("total_available") or 0),
+                }
+                _set_product_cache(store, "inventory", pid, inv_data)
+            except Exception:
+                pass
+        _perf_log.info(
+            "products_brief.graphql store=%s ids=%d found=%d elapsed_ms=%d",
+            store,
+            len(missing),
+            len(brief_map or {}),
+            int((time.time() - started) * 1000),
+        )
+        return out
+    except Exception as e:
+        _perf_log.warning("products_brief.graphql_failed store=%s ids=%d err=%s", store, len(missing), e)
+        if (os.getenv("PTOS_PRODUCTS_BRIEF_REST_FALLBACK", "") or "").strip().lower() not in ("1", "true", "yes"):
+            for pid in missing:
+                data = {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
+                out[pid] = data
+            return out
+
+    def _fetch_one(pid: str) -> tuple[str, dict]:
+        try:
+            data = get_product_brief(str(pid), store=store)
+            return (pid, data)
+        except Exception:
+            return (pid, {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0})
+
+    workers = max(1, min(int(_PRODUCT_BRIEF_WORKERS or 8), 16))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_fetch_one, pid) for pid in missing]
+        for f in as_completed(futs):
+            try:
+                pid, data = f.result()
+            except Exception:
+                continue
+            out[pid] = data
+            try:
+                _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
+            except Exception:
+                pass
+            _set_product_cache(store, "brief", pid, data)
+    return out
+
+
+def _extract_numeric_id_from_gid(gid: str) -> str | None:
+    try:
+        return (gid or "").split("/")[-1] or None
+    except Exception:
+        return None
+
+
+def upload_images_to_product(product_gid: str, image_srcs: list[str], alt_texts: list[str] | None = None, *, store: str | None = None) -> list[str]:
+    """Attach remote images to a Shopify product and return Shopify CDN URLs.
+
+    Best-effort: continues on individual failures and returns all successful CDN URLs.
+    """
+    if not image_srcs:
+        return []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not numeric_id:
+        return []
+    cdn_urls: list[str] = []
+    for idx, src in enumerate(image_srcs):
+        try:
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            resp = _rest_post_store(store, f"/products/{numeric_id}/images.json", {"image": {"src": src, "alt": alt}})
+            try:
+                cdn = (resp or {}).get("image", {}).get("src")
+                if cdn:
+                    cdn_urls.append(cdn)
+            except Exception:
+                pass
+        except Exception:
+            # Ignore per-image failures to avoid blocking the flow
+            continue
+    return cdn_urls
+
+
+def upload_images_to_product_verbose(product_gid: str, image_srcs: list[str], alt_texts: list[str] | None = None, *, store: str | None = None) -> dict:
+    """Upload images and return detailed per-image outcomes plus collected CDN URLs."""
+    results: list[dict] = []
+    cdn_urls: list[str] = []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not (numeric_id and image_srcs):
+        return {"cdn_urls": [], "per_image": results}
+    for idx, src in enumerate(image_srcs):
+        try:
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            resp = _rest_post_store(store, f"/products/{numeric_id}/images.json", {"image": {"src": src, "alt": alt}})
+            cdn = (resp or {}).get("image", {}).get("src")
+            if cdn:
+                cdn_urls.append(cdn)
+            results.append({"src": src, "ok": True, "cdn": cdn, "resp_keys": list((resp or {}).keys())})
+        except Exception as e:
+            results.append({"src": src, "ok": False, "error": str(e)})
+            continue
+    return {"cdn_urls": cdn_urls, "per_image": results}
+
+
+def upload_image_attachments_to_product(product_gid: str, files: list[tuple[str, bytes]], alt_texts: list[str] | None = None, *, store: str | None = None) -> dict:
+    """Upload local files as base64 attachments to a Shopify product. Returns cdn_urls and per-image outcomes.
+
+    files: list of (filename, bytes)
+    """
+    results: list[dict] = []
+    cdn_urls: list[str] = []
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not (numeric_id and files):
+        return {"cdn_urls": [], "per_image": results}
+    for idx, (filename, blob) in enumerate(files):
+        try:
+            b64 = base64.b64encode(blob).decode("ascii")
+            alt = (alt_texts[idx] if (alt_texts and idx < len(alt_texts)) else None) or "Product image"
+            payload = {"image": {"attachment": b64, "filename": filename, "alt": alt}}
+            resp = _rest_post_store(store, f"/products/{numeric_id}/images.json", payload)
+            cdn = (resp or {}).get("image", {}).get("src")
+            if cdn:
+                cdn_urls.append(cdn)
+            results.append({"filename": filename, "ok": True, "cdn": cdn, "resp_keys": list((resp or {}).keys())})
+        except Exception as e:
+            results.append({"filename": filename, "ok": False, "error": str(e)})
+            continue
+    return {"cdn_urls": cdn_urls, "per_image": results}
+
+
+def upload_remote_image_to_shopify_files(image_url: str, alt: str | None = None, *, store: str | None = None) -> dict:
+    """Upload a remote image URL into Shopify Files and return file metadata."""
+    src = (image_url or "").strip()
+    if not src:
+        return {}
+    data = _gql_store(store, FILE_CREATE, {
+        "files": [{
+            "originalSource": src,
+            "contentType": "IMAGE",
+            "alt": alt or "Vendor original product image",
+        }]
+    })
+    files = ((data or {}).get("fileCreate") or {}).get("files") or []
+    file_obj = files[0] if files else {}
+    file_id = (file_obj or {}).get("id")
+    image = (file_obj or {}).get("image") or {}
+    url = image.get("url") or (file_obj or {}).get("url")
+    status = (file_obj or {}).get("fileStatus")
+    if file_id and (not url or url == src or status not in ("READY", "UPLOADED", None)):
+        import time
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                node_data = _gql_store(store, FILE_NODE, {"id": file_id})
+                node = (node_data or {}).get("node") or {}
+                image = (node or {}).get("image") or {}
+                url = image.get("url") or (node or {}).get("url") or url
+                status = (node or {}).get("fileStatus") or status
+                if url and url != src:
+                    break
+            except Exception:
+                break
+    return {
+        "id": file_id,
+        "url": url or src,
+        "status": status,
+    }
+
+
+def set_product_wholesale_image_metafields(
+    product_gid: str,
+    values: dict[str, str | None],
+    *,
+    store: str | None = None,
+) -> None:
+    """Persist wholesale-only image URLs on the product."""
+    metafields = []
+    for key, value in (values or {}).items():
+        val = (value or "").strip() if isinstance(value, str) else ""
+        if not val:
+            continue
+        metafields.append({
+            "ownerId": product_gid,
+            "namespace": "wholesale",
+            "key": key,
+            "type": "single_line_text_field",
+            "value": val,
+        })
+    if metafields:
+        _gql_store(store, METAFIELDS_SET, {"metafields": metafields})
+
+
+def list_product_images(product_gid: str, *, store: str | None = None) -> list[dict]:
+    numeric_id = _extract_numeric_id_from_gid(product_gid)
+    if not numeric_id:
+        return []
+    try:
+        data = _rest_get_store(store, f"/products/{numeric_id}/images.json")
+        return (data or {}).get("images", []) or []
+    except Exception:
+        return []
+
+
+
+
+def _get_location_id_from_inventory_levels(inventory_item_ids: list[str] | None, *, store: str | None = None) -> str | None:
+    """Infer a usable location from inventory levels when locations scope is unavailable."""
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    ids = [str(i).strip() for i in (inventory_item_ids or []) if str(i).strip() and str(i).strip() != "None"]
+    if not ids:
+        return None
+    chunk = 50
+    for i in range(0, len(ids), chunk):
+        batch_ids = ids[i:i + chunk]
+        batch = ",".join(batch_ids)
+        try:
+            data = _rest_get_store(store, f"/inventory_levels.json?inventory_item_ids={batch}")
+            levels = (data or {}).get("inventory_levels") or []
+            _log.info(f"inventory_levels fallback returned {len(levels)} levels for {len(batch_ids)} inventory items")
+            for lv in levels:
+                loc_id = str((lv or {}).get("location_id") or "").strip()
+                if loc_id:
+                    _log.info(f"Using inventory_levels fallback location: {loc_id}")
+                    return loc_id
+        except Exception as e:
+            _log.warning(f"inventory_levels fallback failed for inventory_item_ids={batch}: {e}")
+    return None
+
+def _get_primary_location_id(store: str | None = None) -> str | None:
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    # Try REST first
+    try:
+        data = _rest_get_store(store, "/locations.json")
+        locs = (data or {}).get("locations") or []
+        _log.info(f"REST locations.json returned {len(locs)} locations")
+        for loc in locs:
+            try:
+                if loc.get("active", True):
+                    loc_id = str(loc.get("id"))
+                    _log.info(f"Using REST location: {loc_id} ({loc.get('name')})")
+                    return loc_id
+            except Exception:
+                continue
+        if locs:
+            loc_id = str(locs[0].get("id"))
+            _log.info(f"Using first REST location fallback: {loc_id}")
+            return loc_id
+    except Exception as e:
+        _log.warning(f"REST /locations.json failed: {e}")
+    # Fallback to GraphQL
+    try:
+        data = _gql_store(store, LOCATIONS_QUERY, {})
+        nodes = ((data or {}).get("locations") or {}).get("nodes") or []
+        _log.info(f"GraphQL locations returned {len(nodes)} locations")
+        for node in nodes:
+            loc_gid = node.get("id") or ""
+            if loc_gid:
+                # Extract numeric ID from GID
+                numeric = loc_gid.split("/")[-1]
+                _log.info(f"Using GraphQL location: {numeric} (GID={loc_gid}, name={node.get('name')})")
+                return numeric
+    except Exception as e:
+        _log.error(f"GraphQL locations also failed: {e}")
+    _log.error("No location found via REST or GraphQL!")
+    return None
+
+
+def _set_inventory_tracked(inventory_item_id: str, tracked: bool = True, *, store: str | None = None) -> None:
+    import logging
+    try:
+        _rest_put_store(store, f"/inventory_items/{inventory_item_id}.json", {"inventory_item": {"id": int(inventory_item_id), "tracked": bool(tracked)}})
+    except Exception as e:
+        logging.getLogger("shopify_client").warning(f"_set_inventory_tracked failed for item={inventory_item_id}: {e}")
+
+
+INVENTORY_SET_QUANTITIES = """
+mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+  inventorySetQuantities(input: $input) {
+    inventoryAdjustmentGroup { reason }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _set_inventory_level(location_id: str, inventory_item_id: str, available: int, *, store: str | None = None) -> None:
+    """Set inventory quantity using GraphQL inventorySetQuantities (works on API 2023-10+).
+
+    Falls back to REST /inventory_levels/set.json for older API versions.
+    """
+    import logging
+    _log = logging.getLogger("shopify_client.inventory")
+    # Build GIDs from numeric IDs
+    loc_gid = f"gid://shopify/Location/{location_id}"
+    inv_gid = f"gid://shopify/InventoryItem/{inventory_item_id}"
+    _log.info(f"inventorySetQuantities: item={inv_gid}, loc={loc_gid}, qty={available}")
+    variables = {
+        "input": {
+            "reason": "correction",
+            "name": "available",
+            "ignoreCompareQuantity": True,
+            "quantities": [
+                {
+                    "inventoryItemId": inv_gid,
+                    "locationId": loc_gid,
+                    "quantity": int(available),
+                }
+            ],
+        }
+    }
+    try:
+        data = _gql_store(store, INVENTORY_SET_QUANTITIES, variables)
+        _log.info(f"inventorySetQuantities response: {data}")
+        ue = ((data or {}).get("inventorySetQuantities") or {}).get("userErrors") or []
+        if ue:
+            _log.error(f"inventorySetQuantities userErrors: {ue}")
+            raise RuntimeError(f"Shopify userErrors: {ue}")
+    except Exception as gql_err:
+        _log.warning(f"GraphQL inventorySetQuantities failed: {gql_err}, trying REST fallback")
+        # Fallback to REST for older API versions
+        try:
+            _rest_post_store(store, "/inventory_levels/set.json", {
+                "location_id": int(location_id),
+                "inventory_item_id": int(inventory_item_id),
+                "available": int(available)
+            })
+            _log.info(f"REST inventory_levels/set.json succeeded for item={inventory_item_id}")
+        except Exception as rest_err:
+            _log.error(f"REST fallback also failed for item={inventory_item_id}: {rest_err}")
+            raise RuntimeError(f"GraphQL inventory update failed: {gql_err}; REST fallback failed: {rest_err}")
+            raise RuntimeError(f"Both GraphQL and REST inventory set failed: gql={gql_err}, rest={rest_err}")
+
+
+def _set_inventory_item_cost(inventory_item_id: str, cost: float, *, store: str | None = None) -> None:
+    """Set cost per item on a Shopify inventory item (used for COG price)."""
+    try:
+        _rest_put_store(store, f"/inventory_items/{inventory_item_id}.json", {
+            "inventory_item": {"id": int(inventory_item_id), "cost": str(cost)}
+        })
+    except Exception:
+        # best-effort; do not raise to avoid blocking the flow
+        pass
+
+
+def _numeric_product_id_from_gid(product_gid: str) -> str | None:
+    try:
+        return (product_gid or "").split("/")[-1] or None
+    except Exception:
+        return None
+
+
+def _update_product_options(numeric_product_id: str, sizes: list[str] | None, colors: list[str] | None, *, store: str | None = None) -> None:
+    try:
+        options = []
+        if sizes:
+            options.append({"name": "Size", "values": sizes})
+        if colors:
+            options.append({"name": "Color", "values": colors})
+        if not options:
+            return
+        _rest_put_store(store, f"/products/{numeric_product_id}.json", {"product": {"id": int(numeric_product_id), "options": options}})
+    except Exception:
+        pass
+
+
+def _create_variant(
+    numeric_product_id: str,
+    option1: str | None,
+    option2: str | None,
+    price: float | None,
+    *,
+    sku: str | None = None,
+    barcode: str | None = None,
+    store: str | None = None,
+) -> dict | None:
+    try:
+        variant: dict = {}
+        if option1 is not None:
+            variant["option1"] = option1
+        if option2 is not None:
+            variant["option2"] = option2
+        if price is not None:
+            variant["price"] = str(price)
+        if sku:
+            variant["sku"] = sku
+        if barcode:
+            variant["barcode"] = barcode
+        resp = _rest_post_store(store, f"/products/{numeric_product_id}/variants.json", {"variant": variant})
+        return (resp or {}).get("variant")
+    except Exception:
+        return None
+
+
+def _list_variants(numeric_product_id: str, *, store: str | None = None) -> list[dict]:
+    try:
+        resp = _rest_get_store(store, f"/products/{numeric_product_id}/variants.json")
+        return (resp or {}).get("variants", []) or []
+    except Exception:
+        return []
+
+
+def _update_variant_price(variant_id: str, price: float, *, store: str | None = None) -> None:
+    try:
+        _rest_put_store(store, f"/variants/{variant_id}.json", {"variant": {"id": int(variant_id), "price": str(price)}})
+    except Exception:
+        pass
+
+
+PRODUCT_VARIANTS_BULK_UPDATE = """
+mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants, allowPartialUpdates: true) {
+    product { id }
+    productVariants { id }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def _variant_gid_from_rest(variant: dict) -> str | None:
+    try:
+        gql_id = str((variant or {}).get("admin_graphql_api_id") or "").strip()
+        if gql_id:
+            return gql_id
+        numeric_id = str((variant or {}).get("id") or "").strip()
+        if numeric_id:
+            return f"gid://shopify/ProductVariant/{numeric_id}"
+    except Exception:
+        return None
+    return None
+
+
+def _bulk_update_variant_shopify_fields(
+    product_gid: str,
+    variants: list[dict],
+    *,
+    store: str | None = None,
+) -> dict:
+    """Set GraphQL-only variant fields such as unit price and physical inventory flags."""
+    cleaned = [v for v in (variants or []) if isinstance(v, dict) and v.get("id")]
+    if not cleaned:
+        return {"ok": True, "updated": 0}
+    try:
+        data = _gql_store(store, PRODUCT_VARIANTS_BULK_UPDATE, {"productId": product_gid, "variants": cleaned})
+        payload = (data or {}).get("productVariantsBulkUpdate") or {}
+        errors = payload.get("userErrors") or []
+        return {"ok": not bool(errors), "updated": len(payload.get("productVariants") or []), "errors": errors}
+    except Exception as e:
+        return {"ok": False, "updated": 0, "errors": [str(e)]}
+
+
+def _configure_variants_for_product(
+    product_gid: str,
+    base_price: float | None,
+    sizes: list[str] | None,
+    colors: list[str] | None,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+    *,
+    store: str | None = None,
+) -> dict:
+    numeric_id = _numeric_product_id_from_gid(product_gid)
+    report: dict = {
+        "ok": True,
+        "options_updated": {"size_count": 0, "color_count": 0},
+        "variants_created": 0,
+        "inventory_items_updated": 0,
+        "skipped": [],
+        "errors": [],
+    }
+    if not numeric_id:
+        report["ok"] = False
+        report["errors"].append("Invalid product GID")
+        return report
+    def _resolve_location_for_item(inv_item_id: str | None) -> str | None:
+        nonlocal loc_id
+        if loc_id:
+            return loc_id
+        resolved = _get_location_id_from_inventory_levels([inv_item_id or ""], store=store)
+        if resolved:
+            loc_id = resolved
+        return resolved
+    # Location used for inventory level updates (best-effort)
+    loc_id = _get_primary_location_id(store)
+    # Explicit variants provided: honor per-variant price/sku/qty/track when present
+    explicit_variants: list[dict] = [v for v in (variants or []) if isinstance(v, dict)]
+    if explicit_variants:
+        uniq_sizes: list[str] = []
+        uniq_colors: list[str] = []
+        for v in explicit_variants:
+            try:
+                sv = (v.get("size") or "").strip()
+                cv = (v.get("color") or "").strip()
+                if sv and sv not in uniq_sizes:
+                    uniq_sizes.append(sv)
+                if cv and cv not in uniq_colors:
+                    uniq_colors.append(cv)
+            except Exception:
+                continue
+        # Build a single PUT payload with options AND variants together.
+        # This avoids the issue where updating options first remaps the default variant,
+        # then POST-ing new variants fails silently due to duplicates.
+        product_update: dict = {"id": int(numeric_id)}
+        options_list: list[dict] = []
+        if uniq_sizes:
+            options_list.append({"name": "Size", "values": uniq_sizes})
+        if uniq_colors:
+            options_list.append({"name": "Color", "values": uniq_colors})
+        if options_list:
+            product_update["options"] = options_list
+            report["options_updated"] = {"size_count": len(uniq_sizes), "color_count": len(uniq_colors)}
+        # Build variant payloads for the PUT (replaces default variant)
+        variant_payloads: list[dict] = []
+        for v in explicit_variants:
+            vp: dict = {}
+            sv = (v.get("size") or "").strip()
+            cv = (v.get("color") or "").strip()
+            # option1 = first option (Size if present, else Color)
+            # option2 = second option (Color if Size is also present)
+            if uniq_sizes and uniq_colors:
+                if sv:
+                    vp["option1"] = sv
+                if cv:
+                    vp["option2"] = cv
+            elif uniq_sizes:
+                if sv:
+                    vp["option1"] = sv
+            elif uniq_colors:
+                if cv:
+                    vp["option1"] = cv
+            price_val = v.get("price", base_price)
+            if price_val is not None:
+                vp["price"] = str(price_val)
+            compare_at_val = v.get("compare_at_price")
+            if compare_at_val is not None:
+                try:
+                    if float(compare_at_val) > 0:
+                        vp["compare_at_price"] = str(compare_at_val)
+                except Exception:
+                    pass
+            sku_val = (v.get("sku") or "")
+            if isinstance(sku_val, str) and sku_val.strip():
+                vp["sku"] = sku_val.strip()
+            barcode_val = (v.get("barcode") or "")
+            if isinstance(barcode_val, str) and barcode_val.strip():
+                vp["barcode"] = barcode_val.strip()
+            variant_payloads.append(vp)
+        if variant_payloads:
+            product_update["variants"] = variant_payloads
+        try:
+            _rest_put_store(store, f"/products/{numeric_id}.json", {"product": product_update})
+            report["variants_created"] = len(variant_payloads)
+        except Exception as e:
+            report["ok"] = False
+            report["errors"].append(f"PUT product with variants failed: {e}")
+            return report
+        # After PUT, fetch the created variants to set inventory tracking and levels
+        import logging, time
+        _inv_log = logging.getLogger("shopify_client.inventory")
+        # Allow Shopify to finalize variant creation before we fetch them
+        time.sleep(2.0)
+        try:
+            created_variants = _list_variants(numeric_id, store=store)
+            if loc_id:
+                _inv_log.info(f"Setting inventory for {len(created_variants)} variants, loc={loc_id}")
+            else:
+                _inv_log.warning(f"Primary location unavailable for store={store}; trying per-item inventory_levels fallback")
+            # Build a lookup map from explicit_variants by option values for reliable matching
+            # (Shopify may reorder variants after PUT, so index-based mapping is unreliable)
+            _ev_qty_map: dict[str, dict] = {}
+            for ev in explicit_variants:
+                ev_size = (ev.get("size") or "").strip().lower()
+                ev_color = (ev.get("color") or "").strip().lower()
+                map_key = f"{ev_size}|{ev_color}"
+                _ev_qty_map[map_key] = ev
+            missing_location = False
+            bulk_variant_updates: list[dict] = []
+            for idx, cv_data in enumerate(created_variants):
+                try:
+                    inv_item_id = str((cv_data or {}).get("inventory_item_id") or "")
+                    if not inv_item_id or inv_item_id == "None":
+                        _inv_log.warning(f"Variant {idx}: no inventory_item_id, skipping")
+                        continue
+                    # Match by option values first, fall back to index
+                    cv_o1 = (cv_data.get("option1") or "").strip().lower()
+                    cv_o2 = (cv_data.get("option2") or "").strip().lower()
+                    # Try size|color and color|size orderings
+                    v_cfg = (
+                        _ev_qty_map.get(f"{cv_o1}|{cv_o2}")
+                        or _ev_qty_map.get(f"{cv_o2}|{cv_o1}")
+                        or _ev_qty_map.get(f"{cv_o1}|")
+                        or _ev_qty_map.get(f"|{cv_o1}")
+                        or (explicit_variants[idx] if idx < len(explicit_variants) else {})
+                    )
+                    tq_raw = v_cfg.get("track_quantity")
+                    eff_tq = (bool(tq_raw) if tq_raw is not None else (bool(track_quantity) if track_quantity is not None else True))
+                    _inv_log.info(f"Variant {idx}: inv_item={inv_item_id}, tracking={eff_tq}, option1={cv_o1}, option2={cv_o2}")
+                    _set_inventory_tracked(inv_item_id, eff_tq, store=store)
+                    cost_val = v_cfg.get("cog_price", v_cfg.get("cost"))
+                    if cost_val is not None:
+                        try:
+                            if float(cost_val) > 0:
+                                _set_inventory_item_cost(inv_item_id, float(cost_val), store=store)
+                        except Exception:
+                            pass
+                    variant_gid = _variant_gid_from_rest(cv_data)
+                    if variant_gid:
+                        gql_variant: dict = {
+                            "id": variant_gid,
+                            "inventoryItem": {
+                                "tracked": eff_tq,
+                                "requiresShipping": bool(v_cfg.get("requires_shipping", True)),
+                            },
+                        }
+                        sku_val = str(v_cfg.get("sku") or "").strip()
+                        if sku_val:
+                            gql_variant["inventoryItem"]["sku"] = sku_val
+                        compare_at_val = v_cfg.get("compare_at_price")
+                        if compare_at_val is not None:
+                            try:
+                                if float(compare_at_val) > 0:
+                                    gql_variant["compareAtPrice"] = str(compare_at_val)
+                            except Exception:
+                                pass
+                        unit_measurement = v_cfg.get("unit_price_measurement")
+                        if isinstance(unit_measurement, dict):
+                            gql_variant["unitPriceMeasurement"] = unit_measurement
+                            gql_variant["showUnitPrice"] = bool(v_cfg.get("show_unit_price", True))
+                        bulk_variant_updates.append(gql_variant)
+                    # Brief pause to let Shopify propagate tracking state
+                    time.sleep(1.5)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    q_raw = v_cfg.get("quantity")
+                    eff_q = q_raw if (q_raw is not None) else quantity
+                    if eff_q is not None:
+                        if not eff_loc_id:
+                            missing_location = True
+                            _inv_log.error(f"Variant {idx}: could not infer a Shopify location for inventory_item_id={inv_item_id}")
+                            report["errors"].append(f"inv_variant_{idx}: could not determine Shopify location")
+                            continue
+                        _inv_log.info(f"Variant {idx}: setting qty={eff_q} at loc={eff_loc_id}")
+                        _set_inventory_level(eff_loc_id, inv_item_id, int(eff_q), store=store)
+                        report["inventory_items_updated"] += 1
+                    else:
+                        _inv_log.info(f"Variant {idx}: no quantity to set")
+                except Exception as inv_err:
+                    _inv_log.error(f"Variant {idx} inventory error: {inv_err}")
+                    report["errors"].append(f"inv_variant_{idx}: {inv_err}")
+                    continue
+            if missing_location and not loc_id:
+                report["errors"].append(f"loc_id is None - could not determine Shopify location for store={store}")
+            if bulk_variant_updates:
+                bulk_report = _bulk_update_variant_shopify_fields(product_gid, bulk_variant_updates, store=store)
+                report["variant_fields_updated"] = bulk_report
+                if not bulk_report.get("ok"):
+                    report["errors"].append(f"variant_fields: {bulk_report.get('errors')}")
+        except Exception as list_err:
+            _inv_log.error(f"Failed to list variants for inventory: {list_err}")
+            report["errors"].append(f"list_variants: {list_err}")
+        return report
+    # Fallback: sizes/colors combos with base price
+    values_size = [s.strip() for s in (sizes or []) if isinstance(s, str) and s.strip()]
+    values_color = [c.strip() for c in (colors or []) if isinstance(c, str) and c.strip()]
+    if values_size or values_color:
+        # Update product options and create variants for all combinations
+        _update_product_options(numeric_id, values_size or None, values_color or None, store=store)
+        report["options_updated"] = {"size_count": len(values_size), "color_count": len(values_color)}
+        created_variants: list[dict] = []
+        if values_size and values_color:
+            for sv in values_size:
+                for cv in values_color:
+                    v = _create_variant(numeric_id, sv, cv, base_price, store=store)
+                    if v:
+                        created_variants.append(v)
+        elif values_size:
+            for sv in values_size:
+                v = _create_variant(numeric_id, sv, None, base_price, store=store)
+                if v:
+                    created_variants.append(v)
+        elif values_color:
+            for cv in values_color:
+                v = _create_variant(numeric_id, None, cv, base_price, store=store)
+                if v:
+                    created_variants.append(v)
+        report["variants_created"] = len(created_variants)
+        # Enable inventory and set stock per provided quantity (default 2)
+        for v in created_variants:
+            try:
+                inv_item_id = str((v or {}).get("inventory_item_id"))
+                if inv_item_id and inv_item_id != "None":
+                    _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True, store=store)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    if not eff_loc_id:
+                        report["errors"].append(f"inventory_location_missing:{inv_item_id}")
+                        continue
+                    if quantity is not None:
+                        _set_inventory_level(eff_loc_id, inv_item_id, int(quantity), store=store)
+                    else:
+                        _set_inventory_level(eff_loc_id, inv_item_id, 2, store=store)
+                    report["inventory_items_updated"] += 1
+            except Exception:
+                continue
+        if base_price is None:
+            report["skipped"].append({"field": "base_price", "reason": "missing"})
+    else:
+        # Single default variant: update price and inventory
+        variants_list = _list_variants(numeric_id, store=store)
+        if variants_list:
+            first = variants_list[0]
+            try:
+                var_id = str(first.get("id"))
+                if base_price is not None and var_id:
+                    _update_variant_price(var_id, base_price, store=store)
+                else:
+                    report["skipped"].append({"field": "base_price", "reason": "missing"})
+            except Exception:
+                pass
+            try:
+                inv_item_id = str(first.get("inventory_item_id"))
+                if inv_item_id and inv_item_id != "None":
+                    _set_inventory_tracked(inv_item_id, bool(track_quantity) if track_quantity is not None else True, store=store)
+                    eff_loc_id = _resolve_location_for_item(inv_item_id)
+                    if not eff_loc_id:
+                        report["errors"].append(f"inventory_location_missing:{inv_item_id}")
+                    else:
+                        if quantity is not None:
+                            _set_inventory_level(eff_loc_id, inv_item_id, int(quantity), store=store)
+                        else:
+                            _set_inventory_level(eff_loc_id, inv_item_id, 2, store=store)
+                        report["inventory_items_updated"] += 1
+            except Exception:
+                pass
+        else:
+            report["skipped"].append({"field": "variants", "reason": "no default variant found"})
+    # Mark skipped options when empty inputs were provided
+    if sizes is not None and not values_size:
+        report["skipped"].append({"field": "sizes", "reason": "empty"})
+    if colors is not None and not values_color:
+        report["skipped"].append({"field": "colors", "reason": "empty"})
+    return report
+
+def publish_product_all_channels(product_gid: str, *, store: str | None = None) -> dict:
+    """Publish a product to all available sales channels (publications)."""
+    try:
+        pubs = _gql_store(store, PUBLICATIONS_QUERY, {})
+        nodes = ((pubs or {}).get("publications") or {}).get("nodes") or []
+        pids = [n.get("id") for n in nodes if isinstance(n, dict) and n.get("id")]
+        if not pids:
+            return {"ok": True, "published": 0}
+        _gql_store(store, PUBLISH_PRODUCT, {"id": product_gid, "publicationIds": pids})
+        return {"ok": True, "published": len(pids)}
+    except Exception as e:
+        # best-effort; return error but do not raise
+        return {"ok": False, "error": str(e)}
+
+
+def publish_page_all_channels(page_gid: str, *, store: str | None = None) -> dict:
+    """Publish a page to all available sales channels (publications)."""
+    try:
+        pubs = _gql_store(store, PUBLICATIONS_QUERY, {})
+        nodes = ((pubs or {}).get("publications") or {}).get("nodes") or []
+        pids = [n.get("id") for n in nodes if isinstance(n, dict) and n.get("id")]
+        if not pids:
+            return {"ok": True, "published": 0}
+        _gql_store(store, PUBLISH_PRODUCT, {"id": page_gid, "publicationIds": pids})
+        return {"ok": True, "published": len(pids)}
+    except Exception as e:
+        # best-effort; return error but do not raise
+        return {"ok": False, "error": str(e)}
+
+
+def configure_variants_for_product(
+    product_gid: str,
+    base_price: float | None,
+    sizes: list[str] | None,
+    colors: list[str] | None,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+    *,
+    store: str | None = None,
+) -> dict:
+    """Public wrapper to configure options/variants/pricing/inventory for a product.
+
+    Returns a small summary describing what was attempted.
+    """
+    try:
+        rep = _configure_variants_for_product(product_gid, base_price, sizes, colors, track_quantity, quantity, variants, store=store)
+        return rep
+    except Exception as e:
+        return {"ok": False, "errors": [str(e)]}
+
+
+def _shopify_gid(resource_type: str, item: dict) -> str | None:
+    try:
+        gql_id = str((item or {}).get("admin_graphql_api_id") or "").strip()
+        if gql_id:
+            return gql_id
+        numeric_id = str((item or {}).get("id") or "").strip()
+        if numeric_id:
+            return f"gid://shopify/{resource_type}/{numeric_id}"
+    except Exception:
+        return None
+    return None
+
+
+def _translation_values(translations: list[dict] | None) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for row in translations or []:
+        try:
+            key = str(row.get("key") or "").strip()
+            value = str(row.get("value") or "").strip()
+            if key and value:
+                values[key] = value
+        except Exception:
+            continue
+    return values
+
+
+def _fetch_shopify_translations(resource_ids: list[str], *, store: str | None = None, locale: str = "ar") -> dict[str, dict[str, str]]:
+    if not resource_ids:
+        return {}
+
+    translations_by_resource: dict[str, dict[str, str]] = {}
+    for start in range(0, len(resource_ids), 100):
+        chunk = resource_ids[start:start + 100]
+        data = _gql_store(store, TRANSLATABLE_RESOURCES_BY_IDS, {
+            "resourceIds": chunk,
+            "first": len(chunk),
+            "locale": locale,
+        })
+        connection = (data or {}).get("translatableResourcesByIds") or {}
+        nodes = connection.get("nodes") or []
+        if not nodes and connection.get("edges"):
+            nodes = [edge.get("node") for edge in connection.get("edges") or [] if edge.get("node")]
+        for node in nodes:
+            resource_id = str((node or {}).get("resourceId") or "").strip()
+            if resource_id:
+                translations_by_resource[resource_id] = _translation_values((node or {}).get("translations"))
+    return translations_by_resource
+
+
+def _apply_shopify_translations(products: list[dict], *, store: str | None = None, locale: str = "ar") -> list[dict]:
+    """Attach translated product and variant fields when Shopify translations exist."""
+    if not products or not locale:
+        return products
+
+    product_ids: list[str] = []
+    variant_ids: list[str] = []
+    for product in products:
+        product_gid = _shopify_gid("Product", product)
+        if product_gid:
+            product_ids.append(product_gid)
+        for variant in product.get("variants") or []:
+            variant_gid = _shopify_gid("ProductVariant", variant)
+            if variant_gid:
+                variant_ids.append(variant_gid)
+
+    try:
+        translations_by_resource = _fetch_shopify_translations(product_ids, store=store, locale=locale)
+    except Exception:
+        translations_by_resource = {}
+    try:
+        translations_by_resource.update(_fetch_shopify_translations(variant_ids, store=store, locale=locale))
+    except Exception:
+        pass
+
+    for product in products:
+        product_gid = _shopify_gid("Product", product)
+        product_translations = translations_by_resource.get(product_gid or "", {})
+        if product_translations:
+            product["translations"] = product_translations
+            product["translated_title"] = product_translations.get("title") or product_translations.get("name") or ""
+            product["translated_description"] = (
+                product_translations.get("body_html")
+                or product_translations.get("description")
+                or product_translations.get("descriptionHtml")
+                or ""
+            )
+        for variant in product.get("variants") or []:
+            variant_gid = _shopify_gid("ProductVariant", variant)
+            variant_translations = translations_by_resource.get(variant_gid or "", {})
+            if not variant_translations:
+                continue
+            variant["translations"] = variant_translations
+            for key in ("title", "option1", "option2", "option3"):
+                value = variant_translations.get(key)
+                if value:
+                    variant[f"translated_{key}"] = value
+            option_title = " / ".join(
+                value for value in (
+                    variant_translations.get("option1"),
+                    variant_translations.get("option2"),
+                    variant_translations.get("option3"),
+                ) if value
+            )
+            variant["translated_title"] = variant_translations.get("title") or option_title or ""
+    return products
+
+
+def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit: int = 50) -> list[dict]:
+    """List products from a Shopify store filtered by vendor name."""
+    from urllib.parse import urlencode
+    products: list[dict] = []
+    try:
+        lim = max(1, min(limit or 50, 250))
+        params = {
+            "vendor": vendor_name,
+            "limit": lim,
+            "fields": "id,admin_graphql_api_id,title,body_html,vendor,product_type,status,tags,variants,images,created_at,updated_at",
+        }
+        path = "/products.json?" + urlencode(params)
+        data = _rest_get_store(store, path)
+        products = (data or {}).get("products") or []
+    except Exception:
+        products = []
+    return _apply_shopify_translations(products, store=store, locale="ar")
+
+
+def create_product_only(
+    title: str,
+    description_html: str | None = None,
+    status: str = "ACTIVE",
+    price: float | None = None,
+    sizes: list[str] | None = None,
+    colors: list[str] | None = None,
+    product_type: str | None = None,
+    *,
+    vendor: str | None = None,
+    tags: list[str] | None = None,
+    track_quantity: bool | None = None,
+    quantity: int | None = None,
+    variants: list[dict] | None = None,
+    store: str | None = None,
+    configure_variants: bool = True,
+    publish: bool = True,
+) -> dict:
+    inp: dict = {
+        "title": title or "Offer",
+        "status": status,
+    }
+    if description_html:
+        inp["descriptionHtml"] = description_html
+    if product_type:
+        # Shopify product organization: productType (string)
+        inp["productType"] = product_type
+    if vendor:
+        inp["vendor"] = vendor
+    if tags:
+        inp["tags"] = tags
+    data = _gql_store(store, PRODUCT_CREATE, {"input": inp})
+    prod = data["productCreate"]["product"]
+    config_report: dict | None = None
+    if configure_variants:
+        try:
+            config_report = _configure_variants_for_product(prod["id"], price, sizes, colors, track_quantity, quantity, variants, store=store)
+        except Exception as e:
+            config_report = {"ok": False, "errors": [str(e)]}
+    else:
+        config_report = {"ok": True, "deferred": True}
+    if publish:
+        try:
+            publish_product_all_channels(prod["id"], store=store)
+        except Exception:
+            pass
+    return {"product": prod, "report": (config_report or {"ok": True})}
+
+
+def create_product_and_page(payload: dict, angles: list, creatives: list, landing_copy: dict | None = None, *, store: str | None = None) -> dict:
+    cfg = _get_store_config(store)
+    title = payload.get("title") or (angles and angles[0].get("titles", ["Offer"])[0]) or "Offer"
+    ksp = (angles[0].get("ksp") if angles else [])[:3]
+    # Prefer structured landing HTML if provided; otherwise derive a short feature list
+    structured_html = (landing_copy or {}).get("html") if landing_copy else None
+    desc_html = structured_html or ("<ul>" + "".join([f"<li>{p}</li>" for p in ksp]) + "</ul>" if ksp else "")
+
+    # Collate image URLs requested for upload: prefer uploaded images from payload; otherwise fall back to creatives
+    requested_images = (payload.get("uploaded_images") or []) or [c.get("image_url") for c in (creatives or []) if c.get("image_url")]
+
+    # Do not set description at product creation time.
+    product_in: dict = {
+        "title": title,
+        "status": "ACTIVE",
+    }
+    # Include product organization type when provided in payload
+    try:
+        ptype = (payload or {}).get("product_type")
+        if ptype:
+            product_in["productType"] = ptype
+    except Exception:
+        pass
+
+    pdata = _gql_store(store, PRODUCT_CREATE, {"input": product_in})["productCreate"]["product"]
+    # Attach images via REST after creation and capture Shopify CDN URLs
+    shopify_image_urls: list[str] = []
+    alt_texts: list[str] = []
+    if requested_images:
+        # Prepare alt texts from landing copy sections or description/title
+        sections = (landing_copy or {}).get("sections") or []
+        base_title = title
+        base_desc = (payload.get("description") or "")
+        for idx, _ in enumerate(requested_images):
+            sec = sections[idx] if idx < len(sections) else {}
+            sec_title = sec.get("title") or "Product image"
+            sec_body = sec.get("body") or base_desc
+            alt_texts.append(f"{base_title} — {sec_title}: {sec_body[:80]}")
+        # Perform upload step and prefer returned Shopify CDN URLs
+        shopify_image_urls = upload_images_to_product(pdata["id"], requested_images, alt_texts, store=store)
+
+    # Build landing page body using the common responsive builder (ensures only provided images are embedded)
+    page_body_html = _build_page_body_html(title, landing_copy, shopify_image_urls or requested_images, alt_texts)
+
+    handle = f"offer-{pdata['id'].split('/')[-1]}"
+    page_in = {
+        "title": f"{title} – Offer",
+        "handle": handle,
+        "templateSuffix": "product_test",
+        "body": page_body_html
+    }
+
+    page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    page_url = f"https://{cfg['SHOP']}/pages/{page['handle']}"
+
+    # After landing page is generated, update product description HTML to match the provided/generated content
+    try:
+        final_desc = structured_html or page_body_html or ""
+        if final_desc:
+            update_product_description(pdata["id"], final_desc, store=store)
+    except Exception:
+        pass
+
+    # Configure pricing/variants/inventory via REST after product creation
+    try:
+        base_price = payload.get("base_price")
+        sizes = payload.get("sizes")
+        colors = payload.get("colors")
+        track_quantity = payload.get("track_quantity")
+        quantity = payload.get("quantity")
+        variants = payload.get("variants")
+        _configure_variants_for_product(pdata["id"], base_price, sizes, colors, track_quantity, quantity, variants, store=store)
+    except Exception:
+        pass
+
+    # Publish to all sales channels (best-effort)
+    try:
+        publish_product_all_channels(pdata["id"], store=store)
+    except Exception:
+        pass
+
+    # Try to link landing page to product via a product metafield (best-effort)
+    try:
+        _link_product_landing_page(pdata["id"], page["id"], store=store)
+    except Exception:
+        pass
+
+    # Publish page to all sales channels (best-effort)
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
+
+    # Include Shopify CDN image URLs used/attached so the UI can display them later
+    return {
+        "product_gid": pdata["id"],
+        "page_gid": page["id"],
+        "url": page_url,
+        "image_urls": shopify_image_urls or requested_images or [],
+    }
+
+
+def _build_page_body_html(title: str, landing_copy: dict | None, requested_images: list[str] | None, alt_texts: list[str] | None) -> str:
+    """Build final page HTML.
+
+    Updated preference order (to honor rich HTML produced by the model):
+    1) If model provided an HTML blob (landing_copy.html), return it as-is (assumed self-contained per contract).
+    2) Else, if structured sections are provided, render them and map images from requested_images by index.
+    3) Else, fallback to a simple gallery if nothing else is available.
+    """
+    html_override = (landing_copy or {}).get("html") if landing_copy else None
+    if html_override:
+        # Trust the model's HTML when provided (prompt requires self-contained, accessible HTML)
+        return str(html_override)
+
+    sections = (landing_copy or {}).get("sections") or []
+    headline = (landing_copy or {}).get("headline") or title
+    subheadline = (landing_copy or {}).get("subheadline") or ""
+
+    # Responsive CSS (embedded). Keep minimal classes and mobile-first layout.
+    style_block = (
+        "<style>"
+        ".lp-container{max-width:1200px;margin:0 auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;}"
+        ".lp-hero{padding:32px 0;text-align:center;background:linear-gradient(90deg,#ff7e5f,#feb47b);border-radius:16px;color:#fff;margin-top:12px;}"
+        ".lp-hero h1,.lp-hero h2{margin:0 0 8px;font-size:30px;line-height:1.2;}"
+        ".lp-hero p{margin:0;color:#fffbe8;}"
+        ".lp-section{display:grid;grid-template-columns:1fr;gap:18px;align-items:center;padding:18px 0;}"
+        ".lp-section h3{margin:0 0 8px;font-size:18px;}"
+        ".lp-text p{margin:8px 0 0;line-height:1.6;color:#334155;}"
+        ".lp-img{position:relative;}"
+        ".lp-img img{width:100%;height:auto;border-radius:12px;display:block;box-shadow:0 6px 20px rgba(0,0,0,0.12);}"
+        ".lp-img.placeholder{border:1px dashed #cbd5e1;border-radius:12px;min-height:160px;display:flex;align-items:center;justify-content:center;background:radial-gradient(120px 120px at 50% 50%,rgba(0,74,173,.06),transparent 60%);}"
+        ".lp-img.placeholder .lp-ph{font-size:12px;color:#64748b;padding:8px 10px;background:#fff;border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.08);}"
+        ".lp-grid{display:grid;grid-template-columns:1fr;gap:12px;}"
+        ".cols-2{grid-template-columns:1fr 1fr;}"
+        ".cols-3{grid-template-columns:1fr 1fr 1fr;}"
+        "@media(min-width:768px){.lp-hero h1,.lp-hero h2{font-size:36px;}}"
+        "@media(min-width:1024px){.lp-section{grid-template-columns:1fr 1fr;}.lp-section.alt .lp-img{order:2;}}"
+        "</style>"
+    )
+
+    body_parts: list[str] = [style_block, "<div class=\"lp-container\">", (
+        f"<section class=\"lp-hero\"><h2>{headline}</h2>"
+        + (f"<p>{subheadline}</p>" if subheadline else "")
+        + "</section>"
+    )]
+
+    if sections:
+        effective_images = requested_images or []
+        for idx, sec in enumerate(sections):
+            sec_title = sec.get("title") or ""
+            sec_body = sec.get("body") or ""
+            specified_img = (sec.get("image_url") or "").strip()
+            # Prefer Shopify CDN URLs over any non-Shopify URLs specified by the model
+            if specified_img and ("cdn.shopify.com" in specified_img):
+                img_url = specified_img
+            elif effective_images:
+                img_url = effective_images[idx % len(effective_images)]
+            else:
+                img_url = ""
+            alt = (alt_texts[idx % len(alt_texts)] if alt_texts else title) if img_url else title
+            img_html = (
+                f"<div class=\"lp-img\"><img src=\"{img_url}\" alt=\"{alt}\" loading=\"lazy\"/></div>"
+                if img_url else
+                "<div class=\"lp-img placeholder\"><div class=\"lp-ph\">Click to add image</div></div>"
+            )
+            text_html = (
+                "<div class=\"lp-text\">"
+                + (f"<h3>{sec_title}</h3>" if sec_title else "")
+                + (f"<p style=\"margin:8px 0 0;line-height:1.6;color:#334155;\">{sec_body}</p>" if sec_body else "")
+                + "</div>"
+            )
+            alt_class = " alt" if (idx % 2 == 1) else ""
+            body_parts.append(f"<section class=\"lp-section{alt_class}\">{img_html}{text_html}</section>")
+    else:
+        # No sections structured. Fallback to responsive gallery only
+        effective_images = (requested_images or [])[:10]
+        if effective_images:
+            imgs = "".join([
+                f"<img src=\"{u}\" alt=\"{title}\" loading=\"lazy\" />" for u in effective_images
+            ])
+            body_parts.append(f"<div class=\"lp-grid cols-3 lp-gallery\">{imgs}</div>")
+        else:
+            # No images provided → show a row of placeholders to indicate slots
+            ph = "".join(["<div class=\"lp-img placeholder\"><div class=\"lp-ph\">Add image</div></div>" for _ in range(3)])
+            body_parts.append(f"<div class=\"lp-grid cols-3 lp-gallery\">{ph}</div>")
+
+    body_parts.append("</div>")  # close .lp-container
+    return "".join(body_parts)
+
+
+def create_page_from_copy(title: str, landing_copy: dict, image_urls: list[str] | None = None, alt_texts: list[str] | None = None, body_html_override: str | None = None, *, store: str | None = None) -> dict:
+    # Use precomputed body HTML when provided to avoid building large strings twice
+    body_html = body_html_override if body_html_override is not None else _build_page_body_html(title, landing_copy, image_urls or [], alt_texts or [])
+    # Generate a deterministic-ish base handle from title, and on collision retry with a short suffix
+    handle = f"offer-{abs(hash(title)) % 10_000_000}"
+    page_in = {
+        "title": f"{title} – Offer",
+        "handle": handle,
+        # PageCreateInput (Admin API 2025-07+) no longer supports a 'published' flag.
+        # Pages are created without an explicit publish toggle here.
+        "body": body_html,
+    }
+    try:
+        page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    except RuntimeError as e:
+        # Handle collision: 'Handle has already been taken' → append a short random suffix and retry once
+        if "Handle has already been taken" in str(e):
+            from uuid import uuid4
+            page_in["handle"] = f"{handle}-{uuid4().hex[:6]}"
+            page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+        else:
+            raise
+    cfg = _get_store_config(store)
+    page_url = f"https://{cfg['SHOP']}/pages/{page['handle']}"
+    # Best-effort publish page so it's visible in Online Store
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
+    return {"page_gid": page["id"], "url": page_url}
+
+
+def _link_product_landing_page(product_gid: str, page_gid: str, *, store: str | None = None) -> None:
+    """Link a page to a product using a product metafield custom.landing_page (type: page_reference)."""
+    try:
+        _gql_store(store, METAFIELDS_SET, {
+            "metafields": [{
+                "ownerId": product_gid,
+                "namespace": "custom",
+                "key": "landing_page",
+                "type": "page_reference",
+                "value": page_gid,
+            }]
+        })
+        return
+    except RuntimeError as e:
+        msg = str(e)
+        # If definition missing, create and retry once
+        if "definition" in msg.lower():
+            _gql_store(store, METAFIELD_DEFINITION_CREATE, {
+                "definition": {
+                    "name": "Landing page",
+                    "namespace": "custom",
+                    "key": "landing_page",
+                    "type": "page_reference",
+                    "ownerType": "PRODUCT",
+                    "description": "Landing page associated with this product",
+                    "visibleToStorefront": True,
+                }
+            })
+            _gql_store(store, METAFIELDS_SET, {
+                "metafields": [{
+                    "ownerId": product_gid,
+                    "namespace": "custom",
+                    "key": "landing_page",
+                    "type": "page_reference",
+                    "value": page_gid,
+                }]
+            })
+            return
+        raise
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_description(product_gid: str, description_html: str, *, store: str | None = None) -> dict:
+    inp = {
+        "id": product_gid,
+        "descriptionHtml": description_html or ""
+    }
+    data = _gql_store(store, PRODUCT_UPDATE, {"input": inp})
+    prod = data["productUpdate"]["product"]
+    return prod
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_title(product_gid: str, title: str, *, store: str | None = None) -> dict:
+    inp = {
+        "id": product_gid,
+        "title": title or "Offer"
+    }
+    data = _gql_store(store, PRODUCT_UPDATE, {"input": inp})
+    prod = data["productUpdate"]["product"]
+    return prod
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8))
+def update_product_organization(
+    product_gid: str,
+    *,
+    product_type: str | None = None,
+    tags: list[str] | None = None,
+    merge_tags: bool = True,
+    store: str | None = None,
+) -> dict:
+    inp: dict = {"id": product_gid}
+    clean_type = str(product_type or "").strip()
+    if clean_type:
+        inp["productType"] = clean_type
+
+    clean_tags: list[str] = []
+    seen: set[str] = set()
+    for tag in tags or []:
+        value = str(tag or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean_tags.append(value)
+
+    if merge_tags:
+        numeric_id = _numeric_product_id_from_gid(product_gid)
+        if numeric_id:
+            try:
+                data = _rest_get_store(store, f"/products/{numeric_id}.json?fields=id,tags")
+                existing_raw = ((data or {}).get("product") or {}).get("tags") or ""
+                existing_tags = _tags_to_list(existing_raw)
+                for tag in existing_tags:
+                    key = str(tag or "").strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        clean_tags.insert(0, str(tag).strip())
+            except Exception:
+                pass
+
+    if clean_tags:
+        inp["tags"] = clean_tags
+    if len(inp) == 1:
+        return {"id": product_gid}
+    data = _gql_store(store, PRODUCT_UPDATE, {"input": inp})
+    return data["productUpdate"]["product"]
+
+
+# ==================== Theme API (Page Builder) ====================
+
+THEME_FILES_UPSERT = """
+mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
+  themeFilesUpsert(themeId: $themeId, files: $files) {
+    upsertedThemeFiles { filename }
+    userErrors { field message }
+  }
+}
+"""
+
+THEME_FILES_READ = """
+query ThemeFiles($themeId: ID!, $filenames: [String!]!) {
+  theme(id: $themeId) {
+    files(filenames: $filenames, first: 10) {
+      nodes {
+        filename
+        body { ... on OnlineStoreThemeFileBodyText { content } }
+      }
+    }
+  }
+}
+"""
+
+
+def get_active_theme_id(*, store: str | None = None) -> str:
+    """Get the numeric Shopify theme ID for the currently active (published) theme."""
+    data = _rest_get_store(store, "/themes.json")
+    themes = (data or {}).get("themes") or []
+    for th in themes:
+        if str(th.get("role") or "").lower() == "main":
+            return str(th["id"])
+    raise RuntimeError("No active (main) theme found")
+
+
+def get_active_theme_gid(*, store: str | None = None) -> str:
+    """Get the GID for the active theme (e.g. gid://shopify/OnlineStoreTheme/12345)."""
+    tid = get_active_theme_id(store=store)
+    return f"gid://shopify/OnlineStoreTheme/{tid}"
+
+
+# ---- Dawn section type registry (static) ----
+# These are the standard section types available in the Dawn theme.
+# The AI agent uses this to know what building blocks it can use.
+DAWN_SECTIONS = {
+    "image-banner": {
+        "name": "Image banner",
+        "description": "Full-width hero banner with heading, subheading, and CTA buttons",
+        "key_settings": ["image", "image_overlay_opacity", "heading", "heading_size", "subheading", "button_label", "button_link", "button_label_2", "button_link_2", "color_scheme", "adapt_height_first_image", "show_text_below", "show_text_box", "desktop_content_position", "desktop_content_alignment", "mobile_content_alignment"],
+    },
+    "rich-text": {
+        "name": "Rich text",
+        "description": "Text section with heading, body text, and optional buttons",
+        "key_settings": ["color_scheme", "full_width"],
+        "blocks": ["heading", "caption", "text", "button"],
+    },
+    "featured-product": {
+        "name": "Featured product",
+        "description": "Displays a product with images, price, variants, and add-to-cart button",
+        "key_settings": ["product", "color_scheme", "secondary_background", "media_size", "media_fit", "media_position"],
+        "blocks": ["text", "title", "price", "quantity_selector", "variant_picker", "buy_buttons", "description", "share", "custom_liquid", "rating"],
+    },
+    "collapsible-content": {
+        "name": "Collapsible content / FAQ",
+        "description": "Accordion-style FAQ or collapsible info sections",
+        "key_settings": ["caption", "heading", "heading_size", "heading_alignment", "color_scheme", "container_color_scheme", "open_first_collapsible_row", "image", "image_ratio"],
+        "blocks": ["collapsible_row"],
+    },
+    "multicolumn": {
+        "name": "Multicolumn",
+        "description": "Grid of columns with images, titles, and text — great for features/benefits",
+        "key_settings": ["title", "heading_size", "columns_desktop", "color_scheme", "image_width", "image_ratio", "column_alignment", "swipe_on_mobile", "button_label", "button_link"],
+        "blocks": ["column"],
+    },
+    "image-with-text": {
+        "name": "Image with text",
+        "description": "Side-by-side layout with image and text content",
+        "key_settings": ["image", "height", "desktop_image_width", "layout", "desktop_content_position", "desktop_content_alignment", "color_scheme", "image_behavior"],
+        "blocks": ["heading", "caption", "text", "button"],
+    },
+    "video": {
+        "name": "Video",
+        "description": "Embedded or hosted video section",
+        "key_settings": ["heading", "heading_size", "video_url", "cover_image", "description", "full_width", "color_scheme"],
+    },
+    "featured-collection": {
+        "name": "Featured collection",
+        "description": "Display products from a collection in a grid",
+        "key_settings": ["title", "heading_size", "collection", "products_to_show", "columns_desktop", "color_scheme", "show_secondary_image", "show_vendor", "show_rating", "swipe_on_mobile", "enable_desktop_slider"],
+    },
+    "contact-form": {
+        "name": "Contact form",
+        "description": "A simple contact form section",
+        "key_settings": ["heading", "heading_size", "color_scheme"],
+    },
+    "custom-liquid": {
+        "name": "Custom Liquid",
+        "description": "Inject arbitrary Liquid/HTML code",
+        "key_settings": ["custom_liquid", "color_scheme"],
+    },
+    "newsletter": {
+        "name": "Newsletter / Email signup",
+        "description": "Email subscription form with heading and text",
+        "key_settings": ["color_scheme", "full_width"],
+        "blocks": ["heading", "paragraph", "email_form"],
+    },
+}
+
+
+def list_available_sections() -> list[dict]:
+    """Return the list of Dawn theme sections the AI can use."""
+    out = []
+    for key, info in DAWN_SECTIONS.items():
+        out.append({
+            "type": key,
+            "name": info["name"],
+            "description": info["description"],
+            "key_settings": info.get("key_settings", []),
+            "blocks": info.get("blocks", []),
+        })
+    return out
+
+
+def _template_filename(slug: str) -> str:
+    """Convert a slug into a Shopify template filename."""
+    safe = re.sub(r"[^a-z0-9_-]", "-", slug.lower().strip())[:60]
+    return f"templates/page.ai-{safe}.json"
+
+
+def create_page_template_json(
+    slug: str,
+    sections: dict,
+    order: list[str],
+    *,
+    layout: str | None = None,
+    store: str | None = None,
+) -> dict:
+    """Create a new JSON page template in the active theme using themeFilesUpsert.
+
+    Args:
+        slug: Short identifier (e.g. 'summer-shoes-landing')
+        sections: Dict of section_id -> section config (type, settings, blocks, etc.)
+        order: List of section IDs defining display order
+        layout: Optional layout override. Use 'none' to hide header/footer.
+        store: Multi-store label
+
+    Returns:
+        { template_name, filename, theme_id }
+    """
+    import json as _json
+
+    theme_gid = get_active_theme_gid(store=store)
+    filename = _template_filename(slug)
+    template_suffix = filename.replace("templates/page.", "").replace(".json", "")
+
+    template_body: dict = {
+        "sections": sections,
+        "order": order,
+    }
+    if layout:
+        template_body["layout"] = layout
+
+    body_str = _json.dumps(template_body, indent=2, ensure_ascii=False)
+
+    data = _gql_store(store, THEME_FILES_UPSERT, {
+        "themeId": theme_gid,
+        "files": [{
+            "filename": filename,
+            "body": {
+                "type": "TEXT",
+                "value": body_str,
+            },
+        }],
+    })
+
+    upserted = (data or {}).get("themeFilesUpsert", {}).get("upsertedThemeFiles") or []
+    ue = (data or {}).get("themeFilesUpsert", {}).get("userErrors") or []
+    if ue:
+        raise RuntimeError(f"themeFilesUpsert errors: {ue}")
+
+    return {
+        "template_suffix": template_suffix,
+        "filename": filename,
+        "theme_gid": theme_gid,
+        "upserted": [f.get("filename") for f in upserted],
+    }
+
+
+def update_page_template_json(
+    slug: str,
+    sections: dict,
+    order: list[str],
+    *,
+    layout: str | None = None,
+    store: str | None = None,
+) -> dict:
+    """Update an existing page template (same as create — upsert semantics)."""
+    return create_page_template_json(slug, sections, order, layout=layout, store=store)
+
+
+def read_page_template_json(slug: str, *, store: str | None = None) -> dict | None:
+    """Read the current JSON body of a page template from the theme."""
+    import json as _json
+    theme_gid = get_active_theme_gid(store=store)
+    filename = _template_filename(slug)
+    try:
+        data = _gql_store(store, THEME_FILES_READ, {
+            "themeId": theme_gid,
+            "filenames": [filename],
+        })
+        nodes = ((data or {}).get("theme") or {}).get("files", {}).get("nodes") or []
+        for node in nodes:
+            if node.get("filename") == filename:
+                body = (node.get("body") or {}).get("content")
+                if body:
+                    return _json.loads(body)
+        return None
+    except Exception:
+        return None
+
+
+def create_page_with_template(
+    title: str,
+    template_suffix: str,
+    *,
+    body_html: str = "",
+    store: str | None = None,
+) -> dict:
+    """Create a Shopify page that uses an AI-generated JSON template.
+
+    The template_suffix must match an existing templates/page.{suffix}.json file.
+    """
+    from uuid import uuid4
+
+    handle = f"ai-{abs(hash(title + template_suffix)) % 10_000_000}"
+    page_in = {
+        "title": title,
+        "handle": handle,
+        "templateSuffix": template_suffix,
+        "body": body_html or "",
+    }
+    try:
+        page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+    except RuntimeError as e:
+        if "Handle has already been taken" in str(e):
+            page_in["handle"] = f"{handle}-{uuid4().hex[:6]}"
+            page = _gql_store(store, PAGE_CREATE, {"page": page_in})["pageCreate"]["page"]
+        else:
+            raise
+
+    cfg = _get_store_config(store)
+    page_url = f"https://{cfg['SHOP']}/pages/{page['handle']}"
+
+    # Publish to all channels
+    try:
+        publish_page_all_channels(page["id"], store=store)
+    except Exception:
+        pass
+
+    return {
+        "page_gid": page["id"],
+        "page_handle": page["handle"],
+        "page_url": page_url,
+        "template_suffix": template_suffix,
+    }
+
+
+def search_products_for_picker(
+    *,
+    query: str = "",
+    limit: int = 25,
+    store: str | None = None,
+) -> list[dict]:
+    """Search products for the page builder product picker.
+
+    Uses Shopify GraphQL ``products(query:…)`` so that the search runs
+    server-side across **all** store products (not limited to the first
+    250 like the REST endpoint).
+
+    Supports searching by:
+      - title / handle (substring)
+      - numeric product ID  (e.g. "7654321")
+
+    When *query* is empty we paginate through all products so the full
+    catalogue is available for browsing.
+    """
+    PRODUCTS_SEARCH_GQL = """
+    query ProductsSearch($query: String, $first: Int!, $after: String) {
+      products(query: $query, first: $first, after: $after, sortKey: TITLE) {
+        edges {
+          cursor
+          node {
+            id
+            title
+            handle
+            status
+            featuredImage { url }
+            variants(first: 1) {
+              edges { node { price } }
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+    """
+
+    lim = max(1, min(limit or 25, 250))
+    q = (query or "").strip()
+
+    # Build a Shopify search query string.
+    # Shopify GraphQL products(query:...) does full-text search —
+    # just pass the raw text. No wildcard syntax like title:*...*
+    search_query: str | None = None
+    if q:
+        # If the query looks like a numeric product ID, use Shopify id: prefix
+        if q.isdigit():
+            search_query = f"id:{q}"
+        else:
+            # Plain full-text search across title, handle, product_type, vendor, etc.
+            search_query = q
+
+    all_products: list[dict] = []
+    cursor: str | None = None
+    # Paginate to collect products – when there's a query we usually
+    # get few results; when browsing (no query) we fetch everything.
+    max_pages = 40 if not q else 4  # safety cap
+    page_size = min(250 if not q else max(lim, 50), 250)
+
+    for _ in range(max_pages):
+        variables: dict = {
+            "first": page_size,
+            "query": search_query,
+            "after": cursor,
+        }
+        data = _gql_store(store, PRODUCTS_SEARCH_GQL, variables)
+        edges = ((data or {}).get("products") or {}).get("edges") or []
+        page_info = ((data or {}).get("products") or {}).get("pageInfo") or {}
+
+        for edge in edges:
+            node = edge.get("node") or {}
+            gid = node.get("id") or ""
+            numeric_id = gid.split("/")[-1] if "/" in gid else gid
+            feat_img = (node.get("featuredImage") or {}).get("url")
+            variant_edges = ((node.get("variants") or {}).get("edges") or [])
+            price = (variant_edges[0].get("node") or {}).get("price") if variant_edges else None
+            status_raw = (node.get("status") or "").lower()
+            all_products.append({
+                "id": numeric_id,
+                "title": node.get("title"),
+                "handle": node.get("handle"),
+                "image": feat_img,
+                "price": price,
+                "status": status_raw,
+            })
+
+        # If we have enough or there are no more pages, stop
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            break
+        # When we already have more than the caller asked for, stop
+        if q and len(all_products) >= lim:
+            break
+
+    return all_products[:lim] if q else all_products
+
+
+def list_ai_pages(*, store: str | None = None, limit: int = 50) -> list[dict]:
+    """List Shopify pages that use an AI-generated template (template_suffix starts with 'ai-').
+
+    Returns pages sorted by updated_at descending (most recently edited first).
+    Each item: { id, title, handle, template_suffix, slug, url, created_at, updated_at }
+    """
+    lim = max(1, min(limit, 250))
+    path = f"/pages.json?limit={lim}&fields=id,title,handle,template_suffix,created_at,updated_at,published_at"
+    data = _rest_get_store(store, path)
+    pages = (data or {}).get("pages") or []
+
+    # Filter to AI-generated pages only
+    ai_pages = []
+    for p in pages:
+        ts = p.get("template_suffix") or ""
+        if ts.startswith("ai-"):
+            slug = ts  # The slug IS the template_suffix
+            cfg = _get_store_config(store)
+            # Build the page URL
+            domain = cfg.get("DOMAIN") or cfg["BASE"].replace("/admin/api/2025-01", "").replace("https://", "").replace("http://", "")
+            handle = p.get("handle") or ""
+            page_url = f"https://{domain}/pages/{handle}" if handle else ""
+
+            ai_pages.append({
+                "id": str(p.get("id")),
+                "title": p.get("title") or "Untitled",
+                "handle": handle,
+                "template_suffix": ts,
+                "slug": slug.replace("ai-", "", 1),  # Remove prefix for slug
+                "url": page_url,
+                "created_at": p.get("created_at"),
+                "updated_at": p.get("updated_at"),
+            })
+
+    # Sort by updated_at descending
+    ai_pages.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return ai_pages

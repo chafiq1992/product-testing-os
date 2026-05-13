@@ -1,0 +1,868 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  LayoutDashboard, 
+  PlusCircle, 
+  Package, 
+  Camera, 
+  Settings, 
+  Trash2, 
+  Plus, 
+  Check, 
+  Loader2, 
+  TrendingUp, 
+  Box, 
+  DollarSign, 
+  Tag as TagIcon,
+  RefreshCw,
+  Image as ImageIcon,
+  Filter,
+  ChevronDown,
+  Calendar,
+  Clock,
+  Layers,
+  X
+} from 'lucide-react';
+import { 
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar 
+} from 'recharts';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, collection, addDoc, onSnapshot, query, 
+  where, doc, setDoc, getDoc, updateDoc, deleteDoc, setLogLevel
+} from 'firebase/firestore';
+import { 
+  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+} from 'firebase/auth';
+
+// --- Firebase Configuration ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'wholesale-dashboard-123';
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : { apiKey: "", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: "" };
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+setLogLevel('error');
+
+// --- Constants ---
+const SEGMENTS = ['Men', 'Women', 'Kids'];
+const SEASONS = ['Winter', 'Summer', 'Spring', 'Fall'];
+
+const API_KEY = ""; // Provided by environment
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [products, setProducts] = useState([]);
+  const [vendorTag, setVendorTag] = useState('');
+  
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+
+    onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthReady(true);
+      if (user) {
+        setVendorTag(`VND-${user.uid.substring(0, 6).toUpperCase()}`);
+      }
+    });
+
+    initAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthReady || !user) return;
+
+    const q = query(collection(db, `artifacts/${appId}/users/${user.uid}/products`));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const prods = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProducts(prods);
+    });
+
+    return () => unsubscribe();
+  }, [isAuthReady, user]);
+
+  const renderContent = () => {
+    if (!isAuthReady) return <LoadingScreen />;
+    
+    switch (activeTab) {
+      case 'overview': return <OverviewTab products={products} />;
+      case 'inventory': return <InventoryTab products={products} />;
+      case 'add-new': return <AddNewTab user={user} vendorTag={vendorTag} setActiveTab={setActiveTab} />;
+      case 'settings': return <SettingsTab vendorTag={vendorTag} user={user} />;
+      default: return <OverviewTab products={products} />;
+    }
+  };
+
+  return (
+    <div className="flex flex-col md:flex-row h-screen bg-slate-50 font-sans text-slate-900 overflow-hidden">
+      {/* Desktop Sidebar */}
+      <nav className="hidden md:flex w-64 bg-white border-r border-slate-200 flex-col">
+        <div className="p-6 border-b border-slate-100">
+          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">
+            <Package className="text-blue-600" />
+            WholesaleHub
+          </h1>
+          <p className="text-xs text-slate-500 mt-1 uppercase tracking-wider font-semibold">Vendor Portal</p>
+        </div>
+
+        <div className="flex-1 p-4 space-y-2">
+          <NavItem active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<LayoutDashboard size={20}/>} label="Overview" />
+          <NavItem active={activeTab === 'inventory'} onClick={() => setActiveTab('inventory')} icon={<Package size={20}/>} label="Inventory" />
+          <NavItem active={activeTab === 'add-new'} onClick={() => setActiveTab('add-new')} icon={<PlusCircle size={20}/>} label="Add Product" />
+        </div>
+
+        <div className="p-4 border-t border-slate-100">
+          <NavItem active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={20}/>} label="Profile" />
+          <div className="mt-4 p-3 bg-blue-50 rounded-xl">
+            <p className="text-[10px] text-blue-600 font-bold uppercase tracking-tight">Vendor Tag</p>
+            <p className="text-sm font-mono font-bold text-blue-900">{vendorTag}</p>
+          </div>
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto pb-24 md:pb-8 p-4 md:p-8">
+        {renderContent()}
+      </main>
+
+      {/* Mobile Bottom Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-3 flex justify-between items-center z-50 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.05)]">
+        <MobileNavItem active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<LayoutDashboard size={24}/>} label="Home" />
+        <MobileNavItem active={activeTab === 'inventory'} onClick={() => setActiveTab('inventory')} icon={<Package size={24}/>} label="Stock" />
+        <div className="relative -top-6">
+          <button 
+            onClick={() => setActiveTab('add-new')}
+            className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-90 ${activeTab === 'add-new' ? 'bg-blue-600 text-white shadow-blue-300' : 'bg-white text-blue-600 border-2 border-blue-600'}`}
+          >
+            <Plus size={32} />
+          </button>
+        </div>
+        <MobileNavItem active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings size={24}/>} label="Settings" />
+        <div className="w-12 h-12 flex flex-col items-center justify-center opacity-0 pointer-events-none" />
+      </nav>
+    </div>
+  );
+};
+
+const NavItem = ({ active, onClick, icon, label }) => (
+  <button 
+    onClick={onClick}
+    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+      active 
+        ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' 
+        : 'text-slate-600 hover:bg-slate-100'
+    }`}
+  >
+    {icon}
+    <span className="font-medium text-sm">{label}</span>
+  </button>
+);
+
+const MobileNavItem = ({ active, onClick, icon, label }) => (
+  <button 
+    onClick={onClick}
+    className={`flex flex-col items-center gap-1 transition-colors ${active ? 'text-blue-600' : 'text-slate-400'}`}
+  >
+    {icon}
+    <span className="text-[10px] font-bold uppercase tracking-tighter">{label}</span>
+  </button>
+);
+
+const LoadingScreen = () => (
+  <div className="h-full w-full flex flex-col items-center justify-center gap-4">
+    <Loader2 className="animate-spin text-blue-600" size={40} />
+    <p className="text-slate-500 animate-pulse font-medium">Loading your portal...</p>
+  </div>
+);
+
+// --- TABS ---
+
+const OverviewTab = ({ products }) => {
+  const totalStock = products.reduce((acc, p) => acc + (p.totalQuantity || 0), 0);
+  const totalValue = products.reduce((acc, p) => acc + ((p.salePrice || 0) * (p.totalQuantity || 0)), 0);
+  
+  const chartData = [
+    { name: 'Mon', sales: 4000 }, { name: 'Tue', sales: 3000 }, { name: 'Wed', sales: 2000 },
+    { name: 'Thu', sales: 2780 }, { name: 'Fri', sales: 1890 }, { name: 'Sat', sales: 2390 }, { name: 'Sun', sales: 3490 },
+  ];
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500 max-w-6xl mx-auto">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-end gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Dashboard Overview</h2>
+          <p className="text-slate-500 text-sm">Performance metrics across all segments.</p>
+        </div>
+        <div className="bg-white border p-3 rounded-2xl shadow-sm flex items-center gap-3">
+          <div className="p-2 bg-blue-50 rounded-lg text-blue-600"><Package size={18}/></div>
+          <div>
+            <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">Total Products</span>
+            <p className="text-lg font-bold">{products.length}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+        <StatsCard label="Inventory Level" value={totalStock.toLocaleString()} sub="Total units in stock" icon={<Box size={20} className="text-blue-600" />} />
+        <StatsCard label="Inventory Value" value={`$${totalValue.toLocaleString()}`} sub="Current market value" icon={<DollarSign size={20} className="text-green-600" />} />
+        <StatsCard label="Avg Profit/Unit" value="28.4%" sub="Based on COG/MSRP" icon={<TrendingUp size={20} className="text-orange-600" />} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <h3 className="text-lg font-bold mb-6">Sales Performance</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12}} />
+                <YAxis hide />
+                <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                <Line type="monotone" dataKey="sales" stroke="#2563eb" strokeWidth={3} dot={{ r: 4, fill: '#2563eb', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <h3 className="text-lg font-bold mb-6">Top Stock Volume</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={products.sort((a,b) => b.totalQuantity - a.totalQuantity).slice(0, 5)}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="title" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} />
+                <YAxis hide />
+                <Tooltip />
+                <Bar dataKey="totalQuantity" fill="#818cf8" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StatsCard = ({ label, value, sub, icon }) => (
+  <div className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-slate-100 flex items-start gap-4">
+    <div className="p-3 bg-slate-50 rounded-xl">{icon}</div>
+    <div>
+      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider leading-none mb-1">{label}</p>
+      <p className="text-xl md:text-2xl font-bold">{value}</p>
+      <p className="text-[10px] md:text-xs text-slate-400 mt-1">{sub}</p>
+    </div>
+  </div>
+);
+
+const InventoryTab = ({ products }) => {
+  const [segmentFilter, setSegmentFilter] = useState('All');
+  const [seasonFilter, setSeasonFilter] = useState('All');
+  const [minQty, setMinQty] = useState(0);
+  const [ageFilter, setAgeFilter] = useState('All'); 
+  const [showFilters, setShowFilters] = useState(false);
+
+  const filteredProducts = useMemo(() => {
+    return products.filter(p => {
+      const matchSegment = segmentFilter === 'All' || p.segment === segmentFilter;
+      const matchSeason = seasonFilter === 'All' || p.season === seasonFilter;
+      const matchQty = (p.totalQuantity || 0) >= minQty;
+      
+      let matchAge = true;
+      if (ageFilter !== 'All' && p.receivedAt) {
+        const received = new Date(p.receivedAt).getTime();
+        const now = new Date().getTime();
+        const diffDays = (now - received) / (1000 * 3600 * 24);
+        
+        if (ageFilter === '7') matchAge = diffDays <= 7;
+        if (ageFilter === '30') matchAge = diffDays > 30;
+        if (ageFilter === '90') matchAge = diffDays > 90;
+      }
+      
+      return matchSegment && matchSeason && matchQty && matchAge;
+    });
+  }, [products, segmentFilter, seasonFilter, minQty, ageFilter]);
+
+  return (
+    <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 max-w-6xl mx-auto pb-10">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Live Inventory</h2>
+          <p className="text-slate-500 text-sm">Monitor and filter your warehouse stock.</p>
+        </div>
+        
+        <button 
+          onClick={() => setShowFilters(!showFilters)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl border transition-all font-bold text-sm ${showFilters ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200'}`}
+        >
+          <Filter size={16} />
+          {showFilters ? 'Hide Filters' : 'Filter Results'}
+        </button>
+      </div>
+
+      {showFilters && (
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-4 gap-6 animate-in slide-in-from-top-2">
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Segment</label>
+            <select 
+              value={segmentFilter} 
+              onChange={(e) => setSegmentFilter(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none font-medium"
+            >
+              <option value="All">All Segments</option>
+              {SEGMENTS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Season</label>
+            <select 
+              value={seasonFilter} 
+              onChange={(e) => setSeasonFilter(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none font-medium"
+            >
+              <option value="All">All Seasons</option>
+              {SEASONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Min Quantity</label>
+              <span className="text-xs font-bold text-blue-600">{minQty}+</span>
+            </div>
+            <input 
+              type="range" 
+              min="0" 
+              max="1000" 
+              value={minQty}
+              onChange={(e) => setMinQty(parseInt(e.target.value))}
+              className="w-full accent-blue-600"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Stock Age</label>
+            <select 
+              value={ageFilter} 
+              onChange={(e) => setAgeFilter(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none font-medium"
+            >
+              <option value="All">Any Age</option>
+              <option value="7">New (Last 7 Days)</option>
+              <option value="30">Stagnant (&gt; 30 Days)</option>
+              <option value="90">Legacy (&gt; 90 Days)</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden overflow-x-auto">
+        <table className="w-full text-left min-w-[900px]">
+          <thead className="bg-slate-50 text-slate-400 text-[10px] font-bold uppercase tracking-widest">
+            <tr>
+              <th className="px-6 py-4">Product Detail</th>
+              <th className="px-6 py-4 text-center">Category / Season</th>
+              <th className="px-6 py-4 text-center">Received Date</th>
+              <th className="px-6 py-4 text-center">Quantity</th>
+              <th className="px-6 py-4 text-right">Pricing (Sale)</th>
+              <th className="px-6 py-4 text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filteredProducts.map(p => (
+              <tr key={p.id} className="hover:bg-slate-50/50 transition-colors group">
+                <td className="px-6 py-4">
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-xl bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0">
+                      {p.cleanImage ? (
+                        <img src={p.cleanImage} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-slate-300">
+                          <ImageIcon size={24} />
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">{p.title || 'Draft Item'}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono font-bold tracking-tight">{p.vendorTag}</span>
+                        <div className="flex gap-1">
+                          {p.colors?.map(c => (
+                            <span key={c} className="text-[10px] bg-slate-100 text-slate-500 px-1 rounded font-bold uppercase">{c}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-center">
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded text-[10px] font-bold uppercase tracking-tight">{p.segment}</span>
+                    <span className="text-slate-400 text-[10px] font-medium uppercase tracking-tighter">{p.season}</span>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-center">
+                  <div className="flex flex-col items-center">
+                    <Calendar size={14} className="text-slate-300 mb-1" />
+                    <p className="text-xs font-bold text-slate-600">{p.receivedAt || 'N/A'}</p>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-center">
+                  <div className="inline-flex flex-col items-center">
+                    <p className={`font-bold text-sm ${p.totalQuantity > 100 ? 'text-indigo-600' : 'text-slate-900'}`}>{p.totalQuantity || 0}</p>
+                    <p className="text-[10px] text-slate-400 uppercase font-bold tracking-tighter">In Stock</p>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-right">
+                  <p className="font-bold text-slate-900">${p.salePrice || '0.00'}</p>
+                  <p className="text-[10px] text-green-600 font-bold uppercase tracking-tighter">Net: ${((p.salePrice || 0) - (p.cogPrice || 0)).toFixed(2)}</p>
+                </td>
+                <td className="px-6 py-4 text-center">
+                  <button className="p-2 text-slate-400 hover:text-blue-600 transition-colors"><ChevronDown size={18}/></button>
+                </td>
+              </tr>
+            ))}
+            {filteredProducts.length === 0 && (
+              <tr>
+                <td colSpan="6" className="px-6 py-24 text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-16 h-16 bg-slate-50 text-slate-200 rounded-full flex items-center justify-center"><Package size={32}/></div>
+                    <p className="text-slate-400 font-medium italic">No products match your current filters.</p>
+                    <button onClick={() => { setSegmentFilter('All'); setSeasonFilter('All'); setMinQty(0); setAgeFilter('All'); }} className="text-blue-600 text-xs font-bold underline mt-2">Clear all filters</button>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const AddNewTab = ({ user, vendorTag, setActiveTab }) => {
+  const [loadingAI, setLoadingAI] = useState(false);
+  const [loadingImageGen, setLoadingImageGen] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [capturedImage, setCapturedImage] = useState(null);
+  const [cleanImage, setCleanImage] = useState(null);
+  const [colorInputValue, setColorInputValue] = useState('');
+  
+  const [form, setForm] = useState({
+    title: '',
+    description: '',
+    cogPrice: '',
+    salePrice: '',
+    colors: [],
+    segment: 'Men',
+    season: 'Summer',
+    receivedAt: new Date().toISOString().split('T')[0],
+    sizeGroups: [{ from: 20, to: 25, qty: 10 }]
+  });
+
+  const netProfit = useMemo(() => {
+    const sale = parseFloat(form.salePrice) || 0;
+    const cog = parseFloat(form.cogPrice) || 0;
+    return (sale - cog).toFixed(2);
+  }, [form.salePrice, form.cogPrice]);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  const startCamera = async () => {
+    setCameraActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Camera error:", err);
+      setCameraActive(false);
+      alert("Mobile Camera Access Required.");
+    }
+  };
+
+  const capturePhoto = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (video && canvas) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL('image/png');
+      setCapturedImage(dataUrl);
+      
+      const stream = video.srcObject;
+      stream.getTracks().forEach(track => track.stop());
+      setCameraActive(false);
+      generateContentFromImage(dataUrl);
+    }
+  };
+
+  const generateContentFromImage = async (base64Image) => {
+    setLoadingAI(true);
+    try {
+      const pureBase64 = base64Image.split(',')[1];
+      const prompt = `Fashion cataloger analysis. Provide JSON: "title", "description", "estimated_sale_price", "segment" (Men/Women/Kids), "season" (Winter/Summer/Spring/Fall). JSON format: {"title": "...", "description": "...", "estimated_sale_price": 50, "segment": "...", "season": "..."}`;
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: pureBase64 } }]
+          }]
+        })
+      });
+
+      const data = await response.json();
+      const textResponse = data.candidates[0].content.parts[0].text;
+      const jsonMatch = textResponse.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        setForm(prev => ({
+          ...prev,
+          title: parsed.title || '',
+          description: parsed.description || '',
+          salePrice: parsed.estimated_sale_price?.toString() || '',
+          segment: SEGMENTS.includes(parsed.segment) ? parsed.segment : 'Men',
+          season: SEASONS.includes(parsed.season) ? parsed.season : 'Summer'
+        }));
+      }
+    } catch (err) {
+      console.error("AI Generation Error:", err);
+    } finally {
+      setLoadingAI(false);
+    }
+  };
+
+  const generateCleanImage = async () => {
+    if (!capturedImage) return;
+    setLoadingImageGen(true);
+    try {
+      const prompt = `Professional e-commerce product image of ${form.title}. White studio background, crisp details, high quality.`;
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${API_KEY}`;
+      const payload = { instances: { prompt }, parameters: { sampleCount: 1 } };
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.predictions?.[0]?.bytesBase64Encoded) {
+        setCleanImage(`data:image/png;base64,${result.predictions[0].bytesBase64Encoded}`);
+      }
+    } catch (err) {
+      console.error("Image Gen Error:", err);
+    } finally {
+      setLoadingImageGen(false);
+    }
+  };
+
+  const addSizeGroup = () => setForm(prev => ({ ...prev, sizeGroups: [...prev.sizeGroups, { from: 20, to: 25, qty: 10 }] }));
+  const removeSizeGroup = (idx) => setForm(prev => ({ ...prev, sizeGroups: prev.sizeGroups.filter((_, i) => i !== idx) }));
+
+  const addColor = () => {
+    if (!colorInputValue.trim()) return;
+    if (form.colors.includes(colorInputValue.trim())) return;
+    setForm(prev => ({
+      ...prev,
+      colors: [...prev.colors, colorInputValue.trim()]
+    }));
+    setColorInputValue('');
+  };
+
+  const removeColor = (color) => {
+    setForm(prev => ({
+      ...prev,
+      colors: prev.colors.filter(c => c !== color)
+    }));
+  };
+
+  const handleSubmit = async () => {
+    if (!form.title) return alert("Please enter a product title.");
+    
+    // Calculate total quantity from size groups
+    const totalQty = form.sizeGroups.reduce((acc, curr) => acc + (parseInt(curr.qty) || 0), 0);
+    
+    try {
+      const productData = {
+        ...form,
+        totalQuantity: totalQty,
+        capturedImage,
+        cleanImage,
+        vendorTag,
+        createdAt: new Date().toISOString(),
+      };
+      await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/products`), productData);
+      setActiveTab('inventory');
+    } catch (err) {
+      console.error("Save Error:", err);
+      alert("Error saving product.");
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6 pb-24 animate-in slide-in-from-right-4 duration-500">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">Add Inventory</h2>
+          <p className="text-slate-500 text-sm">Automate your cataloging with AI-powered entry.</p>
+        </div>
+        <button 
+          onClick={handleSubmit}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3.5 rounded-2xl font-bold shadow-lg shadow-blue-200 transition-all active:scale-95"
+        >
+          Finalize & Save
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-6">
+          {/* CAMERA SECTION */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+            <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+              <Camera size={14} /> Product Image
+            </h3>
+            
+            <div className="aspect-square rounded-2xl bg-slate-50 border-2 border-dashed border-slate-200 flex flex-col items-center justify-center relative overflow-hidden">
+              {cameraActive ? (
+                <>
+                  <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                  <div className="absolute bottom-6 flex justify-center w-full">
+                    <button onClick={capturePhoto} className="w-16 h-16 bg-white rounded-full border-4 border-blue-600 shadow-xl flex items-center justify-center">
+                      <div className="w-10 h-10 bg-red-500 rounded-full" />
+                    </button>
+                  </div>
+                </>
+              ) : capturedImage ? (
+                <>
+                  <img src={cleanImage || capturedImage} alt="Captured" className="w-full h-full object-cover" />
+                  <div className="absolute top-4 right-4 flex flex-col gap-2">
+                    <button onClick={() => { setCapturedImage(null); setCleanImage(null); }} className="p-3 bg-white/95 rounded-xl shadow-lg text-red-500"><Trash2 size={20} /></button>
+                    <button onClick={startCamera} className="p-3 bg-white/95 rounded-xl shadow-lg text-blue-500"><RefreshCw size={20} /></button>
+                  </div>
+                  {loadingImageGen && (
+                    <div className="absolute inset-0 bg-white/70 backdrop-blur-md flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="animate-spin text-blue-600" size={32} />
+                      <p className="text-[10px] font-black text-blue-700 uppercase">Cleaning Image...</p>
+                    </div>
+                  )}
+                  {!cleanImage && !loadingImageGen && (
+                    <button onClick={generateCleanImage} className="absolute bottom-4 inset-x-4 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm shadow-xl">
+                      Get Clean Studio Version
+                    </button>
+                  )}
+                </>
+              ) : (
+                <button onClick={startCamera} className="w-full h-full flex flex-col items-center justify-center gap-4">
+                  <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-3xl flex items-center justify-center"><Camera size={40} /></div>
+                  <p className="text-sm font-bold text-slate-700">Open Camera</p>
+                </button>
+              )}
+            </div>
+          </section>
+
+          {/* DATES & LOGISTICS SECTION */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-4">
+            <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-2 flex items-center gap-2 tracking-widest">
+              <Clock size={14} /> Logistics
+            </h3>
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter flex items-center gap-1">
+                <Calendar size={10} /> Receiving Date
+              </label>
+              <input 
+                type="date" 
+                value={form.receivedAt}
+                onChange={(e) => setForm({...form, receivedAt: e.target.value})}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none"
+              />
+            </div>
+          </section>
+
+          {/* PRICING SECTION */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+            <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+              <DollarSign size={14} /> Financials
+            </h3>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">COG Price</label>
+                  <input type="number" value={form.cogPrice} onChange={(e) => setForm({...form, cogPrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Sale Price</label>
+                  <input type="number" value={form.salePrice} onChange={(e) => setForm({...form, salePrice: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" placeholder="0.00" />
+                </div>
+              </div>
+              <div className="flex items-center justify-between p-4 bg-green-50 rounded-2xl border border-green-100 font-bold text-green-700">
+                <span className="text-xs uppercase">Est. Net Profit</span>
+                <span className="text-xl">${netProfit}</span>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="space-y-6">
+          {/* CATALOG DATA SECTION */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm relative">
+            {loadingAI && (
+              <div className="absolute inset-0 bg-white/90 backdrop-blur-sm z-10 flex flex-col items-center justify-center gap-2 rounded-3xl">
+                <Loader2 className="animate-spin text-blue-600" />
+                <p className="text-[10px] font-bold text-blue-600 uppercase">AI is Analyzing...</p>
+              </div>
+            )}
+            <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
+              <TagIcon size={14} /> Catalog Data
+            </h3>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Product Title</label>
+                <input type="text" value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5 tracking-tighter">Segment</label>
+                  <select value={form.segment} onChange={(e) => setForm({...form, segment: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-sm outline-none">
+                    {SEGMENTS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5 tracking-tighter">Season</label>
+                  <select value={form.season} onChange={(e) => setForm({...form, season: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-sm outline-none">
+                    {SEASONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* COLORS AS TEXT INPUT */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5 tracking-tighter">Variations (Colors)</label>
+                <div className="flex gap-2 mb-3">
+                  <input 
+                    type="text" 
+                    value={colorInputValue} 
+                    onChange={(e) => setColorInputValue(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addColor())}
+                    placeholder="Enter color name..."
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-medium outline-none"
+                  />
+                  <button 
+                    onClick={addColor}
+                    className="bg-blue-600 text-white px-4 rounded-xl font-bold text-xs"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {form.colors.map(color => (
+                    <span 
+                      key={color} 
+                      className="inline-flex items-center gap-1.5 bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full text-xs font-bold border border-blue-100 animate-in zoom-in-90"
+                    >
+                      {color}
+                      <button onClick={() => removeColor(color)}><X size={14} /></button>
+                    </span>
+                  ))}
+                  {form.colors.length === 0 && <p className="text-[10px] text-slate-400 italic">No colors added yet.</p>}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* SIZES & QUANTITIES SECTION */}
+          <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-[10px] font-bold uppercase text-slate-400 flex items-center gap-2 tracking-widest">
+                <Layers size={14} /> Stock Variants
+              </h3>
+              <button onClick={addSizeGroup} className="text-blue-600 text-[10px] font-black flex items-center gap-1"><Plus size={12} /> Add Range</button>
+            </div>
+            <div className="space-y-3">
+              {form.sizeGroups.map((group, idx) => (
+                <div key={idx} className="flex flex-col md:flex-row md:items-center gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100 relative group/row">
+                  <div className="grid grid-cols-3 gap-3 flex-1">
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">From</span>
+                      <input 
+                        type="number" 
+                        value={group.from} 
+                        onChange={(e) => { const gs = [...form.sizeGroups]; gs[idx].from = parseInt(e.target.value) || 0; setForm({...form, sizeGroups: gs}); }} 
+                        className="font-bold text-sm outline-none w-full" 
+                      />
+                    </div>
+                    <div className="bg-white p-2 rounded-xl border border-slate-200 flex flex-col">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase mb-1">To</span>
+                      <input 
+                        type="number" 
+                        value={group.to} 
+                        onChange={(e) => { const gs = [...form.sizeGroups]; gs[idx].to = parseInt(e.target.value) || 0; setForm({...form, sizeGroups: gs}); }} 
+                        className="font-bold text-sm outline-none w-full" 
+                      />
+                    </div>
+                    <div className="bg-blue-600 p-2 rounded-xl flex flex-col border border-blue-700">
+                      <span className="text-[9px] text-blue-100 font-bold uppercase mb-1">Qty</span>
+                      <input 
+                        type="number" 
+                        value={group.qty} 
+                        onChange={(e) => { const gs = [...form.sizeGroups]; gs[idx].qty = parseInt(e.target.value) || 0; setForm({...form, sizeGroups: gs}); }} 
+                        className="font-bold text-sm outline-none w-full text-white bg-transparent" 
+                      />
+                    </div>
+                  </div>
+                  {form.sizeGroups.length > 1 && (
+                    <button 
+                      onClick={() => removeSizeGroup(idx)} 
+                      className="absolute -top-2 -right-2 md:relative md:top-0 md:right-0 bg-red-500 text-white md:bg-transparent md:text-slate-300 md:hover:text-red-500 p-1 rounded-full shadow-md md:shadow-none"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+      <canvas ref={canvasRef} className="hidden" />
+    </div>
+  );
+};
+
+const SettingsTab = ({ vendorTag, user }) => (
+  <div className="max-w-2xl mx-auto space-y-6 animate-in zoom-in-95 duration-500 pb-24">
+    <h2 className="text-2xl font-bold">Profile Settings</h2>
+    <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm space-y-8">
+      <div className="flex items-center gap-6">
+        <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl flex items-center justify-center text-white text-3xl font-black shadow-lg shadow-blue-100">{vendorTag?.charAt(4)}</div>
+        <div>
+          <h3 className="text-xl font-bold">Verified Wholesale Partner</h3>
+          <p className="text-slate-500 text-sm">UID: {user?.uid.substring(0, 12)}...</p>
+        </div>
+      </div>
+      <div className="space-y-6">
+        <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">Internal Vendor Identifier</label>
+          <code className="block bg-white border border-slate-200 rounded-xl px-4 py-3 text-blue-600 font-bold font-mono text-sm tracking-widest">{vendorTag}</code>
+        </div>
+      </div>
+      <button onClick={() => auth.signOut()} className="w-full py-4 bg-red-50 text-red-600 font-black rounded-2xl hover:bg-red-100 transition-all text-sm uppercase tracking-widest">Logout</button>
+    </div>
+  </div>
+);
+
+export default App;

@@ -1,0 +1,42 @@
+{
+  "name": "Product Test Landing",
+  "sections": {
+    "hero": {
+      "type": "image-banner",
+      "settings": {
+        "image_behavior": "ambient",
+        "show_text_box": true,
+        "heading": "{{ page.title }}",
+        "text": "Limited-time offer",
+        "show_text_below": false
+      }
+    },
+    "benefits": {
+      "type": "rich-text",
+      "blocks": [
+        { "type": "heading", "settings": { "heading": "Why you'll love it" } },
+        { "type": "text", "settings": { "text": "{{ page.content }}" } }
+      ],
+      "block_order": ["heading", "text"],
+      "settings": { "narrow": true }
+    },
+    "trust": {
+      "type": "rich-text",
+      "blocks": [
+        { "type": "heading", "settings": { "heading": "Trusted by 10,000+ customers" } },
+        { "type": "text", "settings": { "text": "✓ Fast delivery across Morocco<br/>✓ 48h payouts<br/>✓ Secure checkout" } }
+      ],
+      "block_order": ["heading", "text"],
+      "settings": { "narrow": true }
+    },
+    "cta": {
+      "type": "rich-text",
+      "blocks": [
+        { "type": "buttons", "settings": { "button_label_1": "Buy Now", "button_link_1": "/cart", "button_style_secondary": false } }
+      ],
+      "block_order": ["buttons"],
+      "settings": { "narrow": true }
+    }
+  },
+  "order": ["hero", "benefits", "trust", "cta"]
+}

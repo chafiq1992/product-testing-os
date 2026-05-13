@@ -1,0 +1,27 @@
+# VCS
+.git
+.gitignore
+
+# Node/Next artifacts
+frontend/node_modules
+frontend/.next
+frontend/out
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Editors/OS
+.vscode
+.idea
+Thumbs.db
+.DS_Store
+
+# Envs/venvs (do not bake secrets)
+.env
+backend/.venv
+venv
+
+
