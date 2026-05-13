@@ -5415,7 +5415,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        key = _cache_key("meta_campaign_adset_orders_v6", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
+        key = _cache_key("meta_campaign_adset_orders_v7", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -5442,12 +5442,12 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     if store_list and len(store_list) > 1:
                         return await asyncio.wait_for(
                             run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True),
-                            timeout=90,
+                            timeout=240,
                         )
                     single = store_list[0] if store_list else store
                     return await asyncio.wait_for(
                         run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True),
-                        timeout=90,
+                        timeout=240,
                     )
                 except Exception:
                     return []
@@ -5612,7 +5612,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     continue
             return result
 
-        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=110)
+        result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=270)
         if result:
             try:
                 db.set_app_setting((store_list or [store or ""])[0], db_cache_key, {"ts": time.time(), "data": result or {}})
