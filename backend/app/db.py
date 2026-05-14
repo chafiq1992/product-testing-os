@@ -1,10 +1,11 @@
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from sqlalchemy import create_engine, Column, String, DateTime, Text, desc, Index, ForeignKey
+from sqlalchemy import create_engine, Column, String, DateTime, Text, desc, Index, ForeignKey, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Support external database via DATABASE_URL (e.g., Supabase Postgres). Fallback to SQLite.
@@ -19,6 +20,69 @@ else:
     engine = create_engine("sqlite:////app/data/app.db", future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 Base = declarative_base()
+
+
+# ---- system_health: register engine + emit per-query latency samples ----
+def _install_db_health_hooks():
+    try:
+        from app import system_health as _sh
+    except Exception:
+        return
+    try:
+        _sh.attach_db_engine(engine)
+    except Exception:
+        pass
+
+    def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        try:
+            context._sh_started = time.perf_counter()
+        except Exception:
+            pass
+
+    def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        try:
+            started = getattr(context, "_sh_started", None)
+            if started is None:
+                return
+            ms = (time.perf_counter() - started) * 1000.0
+            # Derive a short op name from the SQL: first verb + table-like hint
+            try:
+                s = (statement or "").lstrip()
+                verb = s.split(None, 1)[0].upper()[:8] if s else "SQL"
+                op = verb
+                # Try to grab the first table-ish token after FROM/INTO/UPDATE
+                upper = s.upper()
+                hint = None
+                for kw in (" FROM ", " INTO ", "UPDATE "):
+                    idx = upper.find(kw)
+                    if idx >= 0:
+                        rest = s[idx + len(kw):]
+                        hint = rest.split(None, 1)[0].strip(" ,()`\"';").lower()
+                        break
+                if hint:
+                    op = f"{verb} {hint}"
+            except Exception:
+                op = "SQL"
+            _sh.record("db", op, ms, True)
+        except Exception:
+            pass
+
+    def _handle_error(exception_context):
+        try:
+            # We don't have timing for errored queries reliably; record a 0ms err sample.
+            _sh.record("db", "ERROR", 0.0, False, error=f"{type(exception_context.original_exception).__name__}: {exception_context.original_exception}")
+        except Exception:
+            pass
+
+    try:
+        event.listen(engine, "before_cursor_execute", _before_cursor_execute)
+        event.listen(engine, "after_cursor_execute", _after_cursor_execute)
+        event.listen(engine, "handle_error", _handle_error)
+    except Exception:
+        pass
+
+
+_install_db_health_hooks()
 
 
 class Test(Base):

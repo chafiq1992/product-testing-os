@@ -1,9 +1,54 @@
-import os, json, requests
+import os, json, time, requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
+
+
+def _timed_meta_request(method: str, url: str, **kw):
+    """``requests.<verb>`` wrapper that records a system_health sample on the ``meta`` provider."""
+    import inspect as _inspect
+    try:
+        from app.system_health import record as _sh_record
+    except Exception:
+        _sh_record = None  # type: ignore
+
+    op_name = method
+    try:
+        frame = _inspect.currentframe()
+        if frame and frame.f_back:
+            op_name = frame.f_back.f_code.co_name or method
+    except Exception:
+        op_name = method
+
+    started = time.perf_counter()
+    ok = True
+    err = None
+    try:
+        r = requests.request(method, url, **kw)
+        try:
+            sc = int(getattr(r, "status_code", 0) or 0)
+            if sc >= 500:
+                ok = False
+                err = f"HTTP {sc}"
+            elif sc == 429:
+                ok = False
+                err = "HTTP 429 (rate-limited)"
+        except Exception:
+            pass
+        return r
+    except BaseException as e:
+        ok = False
+        err = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        if _sh_record is not None:
+            try:
+                ms = (time.perf_counter() - started) * 1000.0
+                _sh_record("meta", op_name, ms, ok, error=err)
+            except Exception:
+                pass
 
 ACCESS = os.getenv("META_ACCESS_TOKEN", "")
 AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "")  # numeric only, no act_
@@ -69,7 +114,7 @@ def _post(path: str, payload: dict, files=None):
     payload = {**payload, "access_token": ACCESS}
     url = f"{BASE}/{path}"
     try:
-        r = requests.post(url, data=payload, files=files, timeout=120)
+        r = _timed_meta_request("POST", url, data=payload, files=files, timeout=120)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
@@ -79,7 +124,7 @@ def _get(path: str, params: dict | None = None):
     params = {**(params or {}), "access_token": ACCESS}
     url = f"{BASE}/{path}"
     try:
-        r = requests.get(url, params=params, timeout=120)
+        r = _timed_meta_request("GET", url, params=params, timeout=120)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:

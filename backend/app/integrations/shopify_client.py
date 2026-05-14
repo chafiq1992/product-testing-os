@@ -19,6 +19,59 @@ _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8
 _UTM_ORDERS_DB_TTL_S = int(os.getenv("PTOS_UTM_ORDERS_DB_TTL_S", "300") or "300")  # 5 minutes
 _perf_log = logging.getLogger("shopify_client.perf")
 
+
+def _timed_request(method: str, url: str, **kw):
+    """Drop-in replacement for ``requests.<verb>`` that records a system_health sample.
+
+    Op label is the calling helper's function name (e.g. ``_gql_store``,
+    ``_rest_get_store_raw``). Status >= 500 counts as an error sample.
+    Network exceptions count as errors. Pure-additive: any failure inside
+    recording is swallowed so it can never break the request.
+    """
+    import inspect as _inspect
+    try:
+        from app.system_health import record as _sh_record
+    except Exception:
+        _sh_record = None  # type: ignore
+
+    op_name = method
+    try:
+        frame = _inspect.currentframe()
+        if frame and frame.f_back:
+            op_name = frame.f_back.f_code.co_name or method
+    except Exception:
+        op_name = method
+
+    started = time.perf_counter()
+    ok = True
+    err = None
+    status_code = None
+    try:
+        r = requests.request(method, url, **kw)
+        try:
+            status_code = int(getattr(r, "status_code", 0) or 0)
+            if status_code >= 500:
+                ok = False
+                err = f"HTTP {status_code}"
+            elif status_code == 429:
+                # Surface rate-limit as a soft error so the dashboard catches it
+                ok = False
+                err = "HTTP 429 (rate-limited)"
+        except Exception:
+            pass
+        return r
+    except BaseException as e:
+        ok = False
+        err = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        if _sh_record is not None:
+            try:
+                ms = (time.perf_counter() - started) * 1000.0
+                _sh_record("shopify", op_name, ms, ok, error=err)
+            except Exception:
+                pass
+
 def _canonical_store_label(store: str | None) -> str | None:
     s = (store or "").strip().lower()
     if not s:
@@ -285,7 +338,7 @@ def _gql(query: str, variables: dict):
             auth = (API_KEY, PASSWORD)
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
-    r = requests.post(GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60, auth=auth)
+    r = _timed_request("POST",GQL, headers=headers, json={"query": query, "variables": variables}, timeout=60, auth=auth)
     r.raise_for_status()
     j = r.json()
     if "errors" in j:
@@ -314,7 +367,7 @@ def _rest_post(path: str, payload: dict):
             auth = (API_KEY, PASSWORD)
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
-    r = requests.post(url, headers=headers, json=payload, timeout=60, auth=auth)
+    r = _timed_request("POST",url, headers=headers, json=payload, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -331,7 +384,7 @@ def _rest_get(path: str):
             auth = (API_KEY, PASSWORD)
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
-    r = requests.get(url, headers=headers, timeout=60, auth=auth)
+    r = _timed_request("GET",url, headers=headers, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -347,7 +400,7 @@ def _rest_put(path: str, payload: dict):
             auth = (API_KEY, PASSWORD)
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
-    r = requests.put(url, headers=headers, json=payload, timeout=60, auth=auth)
+    r = _timed_request("PUT",url, headers=headers, json=payload, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -363,7 +416,7 @@ def _rest_delete(path: str):
             auth = (API_KEY, PASSWORD)
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD.")
-    r = requests.delete(url, headers=headers, timeout=60, auth=auth)
+    r = _timed_request("DELETE",url, headers=headers, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -377,7 +430,7 @@ def _gql_store(store: str | None, query: str, variables: dict):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.post(cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=60, auth=auth)
+    r = _timed_request("POST",cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=60, auth=auth)
     r.raise_for_status()
     j = r.json()
     if "errors" in j:
@@ -404,7 +457,7 @@ def _gql_store_once(store: str | None, query: str, variables: dict, *, timeout: 
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.post(cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=timeout, auth=auth)
+    r = _timed_request("POST",cfg["GQL"], headers=cfg["HEADERS"], json={"query": query, "variables": variables}, timeout=timeout, auth=auth)
     r.raise_for_status()
     j = r.json()
     if "errors" in j:
@@ -420,7 +473,7 @@ def _rest_post_store(store: str | None, path: str, payload: dict):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.post(url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
+    r = _timed_request("POST",url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -434,7 +487,7 @@ def _rest_get_store(store: str | None, path: str):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.get(url, headers=cfg["HEADERS"], timeout=60, auth=auth)
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -449,7 +502,7 @@ def _rest_get_store_raw(store: str | None, path: str):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.get(url, headers=cfg["HEADERS"], timeout=60, auth=auth, allow_redirects=False)
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=60, auth=auth, allow_redirects=False)
     r.raise_for_status()
     return r
 
@@ -463,7 +516,7 @@ def _rest_get_store_raw_once(store: str | None, path: str, *, timeout: int = 20)
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.get(url, headers=cfg["HEADERS"], timeout=timeout, auth=auth, allow_redirects=False)
+    r = _timed_request("GET",url, headers=cfg["HEADERS"], timeout=timeout, auth=auth, allow_redirects=False)
     r.raise_for_status()
     return r
 
@@ -512,7 +565,7 @@ def _rest_put_store(store: str | None, path: str, payload: dict):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.put(url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
+    r = _timed_request("PUT",url, headers=cfg["HEADERS"], json=payload, timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -525,7 +578,7 @@ def _rest_delete_store(store: str | None, path: str):
             auth = (cfg["API_KEY"], cfg["PASSWORD"])
         else:
             raise RuntimeError("Provide either SHOPIFY_ACCESS_TOKEN or both SHOPIFY_API_KEY and SHOPIFY_PASSWORD for the selected store.")
-    r = requests.delete(url, headers=cfg["HEADERS"], timeout=60, auth=auth)
+    r = _timed_request("DELETE",url, headers=cfg["HEADERS"], timeout=60, auth=auth)
     r.raise_for_status()
     return r.json() if r.content else {}
 

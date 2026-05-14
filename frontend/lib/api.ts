@@ -1369,3 +1369,38 @@ export async function getLatestBulkAnalysis(store?: string): Promise<{ data?: Bu
   return data as { data?: BulkAnalysisJob | null, error?: string }
 }
 
+
+// -------- System Health (admin-only) --------
+function systemAdminToken(){
+  try{ return typeof window!=='undefined' ? (localStorage.getItem('ptos_system_admin_token')||'') : '' }catch{ return '' }
+}
+function systemAdminHeaders(){
+  const tok = systemAdminToken()
+  return tok? { Authorization: `Bearer ${tok}` } : {}
+}
+
+export async function systemHealthLogin(payload:{ email: string, password: string, remember?: boolean }){
+  const { data } = await axios.post(`${base}/api/system-health/login`, payload)
+  return data as { data?: { token: string, admin: { email: string, name?: string|null } }, error?: string, hint?: string }
+}
+
+export async function systemHealthMe(){
+  const { data } = await axios.get(`${base}/api/system-health/me`, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: { admin: { email: string, name?: string|null } }, error?: string }
+}
+
+export async function systemHealthSnapshot(){
+  const { data } = await axios.get(`${base}/api/system-health/snapshot`, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: any, error?: string }
+}
+
+export async function systemHealthStatus(){
+  const { data } = await axios.get(`${base}/api/system-health/status`, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: { level: 'ok'|'warn'|'crit', reasons: Array<{ level:'ok'|'warn'|'crit', code:string, msg:string, value?:any, threshold?:any, provider?:string, surface?:string }>, uptime_s?: number, now?: number }, error?: string }
+}
+
+export async function systemHealthRefreshConfirmation(){
+  const { data } = await axios.post(`${base}/api/system-health/confirmation-probe/refresh`, {}, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: any, error?: string }
+}
+
