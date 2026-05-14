@@ -76,6 +76,9 @@ Incident log
   HEALTH_INCIDENT_POLLER_S         (60)    background poller cadence — keeps the log
                                            up to date even when no client is polling
                                            the dashboard. Set to 0 to disable.
+  HEALTH_INCIDENT_PERSIST          (1)     0 to disable DB persistence of the log
+  HEALTH_INCIDENT_PERSIST_MIN_S    (30)    minimum gap between DB writes (the log is
+                                           also written immediately on open/resolve)
 
 Misc
   HEALTH_EXCLUDE_ROUTES           (comma-sep prefixes excluded from request timing;
@@ -153,6 +156,8 @@ RSS_CRIT_MB = _int_env("HEALTH_RSS_CRIT_MB", 480)
 
 INCIDENT_LOG_SIZE = _int_env("HEALTH_INCIDENT_LOG_SIZE", 200)
 INCIDENT_POLLER_S = _int_env("HEALTH_INCIDENT_POLLER_S", 60)
+INCIDENT_PERSIST = (os.getenv("HEALTH_INCIDENT_PERSIST", "1") or "1").strip().lower() not in ("0", "false", "no", "off")
+INCIDENT_PERSIST_MIN_S = _int_env("HEALTH_INCIDENT_PERSIST_MIN_S", 30)
 
 _DEFAULT_EXCLUDES = "/uploads,/health,/api/system-health,/favicon.ico"
 EXCLUDE_ROUTES: tuple[str, ...] = tuple(
@@ -191,6 +196,12 @@ _OPEN_INCIDENTS: dict[str, int] = {}  # code -> index into _INCIDENTS (when stil
 # Background poller state
 _POLLER_STARTED = False
 _POLLER_LOCK = threading.Lock()
+
+# Persistence state
+_PERSIST_LAST_WRITE_TS = 0.0
+_PERSIST_LOADED = False
+_PERSIST_KEY = "system_health_incidents"
+_PERSIST_LOCK = threading.Lock()
 
 # A reference to the SQLAlchemy engine (set by db.py once it's created)
 _DB_ENGINE: Any = None
@@ -743,6 +754,65 @@ def snapshot() -> dict[str, Any]:
     return out
 
 
+def _persist_load_once() -> None:
+    """Load persisted incidents from app_settings into memory on first call.
+
+    Idempotent + safe: if the DB or table isn't available, silently no-op.
+    """
+    global _PERSIST_LOADED
+    if not INCIDENT_PERSIST:
+        return
+    with _PERSIST_LOCK:
+        if _PERSIST_LOADED:
+            return
+        _PERSIST_LOADED = True
+    try:
+        from app import db as _db  # lazy import
+        stored = _db.get_app_setting(None, _PERSIST_KEY)
+        if not isinstance(stored, dict):
+            return
+        items = stored.get("items")
+        if not isinstance(items, list):
+            return
+        with _INCIDENTS_LOCK:
+            _INCIDENTS.clear()
+            _OPEN_INCIDENTS.clear()
+            for raw in items[-INCIDENT_LOG_SIZE:]:
+                if not isinstance(raw, dict) or not raw.get("code"):
+                    continue
+                _INCIDENTS.append(raw)
+            # Rebuild open-index for entries that don't have resolved_at
+            tail = list(_INCIDENTS)
+            for idx, entry in enumerate(tail):
+                if not entry.get("resolved_at"):
+                    _OPEN_INCIDENTS[entry["code"]] = idx
+    except Exception:
+        pass
+
+
+def _persist_save(force: bool = False) -> None:
+    """Throttled save of the in-memory incident log to app_settings.
+
+    Writes if forced (new open / new resolve) or if the last write is older
+    than INCIDENT_PERSIST_MIN_S. Runs synchronously but is cheap (single
+    upsert of a small JSON blob).
+    """
+    global _PERSIST_LAST_WRITE_TS
+    if not INCIDENT_PERSIST:
+        return
+    now = time.time()
+    if not force and (now - _PERSIST_LAST_WRITE_TS) < max(1, INCIDENT_PERSIST_MIN_S):
+        return
+    try:
+        with _INCIDENTS_LOCK:
+            items = list(_INCIDENTS)
+        from app import db as _db  # lazy import
+        _db.set_app_setting(None, _PERSIST_KEY, {"items": items, "saved_at": now})
+        _PERSIST_LAST_WRITE_TS = now
+    except Exception:
+        pass
+
+
 def _record_incidents(reasons: list[dict[str, Any]]) -> None:
     """Maintain the rolling incident log.
 
@@ -750,10 +820,16 @@ def _record_incidents(reasons: list[dict[str, Any]]) -> None:
       incident entry (first_seen = last_seen = now).
     - Reason whose code IS open → update last_seen + level + msg + tick count.
     - Open incident whose code is absent from current reasons → mark resolved.
+
+    The log is loaded from app_settings on first call (so the previous
+    instance's history is restored after a Cloud Run cold start) and saved
+    back to app_settings on every state change + throttled by time.
     """
     try:
+        _persist_load_once()
         now = time.time()
         current_codes = {r.get("code"): r for r in reasons or [] if isinstance(r, dict) and r.get("code")}
+        state_changed = False
         with _INCIDENTS_LOCK:
             # Index incidents by id for stable references
             incidents_list = list(_INCIDENTS)
@@ -798,6 +874,7 @@ def _record_incidents(reasons: list[dict[str, Any]]) -> None:
                 # Recompute open index map (deque can evict on append)
                 incidents_list = list(_INCIDENTS)
                 _OPEN_INCIDENTS[code] = len(incidents_list) - 1
+                state_changed = True  # new incident opened
 
             # 2) Resolve incidents whose codes are no longer active
             still_open: dict[str, int] = {}
@@ -813,8 +890,11 @@ def _record_incidents(reasons: list[dict[str, Any]]) -> None:
                 else:
                     if not entry.get("resolved_at"):
                         entry["resolved_at"] = now
+                        state_changed = True  # incident closed
             _OPEN_INCIDENTS.clear()
             _OPEN_INCIDENTS.update(still_open)
+        # Persist (force=True on a state change, otherwise throttled by time)
+        _persist_save(force=state_changed)
     except Exception:
         pass
 
@@ -837,7 +917,9 @@ def clear_incidents() -> int:
             n = len(_INCIDENTS)
             _INCIDENTS.clear()
             _OPEN_INCIDENTS.clear()
-            return n
+        # Wipe persisted copy too
+        _persist_save(force=True)
+        return n
     except Exception:
         return 0
 
