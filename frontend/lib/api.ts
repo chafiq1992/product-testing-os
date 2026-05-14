@@ -1404,3 +1404,8 @@ export async function systemHealthRefreshConfirmation(){
   return data as { data?: any, error?: string }
 }
 
+export async function systemHealthClearIncidents(){
+  const { data } = await axios.post(`${base}/api/system-health/incidents/clear`, {}, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: { cleared: number }, error?: string }
+}
+
