@@ -224,12 +224,38 @@ def fetch_project_live_insights(
     for i, dim in enumerate(dims, start=1):
         params[f"dimension{i}"] = dim
 
-    res = requests.get(
-        CLARITY_EXPORT_URL,
-        params=params,
-        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-        timeout=30,
-    )
+    _sh_record = None
+    try:
+        from app.system_health import record as _sh_record  # type: ignore
+    except Exception:
+        _sh_record = None
+    import time as _t
+    _started = _t.perf_counter()
+    _ok = True
+    _err = None
+    try:
+        res = requests.get(
+            CLARITY_EXPORT_URL,
+            params=params,
+            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+            timeout=30,
+        )
+        try:
+            if int(getattr(res, "status_code", 0) or 0) >= 500:
+                _ok = False
+                _err = f"HTTP {res.status_code}"
+        except Exception:
+            pass
+    except BaseException as _e:
+        _ok = False
+        _err = f"{type(_e).__name__}: {_e}"
+        raise
+    finally:
+        if _sh_record is not None:
+            try:
+                _sh_record("clarity", "fetch_project_live_insights", (_t.perf_counter() - _started) * 1000.0, _ok, error=_err)
+            except Exception:
+                pass
     if res.status_code >= 400:
         raise RuntimeError(f"Clarity API error {res.status_code}: {res.text[:300]}")
     data = res.json()

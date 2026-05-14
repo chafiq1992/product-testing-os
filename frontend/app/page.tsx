@@ -96,6 +96,9 @@ export default function HomePage(){
           <Link href="/wholesale" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white">
             Wholesale
           </Link>
+          <Link href="/system-health" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white">
+            System Health
+          </Link>
           <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow
           </button>

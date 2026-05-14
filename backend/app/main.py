@@ -99,6 +99,13 @@ except Exception:
 
 app = FastAPI(title="Product Testing OS", version="0.1.0")
 
+# System health metrics middleware — pure-additive, fails closed (never blocks request)
+from app.system_health import HealthMiddleware as _HealthMiddleware  # noqa: E402
+from app.system_health_routes import router as _system_health_router  # noqa: E402
+from app import system_health as _sh  # noqa: E402
+app.add_middleware(_HealthMiddleware)
+app.include_router(_system_health_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1172,16 +1179,25 @@ async def create_test(
 
     # Run synchronously by default unless USE_CELERY is explicitly enabled
     use_celery = os.getenv("USE_CELERY", "false").lower() in ("1", "true", "yes")
+
+    def _tracked_pipeline_run(_tid: str, _payload: dict):
+        _sh.register_inflight(f"pipeline:{_tid}", "pipeline", store=(_payload or {}).get("store"), label=f"test {_tid}")
+        try:
+            with _sh.time_op("pipeline", "run_pipeline_sync", store=(_payload or {}).get("store")):
+                run_pipeline_sync(_tid, _payload)
+        finally:
+            _sh.clear_inflight(f"pipeline:{_tid}")
+
     if not use_celery:
         import threading
-        threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
+        threading.Thread(target=_tracked_pipeline_run, args=(test_id, payload), daemon=True).start()
     else:
         try:
             pipeline_launch.delay(test_id, payload)
         except Exception:
             # If enqueue fails (e.g., no broker), fall back to sync so tests aren't stuck
             import threading
-            threading.Thread(target=run_pipeline_sync, args=(test_id, payload), daemon=True).start()
+            threading.Thread(target=_tracked_pipeline_run, args=(test_id, payload), daemon=True).start()
 
     return {"test_id": test_id, "status": "queued"}
 
@@ -2518,7 +2534,15 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
             "campaign_name": (req.campaign_name or "").strip(),
         }
 
-        thread = threading.Thread(target=_run_analysis_job, args=(job_id, req_data), daemon=True)
+        def _tracked_analysis(_jid: str, _rd: dict):
+            _sh.register_inflight(f"analysis:{_jid}", "campaign_analysis", store=(_rd or {}).get("store"), label=f"analysis {_jid}")
+            try:
+                with _sh.time_op("pipeline", "run_analysis_job", store=(_rd or {}).get("store")):
+                    _run_analysis_job(_jid, _rd)
+            finally:
+                _sh.clear_inflight(f"analysis:{_jid}")
+
+        thread = threading.Thread(target=_tracked_analysis, args=(job_id, req_data), daemon=True)
         thread.start()
 
         return {"job_id": job_id}
@@ -2600,8 +2624,16 @@ async def api_generate_action_tasks(req: GenerateActionTasksRequest):
             for old_key in keys[:len(keys) - 20]:
                 _action_task_jobs.pop(old_key, None)
 
+        def _tracked_action_tasks(_jid: str, _analyses, _store):
+            _sh.register_inflight(f"action_tasks:{_jid}", "action_tasks", store=_store, label=f"action_tasks {_jid}")
+            try:
+                with _sh.time_op("pipeline", "run_action_task_job", store=_store):
+                    _run_action_task_job(_jid, _analyses, _store)
+            finally:
+                _sh.clear_inflight(f"action_tasks:{_jid}")
+
         thread = threading.Thread(
-            target=_run_action_task_job,
+            target=_tracked_action_tasks,
             args=(job_id, req.analyses, req.store),
             daemon=True,
         )
@@ -3104,9 +3136,17 @@ async def api_analyze_all_campaigns(req: BulkAnalyzeRequest):
             "date_range": {"start": s_date, "end": e_date},
         })
 
+        def _tracked_bulk(_jid: str, _store, _accts, _s, _e):
+            _sh.register_inflight(f"bulk_analysis:{_jid}", "bulk_analysis", store=_store, label=f"bulk_analysis {_jid}")
+            try:
+                with _sh.time_op("pipeline", "run_bulk_analysis_job", store=_store):
+                    _run_bulk_analysis_job(_jid, _store, _accts, _s, _e)
+            finally:
+                _sh.clear_inflight(f"bulk_analysis:{_jid}")
+
         # Launch background thread (daemon=False so it survives request lifecycle)
         thread = threading.Thread(
-            target=_run_bulk_analysis_job,
+            target=_tracked_bulk,
             args=(job_id, store, (req.ad_accounts or ([req.ad_account] if req.ad_account else [])), s_date, e_date),
             daemon=False,
             name=f"bulk-analysis-{job_id[:8]}",
@@ -5272,7 +5312,15 @@ async def api_ads_launch(req: AdsAutomationLaunchRequest):
             "num_angles": req.num_angles or 3,
             "model": req.model,
         }
-        t = threading.Thread(target=run_ads_automation_sync, args=(req.flow_id, payload), daemon=True)
+        def _tracked_ads(_fid: str, _pl: dict):
+            _sh.register_inflight(f"ads_automation:{_fid}", "ads_automation", store=None, label=f"ads {_fid}")
+            try:
+                with _sh.time_op("pipeline", "run_ads_automation_sync"):
+                    run_ads_automation_sync(_fid, _pl)
+            finally:
+                _sh.clear_inflight(f"ads_automation:{_fid}")
+
+        t = threading.Thread(target=_tracked_ads, args=(req.flow_id, payload), daemon=True)
         t.start()
         return {"flow_id": req.flow_id, "status": "queued"}
     except Exception as e:

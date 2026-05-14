@@ -736,3 +736,58 @@ def gen_variant_images_from_image(
             })
         items.append({"kind": "composite", "image": image_url, "prompt": "fallback"})
         return items
+
+
+# ---- system_health instrumentation -------------------------------------------------
+# Wrap the public generate/analyze functions so the System Health dashboard sees
+# Gemini latency, error rate, and recent failures.
+def _install_gemini_health_hooks():
+    import time as _t
+    try:
+        from app.system_health import record as _sh_record
+    except Exception:
+        return
+
+    def _wrap(name: str) -> None:
+        original = globals().get(name)
+        if not callable(original):
+            return
+
+        def wrapped(*args, **kwargs):
+            started = _t.perf_counter()
+            ok = True
+            err = None
+            try:
+                return original(*args, **kwargs)
+            except BaseException as e:
+                ok = False
+                err = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                try:
+                    _sh_record("gemini", name, (_t.perf_counter() - started) * 1000.0, ok, error=err)
+                except Exception:
+                    pass
+
+        try:
+            wrapped.__name__ = name
+            wrapped.__doc__ = getattr(original, "__doc__", None)
+        except Exception:
+            pass
+        globals()[name] = wrapped
+
+    for fn_name in (
+        "gen_ad_images_from_image",
+        "gen_clean_wholesale_product_image",
+        "gen_promotional_images_from_angles",
+        "gen_feature_benefit_images",
+        "analyze_variants_from_image",
+        "gen_variant_images_from_image",
+    ):
+        try:
+            _wrap(fn_name)
+        except Exception:
+            pass
+
+
+_install_gemini_health_hooks()

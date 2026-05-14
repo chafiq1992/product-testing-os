@@ -11,6 +11,64 @@ client = OpenAI()
 DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 DEFAULT_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
 
+
+# ---- system_health instrumentation -------------------------------------------------
+# Wrap the few OpenAI SDK methods this app actually calls so the System Health
+# dashboard can report p50/p95/p99 + error rate per provider. Pure-additive:
+# if anything goes wrong wiring this, the underlying calls keep working.
+def _install_openai_health_hooks():
+    import time as _t
+    try:
+        from app.system_health import record as _sh_record
+    except Exception:
+        return
+
+    def _wrap(method, category, op):
+        def wrapped(*a, **kw):
+            started = _t.perf_counter()
+            ok = True
+            err = None
+            try:
+                return method(*a, **kw)
+            except BaseException as e:
+                ok = False
+                err = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                try:
+                    _sh_record(category, op, (_t.perf_counter() - started) * 1000.0, ok, error=err)
+                except Exception:
+                    pass
+        try:
+            wrapped.__name__ = getattr(method, "__name__", op)
+        except Exception:
+            pass
+        return wrapped
+
+    try:
+        orig = client.chat.completions.create
+        client.chat.completions.create = _wrap(orig, "openai", "chat.completions.create")
+    except Exception:
+        pass
+    try:
+        orig = client.responses.create  # newer SDK surface
+        client.responses.create = _wrap(orig, "openai", "responses.create")
+    except Exception:
+        pass
+    try:
+        orig = client.images.generate
+        client.images.generate = _wrap(orig, "openai_image", "images.generate")
+    except Exception:
+        pass
+    try:
+        orig = client.images.edit
+        client.images.edit = _wrap(orig, "openai_image", "images.edit")
+    except Exception:
+        pass
+
+
+_install_openai_health_hooks()
+
 ANGLE_JSON_INSTRUCTIONS = {"type": "json_object"}
 
 # We build the prompt with an f-string so that only the payload vars are substituted and

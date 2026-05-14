@@ -115,5 +115,16 @@ def run_pipeline_sync(test_id: str, payload: dict):
 
 @celery.task(name="pipeline_launch")
 def pipeline_launch(test_id: str, payload: dict):
-    # Delegate to the shared sync implementation so both paths stay identical
-    return run_pipeline_sync(test_id, payload)
+    # Delegate to the shared sync implementation so both paths stay identical.
+    # Also register the run in system_health so the worker's in-flight pipelines
+    # show up if/when USE_CELERY=true and the worker shares process with the API.
+    try:
+        from app import system_health as _sh
+        _sh.register_inflight(f"pipeline:{test_id}", "pipeline", store=(payload or {}).get("store"), label=f"test {test_id}")
+        try:
+            with _sh.time_op("pipeline", "celery.pipeline_launch", store=(payload or {}).get("store")):
+                return run_pipeline_sync(test_id, payload)
+        finally:
+            _sh.clear_inflight(f"pipeline:{test_id}")
+    except Exception:
+        return run_pipeline_sync(test_id, payload)
