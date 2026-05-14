@@ -105,6 +105,13 @@ from app.system_health_routes import router as _system_health_router  # noqa: E4
 from app import system_health as _sh  # noqa: E402
 app.add_middleware(_HealthMiddleware)
 app.include_router(_system_health_router)
+# Background poller keeps the incident log up to date even when nobody is
+# watching the dashboard, so issues that occurred while the admin was away
+# are still visible (with first/last-seen timestamps) when they return.
+try:
+    _sh._ensure_incident_poller()  # noqa: SLF001
+except Exception:
+    pass
 
 app.add_middleware(
     CORSMiddleware,

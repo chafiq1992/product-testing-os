@@ -71,6 +71,12 @@ Auth
   SYSTEM_ADMIN_USERS              (JSON map or array — see system_health_routes.py)
   SYSTEM_ADMIN_SECRET             (signing secret for tokens; falls back to JWT_SECRET)
 
+Incident log
+  HEALTH_INCIDENT_LOG_SIZE         (200)   max past incidents kept in memory
+  HEALTH_INCIDENT_POLLER_S         (60)    background poller cadence — keeps the log
+                                           up to date even when no client is polling
+                                           the dashboard. Set to 0 to disable.
+
 Misc
   HEALTH_EXCLUDE_ROUTES           (comma-sep prefixes excluded from request timing;
                                    default: /uploads,/health,/api/system-health,/favicon.ico)
@@ -145,6 +151,9 @@ CONFIRMATION_PROBE_TTL_S = _int_env("HEALTH_CONFIRMATION_PROBE_TTL_S", 300)
 RSS_WARN_MB = _int_env("HEALTH_RSS_WARN_MB", 350)
 RSS_CRIT_MB = _int_env("HEALTH_RSS_CRIT_MB", 480)
 
+INCIDENT_LOG_SIZE = _int_env("HEALTH_INCIDENT_LOG_SIZE", 200)
+INCIDENT_POLLER_S = _int_env("HEALTH_INCIDENT_POLLER_S", 60)
+
 _DEFAULT_EXCLUDES = "/uploads,/health,/api/system-health,/favicon.ico"
 EXCLUDE_ROUTES: tuple[str, ...] = tuple(
     p.strip() for p in (os.getenv("HEALTH_EXCLUDE_ROUTES", _DEFAULT_EXCLUDES) or "").split(",")
@@ -171,6 +180,17 @@ _INFLIGHT_LOCK = threading.Lock()
 # Confirmation stuck-orders probe cache: (ts, result)
 _CONFIRMATION_PROBE: dict[str, Any] = {"ts": 0.0, "result": None, "running": False}
 _CONFIRMATION_PROBE_LOCK = threading.Lock()
+
+# Incident log: persists past warn/crit reasons with first_seen / last_seen / resolved_at.
+# Keyed by code so flapping doesn't spam the log; the same code re-opening after
+# resolution starts a new incident entry.
+_INCIDENTS_LOCK = threading.Lock()
+_INCIDENTS: deque[dict[str, Any]] = deque(maxlen=INCIDENT_LOG_SIZE)
+_OPEN_INCIDENTS: dict[str, int] = {}  # code -> index into _INCIDENTS (when still open)
+
+# Background poller state
+_POLLER_STARTED = False
+_POLLER_LOCK = threading.Lock()
 
 # A reference to the SQLAlchemy engine (set by db.py once it's created)
 _DB_ENGINE: Any = None
@@ -718,8 +738,108 @@ def snapshot() -> dict[str, Any]:
         },
         "confirmation": _confirmation_probe_cached() or {"pending": True},
         "slow_ops": _slow_ops(limit=50),
+        "incidents": list_incidents(limit=100),
     }
     return out
+
+
+def _record_incidents(reasons: list[dict[str, Any]]) -> None:
+    """Maintain the rolling incident log.
+
+    - New reason whose code is not in ``_OPEN_INCIDENTS`` → append a new
+      incident entry (first_seen = last_seen = now).
+    - Reason whose code IS open → update last_seen + level + msg + tick count.
+    - Open incident whose code is absent from current reasons → mark resolved.
+    """
+    try:
+        now = time.time()
+        current_codes = {r.get("code"): r for r in reasons or [] if isinstance(r, dict) and r.get("code")}
+        with _INCIDENTS_LOCK:
+            # Index incidents by id for stable references
+            incidents_list = list(_INCIDENTS)
+
+            # 1) Update / open
+            for code, r in current_codes.items():
+                if code in _OPEN_INCIDENTS:
+                    idx = _OPEN_INCIDENTS[code]
+                    # The deque might have evicted the entry if it was very old;
+                    # fall back to re-opening in that case.
+                    try:
+                        entry = incidents_list[idx]
+                    except Exception:
+                        entry = None
+                    if entry is not None and entry.get("code") == code and not entry.get("resolved_at"):
+                        entry["last_seen"] = now
+                        entry["level"] = r.get("level") or entry.get("level")
+                        entry["msg"] = r.get("msg") or entry.get("msg")
+                        entry["tick_count"] = int(entry.get("tick_count") or 0) + 1
+                        # propagate optional extras
+                        for k in ("value", "threshold", "provider", "surface", "ids"):
+                            if k in r:
+                                entry[k] = r[k]
+                        continue
+                    # Stale index — fall through to open a new one
+                    _OPEN_INCIDENTS.pop(code, None)
+                # New incident
+                entry = {
+                    "id": f"{int(now * 1000)}-{code}",
+                    "code": code,
+                    "level": r.get("level"),
+                    "msg": r.get("msg"),
+                    "first_seen": now,
+                    "last_seen": now,
+                    "resolved_at": None,
+                    "tick_count": 1,
+                }
+                for k in ("value", "threshold", "provider", "surface", "ids"):
+                    if k in r:
+                        entry[k] = r[k]
+                _INCIDENTS.append(entry)
+                # Recompute open index map (deque can evict on append)
+                incidents_list = list(_INCIDENTS)
+                _OPEN_INCIDENTS[code] = len(incidents_list) - 1
+
+            # 2) Resolve incidents whose codes are no longer active
+            still_open: dict[str, int] = {}
+            for code, idx in list(_OPEN_INCIDENTS.items()):
+                try:
+                    entry = incidents_list[idx]
+                except Exception:
+                    continue
+                if entry.get("code") != code:
+                    continue
+                if code in current_codes:
+                    still_open[code] = idx
+                else:
+                    if not entry.get("resolved_at"):
+                        entry["resolved_at"] = now
+            _OPEN_INCIDENTS.clear()
+            _OPEN_INCIDENTS.update(still_open)
+    except Exception:
+        pass
+
+
+def list_incidents(limit: int = 100) -> list[dict[str, Any]]:
+    """Return incidents newest-first. Open incidents have resolved_at=None."""
+    try:
+        with _INCIDENTS_LOCK:
+            items = list(_INCIDENTS)
+        # Newest first; open incidents first within same time
+        items.sort(key=lambda e: (e.get("resolved_at") is not None, -float(e.get("last_seen") or 0)))
+        return items[:limit]
+    except Exception:
+        return []
+
+
+def clear_incidents() -> int:
+    try:
+        with _INCIDENTS_LOCK:
+            n = len(_INCIDENTS)
+            _INCIDENTS.clear()
+            _OPEN_INCIDENTS.clear()
+            return n
+    except Exception:
+        return 0
 
 
 def status() -> dict[str, Any]:
@@ -852,12 +972,43 @@ def status() -> dict[str, Any]:
     elif any(r["level"] == "warn" for r in reasons):
         level = "warn"
 
+    # Update the incident log so past issues remain visible even when resolved
+    _record_incidents(reasons)
+
     return {
         "level": level,
         "reasons": reasons,
         "uptime_s": snap.get("uptime_s"),
         "now": snap.get("now"),
     }
+
+
+def _ensure_incident_poller() -> None:
+    """Spin up a daemon thread that calls status() every HEALTH_INCIDENT_POLLER_S
+    so the incident log accumulates issues even when no client is polling.
+
+    Safe to call repeatedly; only starts once.
+    """
+    global _POLLER_STARTED
+    if INCIDENT_POLLER_S <= 0:
+        return
+    with _POLLER_LOCK:
+        if _POLLER_STARTED:
+            return
+        _POLLER_STARTED = True
+
+    def _poll():
+        # Small initial delay so app start-up isn't slowed by an immediate scan
+        time.sleep(min(15, INCIDENT_POLLER_S))
+        while True:
+            try:
+                status()
+            except Exception:
+                pass
+            time.sleep(max(5, INCIDENT_POLLER_S))
+
+    t = threading.Thread(target=_poll, daemon=True, name="health-incident-poller")
+    t.start()
 
 
 # ---------------- ASGI middleware ----------------

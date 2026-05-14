@@ -186,6 +186,18 @@ async def get_status(req: Request):
         return {"error": f"{type(e).__name__}: {e}", "data": {"level": "warn", "reasons": [{"level": "warn", "code": "HEALTH_INTERNAL", "msg": f"snapshot failed: {e}"}]}}
 
 
+@router.post("/incidents/clear")
+async def clear_incidents(req: Request):
+    admin = _get_admin(req)
+    if not admin:
+        return {"error": "unauthorized"}
+    try:
+        n = sh.clear_incidents()
+        return {"data": {"cleared": n}}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 @router.post("/confirmation-probe/refresh")
 async def refresh_confirmation_probe(req: Request):
     admin = _get_admin(req)
