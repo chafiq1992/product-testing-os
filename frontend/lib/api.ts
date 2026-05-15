@@ -96,6 +96,7 @@ export async function confirmationAgentAnalytics(payload?:{ store?: string }){
       any_n?: number,
       no_n?: number,
       all_n?: number,
+      unassigned_total?: number,
       confirmed_total?: number,
       truncated?: boolean,
     },
@@ -121,13 +122,13 @@ export async function confirmationAdminUsersList(payload?:{ store?: string }){
   const store = payload?.store ?? selectedStore()
   const qp = store? `?store=${encodeURIComponent(store)}` : ''
   const {data} = await axios.get(`${base}/api/confirmation/admin/users${qp}`, { headers: { ...confirmationAdminHeaders() } })
-  return data as { data?: Array<{ email: string, name?: string|null }>, error?: string }
+  return data as { data?: Array<{ email: string, name?: string|null, tags?: string[] }>, error?: string }
 }
 
-export async function confirmationAdminUserUpsert(payload:{ store?: string, email: string, name?: string, password?: string }){
+export async function confirmationAdminUserUpsert(payload:{ store?: string, email: string, name?: string, password?: string, tags?: string[]|string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const {data} = await axios.post(`${base}/api/confirmation/admin/users/upsert`, body, { headers: { ...confirmationAdminHeaders() } })
-  return data as { data?: { email: string, name?: string|null, generated_password?: string|null }, error?: string }
+  return data as { data?: { email: string, name?: string|null, tags?: string[], generated_password?: string|null }, error?: string }
 }
 
 export async function confirmationAdminUserDelete(payload:{ store?: string, email: string }){

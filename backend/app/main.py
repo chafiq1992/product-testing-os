@@ -3776,30 +3776,75 @@ def _confirmation_tags_list(tags_raw: str | list[str] | None) -> list[str]:
         return []
 
 
-def _confirmation_is_fz_agent(agent_email: str | None) -> bool:
-    return (agent_email or "").strip().lower() == "fz@conf.com"
+def _normalize_confirmation_tags(value: Any) -> list[str]:
+    """Normalize agent assignment tags for case-insensitive Shopify tag matching."""
+    raw: list[str] = []
+    if isinstance(value, list):
+        raw = [str(x or "") for x in value]
+    elif isinstance(value, str):
+        raw = [x for x in re.split(r"[,;\n]+", value)]
+    else:
+        raw = []
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in raw:
+        s = str(t or "").strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
 
 
-def _confirmation_order_assigned_to_agent(order: dict, tags_list: list[str], agent_email: str | None) -> bool:
-    """Return True if an order is assigned to the given agent.
-
-    Current rule set (can be extended later):
-      - fz@conf.com: only orders tagged 'fz' AND financial_status in {pending, paid}
-        (orders are already constrained to open+unfulfilled by list_orders_open_unfulfilled).
-    """
-    ae = (agent_email or "").strip().lower()
-    if not ae:
+def _confirmation_order_is_visible(order: dict, tags_list: list[str]) -> bool:
+    """Only count/show open, unfulfilled, not-canceled, not-COD orders."""
+    if not isinstance(order, dict):
         return False
-    if _confirmation_is_fz_agent(ae):
-        tags_lc = {t.strip().lower() for t in (tags_list or []) if str(t).strip()}
-        if "fz" not in tags_lc:
-            return False
-        fs = str((order or {}).get("financial_status") or "").strip().lower()
-        if fs not in ("pending", "paid"):
-            return False
-        return True
-    # default: unassigned routing (everyone sees the queue)
+    if has_cod_tag(tags_list):
+        return False
+    if order.get("cancelled_at") or order.get("canceled_at"):
+        return False
+    if order.get("closed_at"):
+        return False
+    status = str(order.get("status") or "").strip().lower()
+    if status in ("closed", "cancelled", "canceled", "archived"):
+        return False
+    fulfillment = str(order.get("fulfillment_status") or "").strip().lower()
+    if fulfillment and fulfillment != "unfulfilled":
+        return False
     return True
+
+
+def _confirmation_agent_tags(users: list[dict], agent_email: str | None) -> list[str]:
+    ae = _normalize_email(str(agent_email or ""))
+    if not ae:
+        return []
+    for u in (users or []):
+        if not isinstance(u, dict):
+            continue
+        if _normalize_email(str(u.get("email") or "")) == ae:
+            return _normalize_confirmation_tags(u.get("tags") or [])
+    return []
+
+
+def _confirmation_all_agent_tags(users: list[dict]) -> set[str]:
+    out: set[str] = set()
+    for u in (users or []):
+        if isinstance(u, dict):
+            out.update(_normalize_confirmation_tags(u.get("tags") or []))
+    return out
+
+
+def _confirmation_order_has_any_tag(tags_list: list[str], wanted: list[str] | set[str]) -> bool:
+    wanted_set = {str(t or "").strip().lower() for t in (wanted or []) if str(t or "").strip()}
+    if not wanted_set:
+        return False
+    order_tags = {str(t or "").strip().lower() for t in (tags_list or []) if str(t or "").strip()}
+    return bool(order_tags.intersection(wanted_set))
+
+
+def _confirmation_order_assigned_to_agent(tags_list: list[str], agent_tags: list[str]) -> bool:
+    return _confirmation_order_has_any_tag(tags_list, agent_tags)
 
 
 def _load_confirmation_users(store: str | None) -> list[dict]:
@@ -3816,12 +3861,12 @@ def _load_confirmation_users(store: str | None) -> list[dict]:
         if isinstance(val, list):
             for u in val:
                 if isinstance(u, dict) and u.get("email") and u.get("password"):
-                    out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name")})
+                    out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name"), "tags": _normalize_confirmation_tags(u.get("tags") or [])})
         elif isinstance(val, dict):
             # allow {"email":"pw"} map
             for k, v in val.items():
                 if k and v:
-                    out.append({"email": str(k).strip().lower(), "password": str(v), "name": None})
+                    out.append({"email": str(k).strip().lower(), "password": str(v), "name": None, "tags": []})
     except Exception:
         pass
     if out:
@@ -3834,11 +3879,11 @@ def _load_confirmation_users(store: str | None) -> list[dict]:
             if isinstance(parsed, list):
                 for u in parsed:
                     if isinstance(u, dict) and u.get("email") and u.get("password"):
-                        out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name")})
+                        out.append({"email": str(u["email"]).strip().lower(), "password": str(u["password"]), "name": u.get("name"), "tags": _normalize_confirmation_tags(u.get("tags") or [])})
             elif isinstance(parsed, dict):
                 for k, v in parsed.items():
                     if k and v:
-                        out.append({"email": str(k).strip().lower(), "password": str(v), "name": None})
+                        out.append({"email": str(k).strip().lower(), "password": str(v), "name": None, "tags": []})
     except Exception:
         pass
     return out
@@ -3965,7 +4010,12 @@ def _sanitize_confirmation_users(users: list[dict]) -> list[dict]:
         name = u.get("name")
         if not email or not pw:
             continue
-        by_email[email] = {"email": email, "password": pw, "name": (str(name).strip() if isinstance(name, str) and name.strip() else None)}
+        by_email[email] = {
+            "email": email,
+            "password": pw,
+            "name": (str(name).strip() if isinstance(name, str) and name.strip() else None),
+            "tags": _normalize_confirmation_tags(u.get("tags") or []),
+        }
     return list(by_email.values())
 
 
@@ -4023,7 +4073,7 @@ async def api_confirmation_admin_users(req: Request, store: str | None = None):
             return {"error": "unauthorized", "data": []}
         users = _load_confirmation_users(store)
         # Never return passwords
-        out = [{"email": u.get("email"), "name": u.get("name")} for u in (users or []) if isinstance(u, dict) and u.get("email")]
+        out = [{"email": u.get("email"), "name": u.get("name"), "tags": _normalize_confirmation_tags(u.get("tags") or [])} for u in (users or []) if isinstance(u, dict) and u.get("email")]
         # stable sort
         out.sort(key=lambda x: str(x.get("email") or ""))
         return {"data": out}
@@ -4036,6 +4086,7 @@ class ConfirmationAdminUserUpsertRequest(BaseModel):
     email: str
     name: Optional[str] = None
     password: Optional[str] = None  # if omitted, auto-generate
+    tags: Optional[Any] = None
 
 
 @app.post("/api/confirmation/admin/users/upsert")
@@ -4048,18 +4099,23 @@ async def api_confirmation_admin_user_upsert(req: Request, body: ConfirmationAdm
         email = _normalize_email(body.email)
         if not email:
             return {"error": "invalid_email"}
+        name = (body.name or "").strip() if isinstance(body.name, str) else None
+        tags = _normalize_confirmation_tags(body.tags or [])
+        users = _load_confirmation_users(store)
+        existing = next((u for u in (users or []) if isinstance(u, dict) and _normalize_email(str(u.get("email") or "")) == email), None)
         pw = (body.password or "").strip()
         generated = None
         if not pw:
-            generated = _gen_password()
-            pw = generated
-        name = (body.name or "").strip() if isinstance(body.name, str) else None
-        users = _load_confirmation_users(store)
+            if existing and str(existing.get("password") or ""):
+                pw = str(existing.get("password") or "")
+            else:
+                generated = _gen_password()
+                pw = generated
         # Merge/update
         merged = [u for u in (users or []) if isinstance(u, dict) and _normalize_email(str(u.get("email") or "")) != email]
-        merged.append({"email": email, "password": pw, "name": (name if name else None)})
+        merged.append({"email": email, "password": pw, "name": (name if name else None), "tags": tags})
         _save_confirmation_users(store, merged)
-        return {"data": {"email": email, "name": (name if name else None), "generated_password": generated}}
+        return {"data": {"email": email, "name": (name if name else None), "tags": tags, "generated_password": generated}}
     except Exception as e:
         return {"error": str(e)}
 
@@ -4116,11 +4172,11 @@ async def api_confirmation_admin_user_reset_password(req: Request, body: Confirm
                 continue
             if _normalize_email(str(u.get("email") or "")) == email:
                 found = True
-                merged.append({"email": email, "password": pw, "name": u.get("name")})
+                merged.append({"email": email, "password": pw, "name": u.get("name"), "tags": _normalize_confirmation_tags(u.get("tags") or [])})
             else:
                 merged.append(u)
         if not found:
-            merged.append({"email": email, "password": pw, "name": None})
+            merged.append({"email": email, "password": pw, "name": None, "tags": []})
         _save_confirmation_users(store, merged)
         return {"data": {"email": email, "generated_password": generated}}
     except Exception as e:
@@ -4140,26 +4196,44 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
         if not agent:
             return {"error": "unauthorized", "data": {"orders": []}}
         agent_email = str((agent or {}).get("sub") or "").strip().lower()
+        users = _load_confirmation_users(body.store)
+        agent_tags = _confirmation_agent_tags(users, agent_email)
         fields = ",".join([
             "id", "name", "created_at", "processed_at", "total_price", "currency",
             "tags", "financial_status", "fulfillment_status", "email", "phone",
+            "cancelled_at", "canceled_at", "closed_at", "status",
             "customer", "shipping_address", "billing_address", "line_items",
         ])
         res = list_orders_open_unfulfilled(store=body.store, limit=int(body.limit or 50), page_info=body.page_info, fields=fields)
         orders = (res or {}).get("orders") or []
-        out: list[dict] = []
+        filtered: list[tuple[dict, list[str]]] = []
+        product_ids: set[str] = set()
         for o in orders:
             try:
                 if not isinstance(o, dict):
                     continue
-                # normalize tags to list for UI + filtering
                 tags_list = _confirmation_tags_list(o.get("tags"))
-                # Exclude confirmed (COD-tagged) orders from the open queue
-                if has_cod_tag(tags_list):
+                if not _confirmation_order_is_visible(o, tags_list):
                     continue
-                # Optional: assignment routing (e.g., fz@conf.com)
-                if not _confirmation_order_assigned_to_agent(o, tags_list, agent_email):
+                if not _confirmation_order_assigned_to_agent(tags_list, agent_tags):
                     continue
+                filtered.append((o, tags_list))
+                for li in (o.get("line_items") or []):
+                    if isinstance(li, dict):
+                        pid = str(li.get("product_id") or "").strip()
+                        if pid and pid.isdigit():
+                            product_ids.add(pid)
+            except Exception:
+                continue
+        product_briefs: dict = {}
+        if product_ids:
+            try:
+                product_briefs = get_products_brief(list(product_ids), store=body.store) or {}
+            except Exception:
+                product_briefs = {}
+        out: list[dict] = []
+        for o, tags_list in filtered:
+            try:
                 cust = o.get("customer") or {}
                 ship = o.get("shipping_address") or {}
                 bill = o.get("billing_address") or {}
@@ -4191,11 +4265,24 @@ async def api_confirmation_orders(req: Request, body: ConfirmationOrdersRequest)
                 for li in (o.get("line_items") or []):
                     if not isinstance(li, dict):
                         continue
+                    pid = str(li.get("product_id") or "").strip()
+                    brief = (product_briefs or {}).get(pid) or {}
+                    qty = int(li.get("quantity") or 0)
+                    unit_price = li.get("price")
+                    try:
+                        total_price = float(unit_price or 0) * qty
+                    except Exception:
+                        total_price = None
                     items.append({
                         "title": li.get("title"),
                         "variant_title": li.get("variant_title"),
-                        "quantity": li.get("quantity"),
+                        "quantity": qty,
                         "sku": li.get("sku"),
+                        "product_id": li.get("product_id"),
+                        "variant_id": li.get("variant_id"),
+                        "price": unit_price,
+                        "total_price": total_price,
+                        "image_url": brief.get("image") or li.get("image_url") or None,
                     })
                 out.append({
                     "id": str(o.get("id")),
@@ -4231,13 +4318,17 @@ def _confirmation_agent_order_analytics(store: str | None, agent_email: str) -> 
     ae = (agent_email or "").strip().lower()
     if not ae:
         return {}
+    users = _load_confirmation_users(store)
+    agent_tags = _confirmation_agent_tags(users, ae)
+    all_agent_tags = _confirmation_all_agent_tags(users)
     # Pull all pages (best-effort) because the UI list is paginated.
-    fields = "id,tags,financial_status"
+    fields = "id,tags,financial_status,fulfillment_status,cancelled_at,canceled_at,closed_at,status"
     page_info: str | None = None
     max_pages = 20  # safety guard
     pages = 0
 
     assigned_total = 0
+    unassigned_total = 0
     n1 = n2 = n3 = 0
     any_n = 0
     no_n = 0
@@ -4251,9 +4342,11 @@ def _confirmation_agent_order_analytics(store: str | None, agent_email: str) -> 
                 if not isinstance(o, dict):
                     continue
                 tags_list = _confirmation_tags_list(o.get("tags"))
-                if has_cod_tag(tags_list):
+                if not _confirmation_order_is_visible(o, tags_list):
                     continue
-                if not _confirmation_order_assigned_to_agent(o, tags_list, ae):
+                if not _confirmation_order_has_any_tag(tags_list, all_agent_tags):
+                    unassigned_total += 1
+                if not _confirmation_order_assigned_to_agent(tags_list, agent_tags):
                     continue
                 assigned_total += 1
                 tags_lc = {t.lower() for t in (tags_list or [])}
@@ -4284,6 +4377,7 @@ def _confirmation_agent_order_analytics(store: str | None, agent_email: str) -> 
 
     return {
         "assigned_total": assigned_total,
+        "unassigned_total": unassigned_total,
         "n1": n1,
         "n2": n2,
         "n3": n3,

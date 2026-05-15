@@ -13,7 +13,7 @@ import {
   confirmationAdminUsersList,
 } from "@/lib/api"
 
-type AgentRow = { email: string, name?: string|null }
+type AgentRow = { email: string, name?: string|null, tags?: string[] }
 type AgentStats = { confirm: number, phone: number, whatsapp: number, last_at?: string|null }
 type Analytics = {
   totals: { confirm: number, phone: number, whatsapp: number }
@@ -64,6 +64,7 @@ export default function ConfirmationAdminPage(){
   const [newEmail, setNewEmail] = useState("")
   const [newName, setNewName] = useState("")
   const [newPassword, setNewPassword] = useState("")
+  const [newTags, setNewTags] = useState("")
 
   const [resetModal, setResetModal] = useState<{ email: string, generated?: string|null }|null>(null)
 
@@ -162,11 +163,12 @@ export default function ConfirmationAdminPage(){
   async function onAddOrUpdate(){
     try{
       setLoading(true)
-      const res = await confirmationAdminUserUpsert({ store, email: newEmail, name: newName || undefined, password: newPassword || undefined })
+      const res = await confirmationAdminUserUpsert({ store, email: newEmail, name: newName || undefined, password: newPassword || undefined, tags: newTags })
       if((res as any)?.error){ toast.error(String((res as any)?.error)); return }
       const gp = (res as any)?.data?.generated_password
       toast.success("Agent saved")
       setNewPassword("")
+      setNewTags("")
       await loadAll()
       if(gp){
         setResetModal({ email: (res as any)?.data?.email, generated: gp })
@@ -311,11 +313,12 @@ export default function ConfirmationAdminPage(){
               <div className="grid grid-cols-1 gap-2">
                 <input value={newEmail} onChange={(e)=>setNewEmail(e.target.value)} placeholder="agent@email.com" className="rounded-lg border px-3 py-2 text-sm" />
                 <input value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="Name (optional)" className="rounded-lg border px-3 py-2 text-sm" />
+                <input value={newTags} onChange={(e)=>setNewTags(e.target.value)} placeholder="Assignment tags (comma separated)" className="rounded-lg border px-3 py-2 text-sm" />
                 <input value={newPassword} onChange={(e)=>setNewPassword(e.target.value)} placeholder="Password (optional, auto-generate if empty)" className="rounded-lg border px-3 py-2 text-sm" />
                 <button disabled={loading} onClick={onAddOrUpdate} className="rounded-lg px-3 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-60">
                   Save agent
                 </button>
-                <div className="text-[11px] text-slate-500">If you leave password empty, the server generates one and shows it once.</div>
+                <div className="text-[11px] text-slate-500">Tags route matching Shopify orders to this agent. Empty password is preserved for existing agents.</div>
               </div>
             </CardBody>
           </Card>
@@ -330,6 +333,7 @@ export default function ConfirmationAdminPage(){
                   <tr>
                     <th className="text-left font-medium px-3 py-2">Agent</th>
                     <th className="text-left font-medium px-3 py-2">Name</th>
+                    <th className="text-left font-medium px-3 py-2">Tags</th>
                     <th className="text-left font-medium px-3 py-2">Confirmed</th>
                     <th className="text-left font-medium px-3 py-2">Phone</th>
                     <th className="text-left font-medium px-3 py-2">WhatsApp</th>
@@ -344,6 +348,14 @@ export default function ConfirmationAdminPage(){
                       <tr key={a.email} className="border-t">
                         <td className="px-3 py-2 font-medium">{a.email}</td>
                         <td className="px-3 py-2 text-slate-600">{a.name || "—"}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-1.5">
+                            {(a.tags||[]).length === 0 && <span className="text-slate-400">—</span>}
+                            {(a.tags||[]).map(tag=> (
+                              <span key={tag} className="inline-flex items-center rounded-full bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-xs font-semibold text-indigo-800">{tag}</span>
+                            ))}
+                          </div>
+                        </td>
                         <td className="px-3 py-2"><span className="inline-flex items-center rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-xs font-semibold text-emerald-800">{s.confirm}</span></td>
                         <td className="px-3 py-2"><span className="inline-flex items-center rounded-full bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs font-semibold text-blue-800">{s.phone}</span></td>
                         <td className="px-3 py-2"><span className="inline-flex items-center rounded-full bg-fuchsia-50 border border-fuchsia-200 px-2 py-0.5 text-xs font-semibold text-fuchsia-800">{s.whatsapp}</span></td>
@@ -391,5 +403,3 @@ export default function ConfirmationAdminPage(){
     </div>
   )
 }
-
-

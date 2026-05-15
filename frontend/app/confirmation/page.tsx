@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { CheckCircle2, LogOut, Phone, RefreshCw } from "lucide-react"
+import { CheckCircle2, ChevronRight, Copy, ImageIcon, LogOut, Phone, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { confirmationAgentAnalytics, confirmationLogin, confirmationListOrders, confirmationOrderAction, confirmationStats } from "@/lib/api"
 
@@ -20,7 +20,7 @@ type OrderRow = {
   customer?: { first_name?: string|null, last_name?: string|null, email?: string|null, phone?: string|null }
   shipping_address?: any
   billing_address?: any
-  line_items?: Array<{ title?: string|null, variant_title?: string|null, quantity?: number|null, sku?: string|null }>
+  line_items?: Array<{ title?: string|null, variant_title?: string|null, quantity?: number|null, sku?: string|null, product_id?: string|number|null, variant_id?: string|number|null, price?: string|number|null, total_price?: string|number|null, image_url?: string|null }>
   tags: string[]
 }
 
@@ -82,6 +82,25 @@ function fmtAddress(ship: any){
   }catch{ return "" }
 }
 
+function fmtMoney(value?: string|number|null, currency?: string){
+  const n = Number(value ?? 0)
+  const amount = Number.isFinite(n) ? n.toFixed(2) : String(value || "0")
+  return currency ? `${amount} ${currency}` : amount
+}
+
+function variantChips(variant?: string|null){
+  const raw = String(variant || "").trim()
+  if(!raw || raw.toLowerCase() === "default title") return []
+  const parts = raw.split("/").map(x=>x.trim()).filter(Boolean)
+  if(parts.length >= 2){
+    return [
+      { label: "Size", value: parts[0] },
+      { label: "Color", value: parts.slice(1).join(" / ") },
+    ]
+  }
+  return [{ label: "Variant", value: raw }]
+}
+
 export default function ConfirmationPage(){
   const [store, setStore] = useState("irrakids")
   const [email, setEmail] = useState("")
@@ -105,6 +124,8 @@ export default function ConfirmationPage(){
   const [agentAnalytics, setAgentAnalytics] = useState<any>({})
 
   const [confirming, setConfirming] = useState<{ orderId: string, date: string }|null>(null)
+  const [contactModal, setContactModal] = useState<{ title: string, number: string, note?: string }|null>(null)
+  const [expandedOrderId, setExpandedOrderId] = useState<string|null>(null)
 
   useEffect(()=>{
     try{
@@ -151,6 +172,7 @@ export default function ConfirmationPage(){
       }
       const data = (res as any)?.data || {}
       setOrders((data.orders || []) as OrderRow[])
+      setExpandedOrderId(null)
       setNextPageInfo(data.next_page_info || null)
       setPrevPageInfo(data.prev_page_info || null)
       if(dir === "reset"){ setPageIdx(1) }
@@ -185,6 +207,7 @@ export default function ConfirmationPage(){
     setNextPageInfo(null)
     setPrevPageInfo(null)
     setPageIdx(1)
+    setExpandedOrderId(null)
   }
 
   async function onLogin(e: React.FormEvent){
@@ -230,7 +253,8 @@ export default function ConfirmationPage(){
     const data = await mutateTags(o.id, "phone")
     if(!data) return
     setOrders(arr=> arr.map(x=> x.id===o.id? { ...x, tags: (data.tags||[]) } : x))
-    try{ window.open(`tel:${o.phone}`, "_self") }catch{}
+    refreshAgentAnalytics()
+    setContactModal({ title: "Phone number", number: String(o.phone || ""), note: "Use this number on your phone." })
   }
 
   async function onWhatsAppClick(o: OrderRow){
@@ -239,7 +263,22 @@ export default function ConfirmationPage(){
     const data = await mutateTags(o.id, "whatsapp")
     if(!data) return
     setOrders(arr=> arr.map(x=> x.id===o.id? { ...x, tags: (data.tags||[]) } : x))
-    try{ window.open(`https://wa.me/${digits}`, "_blank", "noopener,noreferrer") }catch{}
+    refreshAgentAnalytics()
+    try{
+      await navigator.clipboard.writeText(digits)
+      toast.success("WhatsApp number copied")
+    }catch{
+      setContactModal({ title: "WhatsApp number", number: digits, note: "Copy this number for WhatsApp." })
+    }
+  }
+
+  async function copyNumber(n: string){
+    try{
+      await navigator.clipboard.writeText(n)
+      toast.success("Number copied")
+    }catch{
+      toast.error("Copy failed")
+    }
   }
 
   async function onConfirmSubmit(){
@@ -324,6 +363,7 @@ export default function ConfirmationPage(){
       <div className="sticky top-16 z-40 border-b bg-white/80 backdrop-blur">
         <div className="px-4 md:px-6 py-2 flex items-center gap-2 overflow-auto">
           <StatPill label="Assigned" value={Number(agentAnalytics?.assigned_total||0)} />
+          <StatPill label="Unassigned" value={Number(agentAnalytics?.unassigned_total||0)} />
           <StatPill label="N1" value={Number(agentAnalytics?.n1||0)} />
           <StatPill label="N2" value={Number(agentAnalytics?.n2||0)} />
           <StatPill label="N3" value={Number(agentAnalytics?.n3||0)} />
@@ -392,10 +432,15 @@ export default function ConfirmationPage(){
                   const custName = ([o.customer?.first_name, o.customer?.last_name].filter(Boolean).join(" ").trim()) || shipName
                   const phone = o.phone || o.customer?.phone || ""
                   const shipAddr = fmtAddress(ship)
+                  const expanded = expandedOrderId === o.id
                   return (
-                    <tr key={o.id} className="border-t">
+                    <Fragment key={o.id}>
+                    <tr onClick={()=>setExpandedOrderId(expanded ? null : o.id)} className={`border-t cursor-pointer ${expanded ? "bg-slate-50/70" : "hover:bg-slate-50/50"}`}>
                       <td className="px-4 py-3 align-top">
-                        <div className="font-semibold">{o.name || `#${o.id}`}</div>
+                        <button onClick={(e)=>{ e.stopPropagation(); setExpandedOrderId(expanded ? null : o.id) }} className="inline-flex items-center gap-2 font-semibold text-left hover:text-blue-700">
+                          <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
+                          {o.name || `#${o.id}`}
+                        </button>
                         <div className="text-xs text-slate-500">{(o.line_items||[]).slice(0,2).map((li,i)=> (
                           <span key={i}>{li.title}{li.quantity? ` ×${li.quantity}`:""}{i===0 && (o.line_items||[]).length>1? " · ":""}</span>
                         ))}{(o.line_items||[]).length>2? " · …": ""}</div>
@@ -426,18 +471,66 @@ export default function ConfirmationPage(){
                       </td>
                       <td className="px-4 py-3 align-top">
                         <div className="flex items-center justify-end gap-2">
-                          <button disabled={!phone} onClick={()=>onPhoneClick(o)} title="Call (cycles n1/n2/n3)" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">
+                          <button disabled={!phone} onClick={(e)=>{ e.stopPropagation(); onPhoneClick(o) }} title="Call (cycles n1/n2/n3)" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">
                             <Phone className="w-4 h-4 text-slate-700"/>
                           </button>
-                          <button disabled={!phone} onClick={()=>onWhatsAppClick(o)} title="WhatsApp (cycles wtp1/wtp2/wtp3)" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">
+                          <button disabled={!phone} onClick={(e)=>{ e.stopPropagation(); onWhatsAppClick(o) }} title="WhatsApp (cycles wtp1/wtp2/wtp3)" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border bg-white hover:bg-slate-50 disabled:opacity-50">
                             <WhatsAppIcon className="w-4 h-4 text-slate-700"/>
                           </button>
-                          <button onClick={()=> setConfirming({ orderId: o.id, date: new Date().toISOString().slice(0,10) })} title="Confirmed (adds cod dd/mm/yy tag)" className="inline-flex items-center gap-2 px-3 h-9 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
+                          <button onClick={(e)=>{ e.stopPropagation(); setConfirming({ orderId: o.id, date: new Date().toISOString().slice(0,10) }) }} title="Confirmed (adds cod dd/mm/yy tag)" className="inline-flex items-center gap-2 px-3 h-9 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
                             <CheckCircle2 className="w-4 h-4"/> Confirmed
                           </button>
                         </div>
                       </td>
                     </tr>
+                    {expanded && (
+                      <tr className="border-t bg-slate-50/70">
+                        <td colSpan={8} className="px-4 py-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {(o.line_items||[]).map((li, idx)=> {
+                              const chips = variantChips(li.variant_title)
+                              return (
+                                <div key={`${o.id}-${idx}`} className="rounded-xl border bg-white p-3 flex gap-3">
+                                  <div className="w-20 h-20 rounded-lg border bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
+                                    {li.image_url ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img src={li.image_url} alt={li.title || "Product"} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <ImageIcon className="w-6 h-6 text-slate-300" />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-semibold text-sm truncate">{li.title || "Item"}</div>
+                                    <div className="mt-1 flex flex-wrap gap-1.5">
+                                      {chips.map(c=> (
+                                        <span key={`${c.label}-${c.value}`} className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
+                                          <span className="text-blue-500">{c.label}</span>
+                                          {c.value}
+                                        </span>
+                                      ))}
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                      <div className="rounded-lg bg-slate-50 border px-2 py-1">
+                                        <span className="text-slate-500">Qty </span><span className="font-semibold">{li.quantity || 0}</span>
+                                      </div>
+                                      <div className="rounded-lg bg-slate-50 border px-2 py-1">
+                                        <span className="text-slate-500">Unit </span><span className="font-semibold">{fmtMoney(li.price, o.currency)}</span>
+                                      </div>
+                                    </div>
+                                    <div className="mt-2 flex items-center justify-between gap-2">
+                                      <span className="text-xs text-slate-500 truncate">{li.sku ? `SKU ${li.sku}` : ""}</span>
+                                      <span className="text-sm font-bold text-slate-900">{fmtMoney(li.total_price, o.currency)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                            {(o.line_items||[]).length === 0 && <div className="text-sm text-slate-500">No items on this order.</div>}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>
@@ -471,6 +564,22 @@ export default function ConfirmationPage(){
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={()=>setConfirming(null)} className="px-3 py-1.5 rounded-lg border bg-white hover:bg-slate-50 text-sm font-semibold">Cancel</button>
               <button onClick={onConfirmSubmit} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold">Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contactModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/30 px-4">
+          <div className="w-full max-w-sm bg-white border rounded-xl shadow-xl p-4">
+            <div className="font-semibold">{contactModal.title}</div>
+            {contactModal.note && <div className="text-xs text-slate-500 mt-1">{contactModal.note}</div>}
+            <div className="mt-3 rounded-xl border bg-slate-50 p-3 font-mono text-lg break-all">{contactModal.number}</div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={()=>setContactModal(null)} className="px-3 py-1.5 rounded-lg border bg-white hover:bg-slate-50 text-sm font-semibold">Close</button>
+              <button onClick={()=>copyNumber(contactModal.number)} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-black text-white text-sm font-semibold">
+                <Copy className="w-4 h-4" /> Copy
+              </button>
             </div>
           </div>
         </div>
