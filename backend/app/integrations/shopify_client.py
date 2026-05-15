@@ -2236,12 +2236,90 @@ def _is_size_like_value(value: str) -> bool:
     return bool(re.match(r"^\d+(?:[./-]\d+)?$", t))
 
 
+def _ordered_unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _natural_size_sort_key(value: str):
+    t = str(value or "").strip().lower()
+    apparel_order = {
+        "xxs": 10,
+        "xs": 20,
+        "s": 30,
+        "m": 40,
+        "l": 50,
+        "xl": 60,
+        "xxl": 70,
+        "xxxl": 80,
+        "os": 90,
+        "one size": 90,
+    }
+    if t in apparel_order:
+        return (0, apparel_order[t], t)
+    m = re.match(r"^(\d+(?:\.\d+)?)(?:\s*[-/]\s*(\d+(?:\.\d+)?))?", t)
+    if m:
+        return (1, float(m.group(1)), float(m.group(2) or m.group(1)), t)
+    toddler = re.match(r"^(\d+)t$", t)
+    if toddler:
+        return (2, int(toddler.group(1)), t)
+    return (3, t)
+
+
+def _ordered_size_values(values: list[str], preferred_order: list[str] | None = None) -> list[str]:
+    values = _ordered_unique(values)
+    if not values:
+        return []
+    preferred = _ordered_unique(preferred_order or [])
+    if preferred:
+        known = [v for v in preferred if v in values]
+        missing = [v for v in values if v not in set(known)]
+        return known + sorted(missing, key=_natural_size_sort_key)
+    if all(_is_size_like_value(v) or re.match(r"^\d+(?:\.\d+)?\s*[-/]", str(v or "").strip()) for v in values):
+        return sorted(values, key=_natural_size_sort_key)
+    return values
+
+
+def _rank_colors_by_available_sizes(colors: list[str], sizes: list[str], matrix: dict[str, dict[str, int]]) -> list[str]:
+    colors = _ordered_unique(colors)
+    original_index = {value: idx for idx, value in enumerate(colors)}
+
+    def score(color: str):
+        row = matrix.get(color) or {}
+        available_size_count = sum(1 for size in sizes if int(row.get(size) or 0) > 0)
+        total_qty = sum(max(0, int(qty or 0)) for qty in row.values())
+        return (-available_size_count, -total_qty, original_index.get(color, 0))
+
+    return sorted(colors, key=score)
+
+
+def _graphql_option_values_by_name(node: dict | None) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for opt in ((node or {}).get("options") or []):
+        if not isinstance(opt, dict):
+            continue
+        name = str(opt.get("name") or "").strip()
+        if not name:
+            continue
+        raw_values = opt.get("values") or []
+        out[name] = _ordered_unique([str(v or "").strip() for v in raw_values])
+    return out
+
+
 def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
     node = node or {}
     gid = str(node.get("id") or "")
     pid = gid.split("/")[-1] if "/" in gid else gid
     image = ((node.get("featuredImage") or {}).get("url")) if isinstance(node.get("featuredImage"), dict) else None
     variants = (((node.get("variants") or {}).get("nodes") or []) if isinstance(node.get("variants"), dict) else [])
+    option_values_order = _graphql_option_values_by_name(node)
 
     option_names: list[str] = []
     option_values_by_name: dict[str, set[str]] = {}
@@ -2338,6 +2416,10 @@ def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
     except Exception:
         zero_sizes = 0
 
+    sizes_ordered = _ordered_size_values(sizes_set, option_values_order.get(size_name or ""))
+    colors_ordered_base = _ordered_unique(option_values_order.get(color_name or "") + colors_set)
+    colors_ordered = _rank_colors_by_available_sizes(colors_ordered_base, sizes_ordered or sizes_set, matrix)
+
     return {
         "id": pid,
         "image": image,
@@ -2345,8 +2427,8 @@ def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
         "zero_variants": int(zero_variants),
         "zero_sizes": int(zero_sizes),
         "price": float(min_price) if min_price is not None else None,
-        "sizes": sizes_set,
-        "colors": colors_set,
+        "sizes": sizes_ordered,
+        "colors": colors_ordered,
         "matrix": matrix,
     }
 
@@ -2361,6 +2443,7 @@ def _get_product_inventory_graphql(numeric_product_id: str, *, store: str | None
         ... on Product {
           id
           featuredImage { url }
+          options { name values }
           variants(first: 250) {
             nodes {
               id
@@ -2403,6 +2486,7 @@ def get_product_brief(numeric_product_id: str, *, store: str | None = None) -> d
             ... on Product {
               id
               featuredImage { url }
+              options { name values }
               variants(first: 250) {
                 nodes {
                   price
@@ -2725,6 +2809,19 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
             matrix[color_val][size_val] = matrix[color_val].get(size_val, 0) + avail
         except Exception:
             continue
+
+    try:
+        size_option_values = []
+        color_option_values = []
+        if size_idx is not None and size_idx < len(options):
+            size_option_values = [str(v or "").strip() for v in ((options[size_idx] or {}).get("values") or [])]
+        if color_idx is not None and color_idx < len(options):
+            color_option_values = [str(v or "").strip() for v in ((options[color_idx] or {}).get("values") or [])]
+        sizes_set = _ordered_size_values(sizes_set, size_option_values)
+        colors_set = _rank_colors_by_available_sizes(_ordered_unique(color_option_values + colors_set), sizes_set, matrix)
+    except Exception:
+        sizes_set = _ordered_size_values(sizes_set)
+        colors_set = _rank_colors_by_available_sizes(colors_set, sizes_set, matrix)
 
     return {
         "sizes": sizes_set,
@@ -3113,6 +3210,7 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
         ... on Product {
           id
           featuredImage { url }
+          options { name values }
           variants(first: 250) {
             nodes {
               price

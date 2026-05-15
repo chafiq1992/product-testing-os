@@ -8,6 +8,67 @@ const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
   { value: 'irranova', label: 'irranova' },
 ]
+type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
+
+function inventorySizeSortKey(value: string): [number, number, number, string] | [number, string]{
+  const text = String(value || '').trim().toLowerCase()
+  const apparel: Record<string, number> = { xxs: 10, xs: 20, s: 30, m: 40, l: 50, xl: 60, xxl: 70, xxxl: 80, os: 90, 'one size': 90 }
+  if(text in apparel) return [0, apparel[text], apparel[text], text]
+  const numeric = text.match(/^(\d+(?:\.\d+)?)(?:\s*[-/]\s*(\d+(?:\.\d+)?))?/)
+  if(numeric) return [1, Number(numeric[1]), Number(numeric[2] || numeric[1]), text]
+  const toddler = text.match(/^(\d+)t$/)
+  if(toddler) return [2, Number(toddler[1]), Number(toddler[1]), text]
+  return [3, text]
+}
+
+function isSizeLikeValue(value: string){
+  const text = String(value || '').trim().toLowerCase()
+  if(!text) return false
+  if(['xxs','xs','s','m','l','xl','xxl','xxxl','os','one size'].includes(text)) return true
+  return /^\d+(?:\.\d+)?(?:\s*[./-]\s*\d+(?:\.\d+)?)?/.test(text)
+}
+
+function normalizeInventoryData(data?: VariantInventoryData | null): VariantInventoryData | null{
+  if(!data) return null
+  const unique = (values: string[]) => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for(const raw of values || []){
+      const value = String(raw || '').trim()
+      if(!value || seen.has(value)) continue
+      seen.add(value)
+      out.push(value)
+    }
+    return out
+  }
+  let sizes = unique(data.sizes || [])
+  if(sizes.length && sizes.every(isSizeLikeValue)){
+    sizes = sizes.slice().sort((a,b) => {
+      const ak = inventorySizeSortKey(a) as any[]
+      const bk = inventorySizeSortKey(b) as any[]
+      for(let i = 0; i < Math.max(ak.length, bk.length); i += 1){
+        if(ak[i] === bk[i]) continue
+        return ak[i] < bk[i] ? -1 : 1
+      }
+      return 0
+    })
+  }
+  const colors = unique(data.colors || [])
+  const colorIndex = new Map(colors.map((color, index) => [color, index]))
+  const rankedColors = colors.slice().sort((a,b) => {
+    const rowA = data.matrix[a] || {}
+    const rowB = data.matrix[b] || {}
+    const availableSizesA = sizes.reduce((acc, size) => acc + (((rowA[size] ?? 0) > 0) ? 1 : 0), 0)
+    const availableSizesB = sizes.reduce((acc, size) => acc + (((rowB[size] ?? 0) > 0) ? 1 : 0), 0)
+    if(availableSizesA !== availableSizesB) return availableSizesB - availableSizesA
+    const totalA = Object.values(rowA).reduce((acc, qty) => acc + Math.max(0, Number(qty || 0)), 0)
+    const totalB = Object.values(rowB).reduce((acc, qty) => acc + Math.max(0, Number(qty || 0)), 0)
+    if(totalA !== totalB) return totalB - totalA
+    return (colorIndex.get(a) || 0) - (colorIndex.get(b) || 0)
+  })
+  return { ...data, sizes, colors: rankedColors }
+}
+
 function normalizeStoreValue(value?: string | null): string{
   const v = String(value || '').trim().toLowerCase()
   return v === 'nouralibas' ? 'irrakids' : v
@@ -234,7 +295,7 @@ export default function AdsManagementPage(){
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
   const [invHover, setInvHover] = useState<{ pid: string, rect?: DOMRect }|null>(null)
-  const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }>>({})
+  const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
   const visibleItems = useMemo(()=> {
@@ -1459,7 +1520,8 @@ export default function AdsManagementPage(){
         }
       }
       if(best){
-        setVariantInventoryCache(prev => ({ ...prev, [pid]: best }))
+        const normalized = normalizeInventoryData(best)
+        if(normalized) setVariantInventoryCache(prev => ({ ...prev, [pid]: normalized }))
       }
     }catch{}
     finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
@@ -1468,7 +1530,7 @@ export default function AdsManagementPage(){
   function InventoryTooltip(){
     if(!invHover || !invHover.rect) return null
     const pid = invHover.pid
-    const data = variantInventoryCache[pid]
+    const data = normalizeInventoryData(variantInventoryCache[pid])
     const loading = variantInventoryLoading[pid]
     const rect = invHover.rect
     // Position tooltip below the hovered element

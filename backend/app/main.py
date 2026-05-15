@@ -6908,6 +6908,9 @@ THEME_EDITOR_SWATCH_SNIPPET = r"""{% comment %}
       'بيج': '#d6c6a8', 'بني': '#8b5e34'
     };
 
+    var ptosVariantData = {{ product.variants | json }};
+    var ptosOptionNames = {{ product.options | json }};
+
     function clean(text) {
       return String(text || '')
         .replace(/variant\s+sold\s+out\s+or\s+unavailable/ig, '')
@@ -6991,6 +6994,98 @@ THEME_EDITOR_SWATCH_SNIPPET = r"""{% comment %}
         if (match) return match[1];
       }
       return '24';
+    }
+
+    function productOptionIndex(kind, fieldset, fieldsets) {
+      var names = Array.isArray(ptosOptionNames) ? ptosOptionNames.map(clean) : [];
+      for (var i = 0; i < names.length; i += 1) {
+        var name = names[i].toLowerCase();
+        if (kind === 'color' && /colou?r|couleur|Ù„ÙˆÙ†|color/.test(name)) return i;
+        if (kind === 'size' && /size|shoe|taille|pointure|Ø§Ù„Ø­Ø¬Ù…|Ù…Ù‚Ø§Ø³|Ù‚ÙŠØ§Ø³/.test(name)) return i;
+      }
+      var optionFieldsets = [];
+      Array.prototype.forEach.call(fieldsets || [], function (fs) {
+        if (optionKind(fs)) optionFieldsets.push(fs);
+      });
+      var fallbackIndex = optionFieldsets.indexOf(fieldset);
+      return fallbackIndex >= 0 ? fallbackIndex : -1;
+    }
+
+    function variantOptionValue(variant, index) {
+      if (!variant || index < 0) return '';
+      if (Array.isArray(variant.options) && variant.options.length > index) return clean(variant.options[index]);
+      return clean(variant['option' + (index + 1)]);
+    }
+
+    function variantAvailable(variant) {
+      if (!variant) return false;
+      if (variant.available === true) return true;
+      var qty = Number(variant.inventory_quantity != null ? variant.inventory_quantity : variant.inventoryQuantity);
+      return isFinite(qty) && qty > 0;
+    }
+
+    function variantQuantity(variant) {
+      var qty = Number(variant && (variant.inventory_quantity != null ? variant.inventory_quantity : variant.inventoryQuantity));
+      if (isFinite(qty) && qty > 0) return qty;
+      return variantAvailable(variant) ? 1 : 0;
+    }
+
+    function reorderColorsByAvailability(fieldsets) {
+      if (!Array.isArray(ptosVariantData) || !ptosVariantData.length) return;
+      var colorFieldset = null;
+      var sizeFieldset = null;
+      Array.prototype.forEach.call(fieldsets, function (fieldset) {
+        var kind = optionKind(fieldset);
+        if (kind === 'color' && !colorFieldset) colorFieldset = fieldset;
+        if (kind === 'size' && !sizeFieldset) sizeFieldset = fieldset;
+      });
+      if (!colorFieldset) return;
+
+      var colorIndex = productOptionIndex('color', colorFieldset, fieldsets);
+      var sizeIndex = sizeFieldset ? productOptionIndex('size', sizeFieldset, fieldsets) : -1;
+      if (colorIndex < 0) return;
+
+      var inputs = Array.prototype.slice.call(colorFieldset.querySelectorAll('input[type="radio"]'));
+      var controls = inputs.map(function (input, index) {
+        var label = input.nextElementSibling;
+        var value = optionText(input, label || colorFieldset);
+        return { input: input, label: label, value: value, index: index };
+      }).filter(function (item) { return item.label && item.value; });
+      if (controls.length < 2) return;
+
+      var stats = {};
+      ptosVariantData.forEach(function (variant) {
+        var color = variantOptionValue(variant, colorIndex);
+        if (!color) return;
+        if (!stats[color]) stats[color] = { sizes: {}, total: 0 };
+        if (variantAvailable(variant)) {
+          var size = sizeIndex >= 0 ? variantOptionValue(variant, sizeIndex) : '__default__';
+          stats[color].sizes[size || '__default__'] = true;
+          stats[color].total += variantQuantity(variant);
+        }
+      });
+
+      var sorted = controls.slice().sort(function (a, b) {
+        var sa = stats[a.value] || { sizes: {}, total: 0 };
+        var sb = stats[b.value] || { sizes: {}, total: 0 };
+        var ca = Object.keys(sa.sizes).length;
+        var cb = Object.keys(sb.sizes).length;
+        if (ca !== cb) return cb - ca;
+        if (sa.total !== sb.total) return sb.total - sa.total;
+        return a.index - b.index;
+      });
+
+      var signature = sorted.map(function (item) { return item.value; }).join('|');
+      if (colorFieldset.getAttribute('data-ptos-color-order') === signature) return;
+      if (controls.map(function (item) { return item.value; }).join('|') === signature) {
+        colorFieldset.setAttribute('data-ptos-color-order', signature);
+        return;
+      }
+      sorted.forEach(function (item) {
+        colorFieldset.appendChild(item.input);
+        colorFieldset.appendChild(item.label);
+      });
+      colorFieldset.setAttribute('data-ptos-color-order', signature);
     }
 
     function findProductRoot() {
@@ -7166,6 +7261,7 @@ THEME_EDITOR_SWATCH_SNIPPET = r"""{% comment %}
       document.documentElement.classList.add('ptos-swatch-ready');
       detectRtl();
       var fieldsets = document.querySelectorAll('variant-radios fieldset, variant-selects fieldset, .product-form__input');
+      reorderColorsByAvailability(fieldsets);
       Array.prototype.forEach.call(fieldsets, function (fieldset) {
         var kind = optionKind(fieldset);
         if (!kind) return;
