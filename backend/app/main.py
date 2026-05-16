@@ -5564,7 +5564,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        key = _cache_key("meta_campaign_adset_orders_v7", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
+        key = _cache_key("meta_campaign_adset_orders_v8", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}

@@ -1381,7 +1381,7 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
 
 def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
     closed = "all" if include_closed else "open"
-    return f"shopify_utm_orders_v4:{processed_min_date}:{processed_max_date}:{closed}"
+    return f"shopify_utm_orders_v5:{processed_min_date}:{processed_max_date}:{closed}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
@@ -1742,12 +1742,18 @@ def _graphql_utm_rows_may_be_capped(rows: list[dict], processed_min_date: str, p
         day_cap = max_pages_per_day * first
         if day_cap <= 0:
             return False
+        try:
+            cap_ratio = float(os.getenv("PTOS_UTM_ORDERS_GQL_CAP_RATIO", "0.75") or "0.75")
+        except Exception:
+            cap_ratio = 0.75
+        cap_ratio = min(1.0, max(0.5, cap_ratio))
+        soft_cap = max(1, int(day_cap * cap_ratio))
         counts: dict[str, int] = {}
         for row in rows or []:
             day = str((row or {}).get("processed_at") or "").split("T")[0]
             if day:
                 counts[day] = counts.get(day, 0) + 1
-        return any(counts.get(day, 0) >= day_cap for day in days)
+        return any(counts.get(day, 0) >= soft_cap for day in days)
     except Exception:
         return False
 
