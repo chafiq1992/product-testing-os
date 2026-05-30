@@ -889,16 +889,19 @@ async function apiPost(path: string, body: object) {
   const res = await fetch(`${API}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 async function apiGet(path: string) {
   const res = await fetch(`${API}${path}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 async function apiPatch(path: string, body: object) {
   const res = await fetch(`${API}${path}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
@@ -1077,7 +1080,7 @@ function Dashboard({
     try {
       const res = await apiGet(`/api/wholesale/vendors/${vendor.id}/products`)
       setProducts(res?.data || [])
-    } catch { setProducts([]) }
+    } catch { /* keep the current list visible if Shopify is temporarily slow */ }
     finally { setLoadingProducts(false) }
   }
 
@@ -1101,7 +1104,7 @@ function Dashboard({
       case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
       case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
       case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
-      case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { refreshProducts(); setActiveTab('inventory') }} copy={copy} lang={lang} />
+      case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />

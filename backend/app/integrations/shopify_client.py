@@ -4202,7 +4202,14 @@ def _apply_shopify_translations(products: list[dict], *, store: str | None = Non
     return products
 
 
-def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit: int = 50) -> list[dict]:
+def list_products_by_vendor(
+    vendor_name: str,
+    *,
+    store: str | None = None,
+    limit: int = 50,
+    include_translations: bool = True,
+    request_timeout: int | None = None,
+) -> list[dict]:
     """List products from a Shopify store filtered by vendor name."""
     from urllib.parse import urlencode
     products: list[dict] = []
@@ -4214,11 +4221,17 @@ def list_products_by_vendor(vendor_name: str, *, store: str | None = None, limit
             "fields": "id,admin_graphql_api_id,title,body_html,vendor,product_type,status,tags,variants,images,created_at,updated_at",
         }
         path = "/products.json?" + urlencode(params)
-        data = _rest_get_store(store, path)
+        if request_timeout is not None:
+            resp = _rest_get_store_raw_once(store, path, timeout=max(3, int(request_timeout or 0)))
+            data = resp.json() if resp.content else {}
+        else:
+            data = _rest_get_store(store, path)
         products = (data or {}).get("products") or []
     except Exception:
         products = []
-    return _apply_shopify_translations(products, store=store, locale="ar")
+    if include_translations:
+        return _apply_shopify_translations(products, store=store, locale="ar")
+    return products
 
 
 def create_product_only(

@@ -464,9 +464,60 @@ def _verify_shopify_state(token: str) -> dict | None:
     except Exception:
         return None
 
-# Mount static uploads directory. Use the unified path from config.
+# Uploads are served through a route instead of StaticFiles so Cloud Run instances
+# can fall back to the database copy when the file was saved on a different instance.
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+
+def _upload_blob_key(filename: str) -> str:
+    return f"upload_blob:{filename}"
+
+
+def _persist_upload_blob(filename: str, data: bytes, content_type: str | None) -> None:
+    try:
+        if not filename or not data:
+            return
+        db.set_app_setting(None, _upload_blob_key(filename), {
+            "filename": filename,
+            "content_type": content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+            "data_b64": base64.b64encode(data).decode("ascii"),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        })
+    except Exception as e:
+        logging.getLogger("app.uploads").warning("Failed to persist upload blob %s: %s", filename, e)
+
+
+def _load_upload_blob(filename: str) -> tuple[bytes, str] | None:
+    try:
+        payload = db.get_app_setting(None, _upload_blob_key(filename))
+        if not isinstance(payload, dict):
+            return None
+        raw = base64.b64decode(str(payload.get("data_b64") or ""))
+        if not raw:
+            return None
+        content_type = str(payload.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        return raw, content_type
+    except Exception:
+        return None
+
+
+@app.api_route("/uploads/{filename:path}", methods=["GET", "HEAD"])
+async def api_uploads_file(filename: str, request: Request):
+    safe_name = (filename or "").replace("\\", "/").split("/")[-1]
+    if not safe_name or safe_name in {".", ".."}:
+        return Response(status_code=404)
+
+    local_path = Path(UPLOADS_DIR) / safe_name
+    content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+    if local_path.exists() and local_path.is_file():
+        data = b"" if request.method == "HEAD" else local_path.read_bytes()
+        return Response(content=data, media_type=content_type)
+
+    blob = _load_upload_blob(safe_name)
+    if not blob:
+        return Response(status_code=404)
+    data, stored_content_type = blob
+    return Response(content=(b"" if request.method == "HEAD" else data), media_type=stored_content_type or content_type)
 
 # Normalize Meta ad account IDs passed from clients (accepts either numeric or 'act_123...').
 def _normalize_ad_acct_id(acct: str | None) -> str | None:
@@ -8176,19 +8227,36 @@ def _wholesale_extract_customer_snapshot(order_obj: dict) -> dict[str, Any]:
     }
 
 
-def _wholesale_fetch_shopify_vendor_orders(vendor_name: str, vendor_id: str) -> list[dict]:
-    from app.integrations.shopify_client import _rest_get_store
+def _wholesale_shopify_get_once(path: str, *, timeout: int | None = None) -> dict:
+    from app.integrations.shopify_client import _rest_get_store_raw_once
 
+    timeout_s = timeout
+    if timeout_s is None:
+        timeout_s = int(os.getenv("PTOS_WHOLESALE_SHOPIFY_READ_TIMEOUT_S", "12") or "12")
+    resp = _rest_get_store_raw_once(WHOLESALE_STORE, path, timeout=max(3, int(timeout_s)))
+    return resp.json() if resp.content else {}
+
+
+def _wholesale_fetch_shopify_vendor_orders(vendor_name: str, vendor_id: str) -> list[dict]:
     orders_by_id: dict[str, dict] = {}
+    timeout_s = int(os.getenv("PTOS_WHOLESALE_ORDERS_TIMEOUT_S", "12") or "12")
 
     path_dashboard = f"/orders.json?tag={quote(WHOLESALE_DASHBOARD_TAG, safe='')}&status=any&limit=250"
-    result_dashboard = _rest_get_store(WHOLESALE_STORE, path_dashboard)
+    try:
+        result_dashboard = _wholesale_shopify_get_once(path_dashboard, timeout=timeout_s)
+    except Exception as exc:
+        logging.getLogger("app.wholesale").warning("Wholesale dashboard order fetch timed out/failed: %s", exc)
+        result_dashboard = {}
     for order in (result_dashboard or {}).get("orders", []) or []:
         if _wholesale_order_matches_vendor(order, vendor_name, vendor_id):
             orders_by_id[str(order.get("id"))] = order
 
     path_legacy = f"/orders.json?tag={quote(_wholesale_vendor_name_tag(vendor_name), safe='')}&status=any&limit=250"
-    result_legacy = _rest_get_store(WHOLESALE_STORE, path_legacy)
+    try:
+        result_legacy = _wholesale_shopify_get_once(path_legacy, timeout=timeout_s)
+    except Exception as exc:
+        logging.getLogger("app.wholesale").warning("Wholesale legacy order fetch timed out/failed: %s", exc)
+        result_legacy = {}
     for order in (result_legacy or {}).get("orders", []) or []:
         if _wholesale_order_matches_vendor(order, vendor_name, vendor_id):
             orders_by_id[str(order.get("id"))] = order
@@ -8442,34 +8510,19 @@ async def api_wholesale_upload_image(request: Request, image: UploadFile = File(
         safe_name = (image.filename or "photo.jpg").replace("/", "_").replace("\\", "_")
         filename = f"wholesale_{file_id}_{safe_name}"
         data = await image.read()
+        content_type = image.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
         url_path = save_file(filename, data)
+        _persist_upload_blob(filename, data, content_type)
         # Build absolute URL using BASE_URL from config
         base = (BASE_URL or "").rstrip("/")
         encoded_path = quote(url_path, safe="/:")
         abs_url = f"{base}{encoded_path}" if base else encoded_path
-        shopify_file_url = ""
-        shopify_file_id = ""
-        try:
-            from app.integrations.shopify_client import upload_remote_image_to_shopify_files
-
-            file_info = await run_in_threadpool(
-                upload_remote_image_to_shopify_files,
-                abs_url,
-                "Wholesale vendor original product image",
-                store=WHOLESALE_STORE,
-            )
-            shopify_file_url = str((file_info or {}).get("url") or "").strip()
-            shopify_file_id = str((file_info or {}).get("id") or "").strip()
-        except Exception as e:
-            logging.getLogger("app.wholesale").exception("Failed to upload wholesale vendor image to Shopify Files: %r", e)
-        durable_url = shopify_file_url or abs_url
         return {
             "data": {
-                "url": durable_url,
+                "url": abs_url,
                 "filename": filename,
                 "source_url": abs_url,
-                "shopify_file_url": shopify_file_url or None,
-                "shopify_file_id": shopify_file_id or None,
+                "content_type": content_type,
             }
         }
     except Exception as e:
@@ -9204,16 +9257,18 @@ def _wholesale_configure_product_background(
 
 
 def _wholesale_inventory_levels_for_items(inventory_item_ids: list[Any]) -> dict[str, dict[str, Any]]:
-    from app.integrations.shopify_client import _rest_get_store
-
     ids = [str(i).strip() for i in (inventory_item_ids or []) if str(i).strip() and str(i).strip() != "None"]
+    max_ids = int(os.getenv("PTOS_WHOLESALE_INVENTORY_MAX_IDS", "250") or "250")
+    if max_ids > 0:
+        ids = ids[:max_ids]
     levels_by_item: dict[str, dict[str, Any]] = {}
+    timeout_s = int(os.getenv("PTOS_WHOLESALE_INVENTORY_TIMEOUT_S", "10") or "10")
     for i in range(0, len(ids), 50):
         batch = ",".join(ids[i:i + 50])
         if not batch:
             continue
         try:
-            data = _rest_get_store(WHOLESALE_STORE, f"/inventory_levels.json?inventory_item_ids={batch}")
+            data = _wholesale_shopify_get_once(f"/inventory_levels.json?inventory_item_ids={batch}", timeout=timeout_s)
             for level in (data or {}).get("inventory_levels", []) or []:
                 item_id = str(level.get("inventory_item_id") or "")
                 if not item_id:
@@ -9331,8 +9386,14 @@ async def api_wholesale_vendor_products(vendor_id: str):
 
         vendor_name = vendor.get("name", vid)
         from app.integrations.shopify_client import list_products_by_vendor
-        products = list_products_by_vendor(vendor_name, store=WHOLESALE_STORE, limit=250)
-        products = await run_in_threadpool(_wholesale_apply_vendor_original_images, products)
+        products = await run_in_threadpool(
+            list_products_by_vendor,
+            vendor_name,
+            store=WHOLESALE_STORE,
+            limit=250,
+            include_translations=False,
+            request_timeout=int(os.getenv("PTOS_WHOLESALE_PRODUCTS_TIMEOUT_S", "12") or "12"),
+        )
         products = await run_in_threadpool(_wholesale_enrich_products_inventory, products)
         return {"data": products}
     except Exception as e:
