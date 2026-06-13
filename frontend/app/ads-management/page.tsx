@@ -206,6 +206,12 @@ export default function AdsManagementPage(){
   const hydratingProductIdsRef = useRef<Set<string>>(new Set())
   // Ids already re-fetched once after the server returned stale cached data
   const staleRefreshedIdsRef = useRef<Set<string>>(new Set())
+  // Shared hydration queue: pending ids (ordered), membership set, live worker count,
+  // and per-id retry pass counter. Priority enqueues (search, visible rows) jump the line.
+  const hydratePendingRef = useRef<string[]>([])
+  const hydratePendingSetRef = useRef<Set<string>>(new Set())
+  const hydrateWorkersRef = useRef<number>(0)
+  const hydrateRetryPassRef = useRef<Map<string, number>>(new Map())
   const hydrateContextRef = useRef<{
     token: number,
     start: string,
@@ -215,6 +221,8 @@ export default function AdsManagementPage(){
     campaigns: MetaCampaignRow[],
     mappings: Record<string, CampaignMapping>,
     profitOnly: boolean,
+    countsById: Record<string, number>,
+    reveal?: (countsById: Record<string, number>) => void,
   } | null>(null)
   const rowObserverRef = useRef<IntersectionObserver|null>(null)
   const [adAccountName, setAdAccountName] = useState<string>('')
@@ -305,9 +313,16 @@ export default function AdsManagementPage(){
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
   const visibleItems = useMemo(()=> {
-    if(!ownerFilter) return items || []
-    return (items||[]).filter(r => ownerOfRow(r) === ownerFilter)
-  }, [items, campaignMeta, ownerFilter])
+    let base = items || []
+    // Search filter first: when focused, the whole page (totals included) scopes
+    // to the matching campaign(s)
+    const focusId = (searchFocusId||'').trim()
+    const q = (searchActive||'').trim().toLowerCase()
+    if(focusId) base = base.filter(r => String(r.campaign_id||'') === focusId)
+    else if(q) base = base.filter(r => String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q))
+    if(!ownerFilter) return base
+    return base.filter(r => ownerOfRow(r) === ownerFilter)
+  }, [items, campaignMeta, ownerFilter, searchActive, searchFocusId])
 
   // Fallback lookup: product id -> first manual-mapped campaign count (avoids O(n) scan per call)
   const manualCountsByPid = useMemo(()=>{
@@ -762,115 +777,135 @@ export default function AdsManagementPage(){
     return hasOrders && hasBrief
   }
 
-  async function runProductHydrationQueue(
-    idsInput: string[],
-    context: NonNullable<typeof hydrateContextRef.current>,
-    revealZeroSpendCampaigns?: (countsById: Record<string, number>) => void,
-    countsById?: Record<string, number>,
-    retryPass: number = 0,
-  ){
-    const token = context.token
-    const ids = idsInput
-      .map(id => String(id || '').trim())
-      .filter((id, idx, arr) => id && /^\d+$/.test(id) && arr.indexOf(id) === idx)
-      .filter(id => !hydratedProductIdsRef.current.has(id) && !hydratingProductIdsRef.current.has(id))
-    if(ids.length === 0) return
-
-    // Show the loading indicator on every queued row immediately, not just when
-    // its chunk starts — rows waiting in the queue are still "getting data".
-    for(const id of ids) hydratingProductIdsRef.current.add(id)
-    markProductsHydrating(ids, true)
-
-    let cursor = 0
-    const nextChunk = () => {
-      const chunk = ids.slice(cursor, cursor + SHOPIFY_HYDRATE_BATCH_SIZE)
-      cursor += SHOPIFY_HYDRATE_BATCH_SIZE
-      return chunk
-    }
-
-    const failedIds: string[] = []
-    const staleIds: string[] = []
-
-    const worker = async () => {
-      while(token === ordersSeqToken.current){
-        const chunk = nextChunk()
-        if(chunk.length === 0) break
-        let products: Record<string, any> | null = null
-        // Retry transient failures (network blips, timeouts) before giving up on the chunk
-        for(let attempt = 0; attempt < 2 && token === ordersSeqToken.current; attempt++){
-          try{
-            const res = await shopifyHydrateProducts({
-              product_ids: chunk,
-              start: context.start,
-              end: context.end,
-              store: context.primaryStore,
-              stores: context.storeList,
-              include: ['brief', 'orders'],
-              cache_mode: 'stale_then_refresh',
-            })
-            products = ((res as any)?.data || {}).products || {}
-            break
-          }catch{
-            if(attempt === 0) await new Promise(r => setTimeout(r, 1500))
-          }
+  // Add product ids to the shared hydration queue. Priority enqueues (search focus,
+  // rows scrolled into view) go to the FRONT of the queue so they load next instead
+  // of waiting behind the full table.
+  function enqueueProductHydration(idsInput: string[], opts?: { priority?: boolean, resetRetries?: boolean }){
+    const context = hydrateContextRef.current
+    if(!context || context.profitOnly) return
+    const seen = new Set<string>()
+    const toAdd: string[] = []
+    for(const raw of idsInput){
+      const id = String(raw || '').trim()
+      if(!id || !/^\d+$/.test(id) || seen.has(id)) continue
+      seen.add(id)
+      if(hydratedProductIdsRef.current.has(id)) continue
+      if(opts?.resetRetries) hydrateRetryPassRef.current.delete(id)
+      if(hydratingProductIdsRef.current.has(id)) continue // request already in flight
+      if(hydratePendingSetRef.current.has(id)){
+        if(opts?.priority){
+          const arr = hydratePendingRef.current
+          const idx = arr.indexOf(id)
+          if(idx > 0){ arr.splice(idx, 1); arr.unshift(id) }
         }
-        if(token !== ordersSeqToken.current) break
-        if(products){
-          const nextCounts = mergeHydratedProducts(products, context.campaigns, context.mappings)
-          for(const [pid, count] of Object.entries(nextCounts)){
-            if(countsById) countsById[pid] = Number(count || 0)
-          }
-          if(revealZeroSpendCampaigns && countsById) revealZeroSpendCampaigns(countsById)
-          const completed: string[] = []
-          for(const id of chunk){
-            const entry = (products as any)[id]
-            if(isHydrateEntryComplete(entry)){
-              hydratedProductIdsRef.current.add(id)
-              completed.push(id)
-              // Server returned stale cached values and is refreshing in the background:
-              // schedule one follow-up fetch to pick up the fresh numbers.
-              if(entry.refreshing === true && !staleRefreshedIdsRef.current.has(id)){
-                staleRefreshedIdsRef.current.add(id)
-                staleIds.push(id)
-              }
-            }else{
-              failedIds.push(id)
-            }
-          }
-          for(const id of completed) hydratingProductIdsRef.current.delete(id)
-          if(completed.length > 0) markProductsHydrating(completed, false)
-        }else{
-          // Whole chunk failed: keep the loading indicator on while a retry pass is pending
-          failedIds.push(...chunk)
-        }
+        continue
       }
+      toAdd.push(id)
     }
-
-    await Promise.all(Array.from({ length: SHOPIFY_HYDRATE_CONCURRENCY }, () => worker()))
-
-    if(token !== ordersSeqToken.current) return
-
-    // One delayed retry pass for ids that came back empty or failed entirely.
-    if(failedIds.length > 0){
-      for(const id of failedIds) hydratingProductIdsRef.current.delete(id)
-      if(retryPass < 1){
-        setTimeout(()=>{
-          if(token !== ordersSeqToken.current) return
-          runProductHydrationQueue(failedIds, context, revealZeroSpendCampaigns, countsById, retryPass + 1).catch(()=>{})
-        }, 6000)
-      }else{
-        // Give up: clear the loading indicator so rows show "—" instead of spinning forever
-        markProductsHydrating(failedIds, false)
-      }
+    if(toAdd.length > 0){
+      for(const id of toAdd) hydratePendingSetRef.current.add(id)
+      if(opts?.priority) hydratePendingRef.current.unshift(...toAdd)
+      else hydratePendingRef.current.push(...toAdd)
+      // Loading indicator goes on as soon as a row is queued, not when its chunk starts
+      markProductsHydrating(toAdd, true)
     }
+    while(hydrateWorkersRef.current < SHOPIFY_HYDRATE_CONCURRENCY && hydratePendingRef.current.length > 0){
+      hydrateWorkersRef.current += 1
+      hydrationWorker().catch(()=>{}).finally(()=>{ hydrateWorkersRef.current -= 1 })
+    }
+  }
 
-    // Follow-up fetch for stale-cache entries once the server's background refresh has landed.
-    if(staleIds.length > 0){
+  function scheduleHydrationRetry(ids: string[], token: number){
+    const retry: string[] = []
+    const giveUp: string[] = []
+    for(const id of ids){
+      const passes = hydrateRetryPassRef.current.get(id) || 0
+      if(passes < 1){ hydrateRetryPassRef.current.set(id, passes + 1); retry.push(id) }
+      else giveUp.push(id)
+    }
+    // Exhausted retries: clear the indicator so rows show "—" instead of spinning forever
+    if(giveUp.length > 0) markProductsHydrating(giveUp, false)
+    if(retry.length > 0){
+      // Keep the loading indicator on during the wait; retry jumps the queue
       setTimeout(()=>{
         if(token !== ordersSeqToken.current) return
-        for(const id of staleIds) hydratedProductIdsRef.current.delete(id)
-        runProductHydrationQueue(staleIds, context, revealZeroSpendCampaigns, countsById, 1).catch(()=>{})
-      }, 5000)
+        enqueueProductHydration(retry, { priority: true })
+      }, 6000)
+    }
+  }
+
+  async function hydrationWorker(){
+    while(true){
+      const context = hydrateContextRef.current
+      if(!context || context.profitOnly) return
+      const token = context.token
+      if(token !== ordersSeqToken.current) return
+      const chunk: string[] = []
+      while(chunk.length < SHOPIFY_HYDRATE_BATCH_SIZE && hydratePendingRef.current.length > 0){
+        const id = hydratePendingRef.current.shift() as string
+        hydratePendingSetRef.current.delete(id)
+        if(hydratedProductIdsRef.current.has(id) || hydratingProductIdsRef.current.has(id)) continue
+        chunk.push(id)
+      }
+      if(chunk.length === 0) return
+      for(const id of chunk) hydratingProductIdsRef.current.add(id)
+      let products: Record<string, any> | null = null
+      // Retry transient failures (network blips, timeouts) before giving up on the chunk
+      for(let attempt = 0; attempt < 2 && token === ordersSeqToken.current; attempt++){
+        try{
+          const res = await shopifyHydrateProducts({
+            product_ids: chunk,
+            start: context.start,
+            end: context.end,
+            store: context.primaryStore,
+            stores: context.storeList,
+            include: ['brief', 'orders'],
+            cache_mode: 'stale_then_refresh',
+          })
+          products = ((res as any)?.data || {}).products || {}
+          break
+        }catch{
+          if(attempt === 0) await new Promise(r => setTimeout(r, 1500))
+        }
+      }
+      for(const id of chunk) hydratingProductIdsRef.current.delete(id)
+      if(token !== ordersSeqToken.current) return
+      if(products){
+        const nextCounts = mergeHydratedProducts(products, context.campaigns, context.mappings)
+        for(const [pid, count] of Object.entries(nextCounts)){
+          context.countsById[pid] = Number(count || 0)
+        }
+        context.reveal?.(context.countsById)
+        const completed: string[] = []
+        const failed: string[] = []
+        const stale: string[] = []
+        for(const id of chunk){
+          const entry = (products as any)[id]
+          if(isHydrateEntryComplete(entry)){
+            hydratedProductIdsRef.current.add(id)
+            completed.push(id)
+            // Server returned stale cached values and is refreshing in the background:
+            // schedule one follow-up fetch to pick up the fresh numbers.
+            if(entry.refreshing === true && !staleRefreshedIdsRef.current.has(id)){
+              staleRefreshedIdsRef.current.add(id)
+              stale.push(id)
+            }
+          }else{
+            failed.push(id)
+          }
+        }
+        if(completed.length > 0) markProductsHydrating(completed, false)
+        if(failed.length > 0) scheduleHydrationRetry(failed, token)
+        if(stale.length > 0){
+          setTimeout(()=>{
+            if(token !== ordersSeqToken.current) return
+            for(const id of stale) hydratedProductIdsRef.current.delete(id)
+            enqueueProductHydration(stale)
+          }, 5000)
+        }
+      }else{
+        scheduleHydrationRetry(chunk, token)
+      }
     }
   }
 
@@ -1009,6 +1044,9 @@ export default function AdsManagementPage(){
       hydratedProductIdsRef.current = new Set()
       hydratingProductIdsRef.current = new Set()
       staleRefreshedIdsRef.current = new Set()
+      hydratePendingRef.current = []
+      hydratePendingSetRef.current = new Set()
+      hydrateRetryPassRef.current = new Map()
 
       setLoading(false)
 
@@ -1034,6 +1072,8 @@ export default function AdsManagementPage(){
         campaigns: rankedAllCampaigns,
         mappings: shaped,
         profitOnly,
+        countsById: {} as Record<string, number>,
+        reveal: revealZeroSpendCampaigns,
       }
       hydrateContextRef.current = hydrationContext
 
@@ -1083,13 +1123,12 @@ export default function AdsManagementPage(){
 
       // Phase 2: Progressive Shopify hydration. Visible/high-spend rows go first.
       // (When focused via search, skip stale visible ids from before the reload.)
-      const countsById: Record<string, number> = {}
       const priorityIds = [
         ...(focusMatch ? [] : Object.keys(visibleProductIds || {})),
         ...spendingProductIds.slice(0, 10),
         ...idsOrdered,
       ]
-      runProductHydrationQueue(priorityIds, hydrationContext, revealZeroSpendCampaigns, countsById).catch(()=>{})
+      enqueueProductHydration(priorityIds)
 
       // Phase 3: Manual mapped collection rows stay in a background lane.
       ;(async()=>{
@@ -1427,12 +1466,13 @@ export default function AdsManagementPage(){
     | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
     | { kind:'campaign', row: MetaCampaignRow, groupProductId?: string, isChild?: boolean }
 
-  // Fuzzy search suggestions (instant, client-side on loaded campaigns)
+  // Fuzzy search suggestions (instant, client-side on ALL loaded campaigns —
+  // not the filtered view, so a new search works while a filter is active)
   const searchSuggestions = useMemo(()=>{
     const q = (searchQuery||'').trim().toLowerCase()
     if(!q || q.length < 1) return []
     const results: Array<{ id:string, name:string, score:number }> = []
-    for(const c of (visibleItems||[])){
+    for(const c of (items||[])){
       const name = String(c.name||'').toLowerCase()
       const id = String(c.campaign_id||'')
       let score = 0
@@ -1458,34 +1498,45 @@ export default function AdsManagementPage(){
     const deduped = results.filter(r => { if(seen.has(r.id)) return false; seen.add(r.id); return true })
     deduped.sort((a,b) => b.score - a.score)
     return deduped.slice(0, 12)
-  }, [searchQuery, visibleItems])
+  }, [searchQuery, items])
 
   // Number of loaded campaigns whose name or id contains the query (for "show all" option)
   const searchMatchCount = useMemo(()=>{
     const q = (searchQuery||'').trim().toLowerCase()
     if(!q) return 0
     let count = 0
-    for(const c of (visibleItems||[])){
+    for(const c of (items||[])){
       if(String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q)) count++
     }
     return count
-  }, [searchQuery, visibleItems])
+  }, [searchQuery, items])
 
-  // Apply a search selection: filter the table and reload focused on the match(es)
-  function applySearchFocus(sel: { campaignId?: string, query?: string, label: string }){
-    if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
+  // Apply a search selection. Default: INSTANT — filter the already-loaded table
+  // client-side and bump the matching campaigns' products to the front of the
+  // hydration queue. No reload, no range change. `allTime` opts into the heavy
+  // all-time reload (needed to find old campaigns outside the current range).
+  function applySearchFocus(sel: { campaignId?: string, query?: string, label: string, allTime?: boolean }){
     setSearchQuery(sel.label)
     setSearchActive(sel.label.toLowerCase())
     setSearchFocusId(sel.campaignId || '')
     setSearchFocused(false)
     searchRef.current?.blur()
-    // Reload with all-time range, hydrating only the focused campaign(s)
-    setDatePreset('maximum')
-    load('maximum', {
-      stores: selectedStores,
-      adAccounts: selectedAdAccounts,
-      focus: sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
-    })
+    if(sel.allTime){
+      if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
+      setDatePreset('maximum')
+      load('maximum', {
+        stores: selectedStores,
+        adAccounts: selectedAdAccounts,
+        focus: sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
+      })
+      return
+    }
+    const q = (sel.query || sel.label || '').trim().toLowerCase()
+    const matched = (items||[]).filter(r => sel.campaignId
+      ? String(r.campaign_id||'') === String(sel.campaignId)
+      : (String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q)))
+    const pids = productIdsForCampaigns(matched, manualIds)
+    if(pids.length > 0) enqueueProductHydration(pids, { priority: true, resetRetries: true })
   }
 
   function clearSearchFocus(){
@@ -1571,7 +1622,8 @@ export default function AdsManagementPage(){
     if(!context || context.profitOnly) return
     const ids = Object.keys(visibleProductIds || {})
     if(ids.length === 0) return
-    runProductHydrationQueue(ids, context).catch(()=>{})
+    // Rows on screen jump the queue; also gives gave-up ids another chance
+    enqueueProductHydration(ids, { priority: true, resetRetries: true })
   }, [visibleProductIds])
 
   const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
@@ -2181,11 +2233,34 @@ export default function AdsManagementPage(){
                     </button>
                   )
                 })}
+                {/* Bottom option: heavy all-time search (finds old campaigns outside the current range) */}
+                <button
+                  className="w-full text-left px-3 py-2 hover:bg-amber-50 flex items-center gap-2 text-sm border-t border-t-slate-200 transition-colors"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim(), allTime: true })
+                  }}
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0"/>
+                  <span className="flex-1 text-slate-600">Search <span className="font-semibold">all time</span> for "{searchQuery.trim()}"</span>
+                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-semibold">slower</span>
+                </button>
               </div>
             )}
             {searchFocused && searchQuery.trim() && searchSuggestions.length === 0 && (
-              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl px-4 py-3 text-sm text-slate-400">
-                No campaigns matching "{searchQuery}"
+              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl">
+                <div className="px-4 py-3 text-sm text-slate-400">No loaded campaigns matching "{searchQuery}"</div>
+                <button
+                  className="w-full text-left px-3 py-2 hover:bg-amber-50 flex items-center gap-2 text-sm border-t border-t-slate-200 transition-colors"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim(), allTime: true })
+                  }}
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0"/>
+                  <span className="flex-1 text-slate-600">Search <span className="font-semibold">all time</span> for "{searchQuery.trim()}" (includes old campaigns)</span>
+                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-semibold">slower</span>
+                </button>
               </div>
             )}
             {searchActive && (
