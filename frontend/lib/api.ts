@@ -819,7 +819,8 @@ export async function shopifyHydrateProducts(payload:{
   }
   const url = `${base}/api/ads-management/shopify-hydrate`
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
-    const {data} = await axios.post(url, body)
+    // Hard timeout so a hung request fails fast and the caller's retry logic kicks in
+    const {data} = await axios.post(url, body, { timeout: 45000 })
     return data as { data: { products: Record<string, AdsShopifyHydrateProduct> }, error?: string }
   })
 }

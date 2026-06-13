@@ -204,6 +204,8 @@ export default function AdsManagementPage(){
   const [visibleProductIds, setVisibleProductIds] = useState<Record<string, true>>({})
   const hydratedProductIdsRef = useRef<Set<string>>(new Set())
   const hydratingProductIdsRef = useRef<Set<string>>(new Set())
+  // Ids already re-fetched once after the server returned stale cached data
+  const staleRefreshedIdsRef = useRef<Set<string>>(new Set())
   const hydrateContextRef = useRef<{
     token: number,
     start: string,
@@ -293,6 +295,8 @@ export default function AdsManagementPage(){
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [searchActive, setSearchActive] = useState<string>('')  // confirmed filter
   const [searchFocused, setSearchFocused] = useState<boolean>(false)
+  // When a single campaign is picked from suggestions, filter by exact campaign id
+  const [searchFocusId, setSearchFocusId] = useState<string>('')
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
@@ -441,6 +445,10 @@ export default function AdsManagementPage(){
     const endDate = new Date(now)
     const startDate = new Date(now)
     switch(preset){
+      case 'maximum':
+        // All-time search mode: use a wide window for Shopify order counts
+        startDate.setFullYear(startDate.getFullYear()-3)
+        break
       case 'today':
         startDate.setHours(0,0,0,0)
         break
@@ -744,11 +752,22 @@ export default function AdsManagementPage(){
     })
   }
 
+  // Returns true when a hydrate response entry actually carries the data we asked for.
+  // The backend returns an empty placeholder ({cached:false}) when its Shopify calls fail,
+  // so "response arrived" is not the same as "data arrived".
+  function isHydrateEntryComplete(entry: any): boolean{
+    if(!entry || typeof entry !== 'object') return false
+    const hasOrders = typeof entry.orders === 'number'
+    const hasBrief = ('image' in entry) || ('total_available' in entry)
+    return hasOrders && hasBrief
+  }
+
   async function runProductHydrationQueue(
     idsInput: string[],
     context: NonNullable<typeof hydrateContextRef.current>,
     revealZeroSpendCampaigns?: (countsById: Record<string, number>) => void,
     countsById?: Record<string, number>,
+    retryPass: number = 0,
   ){
     const token = context.token
     const ids = idsInput
@@ -757,50 +776,105 @@ export default function AdsManagementPage(){
       .filter(id => !hydratedProductIdsRef.current.has(id) && !hydratingProductIdsRef.current.has(id))
     if(ids.length === 0) return
 
+    // Show the loading indicator on every queued row immediately, not just when
+    // its chunk starts — rows waiting in the queue are still "getting data".
+    for(const id of ids) hydratingProductIdsRef.current.add(id)
+    markProductsHydrating(ids, true)
+
     let cursor = 0
     const nextChunk = () => {
       const chunk = ids.slice(cursor, cursor + SHOPIFY_HYDRATE_BATCH_SIZE)
       cursor += SHOPIFY_HYDRATE_BATCH_SIZE
-      for(const id of chunk) hydratingProductIdsRef.current.add(id)
       return chunk
     }
+
+    const failedIds: string[] = []
+    const staleIds: string[] = []
 
     const worker = async () => {
       while(token === ordersSeqToken.current){
         const chunk = nextChunk()
         if(chunk.length === 0) break
-        markProductsHydrating(chunk, true)
-        try{
-          const res = await shopifyHydrateProducts({
-            product_ids: chunk,
-            start: context.start,
-            end: context.end,
-            store: context.primaryStore,
-            stores: context.storeList,
-            include: ['brief', 'orders'],
-            cache_mode: 'stale_then_refresh',
-          })
-          if(token !== ordersSeqToken.current) break
-          const products = ((res as any)?.data || {}).products || {}
+        let products: Record<string, any> | null = null
+        // Retry transient failures (network blips, timeouts) before giving up on the chunk
+        for(let attempt = 0; attempt < 2 && token === ordersSeqToken.current; attempt++){
+          try{
+            const res = await shopifyHydrateProducts({
+              product_ids: chunk,
+              start: context.start,
+              end: context.end,
+              store: context.primaryStore,
+              stores: context.storeList,
+              include: ['brief', 'orders'],
+              cache_mode: 'stale_then_refresh',
+            })
+            products = ((res as any)?.data || {}).products || {}
+            break
+          }catch{
+            if(attempt === 0) await new Promise(r => setTimeout(r, 1500))
+          }
+        }
+        if(token !== ordersSeqToken.current) break
+        if(products){
           const nextCounts = mergeHydratedProducts(products, context.campaigns, context.mappings)
           for(const [pid, count] of Object.entries(nextCounts)){
             if(countsById) countsById[pid] = Number(count || 0)
           }
           if(revealZeroSpendCampaigns && countsById) revealZeroSpendCampaigns(countsById)
-          for(const id of chunk) hydratedProductIdsRef.current.add(id)
-        }catch{
-          // Keep the row skeletons isolated; one failed batch should not block the table.
-        }finally{
-          for(const id of chunk) hydratingProductIdsRef.current.delete(id)
-          markProductsHydrating(chunk, false)
+          const completed: string[] = []
+          for(const id of chunk){
+            const entry = (products as any)[id]
+            if(isHydrateEntryComplete(entry)){
+              hydratedProductIdsRef.current.add(id)
+              completed.push(id)
+              // Server returned stale cached values and is refreshing in the background:
+              // schedule one follow-up fetch to pick up the fresh numbers.
+              if(entry.refreshing === true && !staleRefreshedIdsRef.current.has(id)){
+                staleRefreshedIdsRef.current.add(id)
+                staleIds.push(id)
+              }
+            }else{
+              failedIds.push(id)
+            }
+          }
+          for(const id of completed) hydratingProductIdsRef.current.delete(id)
+          if(completed.length > 0) markProductsHydrating(completed, false)
+        }else{
+          // Whole chunk failed: keep the loading indicator on while a retry pass is pending
+          failedIds.push(...chunk)
         }
       }
     }
 
     await Promise.all(Array.from({ length: SHOPIFY_HYDRATE_CONCURRENCY }, () => worker()))
+
+    if(token !== ordersSeqToken.current) return
+
+    // One delayed retry pass for ids that came back empty or failed entirely.
+    if(failedIds.length > 0){
+      for(const id of failedIds) hydratingProductIdsRef.current.delete(id)
+      if(retryPass < 1){
+        setTimeout(()=>{
+          if(token !== ordersSeqToken.current) return
+          runProductHydrationQueue(failedIds, context, revealZeroSpendCampaigns, countsById, retryPass + 1).catch(()=>{})
+        }, 6000)
+      }else{
+        // Give up: clear the loading indicator so rows show "—" instead of spinning forever
+        markProductsHydrating(failedIds, false)
+      }
+    }
+
+    // Follow-up fetch for stale-cache entries once the server's background refresh has landed.
+    if(staleIds.length > 0){
+      setTimeout(()=>{
+        if(token !== ordersSeqToken.current) return
+        for(const id of staleIds) hydratedProductIdsRef.current.delete(id)
+        runProductHydrationQueue(staleIds, context, revealZeroSpendCampaigns, countsById, 1).catch(()=>{})
+      }, 5000)
+    }
   }
 
-  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean }){
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean, focus?: { query?: string, campaignId?: string } }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
@@ -808,8 +882,16 @@ export default function AdsManagementPage(){
       const effStores = opts?.stores ?? selectedStores
       const effAdAccounts = opts?.adAccounts ?? selectedAdAccounts
       const profitOnly = opts?.profit ?? profitMode
+      // Search focus: when set, only the matching campaign(s) get hydrated so the
+      // searched campaign's data loads first instead of waiting behind the full table.
+      const focus = opts?.focus
+      const focusMatch = focus ? (c: MetaCampaignRow) => {
+        if(focus.campaignId) return String(c.campaign_id||'') === String(focus.campaignId)
+        const q = String(focus.query||'').trim().toLowerCase()
+        if(!q) return true
+        return String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q)
+      } : null
       const metaParams = metaRangeParams(effPreset)
-      const { start: rangeStart, end: rangeEnd } = effectiveYmdRange(effPreset)
 
       // Phase 1: One bundle call per ad account (campaigns come from Meta, not per-store).
       // Mappings + meta come from first store. This keeps it to N calls (one per ad account).
@@ -819,13 +901,16 @@ export default function AdsManagementPage(){
       const primaryStore = effStores[0] || 'irrakids'
       const acctList = effAdAccounts.length > 0 ? effAdAccounts : ['']
 
+      // Only send an explicit time range when the preset resolves to one — the backend
+      // prefers since/until over date_preset, so sending a fallback range here would
+      // silently override presets like 'maximum' (all-time search) with last-7-days.
       const bundlePromises = acctList.map(acct =>
         fetchAdsManagementBundle({
           date_preset: metaParams.datePreset,
           ad_account: acct || undefined,
           store: primaryStore,
-          start: metaParams.range?.start || rangeStart,
-          end: metaParams.range?.end || rangeEnd,
+          start: metaParams.range?.start,
+          end: metaParams.range?.end,
           profit_only: profitOnly,
         }).catch(() => null)
       )
@@ -923,11 +1008,15 @@ export default function AdsManagementPage(){
       setVisibleProductIds({})
       hydratedProductIdsRef.current = new Set()
       hydratingProductIdsRef.current = new Set()
+      staleRefreshedIdsRef.current = new Set()
 
       setLoading(false)
 
-      const spendingProductIds = productIdsForCampaigns(spendingCampaigns, shaped)
-      const allProductIds = productIdsForCampaigns(rankedAllCampaigns, shaped)
+      // When search focus is active, hydrate only the matching campaigns' products
+      const hydrateSpendingCampaigns = focusMatch ? spendingCampaigns.filter(focusMatch) : spendingCampaigns
+      const hydrateAllCampaigns = focusMatch ? rankedAllCampaigns.filter(focusMatch) : rankedAllCampaigns
+      const spendingProductIds = productIdsForCampaigns(hydrateSpendingCampaigns, shaped)
+      const allProductIds = productIdsForCampaigns(hydrateAllCampaigns, shaped)
       const spendingProductIdSet = new Set(spendingProductIds)
       const idsOrdered = [
         ...spendingProductIds,
@@ -948,8 +1037,9 @@ export default function AdsManagementPage(){
       }
       hydrateContextRef.current = hydrationContext
 
-      // Fire store-total in background for each store
-      if(!profitOnly){
+      // Fire store-total in background for each store (skip in focused search mode:
+      // an all-time store total is a heavy query and isn't shown for a single campaign)
+      if(!profitOnly && !focusMatch){
         ;(async()=>{
           try{
             const totals = await Promise.allSettled(
@@ -988,12 +1078,14 @@ export default function AdsManagementPage(){
         return
       }
 
-      warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
+      // UTM warm-up scans the whole order range; skip it for focused all-time searches
+      if(!focusMatch) warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
 
       // Phase 2: Progressive Shopify hydration. Visible/high-spend rows go first.
+      // (When focused via search, skip stale visible ids from before the reload.)
       const countsById: Record<string, number> = {}
       const priorityIds = [
-        ...Object.keys(visibleProductIds || {}),
+        ...(focusMatch ? [] : Object.keys(visibleProductIds || {})),
         ...spendingProductIds.slice(0, 10),
         ...idsOrdered,
       ]
@@ -1001,7 +1093,7 @@ export default function AdsManagementPage(){
 
       // Phase 3: Manual mapped collection rows stay in a background lane.
       ;(async()=>{
-        for(const row of rankedAllCampaigns){
+        for(const row of hydrateAllCampaigns){
           if(ordersToken !== ordersSeqToken.current) break
           const rowKey = (row.campaign_id || row.name || '') as any
           const rowStore = (row as any)._store || primaryStore
@@ -1368,20 +1460,62 @@ export default function AdsManagementPage(){
     return deduped.slice(0, 12)
   }, [searchQuery, visibleItems])
 
+  // Number of loaded campaigns whose name or id contains the query (for "show all" option)
+  const searchMatchCount = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q) return 0
+    let count = 0
+    for(const c of (visibleItems||[])){
+      if(String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q)) count++
+    }
+    return count
+  }, [searchQuery, visibleItems])
+
+  // Apply a search selection: filter the table and reload focused on the match(es)
+  function applySearchFocus(sel: { campaignId?: string, query?: string, label: string }){
+    if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
+    setSearchQuery(sel.label)
+    setSearchActive(sel.label.toLowerCase())
+    setSearchFocusId(sel.campaignId || '')
+    setSearchFocused(false)
+    searchRef.current?.blur()
+    // Reload with all-time range, hydrating only the focused campaign(s)
+    setDatePreset('maximum')
+    load('maximum', {
+      stores: selectedStores,
+      adAccounts: selectedAdAccounts,
+      focus: sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
+    })
+  }
+
+  function clearSearchFocus(){
+    const prev = preSearchPresetRef.current || 'last_7d_incl_today'
+    preSearchPresetRef.current = ''
+    setSearchQuery('')
+    setSearchActive('')
+    setSearchFocusId('')
+    setSearchFocused(false)
+    if(datePreset === 'maximum'){
+      setDatePreset(prev)
+      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+    }
+  }
+
   const displayRows = useMemo<DisplayRow[]>(()=>{
     const activeFilter = (searchActive||'').trim().toLowerCase()
+    const focusId = (searchFocusId||'').trim()
+    const rowMatches = (r: MetaCampaignRow) => {
+      if(focusId) return String(r.campaign_id||'') === focusId
+      const name = String(r.name||'').toLowerCase()
+      const id = String(r.campaign_id||'')
+      return name.includes(activeFilter) || id.includes(activeFilter)
+    }
+    const filtering = !!focusId || !!activeFilter
     const out: DisplayRow[] = []
     for(const p of sortedParents){
       if(p.kind==='group'){
         // If search active, check if any campaign in the group matches
-        if(activeFilter){
-          const matches = p.rows.some(r => {
-            const name = String(r.name||'').toLowerCase()
-            const id = String(r.campaign_id||'')
-            return name.includes(activeFilter) || id.includes(activeFilter)
-          })
-          if(!matches) continue
-        }
+        if(filtering && !p.rows.some(rowMatches)) continue
         out.push({ kind:'group', productId: p.productId, rows: p.rows, primary: p.primary })
         if(!profitMode && groupExpanded[p.productId]){
           const children = (p.rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
@@ -1390,16 +1524,12 @@ export default function AdsManagementPage(){
           }
         }
       }else{
-        if(activeFilter){
-          const name = String(p.row.name||'').toLowerCase()
-          const id = String(p.row.campaign_id||'')
-          if(!name.includes(activeFilter) && !id.includes(activeFilter)) continue
-        }
+        if(filtering && !rowMatches(p.row)) continue
         out.push({ kind:'campaign', row: p.row, isChild: false })
       }
     }
     return out
-  }, [sortedParents, groupExpanded, searchActive, profitMode])
+  }, [sortedParents, groupExpanded, searchActive, searchFocusId, profitMode])
 
   useEffect(()=>{
     if(typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return
@@ -1706,6 +1836,7 @@ export default function AdsManagementPage(){
               <option value="last_6d_incl_today">Last 6 days (including today)</option>
               <option value="last_7d_incl_today">Last 7 days (including today)</option>
               <option value="custom">Custom…</option>
+              {datePreset==='maximum' && <option value="maximum">All time (search)</option>}
             </select>
             {datePreset==='custom' && (
               <div className="flex items-center gap-1 text-sm">
@@ -1971,38 +2102,19 @@ export default function AdsManagementPage(){
               <input
                 ref={searchRef}
                 value={searchQuery}
-                onChange={(e) => { setSearchQuery(e.target.value); if(!e.target.value.trim()) setSearchActive('') }}
+                onChange={(e) => { setSearchQuery(e.target.value); if(!e.target.value.trim()){ setSearchActive(''); setSearchFocusId('') } }}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
                 onKeyDown={(e) => {
                   if(e.key==='Enter'){
-                    // Save current date preset and reload with all-time
-                    if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
-                    if(searchSuggestions.length > 0){
-                      const first = searchSuggestions[0]
-                      setSearchActive(first.name.toLowerCase())
-                      setSearchQuery(first.name)
-                    } else {
-                      setSearchActive(searchQuery.toLowerCase())
-                    }
-                    setSearchFocused(false)
-                    searchRef.current?.blur()
-                    // Reload with maximum date range
-                    setDatePreset('maximum')
-                    load('maximum', { stores: selectedStores, adAccounts: selectedAdAccounts })
+                    const q = searchQuery.trim()
+                    if(!q) return
+                    // Enter = the top dropdown option: show ALL campaigns matching the query
+                    applySearchFocus({ query: q, label: q })
                   }
                   if(e.key==='Escape'){
-                    const prev = preSearchPresetRef.current || 'last_7d'
-                    preSearchPresetRef.current = ''
-                    setSearchQuery('')
-                    setSearchActive('')
-                    setSearchFocused(false)
                     searchRef.current?.blur()
-                    // Restore original date preset and reload
-                    if(datePreset === 'maximum'){
-                      setDatePreset(prev)
-                      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
-                    }
+                    clearSearchFocus()
                   }
                 }}
                 placeholder="Search campaigns by name or ID…"
@@ -2010,16 +2122,7 @@ export default function AdsManagementPage(){
               />
               {(searchQuery || searchActive) && (
                 <button
-                  onClick={() => {
-                    const prev = preSearchPresetRef.current || 'last_7d'
-                    preSearchPresetRef.current = ''
-                    setSearchQuery(''); setSearchActive(''); searchRef.current?.focus()
-                    // Restore original date preset and reload
-                    if(datePreset === 'maximum'){
-                      setDatePreset(prev)
-                      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
-                    }
-                  }}
+                  onClick={() => { clearSearchFocus(); searchRef.current?.focus() }}
                   className="text-slate-400 hover:text-slate-600"
                 >
                   <X className="w-4 h-4"/>
@@ -2028,7 +2131,23 @@ export default function AdsManagementPage(){
             </div>
             {/* Suggestions Dropdown */}
             {searchFocused && searchQuery.trim() && searchSuggestions.length > 0 && (
-              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-72 overflow-y-auto">
+                {/* Top option: focus ALL campaigns matching the query */}
+                {searchMatchCount > 0 && (
+                  <button
+                    className="w-full text-left px-3 py-2 bg-blue-50/60 hover:bg-blue-100 flex items-center gap-2 text-sm border-b border-b-slate-200 transition-colors"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim() })
+                    }}
+                  >
+                    <Search className="w-3.5 h-3.5 text-blue-500 flex-shrink-0"/>
+                    <span className="flex-1 text-blue-700 font-semibold">
+                      Show all {searchMatchCount} campaign{searchMatchCount===1?'':'s'} matching "{searchQuery.trim()}"
+                    </span>
+                    <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">Enter ↵</span>
+                  </button>
+                )}
                 {searchSuggestions.map(s => {
                   const q = searchQuery.toLowerCase()
                   const nameL = s.name.toLowerCase()
@@ -2039,14 +2158,8 @@ export default function AdsManagementPage(){
                       className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center gap-2 text-sm border-b border-b-slate-100 last:border-b-0 transition-colors"
                       onMouseDown={(e) => {
                         e.preventDefault()
-                        // Save current date preset and reload with all-time
-                        if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
-                        setSearchQuery(s.name)
-                        setSearchActive(s.name.toLowerCase())
-                        setSearchFocused(false)
-                        // Reload with maximum date range
-                        setDatePreset('maximum')
-                        load('maximum', { stores: selectedStores, adAccounts: selectedAdAccounts })
+                        // Focus this single campaign only
+                        applySearchFocus({ campaignId: s.id || undefined, query: s.name, label: s.name })
                       }}
                     >
                       <Search className="w-3.5 h-3.5 text-slate-300 flex-shrink-0"/>
@@ -2077,18 +2190,9 @@ export default function AdsManagementPage(){
             )}
             {searchActive && (
               <div className="mt-1 flex items-center gap-1 text-xs text-blue-600">
-                <span>Filtered:</span>
+                <span>{searchFocusId ? 'Focused campaign:' : 'Filtered:'}</span>
                 <span className="font-semibold truncate max-w-[200px]">"{searchActive}"</span>
-                <button onClick={() => {
-                  const prev = preSearchPresetRef.current || 'last_7d'
-                  preSearchPresetRef.current = ''
-                  setSearchQuery(''); setSearchActive('')
-                  // Restore original date preset and reload
-                  if(datePreset === 'maximum'){
-                    setDatePreset(prev)
-                    load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
-                  }
-                }} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
+                <button onClick={clearSearchFocus} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
               </div>
             )}
           </div>
@@ -2350,7 +2454,7 @@ export default function AdsManagementPage(){
                           {profitMode ? (
                             profitTrueCpp!=null ? `${Math.round(profitTrueCpp).toLocaleString()} MAD` : '—'
                           ) : (
-                            orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp
+                            orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
                           )}
                         </td>
                         {!profitMode && (
@@ -2603,7 +2707,7 @@ export default function AdsManagementPage(){
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                       ) : (
-                        hasAnyPid ? (
+                        hasAnyPid && hydratingBrief ? (
                           <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-100 border animate-pulse" />
                         ) : (
                           <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
@@ -2857,7 +2961,7 @@ export default function AdsManagementPage(){
                       ) : isChild ? (
                         <span className="text-slate-400">—</span>
                       ) : (
-                        orders==null ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : trueCpp
+                        orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
                       )}
                     </td>
                     {!profitMode && (
@@ -2875,13 +2979,13 @@ export default function AdsManagementPage(){
                               onMouseLeave={() => setInvHover(null)}
                             >
                               {inv===null || inv===undefined ? (
-                                <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" />
+                                hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                               ) : (
                                 <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
                               )}
                               <span className="text-slate-300">/</span>
                               {zeros===null || zeros===undefined ? (
-                                <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" />
+                                hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                               ) : (
                                 <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
                               )}
