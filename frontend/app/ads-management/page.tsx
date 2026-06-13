@@ -88,8 +88,10 @@ function normalizeStoreList(values?: string[]): string[]{
 type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
-const SHOPIFY_HYDRATE_BATCH_SIZE = 5
-const SHOPIFY_HYDRATE_CONCURRENCY = 2
+// Backend accepts up to 25 product ids per hydrate request; 10×3 keeps requests
+// well under the server's 35s budget while halving the number of round-trips.
+const SHOPIFY_HYDRATE_BATCH_SIZE = 10
+const SHOPIFY_HYDRATE_CONCURRENCY = 3
 
 function MultiCheckDropdown({ label, options, selected, onChange, className }: {
   label: string,
@@ -303,6 +305,19 @@ export default function AdsManagementPage(){
     return (items||[]).filter(r => ownerOfRow(r) === ownerFilter)
   }, [items, campaignMeta, ownerFilter])
 
+  // Fallback lookup: product id -> first manual-mapped campaign count (avoids O(n) scan per call)
+  const manualCountsByPid = useMemo(()=>{
+    const map: Record<string, number> = {}
+    for(const k of Object.keys(manualIds||{})){
+      const m = (manualIds as any)[k]
+      if(m && m.kind==='product'){
+        const c = (manualCounts as any)[String(k)]
+        if(typeof c === 'number' && map[String(m.id)] == null) map[String(m.id)] = c
+      }
+    }
+    return map
+  }, [manualIds, manualCounts])
+
   const totalSpend = useMemo(()=> (visibleItems||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [visibleItems])
   const tableOrdersTotal = useMemo(()=>{
     // Sum orders while respecting product-grouping (count each product once)
@@ -335,30 +350,29 @@ export default function AdsManagementPage(){
       nour: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
       adil: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
     }
-    for(const owner of CAMPAIGN_OWNERS){
-      const rows = (items||[]).filter(r => ownerOfRow(r) === owner)
-      const pidToAnyRow: Record<string, MetaCampaignRow> = {}
-      const ungrouped: MetaCampaignRow[] = []
-      let spend = 0
-      for(const r of rows){
-        spend += Number(r.spend||0)
-        const pid = getProductIdForRow(r)
-        if(pid){
-          if(!pidToAnyRow[pid]) pidToAnyRow[pid] = r
-        }else{
-          ungrouped.push(r)
+    const seenPids: Record<CampaignOwner, Set<string>> = {
+      chafiq: new Set(), nour: new Set(), adil: new Set(),
+    }
+    for(const r of (items||[])){
+      const owner = ownerOfRow(r)
+      if(!owner) continue
+      const s = stats[owner]
+      s.campaigns += 1
+      s.spend += Number(r.spend||0)
+      const pid = getProductIdForRow(r)
+      if(pid){
+        if(!seenPids[owner].has(pid)){
+          seenPids[owner].add(pid)
+          const v = getOrdersByProductId(pid)
+          if(typeof v === 'number' && v > 0) s.orders += v
         }
-      }
-      let orders = 0
-      for(const pid of Object.keys(pidToAnyRow)){
-        const v = getOrdersByProductId(pid)
-        if(typeof v === 'number' && v > 0) orders += v
-      }
-      for(const r of ungrouped){
+      }else{
         const v = getOrders(r)
-        if(typeof v === 'number' && v > 0) orders += v
+        if(typeof v === 'number' && v > 0) s.orders += v
       }
-      stats[owner] = { spend, orders, campaigns: rows.length, trueCpp: orders > 0 ? spend / orders : null }
+    }
+    for(const owner of CAMPAIGN_OWNERS){
+      stats[owner].trueCpp = stats[owner].orders > 0 ? stats[owner].spend / stats[owner].orders : null
     }
     return stats
   }, [items, campaignMeta, shopifyCounts, manualCounts, manualIds])
@@ -1172,14 +1186,8 @@ export default function AdsManagementPage(){
     const v = shopifyCounts[String(pid)]
     if(typeof v === 'number') return v
     // Fallback: if a row is manually mapped to this product, use its computed manual count
-    for(const k of Object.keys(manualIds||{})){
-      const m = (manualIds as any)[k]
-      if(m && m.kind==='product' && String(m.id)===String(pid)){
-        const c = (manualCounts as any)[String(k)]
-        if(typeof c === 'number') return c
-      }
-    }
-    return null
+    const c = manualCountsByPid[String(pid)]
+    return typeof c === 'number' ? c : null
   }
 
   type ParentRow =
@@ -1223,7 +1231,7 @@ export default function AdsManagementPage(){
       const cpp = purchases>0 ? (spend / purchases) : null
       let ctr: number | null = null
       try{
-        const sumSpend = p.rows.reduce((acc,r)=> acc + Number(r.spend||0), 0)
+        const sumSpend = spend
         const ctrSpend = p.rows.reduce((acc,r)=> {
           const v = (r.ctr==null ? null : Number(r.ctr))
           if(v==null) return acc
@@ -1256,9 +1264,23 @@ export default function AdsManagementPage(){
     return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
   }
 
+  function parentMetricKey(p: ParentRow): string{
+    return p.kind==='group' ? `g:${p.productId}` : `s:${campaignMergeKey(p.row)}`
+  }
+
+  // Precompute metrics once per parent row: sorting and rendering both read from
+  // this map instead of recomputing parentMetric() per comparison/per row.
+  const parentMetrics = useMemo(()=>{
+    const map: Record<string, ReturnType<typeof parentMetric>> = {}
+    for(const p of parentRows){
+      map[parentMetricKey(p)] = parentMetric(p)
+    }
+    return map
+  }, [parentRows, shopifyCounts, productBriefs, manualIds, manualCounts, manualCountsByPid])
+
   function compareParents(a: ParentRow, b: ParentRow){
-    const am = parentMetric(a) as any
-    const bm = parentMetric(b) as any
+    const am = (parentMetrics[parentMetricKey(a)] || parentMetric(a)) as any
+    const bm = (parentMetrics[parentMetricKey(b)] || parentMetric(b)) as any
     const av = (()=>{
       switch(sortKey){
         case 'campaign': return (a.kind==='group'? (a.primary.name||a.productId) : (a.row.name||'')).toLowerCase()
@@ -1307,7 +1329,7 @@ export default function AdsManagementPage(){
     const arr = parentRows.slice()
     try{ arr.sort(compareParents) }catch{}
     return arr
-  }, [parentRows, sortKey, sortDir, shopifyCounts, productBriefs, manualIds, manualCounts])
+  }, [parentRows, parentMetrics, sortKey, sortDir])
 
   type DisplayRow =
     | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
@@ -1388,7 +1410,12 @@ export default function AdsManagementPage(){
         const pid = (entry.target as HTMLElement).dataset.productId
         if(pid) next[pid] = true
       }
-      if(Object.keys(next).length > 0) setVisibleProductIds(prev => ({ ...prev, ...next }))
+      if(Object.keys(next).length > 0) setVisibleProductIds(prev => {
+        // Skip the state update (and full re-render) when nothing new became visible
+        let hasNew = false
+        for(const pid of Object.keys(next)){ if(!prev[pid]){ hasNew = true; break } }
+        return hasNew ? { ...prev, ...next } : prev
+      })
     }, { root: null, rootMargin: '320px 0px', threshold: 0.01 })
     rowObserverRef.current = observer
     return () => {
@@ -1397,10 +1424,16 @@ export default function AdsManagementPage(){
     }
   }, [])
 
-  const registerProductRow = useCallback((pid?: string | null) => (el: HTMLTableRowElement | null) => {
-    if(!pid || !el) return
-    el.dataset.productId = String(pid)
-    rowObserverRef.current?.observe(el)
+  const registerProductRow = useCallback((pid?: string | null) => {
+    let observedEl: HTMLTableRowElement | null = null
+    return (el: HTMLTableRowElement | null) => {
+      // Unobserve detached rows so the observer doesn't accumulate dead nodes across reloads
+      if(observedEl && observedEl !== el) rowObserverRef.current?.unobserve(observedEl)
+      observedEl = el
+      if(!pid || !el) return
+      el.dataset.productId = String(pid)
+      rowObserverRef.current?.observe(el)
+    }
   }, [])
 
   useEffect(()=>{
@@ -1530,7 +1563,8 @@ export default function AdsManagementPage(){
   function InventoryTooltip(){
     if(!invHover || !invHover.rect) return null
     const pid = invHover.pid
-    const data = normalizeInventoryData(variantInventoryCache[pid])
+    // Cache entries are normalized in loadVariantInventory; no need to re-sort on every render
+    const data = variantInventoryCache[pid] || null
     const loading = variantInventoryLoading[pid]
     const rect = invHover.rect
     // Position tooltip below the hovered element
@@ -2184,7 +2218,7 @@ export default function AdsManagementPage(){
               {!loading && displayRows.map((d)=>{
                 if(d.kind==='group'){
                   const pid = d.productId
-                  const m = parentMetric({ kind:'group', productId: pid, rows: d.rows, primary: d.primary } as any)
+                  const m = parentMetrics[`g:${pid}`] || parentMetric({ kind:'group', productId: pid, rows: d.rows, primary: d.primary } as any)
                   const orders = m.orders
                   const trueCppVal = m.trueCpp
                   const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
