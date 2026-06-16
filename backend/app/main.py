@@ -7086,12 +7086,23 @@ THEME_EDITOR_SWATCH_SNIPPET = r"""{% comment %}
 
     function optionKind(fieldset) {
       var legend = clean((fieldset.querySelector('legend') || {}).textContent).toLowerCase();
-      var labels = Array.prototype.map.call(fieldset.querySelectorAll('input[type="radio"]'), function (input) {
+      var labelTexts = Array.prototype.map.call(fieldset.querySelectorAll('input[type="radio"]'), function (input) {
         var label = input.nextElementSibling;
         return optionText(input, label || fieldset);
-      }).join(' / ').toLowerCase();
-      if (/colou?r|couleur|لون|color/.test(legend) || /\/.+\//.test(labels)) return 'color';
+      });
+      var labels = labelTexts.join(' / ').toLowerCase();
+      // Detect size FIRST so multi-value size fieldsets (e.g. 36/37/38/39/40) are never
+      // mistaken for colors: their labels are joined with ' / ', which would otherwise
+      // look like a color swatch and let the colors reorder shuffle the sizes.
+      var allSizeValues = labelTexts.length > 0 && labelTexts.every(function (text) {
+        var t = clean(text).toLowerCase();
+        return /^\d+(?:\.\d+)?$/.test(t) || /^\d+\s*[-–]\s*\d+/.test(t) || /^(?:xxs|xs|s|m|l|xl|xxl|xxxl|os|one size)$/.test(t);
+      });
+      if (allSizeValues) return 'size';
+      if (/colou?r|couleur|لون|color/.test(legend) || labelTexts.some(function (text) { return clean(text).indexOf('/') >= 0; })) return 'color';
       if (/size|shoe|taille|pointure|الحجم|مقاس|قياس/.test(legend) || /\d+\s*[-\u2013]\s*\d+(?:\s*[*x]\s*\d+\s*(?:pcs?|قطعة|قطع)?)?/.test(labels)) return 'size';
+      // Fallback: a remaining multi-value option (and not size-like, handled above) is a color.
+      if (labelTexts.length >= 3) return 'color';
       return '';
     }
 
