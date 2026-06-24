@@ -7,8 +7,9 @@ import {
   TrendingUp, Box, DollarSign, Tag as TagIcon, RefreshCw, Image as ImageIcon,
   Filter, ChevronDown, Calendar, Clock, Layers, X, LogOut, User, Eye, EyeOff,
   ShoppingCart, CheckCircle, Minus, Search, Phone, MapPin, ClipboardList, FileText,
-  CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2
+  CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2, MessageCircle
 } from 'lucide-react'
+import ChatInbox from '../../components/chat/ChatInbox'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
@@ -170,6 +171,7 @@ const WHOLESALE_COPY = {
     inventory: 'Inventory',
     orders: 'Orders',
     customers: 'Customers',
+    chat: 'Chat',
     createOrder: 'Create Order',
     addProduct: 'Add Product',
     home: 'Home',
@@ -214,6 +216,7 @@ const WHOLESALE_COPY = {
     inventory: 'الستوك',
     orders: 'الطلبات',
     customers: 'الزبناء',
+    chat: 'المحادثة',
     createOrder: 'دير طلب',
     addProduct: 'زيد منتوج',
     home: 'الرئيسية',
@@ -262,6 +265,7 @@ const WHOLESALE_TEXT = {
     inventory: 'Inventory',
     orders: 'Orders',
     customers: 'Customers',
+    chat: 'Chat',
     createOrder: 'Create Order',
     addProduct: 'Add Product',
     home: 'Home',
@@ -1107,6 +1111,17 @@ function Dashboard({
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
+      case 'chat': return (
+        <ChatInbox
+          me={{
+            id: String(vendor.id || vendor.username || '').toLowerCase(),
+            handle: String(vendor.username || vendor.id || '').toLowerCase(),
+            name: vendor.name || vendor.username || 'Vendor',
+            avatar: profileImage || '',
+            kind: 'vendor',
+          }}
+        />
+      )
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
     }
   }
@@ -1127,6 +1142,7 @@ function Dashboard({
           <NavItem active={activeTab==='orders' || activeTab==='create-order'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={20}/>} label={copy.orders} />
           <NavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={20}/>} label={copy.inventory} />
           <NavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={20}/>} label={copy.customers} />
+          <NavItem active={activeTab==='chat'} onClick={()=>setActiveTab('chat')} icon={<MessageCircle size={20}/>} label={copy.chat} />
         </div>
         <div className="p-4 border-t border-slate-100">
           <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
@@ -1248,6 +1264,7 @@ function Dashboard({
         <MobileNavItem active={activeTab==='orders' || activeTab==='create-order'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={30}/>} label={copy.orders} />
         <MobileNavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={30}/>} label={copy.stock} />
         <MobileNavItem active={activeTab==='customers'} onClick={()=>setActiveTab('customers')} icon={<Users size={30}/>} label={copy.customers} />
+        <MobileNavItem active={activeTab==='chat'} onClick={()=>setActiveTab('chat')} icon={<MessageCircle size={30}/>} label={copy.chat} />
       </nav>
     </div>
   )

@@ -105,6 +105,10 @@ from app.system_health_routes import router as _system_health_router  # noqa: E4
 from app import system_health as _sh  # noqa: E402
 app.add_middleware(_HealthMiddleware)
 app.include_router(_system_health_router)
+
+# Internal chat / inbox (vendor + agent DMs over WebSocket; no WhatsApp API)
+from app import chat as _chat  # noqa: E402
+app.include_router(_chat.router)
 # Background poller keeps the incident log up to date even when nobody is
 # watching the dashboard, so issues that occurred while the admin was away
 # are still visible (with first/last-seen timestamps) when they return.
