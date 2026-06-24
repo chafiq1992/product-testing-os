@@ -97,8 +97,10 @@ export async function fetchConversations(me: string): Promise<Conversation[]> {
   return data || []
 }
 
-export async function fetchMessages(me: string, peer: string, before?: string): Promise<ChatMessage[]> {
-  const q = `me=${encodeURIComponent(me)}&peer=${encodeURIComponent(peer)}${before ? `&before=${encodeURIComponent(before)}` : ''}`
+export async function fetchMessages(me: string, peer: string, before?: string, after?: string): Promise<ChatMessage[]> {
+  let q = `me=${encodeURIComponent(me)}&peer=${encodeURIComponent(peer)}`
+  if (before) q += `&before=${encodeURIComponent(before)}`
+  if (after) q += `&after=${encodeURIComponent(after)}`
   const { data } = await jget(`/api/chat/messages?${q}`)
   return data || []
 }

@@ -212,15 +212,137 @@ class ConnectionManager:
                 self.disconnect(ws, aid)
         return delivered
 
-    async def broadcast_presence(self, account_id: str, online: bool) -> None:
-        payload = {"type": "presence", "data": {"id": _norm_id(account_id), "online": online}}
+    async def send_to_all(self, payload: dict) -> None:
         for aid in list(self.connections.keys()):
-            if aid == _norm_id(account_id):
-                continue
             await self.send_to(aid, payload)
 
 
 manager = ConnectionManager()
+
+
+# ---------------------------------------------------------------------------
+# Cross-instance delivery (Redis pub/sub; degrades to local-only delivery)
+# ---------------------------------------------------------------------------
+# Cloud Run runs multiple instances, and each holds its own in-memory set of
+# WebSocket connections. Without a shared bus, a message sent on instance A is
+# never pushed to a peer connected on instance B — it only appears on reload.
+# We fan out every realtime event through Redis so all instances deliver to
+# their local sockets. If Redis is unreachable we silently fall back to
+# local-only delivery (same-instance still works; clients poll as a backstop).
+
+import os as _os
+
+try:
+    import redis.asyncio as _aioredis  # type: ignore
+except Exception:  # pragma: no cover
+    _aioredis = None  # type: ignore
+
+try:
+    from app.config import CELERY_BROKER_URL as _DEFAULT_REDIS_URL
+except Exception:
+    _DEFAULT_REDIS_URL = ""
+
+INSTANCE_ID = uuid4().hex[:10]
+_CHAT_CHANNEL = "chat_events_v1"
+_redis = None
+_redis_ready = False
+_pubsub_task = None
+_pubsub_lock = asyncio.Lock()
+_pubsub_next_attempt = 0.0
+
+
+def _chat_redis_url() -> str:
+    return (_os.getenv("CHAT_REDIS_URL") or _os.getenv("CELERY_BROKER_URL") or _DEFAULT_REDIS_URL or "").strip()
+
+
+async def ensure_pubsub() -> None:
+    """Connect to Redis and start the subscriber loop (idempotent, best-effort).
+
+    Never blocks a caller for long: when Redis is unreachable it backs off so
+    repeated connection attempts don't add latency to every WebSocket connect.
+    """
+    global _redis, _redis_ready, _pubsub_task, _pubsub_next_attempt
+    if _redis_ready or _aioredis is None:
+        return
+    import time as _t
+    if _t.monotonic() < _pubsub_next_attempt:
+        return
+    async with _pubsub_lock:
+        if _redis_ready or _t.monotonic() < _pubsub_next_attempt:
+            return
+        url = _chat_redis_url()
+        if not url:
+            _pubsub_next_attempt = _t.monotonic() + 600
+            return
+        try:
+            client = _aioredis.from_url(
+                url, encoding="utf-8", decode_responses=True,
+                socket_connect_timeout=3, socket_timeout=5, health_check_interval=30,
+            )
+            await client.ping()
+            _redis = client
+            _pubsub_task = asyncio.create_task(_subscribe_loop())
+            _redis_ready = True
+            log.info("chat pubsub connected (instance=%s)", INSTANCE_ID)
+        except Exception as e:
+            log.warning("chat pubsub unavailable; local-only delivery: %s", e)
+            _redis = None
+            _redis_ready = False
+            _pubsub_next_attempt = _t.monotonic() + 30  # back off; retry later
+
+
+async def _subscribe_loop() -> None:
+    while _redis is not None:
+        try:
+            pubsub = _redis.pubsub()
+            await pubsub.subscribe(_CHAT_CHANNEL)
+            async for msg in pubsub.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    env = json.loads(msg["data"])
+                except Exception:
+                    continue
+                if env.get("origin") == INSTANCE_ID:
+                    continue  # the origin instance already delivered locally
+                payload = env.get("payload")
+                targets = env.get("targets") or []
+                if "*" in targets:
+                    await manager.send_to_all(payload)
+                else:
+                    for t in targets:
+                        await manager.send_to(t, payload)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning("chat pubsub loop error (retrying): %s", e)
+            await asyncio.sleep(2)
+
+
+async def _publish(targets: List[str], payload: dict) -> None:
+    if not _redis_ready or _redis is None:
+        return
+    try:
+        await _redis.publish(_CHAT_CHANNEL, json.dumps({"origin": INSTANCE_ID, "targets": targets, "payload": payload}))
+    except Exception as e:
+        log.warning("chat publish failed: %s", e)
+
+
+async def _fanout(targets: List[str], payload: dict) -> None:
+    """Deliver to local sockets immediately + publish for other instances."""
+    uniq = list({_norm_id(t) for t in targets if t})
+    for t in uniq:
+        await manager.send_to(t, payload)
+    await _publish(uniq, payload)
+
+
+async def _fanout_all(payload: dict) -> None:
+    await manager.send_to_all(payload)
+    await _publish(["*"], payload)
+
+
+async def _broadcast_presence(account_id: str, online: bool) -> None:
+    await _fanout_all({"type": "presence", "data": {"id": _norm_id(account_id), "online": online}})
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +439,8 @@ async def persist_and_deliver(
         payload["client_id"] = client_id
 
     event = {"type": "message", "data": payload}
-    # Deliver to recipient's other tabs + echo to sender's other tabs.
-    await manager.send_to(recipient_id, event)
-    await manager.send_to(sender_id, event)
+    # Deliver to recipient + echo to sender's other tabs (across all instances).
+    await _fanout([recipient_id, sender_id], event)
     return payload
 
 
@@ -344,8 +465,8 @@ async def mark_read(me: str, peer: str) -> int:
         if ids:
             session.commit()
     if ids:
-        await manager.send_to(
-            peer_id,
+        await _fanout(
+            [peer_id],
             {"type": "read", "data": {"peer": me_id, "message_ids": ids, "read_at": _iso(now)}},
         )
     return len(ids)
@@ -507,10 +628,23 @@ async def chat_conversations(me: str, limit: int = 100):
 
 
 @router.get("/api/chat/messages")
-async def chat_messages(me: str, peer: str, before: str | None = None, limit: int = 40):
+async def chat_messages(me: str, peer: str, before: str | None = None, after: str | None = None, limit: int = 40):
     cid = conversation_id(me, peer)
     with db.SessionLocal() as session:
         query = session.query(ChatMessage).filter(ChatMessage.conversation_id == cid)
+        # Incremental poll: only messages newer than `after` (cheap, indexed), asc.
+        if after:
+            try:
+                adt = datetime.fromisoformat(after.replace("Z", ""))
+                rows = (
+                    query.filter(ChatMessage.created_at > adt)
+                    .order_by(ChatMessage.created_at)
+                    .limit(200)
+                    .all()
+                )
+                return {"data": [_message_dict(m) for m in rows]}
+            except Exception:
+                pass
         if before:
             try:
                 bdt = datetime.fromisoformat(before.replace("Z", ""))
@@ -593,11 +727,12 @@ async def chat_ws(websocket: WebSocket, account_id: str):
     if not aid:
         await websocket.close(code=4400)
         return
+    asyncio.create_task(ensure_pubsub())  # connect the cross-instance bus in the background
     was_online = manager.is_online(aid)
     await manager.connect(websocket, aid)
     upsert_account(aid, touch=True)
     if not was_online:
-        await manager.broadcast_presence(aid, True)
+        await _broadcast_presence(aid, True)
     # Tell the freshly-connected client who is currently online.
     try:
         await websocket.send_json({"type": "presence_snapshot", "data": {"online": manager.online_ids()}})
@@ -646,7 +781,7 @@ async def chat_ws(websocket: WebSocket, account_id: str):
             elif mtype == "typing":
                 peer = _norm_id(payload.get("peer"))
                 if peer:
-                    await manager.send_to(peer, {"type": "typing", "data": {"peer": aid, "typing": bool(payload.get("typing", True))}})
+                    await _fanout([peer], {"type": "typing", "data": {"peer": aid, "typing": bool(payload.get("typing", True))}})
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -656,6 +791,6 @@ async def chat_ws(websocket: WebSocket, account_id: str):
         upsert_account(aid, touch=True)
         if not manager.is_online(aid):
             try:
-                await manager.broadcast_presence(aid, False)
+                await _broadcast_presence(aid, False)
             except Exception:
                 pass

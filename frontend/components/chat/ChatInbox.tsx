@@ -266,6 +266,47 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, typingPeer])
 
+  // Keep a ref to the latest messages so pollers can read them without re-subscribing.
+  const messagesRef = useRef<ChatMessage[]>([])
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
+  // ── Polling fallback ───────────────────────────────────────
+  // Belt-and-suspenders for realtime: if the WebSocket push is delayed or lost
+  // (e.g. a peer on another Cloud Run instance with the Redis bus unavailable),
+  // these light, visibility-gated polls keep the thread fresh from the DB.
+  useEffect(() => {
+    const peer = activePeer
+    if (!peer) return
+    const tick = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      const list = messagesRef.current
+      const last = [...list].reverse().find(m => m.status !== 'sending')?.created_at
+      try {
+        const news = await fetchMessages(meId, peer.id, undefined, last || undefined)
+        if (!news.length) return
+        let incoming = false
+        setMessages(prev => {
+          const have = new Set(prev.map(x => x.id))
+          const add = news.filter(n => !have.has(n.id) && !(n.client_id && prev.some(p => p.id === n.client_id)))
+          if (!add.length) return prev
+          add.forEach(n => { seenIds.current.add(n.id); if (n.recipient_id === meId) incoming = true })
+          return [...prev, ...add]
+        })
+        if (incoming) { markRead(meId, peer.id) }
+      } catch {}
+    }
+    const h = window.setInterval(tick, 5000)
+    return () => window.clearInterval(h)
+  }, [activePeer, meId])
+
+  useEffect(() => {
+    const h = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      refreshConversations()
+    }, 12000)
+    return () => window.clearInterval(h)
+  }, [refreshConversations])
+
   // ── Search ─────────────────────────────────────────────────
   useEffect(() => {
     const q = searchTerm.trim()
