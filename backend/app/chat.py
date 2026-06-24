@@ -224,6 +224,43 @@ manager = ConnectionManager()
 
 
 # ---------------------------------------------------------------------------
+# Directory providers
+# ---------------------------------------------------------------------------
+# Other modules (e.g. the wholesale vendor registry, a future customer dashboard)
+# can expose their accounts to chat search without this module knowing about them.
+# A provider is ``fn(term: str) -> list[dict]`` returning account dicts that look
+# like {"id", "handle", "name", "avatar", "kind"}.
+_directory_providers: List[Any] = []
+
+
+def register_directory_provider(fn) -> None:
+    if fn not in _directory_providers:
+        _directory_providers.append(fn)
+
+
+def _provider_accounts(term: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for fn in _directory_providers:
+        try:
+            for acc in fn(term) or []:
+                aid = _norm_id(acc.get("id") or acc.get("handle"))
+                if not aid:
+                    continue
+                out.append({
+                    "id": aid,
+                    "handle": _norm_id(acc.get("handle") or aid),
+                    "name": acc.get("name") or acc.get("handle") or aid,
+                    "avatar": acc.get("avatar") or "",
+                    "kind": acc.get("kind") or "",
+                    "online": manager.is_online(aid),
+                    "last_seen": None,
+                })
+        except Exception as e:
+            log.warning("chat directory provider failed: %s", e)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Core: persist + deliver a message
 # ---------------------------------------------------------------------------
 
@@ -398,16 +435,29 @@ async def chat_register(req: RegisterReq):
 
 @router.get("/api/chat/search")
 async def chat_search(q: str = "", me: str = "", limit: int = 20):
-    term = _norm_id(q)
+    term = _norm_id(q).lstrip("@")
     me_id = _norm_id(me)
+    cap = max(1, min(limit, 50))
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    # 1) Registered chat accounts (authoritative — keep real avatar/presence).
     with db.SessionLocal() as session:
         query = session.query(ChatAccount)
         if term:
             like = f"%{term}%"
             query = query.filter(or_(ChatAccount.handle.like(like), ChatAccount.display_name.ilike(like)))
-        rows = query.order_by(ChatAccount.handle).limit(max(1, min(limit, 50))).all()
-    out = [_account_dict(a) for a in rows if a.id != me_id]
-    return {"data": out}
+        rows = query.order_by(ChatAccount.handle).limit(cap * 2).all()
+    for a in rows:
+        if a.id != me_id:
+            merged[a.id] = _account_dict(a)
+
+    # 2) Accounts known to other modules (vendors, customers...) not yet registered.
+    for acc in _provider_accounts(term):
+        if acc["id"] != me_id and acc["id"] not in merged:
+            merged[acc["id"]] = acc
+
+    out = sorted(merged.values(), key=lambda a: a.get("handle") or "")
+    return {"data": out[:cap]}
 
 
 @router.get("/api/chat/account/{account_id}")

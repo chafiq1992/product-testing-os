@@ -8492,6 +8492,48 @@ async def api_wholesale_list_vendors():
         return {"error": str(e)}
 
 
+def _wholesale_chat_directory(term: str) -> list[dict]:
+    """Expose wholesale vendors to chat search so they're reachable by id/name
+    even before they've opened the Chat tab."""
+    try:
+        t = (term or "").strip().lower()
+        with db.SessionLocal() as session:
+            rows = session.query(db.AppSetting).filter(
+                db.AppSetting.store == WHOLESALE_STORE,
+                db.AppSetting.key.like("wholesale_vendor:%"),
+            ).all()
+        out: list[dict] = []
+        for r in rows:
+            try:
+                val = json.loads(r.value) if r.value else {}
+            except Exception:
+                continue
+            if not isinstance(val, dict):
+                continue
+            vid = str(val.get("id") or val.get("username") or "").strip().lower()
+            if not vid:
+                continue
+            name = str(val.get("name") or val.get("username") or vid)
+            if t and (t not in vid) and (t not in name.lower()):
+                continue
+            out.append({
+                "id": vid,
+                "handle": str(val.get("username") or vid).strip().lower(),
+                "name": name,
+                "avatar": val.get("profile_image") or val.get("avatar") or "",
+                "kind": "vendor",
+            })
+        return out
+    except Exception:
+        return []
+
+
+try:
+    _chat.register_directory_provider(_wholesale_chat_directory)
+except Exception:
+    pass
+
+
 @app.post("/api/wholesale/login")
 async def api_wholesale_login(req: WholesaleLogin):
     """Vendor login: validate credentials and return vendor info."""
