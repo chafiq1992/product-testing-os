@@ -1076,7 +1076,25 @@ function Dashboard({
   const [loadingProducts, setLoadingProducts] = useState(true)
   const [orderStats, setOrderStats] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [chatConversationOpen, setChatConversationOpen] = useState(false)
+  const [navHidden, setNavHidden] = useState(false)
+  const mainRef = useRef<HTMLElement | null>(null)
+  const lastScrollRef = useRef(0)
+  const isChat = activeTab === 'chat'
   const profileImage = vendor.profile_image || vendor.profileImage || vendor.avatar || ''
+
+  // Dynamic bottom island: slide it away on scroll-down, bring it back on scroll-up.
+  function onMainScroll() {
+    const el = mainRef.current
+    if (!el) return
+    const y = el.scrollTop
+    const last = lastScrollRef.current
+    if (y > last + 8 && y > 60) setNavHidden(true)
+    else if (y < last - 8) setNavHidden(false)
+    lastScrollRef.current = y
+  }
+  // Hide the island entirely while reading a conversation (WhatsApp-style).
+  const islandHidden = navHidden || (isChat && chatConversationOpen)
   const vendorInitial = (vendor.name || vendor.username || 'V').charAt(0).toUpperCase()
 
   async function refreshProducts() {
@@ -1096,6 +1114,8 @@ function Dashboard({
   }
 
   useEffect(() => { refreshProducts(); refreshOrders() }, [vendor.id])
+  // Reveal the island and reset scroll tracking whenever the tab changes.
+  useEffect(() => { setNavHidden(false); lastScrollRef.current = 0; if (mainRef.current) mainRef.current.scrollTop = 0 }, [activeTab])
   const isArabic = lang === 'ar'
 
   function toggleLang() {
@@ -1111,25 +1131,12 @@ function Dashboard({
       case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
-      case 'chat': return (
-        <ChatInbox
-          me={{
-            id: String(vendor.id || vendor.username || '').toLowerCase(),
-            handle: String(vendor.username || vendor.id || '').toLowerCase(),
-            name: vendor.name || vendor.username || 'Vendor',
-            avatar: profileImage || '',
-            kind: 'vendor',
-          }}
-          catalogVendorId={String(vendor.id || vendor.username || '').toLowerCase()}
-          catalogVendorName={vendor.name || vendor.username || ''}
-        />
-      )
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
     }
   }
 
   return (
-    <div dir={isArabic ? 'rtl' : 'ltr'} className="flex flex-col md:flex-row h-screen bg-slate-50 text-slate-900 overflow-hidden" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', system-ui, sans-serif" }}>
+    <div dir={isArabic ? 'rtl' : 'ltr'} className="flex flex-col md:flex-row h-[100dvh] bg-slate-50 text-slate-900 overflow-hidden" style={{ fontFamily: isArabic ? "'Tajawal', 'Noto Sans Arabic', system-ui, sans-serif" : "'Inter', system-ui, sans-serif" }}>
       {/* Desktop Sidebar */}
       <nav className="hidden md:flex w-64 bg-white border-r border-slate-200 flex-col">
         <div className="p-6 border-b border-slate-100">
@@ -1163,7 +1170,8 @@ function Dashboard({
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto pb-24 md:pb-8">
+      <main ref={mainRef} onScroll={onMainScroll} className={isChat ? "flex-1 min-h-0 flex flex-col overflow-hidden" : "flex-1 overflow-y-auto pb-24 md:pb-8"}>
+        {!isChat && (
         <div className="sticky top-0 z-30 px-3 pt-3 md:px-8 md:pt-6 bg-slate-50/95 backdrop-blur">
           <div className="relative rounded-2xl md:rounded-[24px] border border-slate-200/80 bg-white px-3 py-2.5 md:px-7 md:py-4 text-slate-900 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
@@ -1235,6 +1243,25 @@ function Dashboard({
             </div>
             </div>
           </div>
+        )}
+        {isChat ? (
+          <div className="flex-1 min-h-0">
+            <ChatInbox
+              framed={false}
+              heightClass="h-full"
+              onActiveConversationChange={setChatConversationOpen}
+              me={{
+                id: String(vendor.id || vendor.username || '').toLowerCase(),
+                handle: String(vendor.username || vendor.id || '').toLowerCase(),
+                name: vendor.name || vendor.username || 'Vendor',
+                avatar: profileImage || '',
+                kind: 'vendor',
+              }}
+              catalogVendorId={String(vendor.id || vendor.username || '').toLowerCase()}
+              catalogVendorName={vendor.name || vendor.username || ''}
+            />
+          </div>
+        ) : (
         <div className="p-4 md:p-8 pt-5">
           {activeTab === 'overview' && (
             <div className="mx-auto mb-5 grid max-w-6xl grid-cols-2 gap-3">
@@ -1258,10 +1285,11 @@ function Dashboard({
           )}
           {renderContent()}
         </div>
+        )}
       </main>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-3 py-2 flex justify-around items-center z-50 shadow-[0_-8px_30px_rgba(0,0,0,0.08)]">
+      {/* Mobile Bottom Nav — dynamic island: slides away on scroll-down / inside a chat */}
+      <nav className={`md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-3 py-2 flex justify-around items-center z-50 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] transition-transform duration-300 ease-out ${islandHidden ? 'translate-y-[140%]' : 'translate-y-0'}`}>
         <MobileNavItem active={activeTab==='overview'} onClick={()=>setActiveTab('overview')} icon={<LayoutDashboard size={30}/>} label={copy.home} />
         <MobileNavItem active={activeTab==='orders' || activeTab==='create-order'} onClick={()=>setActiveTab('orders')} icon={<ClipboardList size={30}/>} label={copy.orders} />
         <MobileNavItem active={activeTab==='inventory' || activeTab==='add-new'} onClick={()=>setActiveTab('inventory')} icon={<Package size={30}/>} label={copy.stock} />

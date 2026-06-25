@@ -114,12 +114,14 @@ function MessageView({ m, mine }: { m: ChatMessage; mine: boolean }) {
   )
 }
 
-export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]', catalogVendorId, catalogVendorName }: {
+export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]', catalogVendorId, catalogVendorName, framed = true, onActiveConversationChange }: {
   me: Me
   className?: string
   heightClass?: string
   catalogVendorId?: string
   catalogVendorName?: string
+  framed?: boolean
+  onActiveConversationChange?: (open: boolean) => void
 }) {
   const meId = (me.id || '').toLowerCase()
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -150,6 +152,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   const recorder = useAudioRecorder()
 
   useEffect(() => { activePeerRef.current = activePeer }, [activePeer])
+  useEffect(() => { onActiveConversationChange?.(!!activePeer) }, [activePeer, onActiveConversationChange])
 
   const refreshConversations = useCallback(async () => {
     try { setConversations(await fetchConversations(meId)) } catch {}
@@ -445,7 +448,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   }, [messages])
 
   return (
-    <div className={`flex ${heightClass} bg-slate-100 rounded-xl overflow-hidden border border-slate-200 ${className}`}>
+    <div className={`flex ${heightClass} bg-slate-100 overflow-hidden ${framed ? 'rounded-xl border border-slate-200' : ''} ${className}`}>
       {/* ── Sidebar (conversation list) ── */}
       <aside className={`${activePeer ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-80 lg:w-96 bg-white border-r border-slate-200`}>
         <div className="p-3 border-b border-slate-200">
@@ -465,7 +468,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
             />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto pb-24 md:pb-2">
           {searching && <div className="p-4 text-center text-sm text-slate-400"><Loader2 size={16} className="animate-spin inline" /> Searching…</div>}
           {!searching && listItems.length === 0 && (
             <div className="p-6 text-center text-sm text-slate-400">
