@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, Send, Paperclip, Mic, X, ArrowLeft, Check, CheckCheck,
-  ImageIcon, Play, Pause, Trash2, Loader2, MessageSquare, Circle,
+  ImageIcon, Play, Pause, Trash2, Loader2, MessageSquare, Circle, Store,
 } from 'lucide-react'
 import {
   ChatAccount, ChatMessage, Conversation, Me,
@@ -11,6 +11,10 @@ import {
   markRead, sendMessageHttp, uploadMedia, mediaUrl, wsUrl,
 } from './chatApi'
 import { useAudioRecorder } from './useAudioRecorder'
+import { ProductCard, CatalogCard } from './catalog'
+import ProductBubble from './ProductBubble'
+import ProductPanel from './ProductPanel'
+import CatalogPicker from './CatalogPicker'
 
 function uuid() {
   try { return crypto.randomUUID() } catch { return `id_${Date.now()}_${Math.random().toString(36).slice(2)}` }
@@ -110,10 +114,12 @@ function MessageView({ m, mine }: { m: ChatMessage; mine: boolean }) {
   )
 }
 
-export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]' }: {
+export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]', catalogVendorId, catalogVendorName }: {
   me: Me
   className?: string
   heightClass?: string
+  catalogVendorId?: string
+  catalogVendorName?: string
 }) {
   const meId = (me.id || '').toLowerCase()
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -128,6 +134,8 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   const [searchResults, setSearchResults] = useState<ChatAccount[]>([])
   const [searching, setSearching] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [panelProduct, setPanelProduct] = useState<{ vendor: string; id: string; fallback?: ProductCard } | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const seenIds = useRef<Set<string>>(new Set())
@@ -356,6 +364,26 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
     dispatch(peer, clientId, { type: 'text', text: body })
   }, [activePeer, text, pushOptimistic, dispatch])
 
+  const sendCard = useCallback((type: 'product' | 'catalog', card: ProductCard | CatalogCard) => {
+    const peer = activePeer
+    if (!peer) return
+    const clientId = pushOptimistic(peer, { type, card } as Partial<ChatMessage>)
+    dispatch(peer, clientId, { type, card })
+  }, [activePeer, pushOptimistic, dispatch])
+
+  const handleCatalogSend = useCallback((items: ProductCard[], asCatalog: boolean, title: string) => {
+    if (!items.length) return
+    if (asCatalog) {
+      sendCard('catalog', { vendor: catalogVendorId || me.id, title, count: items.length, products: items })
+    } else {
+      sendCard('product', items[0])
+    }
+  }, [sendCard, catalogVendorId, me.id])
+
+  const openProduct = useCallback((vendor: string, productId: string, fallback?: ProductCard) => {
+    setPanelProduct({ vendor, id: productId, fallback })
+  }, [])
+
   const sendFiles = useCallback(async (files: FileList | null) => {
     const peer = activePeer
     if (!peer || !files || !files.length) return
@@ -493,10 +521,15 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
             <div className="flex-1 overflow-y-auto py-3 space-y-1.5" style={{ backgroundImage: 'radial-gradient(rgba(0,0,0,0.03) 1px, transparent 1px)', backgroundSize: '16px 16px' }}>
               {loadingMsgs && <div className="text-center text-sm text-slate-400 py-4"><Loader2 size={16} className="animate-spin inline" /></div>}
               {!loadingMsgs && messages.length === 0 && <div className="text-center text-sm text-slate-400 py-8">No messages yet. Say hi 👋</div>}
-              {datedMessages.map((row, i) => row.day !== undefined
-                ? <div key={`d-${i}`} className="flex justify-center my-2"><span className="text-[11px] bg-white/80 text-slate-500 px-2 py-0.5 rounded-full shadow-sm">{row.day}</span></div>
-                : <MessageView key={row.m!.id} m={row.m!} mine={row.m!.sender_id === meId} />
-              )}
+              {datedMessages.map((row, i) => {
+                if (row.day !== undefined) return <div key={`d-${i}`} className="flex justify-center my-2"><span className="text-[11px] bg-white/80 text-slate-500 px-2 py-0.5 rounded-full shadow-sm">{row.day}</span></div>
+                const msg = row.m!
+                const mine = msg.sender_id === meId
+                if (msg.type === 'product' || msg.type === 'catalog') {
+                  return <ProductBubble key={msg.id} m={msg} mine={mine} onOpenProduct={openProduct} />
+                }
+                return <MessageView key={msg.id} m={msg} mine={mine} />
+              })}
               <div ref={bottomRef} />
             </div>
 
@@ -514,6 +547,9 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
                 </div>
               ) : (
                 <div className="flex items-end gap-2">
+                  {catalogVendorId && (
+                    <button onClick={() => setPickerOpen(true)} className="p-2 text-slate-500 hover:text-blue-600" title="Send catalog"><Store size={22} /></button>
+                  )}
                   <button onClick={() => imgInputRef.current?.click()} className="p-2 text-slate-500 hover:text-blue-600" title="Photo / video"><ImageIcon size={22} /></button>
                   <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-500 hover:text-blue-600" title="Attach file"><Paperclip size={22} /></button>
                   <textarea
@@ -538,6 +574,24 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
 
       <input ref={imgInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
       <input ref={fileInputRef} type="file" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
+
+      {pickerOpen && catalogVendorId && (
+        <CatalogPicker
+          vendorId={catalogVendorId}
+          vendorName={catalogVendorName}
+          onClose={() => setPickerOpen(false)}
+          onSend={handleCatalogSend}
+          onPreview={(id, fallback) => openProduct(catalogVendorId, id, fallback)}
+        />
+      )}
+
+      <ProductPanel
+        vendorId={panelProduct?.vendor || ''}
+        productId={panelProduct?.id || null}
+        fallback={panelProduct?.fallback}
+        onClose={() => setPanelProduct(null)}
+        onSend={activePeer ? (card) => sendCard('product', card) : undefined}
+      />
     </div>
   )
 }

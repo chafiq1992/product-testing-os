@@ -19,12 +19,13 @@ export type ChatMessage = {
   conversation_id?: string
   sender_id: string
   recipient_id: string
-  type: 'text' | 'image' | 'video' | 'audio' | 'file'
+  type: 'text' | 'image' | 'video' | 'audio' | 'file' | 'product' | 'catalog'
   text?: string | null
   media_url?: string | null
   media_mime?: string | null
   media_name?: string | null
   duration?: string | null
+  card?: any
   status: 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
   created_at?: string | null
   read_at?: string | null
@@ -111,7 +112,7 @@ export async function markRead(me: string, peer: string): Promise<void> {
 
 export async function sendMessageHttp(payload: {
   sender: string; recipient: string; type?: string; text?: string
-  media_url?: string; media_mime?: string; media_name?: string; duration?: string; client_id?: string
+  media_url?: string; media_mime?: string; media_name?: string; duration?: string; card?: any; client_id?: string
 }): Promise<ChatMessage> {
   const { data, error } = await jpost('/api/chat/send', payload)
   if (error) throw new Error(error)

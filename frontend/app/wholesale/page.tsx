@@ -1120,6 +1120,8 @@ function Dashboard({
             avatar: profileImage || '',
             kind: 'vendor',
           }}
+          catalogVendorId={String(vendor.id || vendor.username || '').toLowerCase()}
+          catalogVendorName={vendor.name || vendor.username || ''}
         />
       )
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />

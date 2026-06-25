@@ -9457,6 +9457,135 @@ async def api_wholesale_vendor_products(vendor_id: str):
         return {"error": str(e)}
 
 
+# ── Chat catalog: vendor's in-stock Shopify products, normalized for the chat UI ──
+_chat_catalog_cache: dict[str, tuple[float, dict]] = {}
+_CHAT_CATALOG_TTL_S = int(os.getenv("PTOS_CHAT_CATALOG_TTL_S", "300") or "300")
+
+
+def _catalog_variant_available(variant: dict) -> int:
+    try:
+        return max(0, int(
+            variant.get("inventory_available")
+            if variant.get("inventory_available") is not None
+            else (variant.get("available_quantity")
+                  if variant.get("available_quantity") is not None
+                  else (variant.get("inventory_quantity") or 0))
+        ))
+    except Exception:
+        return 0
+
+
+def _catalog_normalize_product(p: dict) -> dict:
+    images = [im for im in (p.get("images") or []) if isinstance(im, dict)]
+    img_by_id = {im.get("id"): im.get("src") for im in images if im.get("id") and im.get("src")}
+    featured = (images[0].get("src") if images else (p.get("image") or {}).get("src")) or ""
+
+    variants_out: list[dict] = []
+    total_available = 0
+    in_stock_prices: list[float] = []
+    all_prices: list[float] = []
+    for v in (p.get("variants") or []):
+        if not isinstance(v, dict):
+            continue
+        avail = _catalog_variant_available(v)
+        total_available += avail
+        try:
+            price = float(v.get("price") or 0)
+        except Exception:
+            price = 0.0
+        all_prices.append(price)
+        if avail > 0:
+            in_stock_prices.append(price)
+        variants_out.append({
+            "id": str(v.get("id") or ""),
+            "title": v.get("title") or "",
+            "price": v.get("price"),
+            "compare_at_price": v.get("compare_at_price"),
+            "available": avail,
+            "sku": v.get("sku") or "",
+            "image": img_by_id.get(v.get("image_id")) or featured,
+        })
+
+    prices = in_stock_prices or all_prices
+    return {
+        "id": str(p.get("id") or ""),
+        "handle": p.get("handle") or "",
+        "title": p.get("title") or "",
+        "description_html": p.get("body_html") or "",
+        "image": featured,
+        "images": [im.get("src") for im in images if im.get("src")],
+        "price_min": (min(prices) if prices else 0),
+        "price_max": (max(prices) if prices else 0),
+        "compare_at_price": next((v.get("compare_at_price") for v in variants_out if v.get("compare_at_price")), None),
+        "available": total_available,
+        "variants": variants_out,
+    }
+
+
+def _build_vendor_catalog_sync(vid: str) -> dict:
+    key = _wholesale_vendor_key(vid)
+    vendor = db.get_app_setting(WHOLESALE_STORE, key)
+    if not isinstance(vendor, dict):
+        return {"error": "vendor_not_found"}
+    vendor_name = vendor.get("name", vid)
+    from app.integrations.shopify_client import list_products_by_vendor
+    products = list_products_by_vendor(
+        vendor_name, store=WHOLESALE_STORE, limit=250, include_translations=False,
+        request_timeout=int(os.getenv("PTOS_WHOLESALE_PRODUCTS_TIMEOUT_S", "12") or "12"),
+    )
+    products = _wholesale_enrich_products_inventory(products)
+    normalized = [_catalog_normalize_product(p) for p in (products or [])]
+    in_stock = [p for p in normalized if p["available"] > 0]
+    in_stock.sort(key=lambda p: p["title"].lower())
+    return {
+        "vendor": {"id": vid, "name": vendor_name, "store_type": vendor.get("store_type") or ""},
+        "products": in_stock,
+        "count": len(in_stock),
+    }
+
+
+async def _get_vendor_catalog(vid: str, force: bool = False) -> dict:
+    now = time.time()
+    cached = _chat_catalog_cache.get(vid)
+    if cached and not force and (now - cached[0]) < _CHAT_CATALOG_TTL_S:
+        return cached[1]
+    result = await run_in_threadpool(_build_vendor_catalog_sync, vid)
+    if "error" not in result:
+        _chat_catalog_cache[vid] = (now, result)
+    return result
+
+
+@app.get("/api/chat/catalog")
+async def api_chat_catalog(vendor: str, refresh: int = 0):
+    """In-stock catalog for a vendor (images are Shopify CDN links)."""
+    try:
+        vid = (vendor or "").strip().lower()
+        if not vid:
+            return {"error": "vendor is required"}
+        return {"data": await _get_vendor_catalog(vid, force=bool(refresh))}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/chat/catalog/product")
+async def api_chat_catalog_product(vendor: str, id: str):
+    """Full normalized detail for a single in-stock product (for the slide-in panel)."""
+    try:
+        vid = (vendor or "").strip().lower()
+        pid = str(id or "").strip()
+        if not (vid and pid):
+            return {"error": "vendor and id are required"}
+        catalog = await _get_vendor_catalog(vid)
+        if "error" in catalog:
+            return catalog
+        for p in catalog.get("products", []):
+            if p["id"] == pid:
+                return {"data": p}
+        return {"error": "not_found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/api/wholesale/vendors/{vendor_id}/products")
 async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCreate, background_tasks: BackgroundTasks):
     """Create a product on the MMD Shopify store tagged with the vendor name."""

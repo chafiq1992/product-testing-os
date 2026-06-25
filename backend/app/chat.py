@@ -64,12 +64,13 @@ class ChatMessage(db.Base):
     conversation_id = Column(String, nullable=False, index=True)  # sorted "a|b"
     sender_id = Column(String, nullable=False, index=True)
     recipient_id = Column(String, nullable=False, index=True)
-    msg_type = Column(String, nullable=False, default="text")     # text|image|video|audio|file
+    msg_type = Column(String, nullable=False, default="text")     # text|image|video|audio|file|product|catalog
     text = Column(Text, nullable=True)
     media_url = Column(String, nullable=True)
     media_mime = Column(String, nullable=True)
     media_name = Column(String, nullable=True)
     duration = Column(String, nullable=True)         # audio length (seconds, as string)
+    data_json = Column(Text, nullable=True)          # structured payload for product/catalog cards
     status = Column(String, nullable=False, default="sent")       # sent|delivered|read
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     read_at = Column(DateTime, nullable=True)
@@ -80,11 +81,27 @@ Index("ix_chat_messages_conv_created", ChatMessage.conversation_id, ChatMessage.
 db.Base.metadata.create_all(db.engine)
 
 
+def _ensure_chat_columns() -> None:
+    """Add columns introduced after a table was first created (no Alembic here)."""
+    from sqlalchemy import text as _sa_text
+    for table, col, ddl in [("chat_messages", "data_json", "ALTER TABLE chat_messages ADD COLUMN data_json TEXT")]:
+        try:
+            with db.engine.begin() as conn:
+                conn.execute(_sa_text(ddl))
+        except Exception:
+            pass  # column already exists
+
+
+_ensure_chat_columns()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 MEDIA_TYPES = {"image", "video", "audio", "file"}
+CARD_TYPES = {"product", "catalog"}
+ALLOWED_TYPES = {"text"} | MEDIA_TYPES | CARD_TYPES
 
 
 def _norm_id(value: Any) -> str:
@@ -126,6 +143,7 @@ def _message_dict(m: ChatMessage) -> Dict[str, Any]:
         "media_mime": m.media_mime,
         "media_name": m.media_name,
         "duration": m.duration,
+        "card": (json.loads(m.data_json) if m.data_json else None),
         "status": m.status,
         "created_at": _iso(m.created_at),
         "read_at": _iso(m.read_at),
@@ -397,6 +415,7 @@ async def persist_and_deliver(
     media_mime: str | None = None,
     media_name: str | None = None,
     duration: str | None = None,
+    card: dict | None = None,
     client_id: str | None = None,
 ) -> Dict[str, Any]:
     sender_id = _norm_id(sender)
@@ -404,12 +423,14 @@ async def persist_and_deliver(
     if not sender_id or not recipient_id:
         raise ValueError("sender and recipient required")
     mtype = (msg_type or "text").strip().lower()
-    if mtype not in MEDIA_TYPES and mtype != "text":
+    if mtype not in ALLOWED_TYPES:
         mtype = "text"
     if mtype == "text" and not (text or "").strip():
         raise ValueError("empty message")
     if mtype in MEDIA_TYPES and not media_url:
         raise ValueError("media_url required")
+    if mtype in CARD_TYPES and not card:
+        raise ValueError("card payload required")
 
     # Ensure both accounts exist (so a fresh DM target shows up in directories).
     upsert_account(sender_id, touch=True)
@@ -427,6 +448,7 @@ async def persist_and_deliver(
         media_mime=media_mime,
         media_name=media_name,
         duration=duration,
+        data_json=(json.dumps(card, ensure_ascii=False) if card else None),
         status="delivered" if recipient_online else "sent",
         created_at=datetime.utcnow(),
     )
@@ -535,6 +557,7 @@ class SendReq(BaseModel):
     media_mime: Optional[str] = None
     media_name: Optional[str] = None
     duration: Optional[str] = None
+    card: Optional[Dict[str, Any]] = None
     client_id: Optional[str] = None
 
 
@@ -668,6 +691,7 @@ async def chat_send(req: SendReq):
             media_mime=req.media_mime,
             media_name=req.media_name,
             duration=req.duration,
+            card=req.card,
             client_id=req.client_id,
         )
         return {"data": msg}
@@ -769,6 +793,7 @@ async def chat_ws(websocket: WebSocket, account_id: str):
                         media_mime=payload.get("media_mime"),
                         media_name=payload.get("media_name"),
                         duration=payload.get("duration"),
+                        card=payload.get("card"),
                         client_id=payload.get("client_id"),
                     )
                 except Exception as e:
