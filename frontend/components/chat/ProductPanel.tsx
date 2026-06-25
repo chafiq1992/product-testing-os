@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { X, Send, Package, Check, Loader2 } from 'lucide-react'
-import { CatalogProduct, ProductCard, fetchCatalogProduct, priceLabel } from './catalog'
+import { CatalogProduct, ProductCard, fetchCatalogProduct, priceLabel, unitPriceLabel, pcsLabel } from './catalog'
 
 // Clean, slide-in product detail (price, gallery, description, variants).
 export default function ProductPanel({
@@ -81,6 +81,7 @@ export default function ProductPanel({
               <h2 className="text-xl font-black text-slate-900 leading-tight">{title || (loading ? 'Loading…' : '')}</h2>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 <span className="text-lg font-extrabold text-blue-600">{priceLabel(priceMin, priceMax)}</span>
+                <span className="text-xs font-semibold text-slate-400">/crate</span>
                 {compareAt > 0 && compareAt > priceMin && (
                   <span className="text-sm text-slate-400 line-through">{compareAt.toFixed(2)} DH</span>
                 )}
@@ -88,6 +89,14 @@ export default function ProductPanel({
                   {available > 0 ? `${available} in stock` : 'Out of stock'}
                 </span>
               </div>
+              {(unitPriceLabel(product?.unit_price_min, product?.unit_price_max) || pcsLabel(product?.pcs_options)) && (
+                <div className="mt-1 flex items-center gap-2 text-sm text-slate-500">
+                  {unitPriceLabel(product?.unit_price_min, product?.unit_price_max) && (
+                    <span className="font-semibold text-slate-700">{unitPriceLabel(product?.unit_price_min, product?.unit_price_max)}<span className="text-xs text-slate-400"> /pc</span></span>
+                  )}
+                  {pcsLabel(product?.pcs_options) && <span className="text-xs bg-slate-100 rounded-full px-2 py-0.5">{pcsLabel(product?.pcs_options)}</span>}
+                </div>
+              )}
             </div>
 
             {/* Variants / sizes */}
@@ -97,8 +106,15 @@ export default function ProductPanel({
                 <div className="space-y-1.5">
                   {product.variants.map(v => (
                     <div key={v.id} className={`flex items-center justify-between rounded-lg border px-3 py-2 ${v.available > 0 ? 'border-slate-200' : 'border-slate-100 opacity-50'}`}>
-                      <span className="text-sm font-medium text-slate-700">{v.title}</span>
-                      <div className="flex items-center gap-2">
+                      <div className="min-w-0">
+                        <span className="text-sm font-medium text-slate-700">{v.title}</span>
+                        {(v.unit_price || v.pcs_per_crate) ? (
+                          <span className="block text-[11px] text-slate-400">
+                            {[v.unit_price ? `${v.unit_price.toFixed(2)} DH/pc` : '', v.pcs_per_crate ? `${v.pcs_per_crate} pcs/crate` : ''].filter(Boolean).join(' · ')}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
                         <span className="text-sm font-semibold text-slate-900">{v.price ? `${parseFloat(v.price).toFixed(2)} DH` : ''}</span>
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${v.available > 0 ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'}`}>
                           {v.available > 0 ? v.available : '0'}

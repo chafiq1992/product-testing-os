@@ -9475,6 +9475,18 @@ def _catalog_variant_available(variant: dict) -> int:
         return 0
 
 
+def _catalog_pcs_per_crate(variant: dict) -> int:
+    """Pieces per crate is encoded in the variant title/sku, e.g. '28-30*24pcs'."""
+    for field in (variant.get("title"), variant.get("option1"), variant.get("option2"), variant.get("sku")):
+        match = re.search(r"(\d+)\s*pcs", str(field or ""), re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                pass
+    return 0
+
+
 def _catalog_normalize_product(p: dict) -> dict:
     images = [im for im in (p.get("images") or []) if isinstance(im, dict)]
     img_by_id = {im.get("id"): im.get("src") for im in images if im.get("id") and im.get("src")}
@@ -9484,6 +9496,8 @@ def _catalog_normalize_product(p: dict) -> dict:
     total_available = 0
     in_stock_prices: list[float] = []
     all_prices: list[float] = []
+    in_stock_unit_prices: list[float] = []
+    pcs_options: set[int] = set()
     for v in (p.get("variants") or []):
         if not isinstance(v, dict):
             continue
@@ -9493,9 +9507,14 @@ def _catalog_normalize_product(p: dict) -> dict:
             price = float(v.get("price") or 0)
         except Exception:
             price = 0.0
+        pcs = _catalog_pcs_per_crate(v)
+        unit_price = round(price / pcs, 2) if pcs > 0 else price
         all_prices.append(price)
         if avail > 0:
             in_stock_prices.append(price)
+            in_stock_unit_prices.append(unit_price)
+            if pcs > 0:
+                pcs_options.add(pcs)
         variants_out.append({
             "id": str(v.get("id") or ""),
             "title": v.get("title") or "",
@@ -9504,9 +9523,12 @@ def _catalog_normalize_product(p: dict) -> dict:
             "available": avail,
             "sku": v.get("sku") or "",
             "image": img_by_id.get(v.get("image_id")) or featured,
+            "pcs_per_crate": pcs,
+            "unit_price": unit_price,
         })
 
     prices = in_stock_prices or all_prices
+    unit_prices = in_stock_unit_prices or [vo["unit_price"] for vo in variants_out]
     return {
         "id": str(p.get("id") or ""),
         "handle": p.get("handle") or "",
@@ -9516,8 +9538,12 @@ def _catalog_normalize_product(p: dict) -> dict:
         "images": [im.get("src") for im in images if im.get("src")],
         "price_min": (min(prices) if prices else 0),
         "price_max": (max(prices) if prices else 0),
+        "unit_price_min": (min(unit_prices) if unit_prices else 0),
+        "unit_price_max": (max(unit_prices) if unit_prices else 0),
+        "pcs_options": sorted(pcs_options),
         "compare_at_price": next((v.get("compare_at_price") for v in variants_out if v.get("compare_at_price")), None),
         "available": total_available,
+        "created_at": p.get("created_at") or p.get("published_at") or "",
         "variants": variants_out,
     }
 

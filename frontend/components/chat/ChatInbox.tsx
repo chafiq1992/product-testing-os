@@ -134,7 +134,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   const [searchResults, setSearchResults] = useState<ChatAccount[]>([])
   const [searching, setSearching] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [pickerOpen, setPickerOpen] = useState(false)
+  const [catalogTarget, setCatalogTarget] = useState<{ vendorId: string; vendorName?: string } | null>(null)
   const [panelProduct, setPanelProduct] = useState<{ vendor: string; id: string; fallback?: ProductCard } | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -374,11 +374,11 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   const handleCatalogSend = useCallback((items: ProductCard[], asCatalog: boolean, title: string) => {
     if (!items.length) return
     if (asCatalog) {
-      sendCard('catalog', { vendor: catalogVendorId || me.id, title, count: items.length, products: items })
+      sendCard('catalog', { vendor: items[0]?.vendor || me.id, title, count: items.length, products: items })
     } else {
       sendCard('product', items[0])
     }
-  }, [sendCard, catalogVendorId, me.id])
+  }, [sendCard, me.id])
 
   const openProduct = useCallback((vendor: string, productId: string, fallback?: ProductCard) => {
     setPanelProduct({ vendor, id: productId, fallback })
@@ -516,6 +516,15 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
                   {typingPeer === activePeer.id ? <span className="text-green-600">typing…</span> : isOnline(activePeer.id) ? 'online' : `@${activePeer.handle}`}
                 </div>
               </div>
+              {activePeer.kind === 'vendor' && (
+                <button
+                  onClick={() => setCatalogTarget({ vendorId: activePeer.id, vendorName: activePeer.name })}
+                  className="flex items-center gap-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-bold px-3 py-1.5 transition"
+                  title={`Browse ${activePeer.name || activePeer.handle}'s catalog`}
+                >
+                  <Store size={16} /> <span className="hidden sm:inline">Catalog</span>
+                </button>
+              )}
             </header>
 
             <div className="flex-1 overflow-y-auto py-3 space-y-1.5" style={{ backgroundImage: 'radial-gradient(rgba(0,0,0,0.03) 1px, transparent 1px)', backgroundSize: '16px 16px' }}>
@@ -548,7 +557,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
               ) : (
                 <div className="flex items-end gap-2">
                   {catalogVendorId && (
-                    <button onClick={() => setPickerOpen(true)} className="p-2 text-slate-500 hover:text-blue-600" title="Send catalog"><Store size={22} /></button>
+                    <button onClick={() => setCatalogTarget({ vendorId: catalogVendorId, vendorName: catalogVendorName })} className="p-2 text-slate-500 hover:text-blue-600" title="Send catalog"><Store size={22} /></button>
                   )}
                   <button onClick={() => imgInputRef.current?.click()} className="p-2 text-slate-500 hover:text-blue-600" title="Photo / video"><ImageIcon size={22} /></button>
                   <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-500 hover:text-blue-600" title="Attach file"><Paperclip size={22} /></button>
@@ -575,13 +584,13 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
       <input ref={imgInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
       <input ref={fileInputRef} type="file" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
 
-      {pickerOpen && catalogVendorId && (
+      {catalogTarget && (
         <CatalogPicker
-          vendorId={catalogVendorId}
-          vendorName={catalogVendorName}
-          onClose={() => setPickerOpen(false)}
+          vendorId={catalogTarget.vendorId}
+          vendorName={catalogTarget.vendorName}
+          onClose={() => setCatalogTarget(null)}
           onSend={handleCatalogSend}
-          onPreview={(id, fallback) => openProduct(catalogVendorId, id, fallback)}
+          onPreview={(id, fallback) => openProduct(catalogTarget.vendorId, id, fallback)}
         />
       )}
 

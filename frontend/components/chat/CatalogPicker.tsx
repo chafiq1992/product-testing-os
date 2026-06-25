@@ -1,8 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useState } from 'react'
-import { X, Search, Loader2, Check, Send, Store, RefreshCw, Eye } from 'lucide-react'
-import { Catalog, CatalogProduct, ProductCard, fetchCatalog, toProductCard, priceLabel } from './catalog'
+import { X, Search, Loader2, Check, Send, Store, RefreshCw, Eye, ArrowDownWideNarrow } from 'lucide-react'
+import { Catalog, CatalogProduct, CatalogSort, ProductCard, fetchCatalog, toProductCard, priceLabel, unitPriceLabel, pcsLabel, sortProducts } from './catalog'
 
 // Pop-up grid of the vendor's in-stock products. Pick some or send the whole catalog.
 export default function CatalogPicker({
@@ -19,6 +19,7 @@ export default function CatalogPicker({
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [term, setTerm] = useState('')
+  const [sort, setSort] = useState<CatalogSort>('newest')
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const load = (refresh = false) => {
@@ -34,9 +35,9 @@ export default function CatalogPicker({
   const products = catalog?.products || []
   const filtered = useMemo(() => {
     const q = term.trim().toLowerCase()
-    if (!q) return products
-    return products.filter(p => p.title.toLowerCase().includes(q))
-  }, [products, term])
+    const base = q ? products.filter(p => p.title.toLowerCase().includes(q)) : products
+    return sortProducts(base, sort)
+  }, [products, term, sort])
 
   const toggle = (id: string) => setSelected(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
@@ -74,9 +75,9 @@ export default function CatalogPicker({
           <button onClick={onClose} className="p-2 rounded-full hover:bg-slate-100 text-slate-500"><X size={20} /></button>
         </div>
 
-        {/* Search */}
-        <div className="px-4 py-2.5 border-b border-slate-100">
-          <div className="relative">
+        {/* Search + sort */}
+        <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+          <div className="relative flex-1">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={term}
@@ -84,6 +85,19 @@ export default function CatalogPicker({
               placeholder="Search products"
               className="w-full pl-9 pr-3 py-2 rounded-full bg-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
             />
+          </div>
+          <div className="relative shrink-0">
+            <ArrowDownWideNarrow size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <select
+              value={sort}
+              onChange={e => setSort(e.target.value as CatalogSort)}
+              className="appearance-none pl-8 pr-3 py-2 rounded-full bg-slate-100 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300 cursor-pointer"
+              title="Sort"
+            >
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="stock">Most stock</option>
+            </select>
           </div>
         </div>
 
@@ -124,6 +138,12 @@ export default function CatalogPicker({
                       <span className="text-[11px] font-bold text-blue-600">{priceLabel(p.price_min, p.price_max)}</span>
                       <span className="text-[10px] text-green-600 font-bold">{p.available}</span>
                     </div>
+                    {(unitPriceLabel(p.unit_price_min, p.unit_price_max) || pcsLabel(p.pcs_options)) && (
+                      <div className="mt-0.5 flex items-center justify-between gap-1 text-[9px] text-slate-400">
+                        <span className="truncate">{unitPriceLabel(p.unit_price_min, p.unit_price_max) && `${unitPriceLabel(p.unit_price_min, p.unit_price_max)}/pc`}</span>
+                        <span className="shrink-0">{pcsLabel(p.pcs_options)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )
