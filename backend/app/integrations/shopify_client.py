@@ -2224,10 +2224,44 @@ def _get_product_cache(store: str | None, kind: str, pid: str, ttl_s: int | None
     return None
 
 
+def _get_product_caches(store: str | None, kind: str, pids: list[str], ttl_s: int | None = None) -> dict[str, dict]:
+    """Bulk version of _get_product_cache to avoid one DB session per product."""
+    try:
+        from app import db as _db  # type: ignore
+        keys = [_product_cache_key(kind, pid) for pid in pids]
+        records = _db.get_app_settings(_canonical_store_label(store), keys)
+        ttl = int(ttl_s if ttl_s is not None else _PRODUCT_BRIEF_DB_TTL_S)
+        now = time.time()
+        out: dict[str, dict] = {}
+        for pid in pids:
+            rec = records.get(_product_cache_key(kind, pid)) or {}
+            if not isinstance(rec, dict):
+                continue
+            ts = float(rec.get("ts") or 0)
+            data = rec.get("data")
+            if ts > 0 and ttl > 0 and (now - ts) <= ttl and isinstance(data, dict):
+                out[pid] = data
+        return out
+    except Exception:
+        return {}
+
+
 def _set_product_cache(store: str | None, kind: str, pid: str, data: dict) -> None:
     try:
         from app import db as _db  # type: ignore
         _db.set_app_setting(_canonical_store_label(store), _product_cache_key(kind, pid), {"ts": time.time(), "data": data or {}})
+    except Exception:
+        pass
+
+
+def _set_product_caches(store: str | None, kind: str, values: dict[str, dict]) -> None:
+    try:
+        from app import db as _db  # type: ignore
+        now = time.time()
+        _db.set_app_settings(
+            _canonical_store_label(store),
+            {_product_cache_key(kind, pid): {"ts": now, "data": data or {}} for pid, data in (values or {}).items()},
+        )
     except Exception:
         pass
 
@@ -3266,7 +3300,7 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
 
     now = time.time()
     out: dict[str, dict] = {}
-    missing: list[str] = []
+    db_candidates: list[str] = []
     store_key = (store or "").strip().lower()
     for pid in ids:
         k = f"{store_key}::{pid}"
@@ -3274,15 +3308,20 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
         if hit and (now - float(hit[0])) <= float(_PRODUCT_BRIEF_TTL_S):
             out[pid] = hit[1]
         else:
-            db_hit = _get_product_cache(store, "brief", pid, _PRODUCT_BRIEF_DB_TTL_S)
-            if db_hit is not None:
-                out[pid] = db_hit
-                try:
-                    _PRODUCT_BRIEF_CACHE[k] = (now, db_hit)
-                except Exception:
-                    pass
-            else:
-                missing.append(pid)
+            db_candidates.append(pid)
+
+    db_hits = _get_product_caches(store, "brief", db_candidates, _PRODUCT_BRIEF_DB_TTL_S)
+    missing: list[str] = []
+    for pid in db_candidates:
+        db_hit = db_hits.get(pid)
+        if db_hit is not None:
+            out[pid] = db_hit
+            try:
+                _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, db_hit)
+            except Exception:
+                pass
+        else:
+            missing.append(pid)
 
     if not missing:
         return out
@@ -3290,6 +3329,8 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
     try:
         started = time.time()
         brief_map = _get_products_brief_graphql(missing, store=store)
+        brief_cache_values: dict[str, dict] = {}
+        inventory_cache_values: dict[str, dict] = {}
         for pid in missing:
             data = (brief_map or {}).get(pid) or {"image": None, "total_available": 0, "zero_variants": 0, "zero_sizes": 0, "price": None}
             out[pid] = data
@@ -3297,17 +3338,18 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
             except Exception:
                 pass
-            _set_product_cache(store, "brief", pid, data)
+            brief_cache_values[pid] = data
             try:
-                inv_data = {
+                inventory_cache_values[pid] = {
                     "sizes": (data or {}).get("sizes") or [],
                     "colors": (data or {}).get("colors") or [],
                     "matrix": (data or {}).get("matrix") or {},
                     "total_available": int((data or {}).get("total_available") or 0),
                 }
-                _set_product_cache(store, "inventory", pid, inv_data)
             except Exception:
                 pass
+        _set_product_caches(store, "brief", brief_cache_values)
+        _set_product_caches(store, "inventory", inventory_cache_values)
         _perf_log.info(
             "products_brief.graphql store=%s ids=%d found=%d elapsed_ms=%d",
             store,
@@ -3344,7 +3386,7 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
                 _PRODUCT_BRIEF_CACHE[f"{store_key}::{pid}"] = (now, data)
             except Exception:
                 pass
-            _set_product_cache(store, "brief", pid, data)
+    _set_product_caches(store, "brief", {pid: out[pid] for pid in missing if pid in out})
     return out
 
 

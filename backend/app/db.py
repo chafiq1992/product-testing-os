@@ -443,6 +443,23 @@ def get_app_setting(store: str | None, key: str) -> Any:
             return item.value
 
 
+def get_app_settings(store: str | None, keys: list[str]) -> Dict[str, Any]:
+    """Load many app settings in one query, keyed by setting key."""
+    clean_keys = list(dict.fromkeys(str(key or "").strip() for key in (keys or []) if str(key or "").strip()))
+    if not clean_keys:
+        return {}
+    pks = [_mk_setting_pk(store, key) for key in clean_keys]
+    with SessionLocal() as session:
+        rows = session.query(AppSetting).filter(AppSetting.pk.in_(pks)).all()
+        out: Dict[str, Any] = {}
+        for item in rows:
+            try:
+                out[item.key] = json.loads(item.value) if item.value is not None else None
+            except Exception:
+                out[item.key] = item.value
+        return out
+
+
 def set_app_setting(store: str | None, key: str, value: Any) -> Any:
     with SessionLocal() as session:
         pk = _mk_setting_pk(store, key)
@@ -461,7 +478,52 @@ def set_app_setting(store: str | None, key: str, value: Any) -> Any:
             return item.value
 
 
-def list_campaign_meta(store: str | None = None) -> Dict[str, dict]:
+def set_app_settings(store: str | None, values: Dict[str, Any]) -> Dict[str, Any]:
+    """Upsert many app settings in one transaction."""
+    clean = {str(key or "").strip(): value for key, value in (values or {}).items() if str(key or "").strip()}
+    if not clean:
+        return {}
+    pks = [_mk_setting_pk(store, key) for key in clean]
+    now = _now()
+    with SessionLocal() as session:
+        existing = {item.pk: item for item in session.query(AppSetting).filter(AppSetting.pk.in_(pks)).all()}
+        for key, value in clean.items():
+            pk = _mk_setting_pk(store, key)
+            payload = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+            item = existing.get(pk)
+            if item:
+                item.value = payload
+                item.updated_at = now
+            else:
+                session.add(AppSetting(pk=pk, store=store, key=key, value=payload, updated_at=now))
+        session.commit()
+    return clean
+
+
+def _campaign_meta_summary(value: dict) -> dict:
+    """Return list-view fields without large analysis timeline payloads."""
+    summary = {key: val for key, val in (value or {}).items() if key != "timeline"}
+    incomplete_tasks = 0
+    timeline_entries = 0
+    for entry in ((value or {}).get("timeline") or []):
+        if not isinstance(entry, dict):
+            continue
+        timeline_entries += 1
+        text = entry.get("text")
+        if not isinstance(text, str) or '"type":"task"' not in text.replace(" ", ""):
+            continue
+        try:
+            task = json.loads(text)
+            if task.get("type") == "task" and not task.get("done"):
+                incomplete_tasks += 1
+        except Exception:
+            continue
+    summary["timeline_entries"] = timeline_entries
+    summary["incomplete_tasks"] = incomplete_tasks
+    return summary
+
+
+def list_campaign_meta(store: str | None = None, *, include_timeline: bool = True) -> Dict[str, dict]:
     """Return dict keyed by campaign_key: { campaign_key: { supplier_name?, supplier_alt_name?, timeline?: [{text, at}] } }"""
     with SessionLocal() as session:
         q = session.query(AppSetting).filter(AppSetting.key.like("campaign_meta:%"))
@@ -481,10 +543,18 @@ def list_campaign_meta(store: str | None = None) -> Dict[str, dict]:
                     val = json.loads(r.value) if r.value else {}
                 except Exception:
                     val = {}
-                out[ck] = val or {}
+                out[ck] = (val or {}) if include_timeline else _campaign_meta_summary(val or {})
             except Exception:
                 continue
         return out
+
+
+def get_campaign_meta(store: str | None, campaign_key: str) -> dict:
+    key = str(campaign_key or "").strip()
+    if not key:
+        return {}
+    value = get_app_setting(store, f"campaign_meta:{key}") or {}
+    return value if isinstance(value, dict) else {}
 
 
 def list_profit_costs(store: str | None = None) -> Dict[str, dict]:

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 
 const ALL_STORES = [
   { value: 'irrakids', label: 'irrakids' },
@@ -88,6 +88,22 @@ function normalizeStoreList(values?: string[]): string[]{
 type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
+type CampaignMetaState = CampaignMetaRecord & { product_life_checks?: Record<string, Record<string, boolean>> }
+
+function mergeCampaignMetaRecords(current: Record<string, CampaignMetaState>, incoming: Record<string, CampaignMetaRecord>): Record<string, CampaignMetaState>{
+  const next = { ...current }
+  for(const [key, value] of Object.entries(incoming || {})) next[key] = { ...(current[key] || {}), ...(value || {}) }
+  return next
+}
+
+function incompleteTaskCount(meta?: CampaignMetaState): number{
+  if(typeof meta?.incomplete_tasks === 'number') return Number(meta.incomplete_tasks || 0)
+  let count = 0
+  for(const entry of (meta?.timeline || [])){
+    try{ const value = JSON.parse(entry.text || ''); if(value?.type === 'task' && !value.done) count += 1 }catch{}
+  }
+  return count
+}
 // Backend accepts up to 25 product ids per hydrate request; 10×3 keeps requests
 // well under the server's 35s budget while halving the number of round-trips.
 const SHOPIFY_HYDRATE_BATCH_SIZE = 10
@@ -287,10 +303,11 @@ export default function AdsManagementPage(){
     try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes_by_product')||'{}') }catch{ return {} }
   })
   const [groupTarget, setGroupTarget] = useState<string>('') // product id
-  const [campaignMeta, setCampaignMeta] = useState<Record<string, { supplier_name?:string, supplier_alt_name?:string, supply_available?:string, owner?:string, timeline?:Array<{text:string, at:string}>, product_life_checks?:Record<string, Record<string, boolean>> }>>({})
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, CampaignMetaState>>({})
   const [ownerFilter, setOwnerFilter] = useState<CampaignOwner|''>('')
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
+  const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
   const browserTz = useMemo(()=>{
     try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined }catch{ return undefined }
@@ -809,9 +826,18 @@ export default function AdsManagementPage(){
       // Loading indicator goes on as soon as a row is queued, not when its chunk starts
       markProductsHydrating(toAdd, true)
     }
+    pumpHydrationWorkers()
+  }
+
+  function pumpHydrationWorkers(){
     while(hydrateWorkersRef.current < SHOPIFY_HYDRATE_CONCURRENCY && hydratePendingRef.current.length > 0){
       hydrateWorkersRef.current += 1
-      hydrationWorker().catch(()=>{}).finally(()=>{ hydrateWorkersRef.current -= 1 })
+      hydrationWorker().catch(()=>{}).finally(()=>{
+        hydrateWorkersRef.current = Math.max(0, hydrateWorkersRef.current - 1)
+        // An enqueue can land after a worker observes an empty queue but before
+        // this counter is decremented. Pump again so those rows never get stuck.
+        if(hydratePendingRef.current.length > 0) pumpHydrationWorkers()
+      })
     }
   }
 
@@ -1177,6 +1203,25 @@ export default function AdsManagementPage(){
       }
     }finally{
       setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: false }))
+    }
+  }
+
+  function applyCampaignMetaSummary(incoming?: Record<string, CampaignMetaRecord>){
+    if(incoming) setCampaignMeta(prev => mergeCampaignMetaRecords(prev, incoming))
+  }
+
+  async function openCampaignTimeline(campaign: { id:string, name?:string }){
+    const key = String(campaign.id || campaign.name || '')
+    setTimelineDraft('')
+    setTimelineOpen({ open: true, campaign })
+    setTimelineMetaLoading(true)
+    try{
+      const result = await campaignMetaGet(key, store)
+      if((result as any)?.data){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+      }
+    }catch{} finally {
+      setTimelineMetaLoading(false)
     }
   }
 
@@ -2050,7 +2095,7 @@ export default function AdsManagementPage(){
                     // Refresh meta to show task badges
                     try{
                       const metaRes = await campaignMetaList(store)
-                      if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                      applyCampaignMetaSummary((metaRes as any)?.data)
                     }catch{}
                     setMultiAnalysisResults({})
                   }
@@ -2654,15 +2699,11 @@ export default function AdsManagementPage(){
                           {/* Group Timeline button with red badge */}
                           {!profitMode && (()=>{
                             const groupKey = `group:${pid}`
-                            const tl = (campaignMeta[groupKey] as any)?.timeline || []
-                            const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
+                            const incompleteTasks = incompleteTaskCount(campaignMeta[groupKey])
                             return (
                               <button
                                 title="Group Timeline"
-                                onClick={()=>{
-                                  setTimelineDraft('')
-                                  setTimelineOpen({ open: true, campaign: { id: groupKey, name: d.primary.name || `Product ${pid}` } })
-                                }}
+                                onClick={()=> openCampaignTimeline({ id: groupKey, name: d.primary.name || `Product ${pid}` })}
                                 className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
                               >
                                 <Clock className="w-3.5 h-3.5"/>
@@ -2719,7 +2760,7 @@ export default function AdsManagementPage(){
                                   // Refresh campaign meta to pick up new timeline entry
                                   try{
                                     const metaRes = await campaignMetaList(store)
-                                    if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                                    applyCampaignMetaSummary((metaRes as any)?.data)
                                   }catch{}
                                 }
                               }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
@@ -3162,15 +3203,11 @@ export default function AdsManagementPage(){
                       ><BarChart3 className="w-3.5 h-3.5"/></button>}
                       {!profitMode && (()=>{
                         const ck = String(c.campaign_id||c.name||'')
-                        const tl = (campaignMeta[ck] as any)?.timeline || []
-                        const incompleteTasks = tl.filter((te: any) => { try { const o = JSON.parse(te.text||''); return o?.type==='task' && !o.done } catch { return false } }).length
+                        const incompleteTasks = incompleteTaskCount(campaignMeta[ck])
                         return (
                           <button
                             title="Timeline"
-                            onClick={()=>{
-                              setTimelineDraft('')
-                              setTimelineOpen({ open: true, campaign: { id: String(c.campaign_id||''), name: c.name||'' } })
-                            }}
+                            onClick={()=> openCampaignTimeline({ id: String(c.campaign_id||''), name: c.name||'' })}
                             className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
                           >
                             <Clock className="w-3.5 h-3.5"/>
@@ -3241,7 +3278,7 @@ export default function AdsManagementPage(){
                               }catch{ setAnalysisChecks({}) }
                               try{
                                 const metaRes = await campaignMetaList(store)
-                                if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+                                applyCampaignMetaSummary((metaRes as any)?.data)
                               }catch{}
                             }
                           }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
@@ -3510,7 +3547,7 @@ export default function AdsManagementPage(){
           try{
             await saveActionTasks({ tasks: updated, store })
             const metaRes = await campaignMetaList(store)
-            if((metaRes as any)?.data) setCampaignMeta((metaRes as any).data)
+            applyCampaignMetaSummary((metaRes as any)?.data)
           }catch{}
         }}
         onClearAll={async()=>{
@@ -3521,9 +3558,10 @@ export default function AdsManagementPage(){
       />
       <TimelineModal
         open={timelineOpen.open}
-        onClose={()=> setTimelineOpen({ open:false })}
+        onClose={()=> { setTimelineOpen({ open:false }); setTimelineMetaLoading(false) }}
         campaign={timelineOpen.campaign||null}
         meta={(timelineOpen.campaign && campaignMeta[String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')]) || undefined}
+        loading={timelineMetaLoading}
         draft={timelineDraft}
         setDraft={setTimelineDraft}
         adding={timelineAdding}
@@ -3532,13 +3570,11 @@ export default function AdsManagementPage(){
           const ck = String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')
           try{
             setTimelineAdding(true)
-            await campaignTimelineAdd({ campaign_key: ck, text, store })
+            const result = await campaignTimelineAdd({ campaign_key: ck, text, store })
             setTimelineDraft('')
-            // Refresh meta mapping
-            try{
-              const res = await campaignMetaList(store)
-              setCampaignMeta(((res as any)?.data)||{})
-            }catch{}
+            if((result as any)?.data){
+              setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [ck]: (result as any).data }))
+            }
           }finally{
             setTimelineAdding(false)
           }
@@ -3566,16 +3602,15 @@ export default function AdsManagementPage(){
               ...prev,
               [ck]: { ...prev[ck], timeline }
             }))
-            await campaignMetaUpsert({ campaign_key: ck, timeline, store })
+            const result = await campaignMetaUpsert({ campaign_key: ck, timeline, store })
+            if((result as any)?.data){
+              setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [ck]: (result as any).data }))
+            }
             if(parsed.id){
               const updatedTasks = actionTasks.map(t => t.id === parsed.id ? { ...t, done: nowDone } : t)
               setActionTasks(updatedTasks)
               try{ await saveActionTasks({ tasks: updatedTasks, store }) }catch{}
             }
-            try{
-              const res = await campaignMetaList(store)
-              if((res as any)?.data) setCampaignMeta((res as any).data)
-            }catch{}
           }catch(err){
             console.error('Failed to toggle task:', err)
           }
@@ -3798,7 +3833,7 @@ function localizedActionTask(task: ActionTask, language: 'original'|'ar'): Actio
 }
 
 // Timeline Modal
-function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
+function TimelineModal({ open, onClose, campaign, meta, loading, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, loading?:boolean, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
   const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({ analysis: true, tasks: true, notes: false })
   const [expandedTask, setExpandedTask] = useState<string|null>(null)
   const togglePanel = (key:string) => setOpenPanels(prev => ({ ...prev, [key]: !prev[key] }))
@@ -3889,6 +3924,7 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
           </div>
         </div>
         <div className="p-5 space-y-4">
+          {loading && <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-700 animate-pulse">Loading timeline…</div>}
           {taskEntries.length > 0 && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <div className="flex items-center justify-between text-xs mb-2">
@@ -3904,13 +3940,14 @@ function TimelineModal({ open, onClose, campaign, meta, onAdd, adding, draft, se
             <input
               value={draft}
               onChange={(e)=> setDraft(e.target.value)}
+              disabled={loading}
               placeholder="Add a note…"
               className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 outline-none transition-all"
               onKeyDown={(e)=>{ if(e.key==='Enter' && draft.trim()){ e.preventDefault(); onAdd(draft.trim()) }}}
             />
             <button
               onClick={async()=>{ if(draft.trim()){ await onAdd(draft.trim()) } }}
-              disabled={adding || !draft.trim()}
+              disabled={loading || adding || !draft.trim()}
               className="px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 hover:from-indigo-600 hover:to-violet-600 text-white text-sm font-semibold disabled:opacity-40 shadow-sm transition-all"
             >{adding? 'Adding…' : 'Add'}</button>
           </div>

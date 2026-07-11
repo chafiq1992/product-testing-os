@@ -455,13 +455,34 @@ export async function campaignMappingUpsert(payload:{ campaign_key:string, kind:
 }
 
 // Campaign meta (supplier fields + timeline)
-export async function campaignMetaList(store?: string){
+export type CampaignMetaRecord = {
+  supplier_name?: string,
+  supplier_alt_name?: string,
+  supply_available?: string,
+  owner?: string,
+  timeline?: Array<{ text:string, at:string }>,
+  product_life_checks?: Record<string, any>,
+  timeline_entries?: number,
+  incomplete_tasks?: number,
+}
+
+export async function campaignMetaList(store?: string, includeTimeline = false){
+  const params: string[] = []
+  const s = store ?? selectedStore()
+  if(s) params.push(`store=${encodeURIComponent(s)}`)
+  params.push(`include_timeline=${includeTimeline ? 'true' : 'false'}`)
+  const q = params.length? `?${params.join('&')}` : ''
+  const {data} = await axios.get(`${base}/api/campaign_meta${q}`)
+  return data as { data: Record<string, CampaignMetaRecord>, error?: string }
+}
+
+export async function campaignMetaGet(campaignKey: string, store?: string){
   const params: string[] = []
   const s = store ?? selectedStore()
   if(s) params.push(`store=${encodeURIComponent(s)}`)
   const q = params.length? `?${params.join('&')}` : ''
-  const {data} = await axios.get(`${base}/api/campaign_meta${q}`)
-  return data as { data: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, owner?: string, timeline?: Array<{ text:string, at:string }> }>, error?: string }
+  const {data} = await axios.get(`${base}/api/campaign_meta/${encodeURIComponent(campaignKey)}${q}`)
+  return data as { data: CampaignMetaRecord, error?: string }
 }
 
 export async function campaignMetaUpsert(payload:{ campaign_key:string, supplier_name?:string, supplier_alt_name?:string, supply_available?:string, owner?:string, timeline?: Array<{ text:string, at:string }>, product_life_checks?: Record<string, any>, store?: string }){
@@ -619,7 +640,7 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
 export type AdsManagementBundle = {
   campaigns: MetaCampaignRow[],
   mappings: Record<string, { kind: 'product'|'collection', id: string, store?: string }>,
-  campaign_meta: Record<string, { supplier_name?: string, supplier_alt_name?: string, supply_available?: string, owner?: string, timeline?: Array<{ text: string, at: string }>, product_life_checks?: Record<string, Record<string, boolean>> }>,
+  campaign_meta: Record<string, CampaignMetaRecord>,
   ad_account?: { id?: string, name?: string },
   product_life_instructions: { phases: Record<string, string[]> },
 }

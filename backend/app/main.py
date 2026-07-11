@@ -1642,6 +1642,13 @@ def _ads_get_app_cache(store: str | None, key: str, ttl_s: int) -> tuple[object 
         return None, False, False
 
 
+def _ads_get_app_caches(store: str | None, keys: list[str]) -> dict[str, Any]:
+    try:
+        return db.get_app_settings(_canonical_store_label(store), keys)
+    except Exception:
+        return {}
+
+
 def _ads_set_orders_cache(store: str | None, product_id: str, start: str, end: str, include_closed: bool, date_field: str, count: int) -> None:
     try:
         db.set_app_setting(
@@ -1657,12 +1664,19 @@ def _ads_cached_briefs_for_ids(store_list: list[str | None], product_ids: list[s
     out: dict[str, dict] = {}
     cached_ids: set[str] = set()
     stale_ids: set[str] = set()
+    keys = [_ads_product_cache_key("brief", pid) for pid in product_ids]
+    records_by_store = {st: _ads_get_app_caches(st, keys) for st in store_list}
+    now = time.time()
     for pid in product_ids:
         merged: dict[str, Any] = {}
         saw_cache = False
         all_fresh = True
         for st in store_list:
-            data, cached, fresh = _ads_get_app_cache(st, _ads_product_cache_key("brief", pid), _ADS_MGMT_PRODUCT_BRIEF_CACHE_TTL_S)
+            rec = records_by_store.get(st, {}).get(_ads_product_cache_key("brief", pid)) or {}
+            data = rec.get("data") if isinstance(rec, dict) else None
+            cached = data is not None
+            ts = float(rec.get("ts") or 0) if isinstance(rec, dict) else 0
+            fresh = cached and ts > 0 and (now - ts) <= _ADS_MGMT_PRODUCT_BRIEF_CACHE_TTL_S
             if cached and isinstance(data, dict):
                 saw_cache = True
                 all_fresh = all_fresh and fresh
@@ -1684,12 +1698,19 @@ def _ads_cached_order_counts_for_ids(store_list: list[str | None], product_ids: 
     out: dict[str, int] = {}
     cached_ids: set[str] = set()
     stale_ids: set[str] = set()
+    keys = [_ads_orders_cache_key(pid, start, end, include_closed, date_field) for pid in product_ids]
+    records_by_store = {st: _ads_get_app_caches(st, keys) for st in store_list}
+    now = time.time()
     for pid in product_ids:
         total = 0
         all_cached = True
         all_fresh = True
         for st in store_list:
-            data, cached, fresh = _ads_get_app_cache(st, _ads_orders_cache_key(pid, start, end, include_closed, date_field), _ADS_MGMT_PRODUCT_ORDERS_CACHE_TTL_S)
+            rec = records_by_store.get(st, {}).get(_ads_orders_cache_key(pid, start, end, include_closed, date_field)) or {}
+            data = rec.get("data") if isinstance(rec, dict) else None
+            cached = data is not None
+            ts = float(rec.get("ts") or 0) if isinstance(rec, dict) else 0
+            fresh = cached and ts > 0 and (now - ts) <= _ADS_MGMT_PRODUCT_ORDERS_CACHE_TTL_S
             if cached:
                 try:
                     total += int(data or 0)
@@ -1753,8 +1774,18 @@ def _ads_refresh_hydrate_sync(store_list: list[str | None], product_ids: list[st
                         counts[pid] = 0
             for pid in ids:
                 count = int((counts or {}).get(pid, 0) or 0)
-                _ads_set_orders_cache(st, pid, start, end, include_closed, date_field, count)
                 products.setdefault(pid, {})["orders"] = int(products.setdefault(pid, {}).get("orders") or 0) + count
+            cache_values = {
+                _ads_orders_cache_key(pid, start, end, include_closed, date_field): {
+                    "ts": time.time(),
+                    "data": int((counts or {}).get(pid, 0) or 0),
+                }
+                for pid in ids
+            }
+            try:
+                db.set_app_settings(_canonical_store_label(st), cache_values)
+            except Exception:
+                pass
 
     return products
 
@@ -2041,10 +2072,18 @@ async def api_upsert_campaign_meta(req: CampaignMetaUpsertRequest):
 
 
 @app.get("/api/campaign_meta")
-async def api_list_campaign_meta(store: str | None = None):
+async def api_list_campaign_meta(store: str | None = None, include_timeline: bool = True):
     try:
-        items = db.list_campaign_meta(store)
+        items = db.list_campaign_meta(store, include_timeline=bool(include_timeline))
         return {"data": items}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.get("/api/campaign_meta/{campaign_key}")
+async def api_get_campaign_meta(campaign_key: str, store: str | None = None):
+    try:
+        return {"data": db.get_campaign_meta(store, campaign_key)}
     except Exception as e:
         return {"error": str(e), "data": {}}
 
@@ -2256,7 +2295,9 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store, p
 
     async def _fetch_meta():
         try:
-            return db.list_campaign_meta(store)
+            # The table only needs list-view fields and task badge counts. Large
+            # analysis timelines are fetched for one campaign when its modal opens.
+            return db.list_campaign_meta(store, include_timeline=False)
         except Exception:
             return {}
 

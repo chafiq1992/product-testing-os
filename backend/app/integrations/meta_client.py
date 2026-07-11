@@ -473,20 +473,31 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
         params["time_range"] = json.dumps({"since": since, "until": until})
     else:
         params["date_preset"] = date_preset or "last_7d"
-    res = _get(f"act_{acct}/insights", params)
+
+    # Insights and campaign metadata are independent Meta reads. Fetch them in
+    # parallel so page latency is the slower request, not the sum of both.
+    cparams = {
+        "fields": "id,name,effective_status,configured_status" if profit_only else "id,name,effective_status,configured_status,created_time",
+        "filtering": json.dumps([
+            {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
+        ]),
+        "limit": 500,
+    }
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        insights_future = executor.submit(_get, f"act_{acct}/insights", params)
+        campaigns_future = executor.submit(_get, f"act_{acct}/campaigns", cparams)
+        res = insights_future.result()
+        try:
+            cres = campaigns_future.result()
+            crows = (cres or {}).get("data") or []
+        except Exception:
+            crows = []
+
     rows = (res or {}).get("data") or []
-    # Fetch current statuses for these campaigns
+    # Shape current statuses for these campaigns
     status_map: dict[str, str] = {}
     try:
-        cparams = {
-            "fields": "id,name,effective_status,configured_status" if profit_only else "id,name,effective_status,configured_status,created_time",
-            "filtering": json.dumps([
-                {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
-            ]),
-            "limit": 500,
-        }
-        cres = _get(f"act_{acct}/campaigns", cparams)
-        crows = (cres or {}).get("data") or []
         for c in (crows or []):
             cid = str((c or {}).get("id") or "")
             eff = (c or {}).get("effective_status") or (c or {}).get("configured_status")
