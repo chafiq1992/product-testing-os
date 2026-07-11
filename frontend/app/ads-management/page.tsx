@@ -855,17 +855,19 @@ export default function AdsManagementPage(){
     const giveUp: string[] = []
     for(const id of ids){
       const passes = hydrateRetryPassRef.current.get(id) || 0
-      if(passes < 1){ hydrateRetryPassRef.current.set(id, passes + 1); retry.push(id) }
+      if(passes < 3){ hydrateRetryPassRef.current.set(id, passes + 1); retry.push(id) }
       else giveUp.push(id)
     }
     // Exhausted retries: clear the indicator so rows show "—" instead of spinning forever
     if(giveUp.length > 0) markProductsHydrating(giveUp, false)
     if(retry.length > 0){
       // Keep the loading indicator on during the wait; retry jumps the queue
+      const retryPass = Math.max(...retry.map(id => hydrateRetryPassRef.current.get(id) || 1))
+      const retryDelayMs = Math.min(12000, 2000 * Math.pow(2, Math.max(0, retryPass - 1)))
       setTimeout(()=>{
         if(token !== ordersSeqToken.current) return
         enqueueProductHydration(retry, { priority: true })
-      }, 6000)
+      }, retryDelayMs)
     }
   }
 
@@ -897,6 +899,7 @@ export default function AdsManagementPage(){
             include: ['brief', 'orders'],
             cache_mode: 'stale_then_refresh',
           })
+          if((res as any)?.error) throw new Error(String((res as any).error))
           products = ((res as any)?.data || {}).products || {}
           break
         }catch{

@@ -1839,30 +1839,69 @@ async def api_ads_management_shopify_hydrate(req: AdsManagementShopifyHydrateReq
 
         # Inventory is decision-critical and is never served from a cache. Fetch
         # its brief live while independently filling only missing order counts.
-        refresh_jobs = []
-        refresh_parts: list[tuple[list[str], list[str]]] = []
+        refresh_tasks: dict[str, asyncio.Task] = {}
         if "brief" in include:
-            refresh_parts.append((product_ids, ["brief"]))
-        if missing_order_ids:
-            refresh_parts.append(([pid for pid in product_ids if pid in missing_order_ids], ["orders"]))
-        for ids_to_fetch, parts_to_fetch in refresh_parts:
-            refresh_jobs.append(run_in_threadpool(
+            refresh_tasks["brief"] = asyncio.create_task(run_in_threadpool(
                 _ads_refresh_hydrate_sync,
                 store_list,
-                ids_to_fetch,
+                product_ids,
                 req.start,
                 req.end,
-                parts_to_fetch,
+                ["brief"],
                 include_closed,
                 date_field,
             ))
-        if refresh_jobs:
-            fresh_results = await asyncio.wait_for(asyncio.gather(*refresh_jobs), timeout=35)
-            for fresh in fresh_results:
-                for pid, data in (fresh or {}).items():
-                    products.setdefault(pid, {"cached": False, "refreshing": False}).update(data or {})
-                    products[pid]["cached"] = False
-                    products[pid]["refreshing"] = False
+        if missing_order_ids:
+            refresh_tasks["orders"] = asyncio.create_task(run_in_threadpool(
+                _ads_refresh_hydrate_sync,
+                store_list,
+                [pid for pid in product_ids if pid in missing_order_ids],
+                req.start,
+                req.end,
+                ["orders"],
+                include_closed,
+                date_field,
+            ))
+
+        def _merge_fresh(fresh: dict[str, dict] | None) -> None:
+            if not fresh:
+                return
+            for pid, data in fresh.items():
+                products.setdefault(pid, {"cached": False, "refreshing": False}).update(data or {})
+                products[pid]["cached"] = False
+                products[pid]["refreshing"] = False
+
+        def _consume_deferred(task: asyncio.Task, part: str) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                shopify_logger.warning("ads_mgmt.hydrate_deferred_failed part=%s err=%s", part, e)
+
+        # Inventory and images must not wait behind a slow first-time order scan.
+        # Await the live brief independently; an unfinished order task continues
+        # filling its DB cache so the client's bounded retry can pick it up.
+        brief_task = refresh_tasks.get("brief")
+        if brief_task is not None:
+            done, _pending = await asyncio.wait({brief_task}, timeout=28)
+            if brief_task in done:
+                _merge_fresh(brief_task.result())
+            else:
+                brief_task.add_done_callback(lambda task: _consume_deferred(task, "brief"))
+
+        orders_task = refresh_tasks.get("orders")
+        deferred_orders = False
+        if orders_task is not None:
+            if brief_task is None:
+                done, _pending = await asyncio.wait({orders_task}, timeout=32)
+            else:
+                done = {orders_task} if orders_task.done() else set()
+            if orders_task in done:
+                _merge_fresh(orders_task.result())
+            else:
+                deferred_orders = True
+                orders_task.add_done_callback(lambda task: _consume_deferred(task, "orders"))
 
         fetched_ids = set(product_ids if "brief" in include else []) | missing_order_ids
         stale_to_refresh = [pid for pid in product_ids if pid in stale_order_ids and pid not in missing_order_ids]
@@ -1878,14 +1917,17 @@ async def api_ads_management_shopify_hydrate(req: AdsManagementShopifyHydrateReq
                 data["cached"] = False
             if "orders" in include and "orders" not in data:
                 data["cached"] = False
+                if deferred_orders:
+                    data["refreshing"] = True
 
         shopify_logger.info(
-            "ads_mgmt.shopify_hydrate stores=%s ids=%s cached=%s fetch=%s stale_refresh=%s elapsed_ms=%s",
+            "ads_mgmt.shopify_hydrate stores=%s ids=%s cached=%s fetch=%s stale_refresh=%s deferred_orders=%s elapsed_ms=%s",
             ",".join([str(s or "") for s in store_list]),
             len(product_ids),
             sum(1 for v in products.values() if v.get("cached")),
             len(fetched_ids),
             len(stale_to_refresh),
+            int(deferred_orders),
             int((time.perf_counter() - started) * 1000),
         )
         return {"data": {"products": products}}

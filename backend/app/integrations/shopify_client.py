@@ -2469,7 +2469,10 @@ def _inventory_summary_from_graphql_product(node: dict | None) -> dict:
         zero_sizes = 0
 
     sizes_ordered = _ordered_size_values(sizes_set, option_values_order.get(size_name or ""))
-    colors_ordered_base = _ordered_unique(option_values_order.get(color_name or "") + colors_set)
+    # Some Shopify products expose Color in selectedOptions but omit it from the
+    # product-level options list. ``dict.get`` then returns None; normalize that
+    # to an empty list so one malformed product cannot fail the entire batch.
+    colors_ordered_base = _ordered_unique((option_values_order.get(color_name or "") or []) + colors_set)
     colors_ordered = _rank_colors_by_available_sizes(colors_ordered_base, sizes_ordered or sizes_set, matrix)
 
     return {

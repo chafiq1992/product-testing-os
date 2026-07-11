@@ -48,6 +48,30 @@ def test_inventory_colors_rank_by_available_sizes_then_quantity():
     ]
 
 
+def test_inventory_summary_handles_color_missing_from_product_options():
+    node = {
+        "id": "gid://shopify/Product/123",
+        "options": [{"name": "Size", "values": ["40", "41"]}],
+        "variants": {
+            "nodes": [
+                {
+                    "inventoryQuantity": 2,
+                    "price": "10.00",
+                    "selectedOptions": [
+                        {"name": "Size", "value": "40"},
+                        {"name": "Color", "value": "Black"},
+                    ],
+                }
+            ]
+        },
+    }
+
+    summary = shopify_client._inventory_summary_from_graphql_product(node)
+
+    assert summary["colors"] == ["Black"]
+    assert summary["matrix"] == {"Black": {"40": 2}}
+
+
 def test_variant_inventory_bypasses_stored_cache(monkeypatch):
     expected = {"sizes": ["S"], "colors": ["Black"], "matrix": {"Black": {"S": 2}}, "total_available": 2}
 
