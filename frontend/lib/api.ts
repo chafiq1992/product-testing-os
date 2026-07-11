@@ -803,7 +803,7 @@ export async function shopifyOrdersCountPaidByTitle(payload:{ names: string[], s
   })
 }
 
-export async function shopifyProductsBrief(payload:{ ids: string[], store?: string }){
+export async function shopifyProductsBrief(payload:{ ids: string[], store?: string, fresh_inventory?: boolean }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const url = `${base}/api/shopify/products_brief`
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{

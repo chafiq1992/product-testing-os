@@ -1394,8 +1394,12 @@ def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_
         if not isinstance(rec, dict):
             return None
         ts = float(rec.get("ts") or 0)
-        if ts > 0 and _UTM_ORDERS_DB_TTL_S > 0 and (time.time() - ts) <= _UTM_ORDERS_DB_TTL_S:
-            data = rec.get("data")
+        data = rec.get("data")
+        # Empty ranges are common and expensive to rescan. Cache them briefly so
+        # repeated expansions are instant without hiding new orders for long.
+        empty_ttl = max(1, int(os.getenv("PTOS_UTM_ORDERS_EMPTY_DB_TTL_S", "60") or "60"))
+        ttl = empty_ttl if isinstance(data, list) and len(data) == 0 else _UTM_ORDERS_DB_TTL_S
+        if ts > 0 and ttl > 0 and (time.time() - ts) <= ttl:
             return data if isinstance(data, list) else None
     except Exception:
         return None
@@ -1405,8 +1409,6 @@ def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_
 def _set_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool, rows: list[dict]) -> None:
     try:
         from app import db as _db  # type: ignore
-        if not rows:
-            return
         _db.set_app_setting(
             _canonical_store_label(store),
             _utm_orders_cache_key(processed_min_date, processed_max_date, include_closed),
@@ -1816,14 +1818,24 @@ def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max
     """
     store_list = stores or [None]  # type: ignore
     out: list[dict] = []
-    for st in store_list:
+
+    def _for_store(st: str | None) -> list[dict]:
         try:
             orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
             for o in (orders or []):
                 o["store"] = st or "default"
-            out.extend(orders)
+            return orders
         except Exception:
-            continue
+            return []
+
+    if len(store_list) <= 1:
+        out.extend(_for_store(store_list[0] if store_list else None))
+    else:
+        # Store scans are independent. executor.map preserves the selected-store
+        # order, so output values and deterministic ordering remain unchanged.
+        with ThreadPoolExecutor(max_workers=min(len(store_list), 4)) as executor:
+            for orders in executor.map(_for_store, store_list):
+                out.extend(orders)
     return out
 
 
@@ -2740,17 +2752,10 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
         "total_available": int
       }
     """
-    cached = _get_product_cache(store, "inventory", str(numeric_product_id), _PRODUCT_BRIEF_DB_TTL_S)
-    if cached is not None:
-        return {
-            "sizes": cached.get("sizes") or [],
-            "colors": cached.get("colors") or [],
-            "matrix": cached.get("matrix") or {},
-            "total_available": int(cached.get("total_available") or 0),
-        }
+    # Inventory drives restocking decisions, so this path intentionally bypasses
+    # both memory and database caches and reads Shopify on every request.
     try:
         data = _get_product_inventory_graphql(numeric_product_id, store=store)
-        _set_product_cache(store, "inventory", str(numeric_product_id), data)
         return data
     except Exception as e:
         _perf_log.warning("product_variants_inventory.graphql_failed store=%s pid=%s err=%s", store, numeric_product_id, e)
@@ -3287,7 +3292,7 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
     return out
 
 
-def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None) -> dict:
+def get_products_brief(numeric_product_ids: list[str], *, store: str | None = None, fresh_inventory: bool = False) -> dict:
     """Return product briefs for a list of numeric product IDs.
 
     Performance:
@@ -3297,6 +3302,22 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
     ids = [str(x).strip() for x in (numeric_product_ids or []) if str(x or "").strip()]
     if len(ids) > _PRODUCT_BRIEF_MAX_IDS:
         ids = ids[:_PRODUCT_BRIEF_MAX_IDS]
+
+    if fresh_inventory:
+        # Ads management uses inventory for restocking decisions. A single live
+        # GraphQL batch keeps this current without storing the response in any
+        # memory or database cache.
+        brief_map = _get_products_brief_graphql(ids, store=store)
+        return {
+            pid: (brief_map or {}).get(pid) or {
+                "image": None,
+                "total_available": 0,
+                "zero_variants": 0,
+                "zero_sizes": 0,
+                "price": None,
+            }
+            for pid in ids
+        }
 
     now = time.time()
     out: dict[str, dict] = {}

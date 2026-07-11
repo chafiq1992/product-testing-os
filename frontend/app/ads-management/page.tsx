@@ -9,6 +9,15 @@ const ALL_STORES = [
   { value: 'irranova', label: 'irranova' },
 ]
 type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
+type AdsetOrdersInfo = { count:number, orders: AttributedOrder[] }
+
+function adsetUtmTrueCpp(spendInput: number, ordersInfo?: AdsetOrdersInfo): number | null{
+  if(!ordersInfo) return null
+  const spend = Number(spendInput || 0)
+  const orders = Number(ordersInfo.count || 0)
+  if(orders > 0) return spend / orders
+  return spend > 0 ? spend : null
+}
 
 function inventorySizeSortKey(value: string): [number, number, number, string] | [number, string]{
   const text = String(value || '').trim().toLowerCase()
@@ -255,7 +264,7 @@ export default function AdsManagementPage(){
   const [adsetsExpanded, setAdsetsExpanded] = useState<Record<string, boolean>>({})
   const [adsetsLoading, setAdsetsLoading] = useState<Record<string, boolean>>({})
   const [adsetsByCampaign, setAdsetsByCampaign] = useState<Record<string, MetaAdsetRow[]>>({})
-  const [adsetOrdersByCampaign, setAdsetOrdersByCampaign] = useState<Record<string, Record<string, { count:number, orders: AttributedOrder[] }>>>({})
+  const [adsetOrdersByCampaign, setAdsetOrdersByCampaign] = useState<Record<string, Record<string, AdsetOrdersInfo>>>({})
   const [adsetOrdersLoading, setAdsetOrdersLoading] = useState<Record<string, boolean>>({})
   const [adsetOrdersExpanded, setAdsetOrdersExpanded] = useState<Record<string, boolean>>({})
   const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
@@ -644,7 +653,7 @@ export default function AdsManagementPage(){
 
   async function loadProductBriefForProduct(productId: string): Promise<any | null>{
     const storesToUse = storesForProduct(productId, true)
-    const results = await Promise.allSettled(storesToUse.map(st => shopifyProductsBrief({ ids: [productId], store: st })))
+    const results = await Promise.allSettled(storesToUse.map(st => shopifyProductsBrief({ ids: [productId], store: st, fresh_inventory: true })))
     const merged = mergeBriefResults(results)
     if(Object.keys(merged).length > 0) setProductBriefs(prev=> ({ ...prev, ...merged }))
     return merged[productId] || null
@@ -1760,7 +1769,7 @@ export default function AdsManagementPage(){
   }
 
   async function loadVariantInventory(pid: string){
-    if(variantInventoryCache[pid] || variantInventoryLoading[pid]) return
+    if(variantInventoryLoading[pid]) return
     setVariantInventoryLoading(prev => ({ ...prev, [pid]: true }))
     try{
       // Try all selected stores in parallel – use the first one that returns real data
@@ -2838,29 +2847,34 @@ export default function AdsManagementPage(){
                             if(!cid) return
                             const open = !adsetsExpanded[cid]
                             setAdsetsExpanded(prev=> ({ ...prev, [cid]: open }))
-                            if(open && !adsetsByCampaign[cid]){
+                            if(open && !adsetsByCampaign[cid] && !adsetsLoading[cid]){
                               setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
-                              try{
-                                const m = metaRangeParams(datePreset)
-                                const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
-                                const items = ((res as any)?.data)||[]
-                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
-                              }catch{
-                                setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
-                              }finally{
-                                setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
-                              }
+                              ;(async()=>{
+                                try{
+                                  const m = metaRangeParams(datePreset)
+                                  const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
+                                  const items = ((res as any)?.data)||[]
+                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
+                                }catch{
+                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
+                                }finally{
+                                  setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
+                                }
+                              })()
+                            }
+                            // UTM attribution is independent of the visible Meta ad-set request.
+                            // Start both immediately so expanding a campaign waits only for the slower one.
+                            if(open && !adsetOrdersByCampaign[cid] && !adsetOrdersLoading[cid]){
                               ;(async()=>{
                                 try{
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
                                   const rowStore = (c as any)._store || store
                                   const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined)
+                                  if((ord as any)?.error) throw new Error(String((ord as any).error))
                                   const mapping = ((ord as any)?.data)||{}
                                   setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
-                                }catch{
-                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: {} }))
-                                }finally{
+                                }catch{} finally{
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
                                 }
                               })()
@@ -2938,11 +2952,11 @@ export default function AdsManagementPage(){
                                     const { start, end } = computeRange(datePreset)
                                     if(next.kind==='product'){
                                       if(profitMode){
-                                        try{ const pb = await shopifyProductsBrief({ ids: [next.id], store }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
+                                        try{ const pb = await shopifyProductsBrief({ ids: [next.id], store, fresh_inventory: true }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
                                         return
                                       }
                                       // ensure product brief is loaded for inventory/zero-variants columns
-                                      try{ const pb = await shopifyProductsBrief({ ids: [next.id], store }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
+                                      try{ const pb = await shopifyProductsBrief({ ids: [next.id], store, fresh_inventory: true }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
                                       const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
                                       const count = ((oc as any)?.data||{})[next.id] ?? 0
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
@@ -3326,8 +3340,9 @@ export default function AdsManagementPage(){
                                     const acolor = aactive? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
                                     const aid = String(a.adset_id||'')
                                     const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
+                                    const ordersLoaded = !!ordersInfo
                                     const utmOrders = Number(ordersInfo?.count || 0)
-                                    const utmTrueCpp = utmOrders > 0 ? Number(a.spend || 0) / utmOrders : null
+                                    const utmTrueCpp = adsetUtmTrueCpp(Number(a.spend || 0), ordersInfo)
                                     const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
                                     return (
                                       <Fragment key={aid||a.name}>
@@ -3336,7 +3351,7 @@ export default function AdsManagementPage(){
                                           <span>{a.name||'-'}</span>
                                           {adsetOrdersLoading[cid]? (
                                             <span className="text-[10px] text-slate-500">loading orders…</span>
-                                          ) : (
+                                          ) : ordersLoaded ? (
                                             hasOrders? (
                                               <button
                                                 onClick={()=> setAdsetOrdersExpanded(prev=> ({ ...prev, [aid]: !prev[aid] }))}
@@ -3345,13 +3360,15 @@ export default function AdsManagementPage(){
                                             ) : (
                                               <span className="text-[10px] px-1 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">Orders 0</span>
                                             )
+                                          ) : (
+                                            <span className="text-[10px] text-amber-600">orders unavailable</span>
                                           )}
                                         </div>
                                         <div className="text-right">${(a.spend||0).toFixed(2)}</div>
                                         <div className="text-right">{a.purchases||0}</div>
                                         <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
                                         <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
-                                        <div className="text-right">{utmOrders}</div>
+                                        <div className="text-right">{ordersLoaded ? utmOrders : <span className="text-slate-400">…</span>}</div>
                                         <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
                                           {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
                                         </div>

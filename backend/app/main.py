@@ -1571,6 +1571,7 @@ async def api_orders_count_paid_by_title(req: OrdersCountRequest):
 class ProductsBriefRequest(BaseModel):
     ids: list[str]
     store: Optional[str] = None
+    fresh_inventory: Optional[bool] = False
 
 
 @app.post("/api/shopify/products_brief")
@@ -1585,9 +1586,9 @@ async def api_products_brief(req: ProductsBriefRequest):
         key = _cache_key("shopify_products_brief", {"store": store or None, "ids": ids})
 
         async def _compute():
-            return await run_in_threadpool(get_products_brief, ids, store=store)
+            return await run_in_threadpool(get_products_brief, ids, store=store, fresh_inventory=bool(req.fresh_inventory))
 
-        data = await asyncio.wait_for(_cached(key, 300, _compute), timeout=28)
+        data = await asyncio.wait_for(_compute() if req.fresh_inventory else _cached(key, 300, _compute), timeout=28)
         shopify_logger.info(
             "shopify.products_brief store=%s ids=%s elapsed_ms=%s",
             store,
@@ -1737,7 +1738,7 @@ def _ads_refresh_hydrate_sync(store_list: list[str | None], product_ids: list[st
     if "brief" in include:
         for st in store_list:
             try:
-                brief_map = get_products_brief(ids, store=st) or {}
+                brief_map = get_products_brief(ids, store=st, fresh_inventory=True) or {}
                 for pid, data in (brief_map or {}).items():
                     if not isinstance(data, dict):
                         continue
@@ -1826,51 +1827,64 @@ async def api_ads_management_shopify_hydrate(req: AdsManagementShopifyHydrateReq
         date_field = "processed"
 
         products: dict[str, dict] = {pid: {"cached": False, "refreshing": False} for pid in product_ids}
-        stale_ids: set[str] = set()
-        missing_ids: set[str] = set(product_ids)
-
-        if "brief" in include:
-            briefs, cached_brief_ids, stale_brief_ids = _ads_cached_briefs_for_ids(store_list, product_ids)
-            stale_ids.update(stale_brief_ids)
-            for pid, data in briefs.items():
-                products.setdefault(pid, {"cached": False, "refreshing": False}).update(data)
-                products[pid]["cached"] = True
-            missing_ids -= cached_brief_ids
+        stale_order_ids: set[str] = set()
+        missing_order_ids: set[str] = set(product_ids) if "orders" in include else set()
 
         if "orders" in include:
             counts, cached_order_ids, stale_order_ids = _ads_cached_order_counts_for_ids(store_list, product_ids, req.start, req.end, include_closed, date_field)
-            stale_ids.update(stale_order_ids)
             for pid, count in counts.items():
                 products.setdefault(pid, {"cached": False, "refreshing": False})["orders"] = int(count or 0)
                 products[pid]["cached"] = True
-            if "brief" not in include:
-                missing_ids -= cached_order_ids
-            else:
-                missing_ids = {pid for pid in product_ids if not (pid in products and "orders" in products[pid] and ("image" in products[pid] or "total_available" in products[pid]))}
+            missing_order_ids -= cached_order_ids
 
-        to_fetch = [pid for pid in product_ids if pid in missing_ids]
-        if to_fetch:
-            fresh = await asyncio.wait_for(
-                run_in_threadpool(_ads_refresh_hydrate_sync, store_list, to_fetch, req.start, req.end, include, include_closed, date_field),
-                timeout=35,
-            )
-            for pid, data in (fresh or {}).items():
-                products.setdefault(pid, {"cached": False, "refreshing": False}).update(data or {})
-                products[pid]["cached"] = False
-                products[pid]["refreshing"] = False
+        # Inventory is decision-critical and is never served from a cache. Fetch
+        # its brief live while independently filling only missing order counts.
+        refresh_jobs = []
+        refresh_parts: list[tuple[list[str], list[str]]] = []
+        if "brief" in include:
+            refresh_parts.append((product_ids, ["brief"]))
+        if missing_order_ids:
+            refresh_parts.append(([pid for pid in product_ids if pid in missing_order_ids], ["orders"]))
+        for ids_to_fetch, parts_to_fetch in refresh_parts:
+            refresh_jobs.append(run_in_threadpool(
+                _ads_refresh_hydrate_sync,
+                store_list,
+                ids_to_fetch,
+                req.start,
+                req.end,
+                parts_to_fetch,
+                include_closed,
+                date_field,
+            ))
+        if refresh_jobs:
+            fresh_results = await asyncio.wait_for(asyncio.gather(*refresh_jobs), timeout=35)
+            for fresh in fresh_results:
+                for pid, data in (fresh or {}).items():
+                    products.setdefault(pid, {"cached": False, "refreshing": False}).update(data or {})
+                    products[pid]["cached"] = False
+                    products[pid]["refreshing"] = False
 
-        stale_to_refresh = [pid for pid in product_ids if pid in stale_ids and pid not in set(to_fetch)]
+        fetched_ids = set(product_ids if "brief" in include else []) | missing_order_ids
+        stale_to_refresh = [pid for pid in product_ids if pid in stale_order_ids and pid not in missing_order_ids]
         if stale_to_refresh and (req.cache_mode or "").lower() == "stale_then_refresh":
             for pid in stale_to_refresh:
                 products.setdefault(pid, {"cached": True, "refreshing": True})["refreshing"] = True
-            background_tasks.add_task(_ads_refresh_hydrate_sync, store_list, stale_to_refresh, req.start, req.end, include, include_closed, date_field)
+            background_tasks.add_task(_ads_refresh_hydrate_sync, store_list, stale_to_refresh, req.start, req.end, ["orders"], include_closed, date_field)
+
+        # Entries are complete only when every requested component arrived.
+        for pid in product_ids:
+            data = products.setdefault(pid, {"cached": False, "refreshing": False})
+            if "brief" in include and not ("image" in data or "total_available" in data):
+                data["cached"] = False
+            if "orders" in include and "orders" not in data:
+                data["cached"] = False
 
         shopify_logger.info(
             "ads_mgmt.shopify_hydrate stores=%s ids=%s cached=%s fetch=%s stale_refresh=%s elapsed_ms=%s",
             ",".join([str(s or "") for s in store_list]),
             len(product_ids),
             sum(1 for v in products.values() if v.get("cached")),
-            len(to_fetch),
+            len(fetched_ids),
             len(stale_to_refresh),
             int((time.perf_counter() - started) * 1000),
         )
@@ -1890,6 +1904,12 @@ class AdsManagementUtmWarmRequest(BaseModel):
 
 
 def _ads_warm_utm_orders_sync(store_list: list[str | None], start: str, end: str) -> None:
+    if len(store_list) > 1:
+        try:
+            list_orders_with_utms_processed_multi(start, end, stores=[str(st) for st in store_list if st], include_closed=True)
+        except Exception as e:
+            shopify_logger.warning("ads_mgmt.utm_warm_multi_failed stores=%s err=%s", store_list, e)
+        return
     for st in store_list:
         try:
             list_orders_with_utms_processed(start, end, store=st, include_closed=True)
@@ -1923,13 +1943,8 @@ async def api_product_variants_inventory(req: ProductVariantsInventoryRequest):
         if not pid or not pid.isdigit():
             return {"data": {"sizes": [], "colors": [], "matrix": {}, "total_available": 0}}
         store = _canonical_store_label(req.store)
-        key = _cache_key("shopify_product_variants_inv", {"store": store or None, "id": pid})
-
-        async def _compute():
-            from app.integrations.shopify_client import get_product_variants_inventory
-            return await run_in_threadpool(get_product_variants_inventory, pid, store=store)
-
-        data = await asyncio.wait_for(_cached(key, 300, _compute), timeout=28)
+        from app.integrations.shopify_client import get_product_variants_inventory
+        data = await asyncio.wait_for(run_in_threadpool(get_product_variants_inventory, pid, store=store), timeout=28)
         return {"data": data}
     except asyncio.TimeoutError:
         shopify_logger.warning(
@@ -5660,7 +5675,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        key = _cache_key("meta_campaign_adset_orders_v8", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
+        key = _cache_key("meta_campaign_adset_orders_v9", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -5697,7 +5712,12 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                 except Exception:
                     return []
 
-            adsets, orders = await asyncio.gather(_fetch_adsets(), _fetch_orders())
+            # Pipeline dependent work: start the expensive Shopify scan and Meta
+            # ad-set lookup together, then overlap the ad reverse-map request with
+            # the still-running order scan.
+            adsets_task = asyncio.create_task(_fetch_adsets())
+            orders_task = asyncio.create_task(_fetch_orders())
+            adsets = await adsets_task
 
             adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
 
@@ -5710,10 +5730,16 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                     adset_name_to_id[name.lower()] = aid
 
             # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
-            try:
-                ads_by_adset = await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
-            except Exception:
-                ads_by_adset = {}
+            async def _fetch_ads_by_adset():
+                if not adset_ids:
+                    return {}
+                try:
+                    return await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
+                except Exception:
+                    return {}
+
+            ads_task = asyncio.create_task(_fetch_ads_by_adset())
+            orders, ads_by_adset = await asyncio.gather(orders_task, ads_task)
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
@@ -5855,6 +5881,10 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
 
                 except Exception:
                     continue
+            # Explicit zero buckets let the client distinguish "loaded with zero
+            # orders" from "still loading" and calculate zero-order UTM tCPP.
+            for adset_id in adset_ids:
+                result.setdefault(adset_id, {"count": 0, "orders": []})
             return result
 
         result = await asyncio.wait_for(_cached(key, 60, _compute), timeout=270)
