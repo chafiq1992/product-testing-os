@@ -3310,17 +3310,19 @@ def get_products_brief(numeric_product_ids: list[str], *, store: str | None = No
         # Ads management uses inventory for restocking decisions. A single live
         # GraphQL batch keeps this current without storing the response in any
         # memory or database cache.
-        brief_map = _get_products_brief_graphql(ids, store=store)
-        return {
-            pid: (brief_map or {}).get(pid) or {
-                "image": None,
-                "total_available": 0,
-                "zero_variants": 0,
-                "zero_sizes": 0,
-                "price": None,
-            }
-            for pid in ids
-        }
+        started = time.time()
+        brief_map = _get_products_brief_graphql(ids, store=store) or {}
+        _perf_log.info(
+            "products_brief.graphql_fresh store=%s ids=%d found=%d elapsed_ms=%d",
+            store,
+            len(ids),
+            len(brief_map),
+            int((time.time() - started) * 1000),
+        )
+        # Do not manufacture zero-inventory placeholders for IDs that are not in
+        # this store. In a multi-store request those placeholders can otherwise
+        # overwrite the real image and inventory returned by the matching store.
+        return brief_map
 
     now = time.time()
     out: dict[str, dict] = {}

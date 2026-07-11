@@ -82,3 +82,21 @@ def test_variant_inventory_bypasses_stored_cache(monkeypatch):
     monkeypatch.setattr(shopify_client, "_get_product_inventory_graphql", lambda *_args, **_kwargs: expected)
 
     assert shopify_client.get_product_variants_inventory("123", store="irrakids") == expected
+
+
+def test_fresh_product_brief_does_not_create_missing_store_placeholders(monkeypatch):
+    expected = {
+        "123": {
+            "image": "https://cdn.shopify.com/product.jpg",
+            "total_available": 4,
+            "zero_variants": 0,
+            "zero_sizes": 0,
+            "price": 10.0,
+        }
+    }
+    monkeypatch.setattr(shopify_client, "_get_products_brief_graphql", lambda *_args, **_kwargs: expected)
+
+    result = shopify_client.get_products_brief(["123", "999"], store="irrakids", fresh_inventory=True)
+
+    assert result == expected
+    assert "999" not in result

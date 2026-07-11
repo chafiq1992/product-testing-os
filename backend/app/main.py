@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 import json, os
 import base64, hmac, hashlib
 from pathlib import Path
@@ -1736,23 +1737,39 @@ def _ads_refresh_hydrate_sync(store_list: list[str | None], product_ids: list[st
         return products
 
     if "brief" in include:
-        for st in store_list:
+        def _brief_for_store(st: str | None) -> tuple[str | None, dict, Exception | None]:
             try:
-                brief_map = get_products_brief(ids, store=st, fresh_inventory=True) or {}
-                for pid, data in (brief_map or {}).items():
-                    if not isinstance(data, dict):
-                        continue
-                    cur = products.setdefault(str(pid), {})
-                    if not cur.get("image") or data.get("image"):
-                        cur.update({
-                            "image": data.get("image"),
-                            "total_available": data.get("total_available"),
-                            "zero_variants": data.get("zero_variants"),
-                            "zero_sizes": data.get("zero_sizes"),
-                            "price": data.get("price"),
-                        })
+                return st, get_products_brief(ids, store=st, fresh_inventory=True) or {}, None
             except Exception as e:
-                shopify_logger.warning("ads_mgmt.hydrate_brief_failed store=%s ids=%s err=%s", st, len(ids), e)
+                return st, {}, e
+
+        # Store inventories are independent. Fetch them concurrently so a slow
+        # or throttled store cannot make a two-store request exceed the brief
+        # deadline before the matching store's image is returned.
+        if len(store_list) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(store_list), 4)) as executor:
+                brief_results = list(executor.map(_brief_for_store, store_list))
+        else:
+            brief_results = [_brief_for_store(store_list[0] if store_list else None)]
+
+        # executor.map preserves selected-store order, keeping merge behavior
+        # deterministic while preferring a result that actually has an image.
+        for st, brief_map, error in brief_results:
+            if error is not None:
+                shopify_logger.warning("ads_mgmt.hydrate_brief_failed store=%s ids=%s err=%s", st, len(ids), error)
+                continue
+            for pid, data in brief_map.items():
+                if not isinstance(data, dict):
+                    continue
+                cur = products.setdefault(str(pid), {})
+                if not cur or data.get("image") or not cur.get("image"):
+                    cur.update({
+                        "image": data.get("image"),
+                        "total_available": data.get("total_available"),
+                        "zero_variants": data.get("zero_variants"),
+                        "zero_sizes": data.get("zero_sizes"),
+                        "price": data.get("price"),
+                    })
 
     if "orders" in include:
         s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
