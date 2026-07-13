@@ -5667,7 +5667,7 @@ async def api_set_ad_account(req: AdAccountSetRequest):
 @app.get("/api/meta/ad_accounts")
 async def api_list_ad_accounts():
     try:
-        items = list_ad_accounts()
+        items = await run_in_threadpool(list_ad_accounts)
         # light shape
         data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status")} for x in (items or [])]
         return {"data": data}

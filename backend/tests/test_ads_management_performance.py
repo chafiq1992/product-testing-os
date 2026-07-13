@@ -145,3 +145,48 @@ def test_meta_collection_tracking_signature_resolves_and_matches_exact_utm():
         },
         signature,
     )
+
+
+def test_meta_ad_account_list_paginates_and_merges_business_accounts(monkeypatch):
+    calls = []
+
+    def fake_get(path, params=None):
+        params = dict(params or {})
+        calls.append((path, params))
+        after = params.get("after")
+        if path == "me/adaccounts" and not after:
+            return {
+                "data": [{"id": "act_1", "name": "Direct one", "account_status": 1}],
+                "paging": {
+                    "cursors": {"after": "direct-page-2"},
+                    "next": "https://graph.facebook.com/v20.0/me/adaccounts?after=direct-page-2",
+                },
+            }
+        if path == "me/adaccounts" and after == "direct-page-2":
+            return {"data": [{"id": "act_2", "name": "Direct two", "account_status": 1}]}
+        if path == "me/businesses":
+            return {"data": [{"id": "business-1", "name": "Main business"}]}
+        if path == "business-1/owned_ad_accounts":
+            return {
+                "data": [
+                    {"id": "2", "name": "Duplicate two", "account_status": 1},
+                    {"id": "act_3", "name": "Owned three", "account_status": 1},
+                ]
+            }
+        if path == "business-1/client_ad_accounts":
+            return {"data": [{"id": "act_4", "name": "Client four", "account_status": 2}]}
+        raise AssertionError(f"unexpected Meta path: {path} {params}")
+
+    monkeypatch.setattr(meta_client, "ACCESS", "test-token")
+    monkeypatch.setattr(meta_client, "_get", fake_get)
+
+    result = meta_client.list_ad_accounts()
+
+    assert [item["id"] for item in result] == ["act_4", "act_1", "act_2", "act_3"]
+    assert len([item for item in result if item["id"].removeprefix("act_") == "2"]) == 1
+    assert any(path == "me/adaccounts" and params.get("after") == "direct-page-2" for path, params in calls)
+    assert {path for path, _params in calls} >= {
+        "me/businesses",
+        "business-1/owned_ad_accounts",
+        "business-1/client_ad_accounts",
+    }

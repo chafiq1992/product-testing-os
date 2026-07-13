@@ -1252,10 +1252,12 @@ export default function AdsManagementPage(){
         const items = ((res as any)?.data)||[]
         const extras: Array<{id:string,name:string}> = [
           { id: '8127151147322914', name: '8127151147322914' },
+          ...selectedAdAccounts.map(id => ({ id, name: id })),
         ]
         const byId: Record<string, {id:string,name:string,account_status?:number}> = {}
-        for(const a of items){ byId[a.id] = a }
-        for(const e of extras){ if(!byId[e.id]) byId[e.id] = e as any }
+        const accountKey = (id: string) => String(id || '').replace(/^act_/i, '')
+        for(const a of items){ const key = accountKey(a.id); if(key) byId[key] = a }
+        for(const e of extras){ const key = accountKey(e.id); if(key && !byId[key]) byId[key] = e as any }
         setAdAccounts(Object.values(byId))
       }catch{ setAdAccounts([]) }
     }

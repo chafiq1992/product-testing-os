@@ -180,6 +180,42 @@ def _today_in_tz(tz_name: str | None):
 
 
 # -------- Ad Account helpers --------
+def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: int = 100) -> list[dict]:
+    """Read every page from a Graph API edge without following token-bearing URLs."""
+    base_params = dict(params or {})
+    rows: list[dict] = []
+    after: str | None = None
+    seen_cursors: set[str] = set()
+
+    for _ in range(max(1, int(max_pages or 1))):
+        page_params = dict(base_params)
+        if after:
+            page_params["after"] = after
+        res = _get(path, page_params)
+        if not isinstance(res, dict):
+            break
+        data = res.get("data")
+        if isinstance(data, list):
+            rows.extend(row for row in data if isinstance(row, dict))
+
+        paging = res.get("paging") if isinstance(res.get("paging"), dict) else {}
+        next_url = str((paging or {}).get("next") or "")
+        if not next_url:
+            break
+        cursors = (paging or {}).get("cursors") if isinstance((paging or {}).get("cursors"), dict) else {}
+        next_after = str((cursors or {}).get("after") or "")
+        if not next_after:
+            try:
+                next_after = str(dict(parse_qsl(urlparse(next_url).query)).get("after") or "")
+            except Exception:
+                next_after = ""
+        if not next_after or next_after in seen_cursors:
+            break
+        seen_cursors.add(next_after)
+        after = next_after
+    return rows
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def get_ad_account_info(ad_account_id: str | None = None) -> dict:
     """Fetch ad account basic info: id and name."""
@@ -194,20 +230,68 @@ def get_ad_account_info(ad_account_id: str | None = None) -> dict:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_ad_accounts() -> list[dict]:
-    """List accessible ad accounts for the current access token (id, name)."""
+    """List all ad accounts visible directly or through the token's businesses."""
     if not ACCESS:
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    # Use /me/adaccounts; for system users this also works when token belongs to business user/system user
-    res = _get("me/adaccounts", {"fields": "id,name,account_status", "limit": 500})
-    rows = (res or {}).get("data") or []
-    out: list[dict] = []
-    for r in (rows or []):
-        out.append({
-            "id": str((r or {}).get("id") or ""),
-            "name": (r or {}).get("name") or "",
-            "account_status": (r or {}).get("account_status"),
-        })
-    return out
+
+    account_rows: list[dict] = []
+    errors: list[Exception] = []
+    account_params = {"fields": "id,name,account_status", "limit": 100}
+
+    # Direct assignments are the fastest and most broadly permitted source.
+    try:
+        account_rows.extend(_list_graph_edge_all("me/adaccounts", account_params))
+    except Exception as exc:
+        errors.append(exc)
+
+    # Business tokens can expose additional owned/client accounts that are not
+    # included in the first direct edge response. Query each business best-effort:
+    # a permission problem in one business must not hide accounts from the others.
+    businesses: list[dict] = []
+    try:
+        businesses = _list_graph_edge_all("me/businesses", {"fields": "id,name", "limit": 100})
+    except Exception as exc:
+        errors.append(exc)
+    for business in businesses:
+        business_id = str((business or {}).get("id") or "").strip()
+        if not business_id:
+            continue
+        for edge in ("owned_ad_accounts", "client_ad_accounts"):
+            try:
+                account_rows.extend(_list_graph_edge_all(f"{business_id}/{edge}", account_params))
+            except Exception as exc:
+                errors.append(exc)
+
+    # Meta may return the same account as `123` and `act_123` across edges.
+    # Preserve the first identifier while filling any missing metadata.
+    by_id: dict[str, dict] = {}
+    for row in account_rows:
+        raw_id = str((row or {}).get("id") or "").strip()
+        key = raw_id.lower()
+        if key.startswith("act_"):
+            key = key[4:]
+        if not key:
+            continue
+        shaped = {
+            "id": raw_id,
+            "name": str((row or {}).get("name") or ""),
+            "account_status": (row or {}).get("account_status"),
+        }
+        existing = by_id.get(key)
+        if existing is None:
+            by_id[key] = shaped
+            continue
+        if not existing.get("name") and shaped.get("name"):
+            existing["name"] = shaped["name"]
+        if existing.get("account_status") is None and shaped.get("account_status") is not None:
+            existing["account_status"] = shaped["account_status"]
+
+    if not by_id and errors:
+        raise errors[0]
+    return sorted(
+        by_id.values(),
+        key=lambda item: (str(item.get("name") or "").casefold(), str(item.get("id") or "")),
+    )
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
