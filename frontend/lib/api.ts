@@ -764,7 +764,7 @@ export type AttributedOrder = {
   store?: string,
 }
 
-export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[]){
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[], mappingKind?: 'product'|'collection'){
   const params: string[] = []
   if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
   if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
@@ -775,6 +775,7 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
     const s = store ?? selectedStore()
     if(s) params.push(`store=${encodeURIComponent(s)}`)
   }
+  if(mappingKind) params.push(`mapping_kind=${encodeURIComponent(mappingKind)}`)
   const qp = params.length? `?${params.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`
   return __dedupe(`GET ${url}`, async ()=>{

@@ -1,5 +1,5 @@
 from app import db
-from app.integrations import shopify_client
+from app.integrations import meta_client, shopify_client
 
 
 def test_bulk_app_settings_round_trip():
@@ -100,3 +100,48 @@ def test_fresh_product_brief_does_not_create_missing_store_placeholders(monkeypa
 
     assert result == expected
     assert "999" not in result
+
+
+def test_meta_collection_tracking_signature_resolves_and_matches_exact_utm():
+    ad = {
+        "id": "333",
+        "name": "Creative A",
+        "creative": {
+            "url_tags": "utm_source=meta&utm_medium=cpc&utm_campaign={{campaign.id}}&utm_content={{adset.id}}&ad_id={{ad.id}}",
+        },
+    }
+
+    signature = meta_client._extract_meta_ad_tracking_params(
+        ad,
+        campaign_id="111",
+        adset_id="222",
+        adset_name="Collection audience",
+    )
+
+    assert signature == {
+        "utm_source": "meta",
+        "utm_medium": "cpc",
+        "utm_campaign": "111",
+        "utm_content": "222",
+        "ad_id": "333",
+    }
+    assert meta_client.meta_tracking_signature_matches(
+        {
+            "utm_source": "meta",
+            "utm_medium": "cpc",
+            "utm_campaign": "111",
+            "utm_content": "222",
+            "ad_id": "333",
+        },
+        signature,
+    )
+    assert not meta_client.meta_tracking_signature_matches(
+        {
+            "utm_source": "meta",
+            "utm_medium": "cpc",
+            "utm_campaign": "111",
+            "utm_content": "different-adset",
+            "ad_id": "333",
+        },
+        signature,
+    )

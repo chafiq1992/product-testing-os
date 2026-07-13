@@ -44,7 +44,7 @@ from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_campaign_summary
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts
-from app.integrations.meta_client import list_ads_for_adsets
+from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
@@ -5711,7 +5711,7 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
-async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None):
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, mapping_kind: str | None = None):
     """Attribute Shopify orders to ad sets by matching UTM parameters.
 
     Dual-strategy attribution:
@@ -5734,7 +5734,8 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        key = _cache_key("meta_campaign_adset_orders_v9", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None})
+        collection_utm_mode = str(mapping_kind or "").strip().lower() == "collection"
+        key = _cache_key("meta_campaign_adset_orders_v10", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "mapping_kind": "collection" if collection_utm_mode else "product"})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -5791,14 +5792,32 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
             # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
             async def _fetch_ads_by_adset():
                 if not adset_ids:
-                    return {}
+                    return {}, {}
                 try:
-                    return await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
+                    if collection_utm_mode:
+                        names = {str((a or {}).get("adset_id") or ""): str((a or {}).get("name") or "") for a in (adsets or [])}
+                        tracking = await asyncio.wait_for(
+                            run_in_threadpool(
+                                list_ads_with_tracking_for_adsets,
+                                adset_ids,
+                                campaign_id=str(campaign_id),
+                                adset_names=names,
+                            ),
+                            timeout=18,
+                        )
+                        ids = {
+                            aid: [str((detail or {}).get("ad_id") or "") for detail in details if (detail or {}).get("ad_id")]
+                            for aid, details in (tracking or {}).items()
+                        }
+                        return ids, tracking or {}
+                    ids = await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
+                    return ids or {}, {}
                 except Exception:
-                    return {}
+                    return {}, {}
 
             ads_task = asyncio.create_task(_fetch_ads_by_adset())
-            orders, ads_by_adset = await asyncio.gather(orders_task, ads_task)
+            orders, ad_data = await asyncio.gather(orders_task, ads_task)
+            ads_by_adset, tracking_by_adset = ad_data
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
@@ -5872,6 +5891,39 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
 
                     attributed = False
                     adset_ids_set = set(str(x) for x in adset_ids)
+
+                    # Collection campaigns can contain many products, so product-ID
+                    # attribution is intentionally not used. Match the exact UTM
+                    # signature configured on Meta and count the order once only
+                    # when that signature identifies one ad set unambiguously.
+                    if collection_utm_mode:
+                        if o_adset_id_direct and o_adset_id_direct in adset_ids_set:
+                            _add_order(o_adset_id_direct, o, o_ad_id or None)
+                            continue
+                        order_tracking = {
+                            str(key or "").strip().lower(): str(value or "").strip()
+                            for key, value in (utm or {}).items()
+                            if str(key or "").strip() and str(value or "").strip()
+                        }
+                        if o_campaign_id:
+                            order_tracking.setdefault("campaign_id", o_campaign_id)
+                        if o_adset_id_utm:
+                            order_tracking.setdefault("adset_id", o_adset_id_utm)
+                        if o_ad_id:
+                            order_tracking.setdefault("ad_id", o_ad_id)
+                        matched_adsets: set[str] = set()
+                        for candidate_adset, details in (tracking_by_adset or {}).items():
+                            for detail in (details or []):
+                                if meta_tracking_signature_matches(order_tracking, (detail or {}).get("utm") or {}):
+                                    matched_adsets.add(str(candidate_adset))
+                                    break
+                        if len(matched_adsets) == 1:
+                            matched_adset = next(iter(matched_adsets))
+                            _add_order(matched_adset, o, o_ad_id or None)
+                            continue
+                        if o_ad_id and o_ad_id in ad_to_adset:
+                            _add_order(ad_to_adset[o_ad_id], o, o_ad_id)
+                        continue
 
                     # ===== STRATEGY 0: Direct adset_id from URL =====
                     # Meta auto-tagging puts adset_id in utm_medium/utm_term

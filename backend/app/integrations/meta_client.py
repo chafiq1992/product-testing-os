@@ -1,5 +1,6 @@
 import os, json, time, requests
 from datetime import datetime, timedelta
+from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
@@ -313,6 +314,142 @@ def list_ads_for_adsets(adset_ids: list[str]) -> dict[str, list[str]]:
             out[str(aid)] = [str((r or {}).get("id") or "") for r in rows if (r or {}).get("id")]
         except Exception:
             out[str(aid)] = []
+    return out
+
+
+_META_TRACKING_KEYS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "utm_id",
+    "campaign_id", "adset_id", "ad_id",
+}
+_META_TRACKING_DISCRIMINATORS = {
+    "utm_campaign", "utm_content", "utm_term", "utm_id", "campaign_id", "adset_id", "ad_id",
+}
+
+
+def _tracking_params_from_text(raw: str | None) -> dict[str, str]:
+    """Parse Meta ``url_tags`` or a complete creative URL into tracking values."""
+    text = str(raw or "").strip().lstrip("?")
+    if not text:
+        return {}
+    query = urlparse(text).query if "://" in text else text
+    out: dict[str, str] = {}
+    for key, value in parse_qsl(query, keep_blank_values=False):
+        normalized_key = str(key or "").strip().lower()
+        normalized_value = str(value or "").strip()
+        if normalized_key in _META_TRACKING_KEYS and normalized_value:
+            out[normalized_key] = normalized_value
+    return out
+
+
+def _extract_meta_ad_tracking_params(
+    ad: dict,
+    *,
+    campaign_id: str = "",
+    adset_id: str = "",
+    adset_name: str = "",
+) -> dict[str, str]:
+    """Extract and resolve the UTM signature configured on one Meta ad."""
+    ad = ad or {}
+    ad_id = str(ad.get("id") or "").strip()
+    ad_name = str(ad.get("name") or "").strip()
+    creative = ad.get("creative") or {}
+    sources: list[str] = [str((creative or {}).get("url_tags") or "")]
+    story = (creative or {}).get("object_story_spec") or {}
+    link_data = story.get("link_data") or {}
+    video_data = story.get("video_data") or {}
+    sources.append(str(link_data.get("link") or ""))
+    for child in (link_data.get("child_attachments") or []):
+        sources.append(str((child or {}).get("link") or ""))
+    cta_value = ((video_data.get("call_to_action") or {}).get("value") or {})
+    sources.append(str(cta_value.get("link") or ""))
+
+    params: dict[str, str] = {}
+    for source in sources:
+        for key, value in _tracking_params_from_text(source).items():
+            params.setdefault(key, value)
+
+    replacements = {
+        "{{campaign.id}}": str(campaign_id or "").strip(),
+        "{{adset.id}}": str(adset_id or "").strip(),
+        "{{ad.id}}": ad_id,
+        "{{adset.name}}": str(adset_name or "").strip(),
+        "{{ad.name}}": ad_name,
+    }
+    resolved: dict[str, str] = {}
+    for key, raw_value in params.items():
+        value = str(raw_value or "").strip()
+        for token, replacement in replacements.items():
+            if replacement:
+                value = value.replace(token, replacement)
+        # Unknown dynamic macros cannot be compared to the resolved Shopify value.
+        if value and "{{" not in value and "}}" not in value:
+            resolved[key] = value
+    return resolved
+
+
+def meta_tracking_signature_matches(order_params: dict, signature: dict) -> bool:
+    """Return true when an order contains the complete, useful Meta UTM signature."""
+    normalized_order = {
+        str(key or "").strip().lower(): str(value or "").strip().lower()
+        for key, value in (order_params or {}).items()
+        if str(key or "").strip() and str(value or "").strip()
+    }
+    normalized_signature = {
+        str(key or "").strip().lower(): str(value or "").strip().lower()
+        for key, value in (signature or {}).items()
+        if str(key or "").strip() in _META_TRACKING_KEYS and str(value or "").strip()
+    }
+    if not normalized_signature or not any(key in _META_TRACKING_DISCRIMINATORS for key in normalized_signature):
+        return False
+    return all(normalized_order.get(key) == value for key, value in normalized_signature.items())
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_ads_with_tracking_for_adsets(
+    adset_ids: list[str],
+    *,
+    campaign_id: str = "",
+    adset_names: dict[str, str] | None = None,
+) -> dict[str, list[dict]]:
+    """Return ads and their exact configured UTM signatures grouped by ad set."""
+    if not ACCESS:
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    names = adset_names or {}
+    out: dict[str, list[dict]] = {}
+    for raw_adset_id in (adset_ids or []):
+        aid = str(raw_adset_id or "").strip()
+        if not aid:
+            continue
+        try:
+            res = _get(
+                f"{aid}/ads",
+                {"fields": "id,name,creative{id,url_tags,object_story_spec}", "limit": 500},
+            )
+            rows = (res or {}).get("data") or []
+        except Exception:
+            rows = []
+        details: list[dict] = []
+        for row in rows:
+            row = row or {}
+            creative = row.get("creative") or {}
+            # Some Graph responses return only the creative ID for a nested field.
+            if creative.get("id") and not (creative.get("url_tags") or creative.get("object_story_spec")):
+                try:
+                    creative = _get(str(creative.get("id")), {"fields": "id,url_tags,object_story_spec"}) or creative
+                    row = {**row, "creative": creative}
+                except Exception:
+                    pass
+            details.append({
+                "ad_id": str(row.get("id") or ""),
+                "ad_name": str(row.get("name") or ""),
+                "utm": _extract_meta_ad_tracking_params(
+                    row,
+                    campaign_id=str(campaign_id or ""),
+                    adset_id=aid,
+                    adset_name=str(names.get(aid) or ""),
+                ),
+            })
+        out[aid] = details
     return out
 
 

@@ -2873,7 +2873,8 @@ export default function AdsManagementPage(){
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
                                   const rowStore = (c as any)._store || store
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined)
+                                  const mappingKind = ((manualIds as any)[String(rowKey)]?.kind) as ('product'|'collection'|undefined)
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined, mappingKind)
                                   if((ord as any)?.error) throw new Error(String((ord as any).error))
                                   const mapping = ((ord as any)?.data)||{}
                                   setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
