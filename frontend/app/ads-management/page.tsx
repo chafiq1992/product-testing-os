@@ -3,11 +3,9 @@ import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'rea
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 
-const ALL_STORES = [
-  { value: 'irrakids', label: 'irrakids' },
-  { value: 'irranova', label: 'irranova' },
-]
+const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
 type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
 type AdsetOrdersInfo = { count:number, orders: AttributedOrder[] }
 
@@ -82,13 +80,13 @@ function normalizeStoreValue(value?: string | null): string{
   const v = String(value || '').trim().toLowerCase()
   return v === 'nouralibas' ? 'irrakids' : v
 }
-function normalizeStoreList(values?: string[]): string[]{
-  const allowed = new Set(ALL_STORES.map(s => s.value))
+function normalizeStoreList(values?: string[], options?: Array<{ value: string }>): string[]{
+  const allowed = options ? new Set(options.map(s => s.value)) : null
   const seen = new Set<string>()
   const out: string[] = []
   for(const raw of values || []){
     const v = normalizeStoreValue(raw)
-    if(!v || !allowed.has(v) || seen.has(v)) continue
+    if(!v || (allowed && !allowed.has(v)) || seen.has(v)) continue
     seen.add(v)
     out.push(v)
   }
@@ -215,6 +213,13 @@ export default function AdsManagementPage(){
   })
   // Keep legacy single-value for backward compat with other parts of the code
   const store = normalizeStoreValue(selectedStores[0]) || 'irrakids'
+  const { stores: configuredShopifyStores } = useShopifyStores(store)
+  const storeOptions = useMemo(
+    () => configuredShopifyStores.length
+      ? configuredShopifyStores.map(item => ({ value: item.label, label: item.label }))
+      : DEFAULT_STORE_OPTIONS,
+    [configuredShopifyStores],
+  )
   const adAccount = selectedAdAccounts[0] || ''
   const setStore = (v: string) => {
     const next = normalizeStoreList([v])
@@ -563,7 +568,7 @@ export default function AdsManagementPage(){
   }
 
   function performanceOrderStores(rowStore?: string | null): Array<string | undefined>{
-    const stores = normalizeStoreList(selectedStores||[])
+    const stores = normalizeStoreList(selectedStores||[], storeOptions)
     if(stores.length>0) return Array.from(new Set(stores))
     const fallback = normalizeStoreValue(rowStore || store || '')
     return fallback ? [fallback] : [undefined]
@@ -621,8 +626,8 @@ export default function AdsManagementPage(){
     const mappedStores = Object.values(manualIds || {})
       .filter(m => m && m.kind === 'product' && String(m.id || '') === pid && String(m.store || '').trim())
       .map(m => normalizeStoreValue(m.store))
-    const selected = normalizeStoreList(selectedStores||[])
-    const known = includeKnownFallback ? ALL_STORES.map(s => s.value) : []
+    const selected = normalizeStoreList(selectedStores||[], storeOptions)
+    const known = includeKnownFallback ? storeOptions.map(s => s.value) : []
     const stores = uniqueStores([...mappedStores, ...selected, store, ...known])
     return stores.length ? stores : [store || undefined]
   }
@@ -1866,10 +1871,10 @@ export default function AdsManagementPage(){
         <div className="flex flex-wrap items-center justify-end gap-2">
           <MultiCheckDropdown
             label="Stores"
-            options={ALL_STORES}
+            options={storeOptions}
             selected={selectedStores}
             onChange={(next) => {
-              const normalized = normalizeStoreList(next)
+              const normalized = normalizeStoreList(next, storeOptions)
               const finalStores = normalized.length ? normalized : ['irrakids']
               setSelectedStores(finalStores)
               try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}

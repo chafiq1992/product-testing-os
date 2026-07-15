@@ -4,6 +4,7 @@ import { Rocket, Plus, ExternalLink } from 'lucide-react'
 import { listFlows, saveDraft, deleteFlow } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import ShopifyStoreSelect from '@/components/ShopifyStoreSelect'
 
 function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-none shadow-sm">{children}</div> }
 function CardHeader({ children, className='' }:{children:React.ReactNode,className?:string}){ return <div className={`px-4 pt-4 ${className}`}>{children}</div> }
@@ -67,16 +68,13 @@ export default function HomePage(){
           <h1 className="font-semibold text-lg">Product Testing OS — Flows</h1>
         </div>
         <div className="flex items-center gap-2">
-          <select value={store} onChange={async (e)=>{
-            const val = e.target.value
+          <ShopifyStoreSelect value={store} onChange={async (val)=>{
             setStore(val)
             try{ localStorage.setItem('ptos_store', val) }catch{}
             setLoading(true)
             try{ const res=await listFlows(undefined, val); setItems((res as any)?.data||[]) } finally{ setLoading(false) }
           }} className="rounded-xl border px-2 py-1 text-sm">
-            <option value="irrakids">irrakids</option>
-            <option value="irranova">irranova</option>
-          </select>
+          </ShopifyStoreSelect>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">Home</Link>
           <Link href="/ads-management" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white">
             Ads management

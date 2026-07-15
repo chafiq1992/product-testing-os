@@ -5,6 +5,7 @@ import Link from "next/link"
 import { CheckCircle2, ChevronRight, Copy, ImageIcon, LogOut, Phone, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { confirmationAgentAnalytics, confirmationLogin, confirmationListOrders, confirmationOrderAction, confirmationStats } from "@/lib/api"
+import ShopifyStoreSelect from "@/components/ShopifyStoreSelect"
 
 type OrderRow = {
   id: string
@@ -304,14 +305,11 @@ export default function ConfirmationPage(){
           <form onSubmit={onLogin} className="mt-4 space-y-3">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Store</label>
-              <select value={store} onChange={(e)=> {
-                const v = e.target.value
+              <ShopifyStoreSelect value={store} onChange={(v)=> {
                 setStore(v)
                 try{ localStorage.setItem("ptos_store", v) }catch{}
               }} className="w-full rounded-lg border px-3 py-2 text-sm">
-                <option value="irrakids">irrakids</option>
-                <option value="irranova">irranova</option>
-              </select>
+              </ShopifyStoreSelect>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Email</label>
@@ -342,14 +340,11 @@ export default function ConfirmationPage(){
           <div className="text-xs text-slate-500">Signed in as <span className="font-medium">{agentEmail || "agent"}</span></div>
         </div>
         <div className="flex items-center gap-2">
-          <select value={store} onChange={(e)=> {
-            const v = e.target.value
+          <ShopifyStoreSelect value={store} onChange={(v)=> {
             setStore(v)
             try{ localStorage.setItem("ptos_store", v) }catch{}
           }} className="rounded-xl border px-2 py-1 text-sm">
-            <option value="irrakids">irrakids</option>
-            <option value="irranova">irranova</option>
-          </select>
+          </ShopifyStoreSelect>
           <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">Home</Link>
           <button onClick={()=>{ refreshStats(); refreshAgentAnalytics(); loadOrders({ page_info: pageInfo, direction: undefined }) }} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-2 border bg-white hover:bg-slate-50">
             <RefreshCw className={`w-4 h-4 ${loading? "animate-spin": ""}`}/> Refresh

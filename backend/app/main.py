@@ -53,6 +53,7 @@ from app.campaign_analyzer import analyze_campaign as run_campaign_analysis, gen
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
+from app.shopify_store_registry import build_store_registry, store_env_names, store_env_value
 from app import db
 import re
 import threading
@@ -573,6 +574,19 @@ async def api_shopify_oauth_status(request: Request, store: str | None = None):
         return {"error": str(e), "data": {"connected": False}}
 
 
+@app.get("/api/shopify/stores")
+async def api_shopify_stores(request: Request):
+    """Return the runtime store registry without exposing credentials or tokens."""
+    base_url = _abs_base_url(request)
+    return {
+        "data": {
+            "stores": build_store_registry(db),
+            "callback_url": f"{base_url}/api/shopify/oauth/callback" if base_url else None,
+            "persistent_token_storage": bool((os.getenv("DATABASE_URL") or "").strip()),
+        }
+    }
+
+
 @app.get("/api/shopify/debug/status")
 async def api_shopify_debug_status(store: str | None = None):
     """Safe Shopify health probe for debugging store/token/API latency.
@@ -914,10 +928,9 @@ def _get_shopify_oauth_credentials(store: str) -> tuple[str, str]:
     For stores explicitly enabled for OAuth, require store-specific credentials so we never
     accidentally redirect a merchant into the wrong Shopify app.
     """
-    store_label = (store or "").strip()
-    store_upper = store_label.upper()
-    store_client_id = os.getenv(f"SHOPIFY_CLIENT_ID_{store_upper}") or ""
-    store_client_secret = os.getenv(f"SHOPIFY_CLIENT_SECRET_{store_upper}") or ""
+    store_label = (store or "").strip().lower()
+    store_client_id, _ = store_env_value("SHOPIFY_CLIENT_ID", store_label)
+    store_client_secret, _ = store_env_value("SHOPIFY_CLIENT_SECRET", store_label)
 
     if store_label.lower() in _oauth_enabled_store_labels():
         return store_client_id, store_client_secret
@@ -941,13 +954,13 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
             
         client_id, client_secret = _get_shopify_oauth_credentials(store_label)
         if not (client_id and client_secret):
-            store_upper = store_label.upper()
+            required = store_env_names(store_label)
             return {
                 "error": "missing_shopify_client_credentials",
                 "store": store_label,
                 "required_env": [
-                    f"SHOPIFY_CLIENT_ID_{store_upper}",
-                    f"SHOPIFY_CLIENT_SECRET_{store_upper}",
+                    required["client_id"],
+                    required["client_secret"],
                 ],
             }
             
@@ -1002,13 +1015,13 @@ async def api_shopify_oauth_callback(request: Request):
             
         client_id, client_secret = _get_shopify_oauth_credentials(store_label)
         if not (client_id and client_secret):
-            store_upper = store_label.upper()
+            required = store_env_names(store_label)
             return {
                 "error": "missing_shopify_client_credentials",
                 "store": store_label,
                 "required_env": [
-                    f"SHOPIFY_CLIENT_ID_{store_upper}",
-                    f"SHOPIFY_CLIENT_SECRET_{store_upper}",
+                    required["client_id"],
+                    required["client_secret"],
                 ],
             }
             

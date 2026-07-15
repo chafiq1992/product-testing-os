@@ -12,6 +12,7 @@ import {
   confirmationAdminUserUpsert,
   confirmationAdminUsersList,
 } from "@/lib/api"
+import ShopifyStoreSelect from "@/components/ShopifyStoreSelect"
 
 type AgentRow = { email: string, name?: string|null, tags?: string[] }
 type AgentStats = { confirm: number, phone: number, whatsapp: number, last_at?: string|null }
@@ -248,14 +249,11 @@ export default function ConfirmationAdminPage(){
           <div className="hidden md:block text-xs text-slate-500">Agent management & analytics</div>
         </div>
         <div className="flex items-center gap-2">
-          <select value={store} onChange={(e)=> {
-            const v = e.target.value
+          <ShopifyStoreSelect value={store} onChange={(v)=> {
             setStore(v)
             try{ localStorage.setItem("ptos_store", v) }catch{}
           }} className="rounded-xl border px-2 py-1 text-sm">
-            <option value="irrakids">irrakids</option>
-            <option value="irranova">irranova</option>
-          </select>
+          </ShopifyStoreSelect>
           <select value={days} onChange={(e)=> setDays(parseInt(e.target.value, 10))} className="rounded-xl border px-2 py-1 text-sm">
             <option value={7}>Last 7 days</option>
             <option value={14}>Last 14 days</option>

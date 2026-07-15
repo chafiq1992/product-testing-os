@@ -15,6 +15,7 @@ import {
   Store,
   User,
 } from "lucide-react"
+import ShopifyStoreSelect from "@/components/ShopifyStoreSelect"
 
 type ThemeStatus = {
   connected?: boolean
@@ -34,8 +35,6 @@ type ChatMessage = {
   filesSentToModel?: string[]
   themeFileCount?: number
 }
-
-const STORES = ["irrakids", "irranova", "mmd"]
 
 const EXAMPLES = [
   "Under the buy button, add 4 trust items using our theme default layout: 1 delivery, 2 exchange, 3 secure payment, 4 support.",
@@ -66,7 +65,7 @@ export default function ThemeEditorPage() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("ptos_store")
-      if (saved && STORES.includes(saved)) setStore(saved)
+      if (saved) setStore(saved)
     } catch {}
   }, [])
 
@@ -190,13 +189,11 @@ export default function ThemeEditorPage() {
             <label className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-400">
               <Store size={14} /> Store
             </label>
-            <select
+            <ShopifyStoreSelect
               value={store}
-              onChange={e => handleStoreChange(e.target.value)}
+              onChange={handleStoreChange}
               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {STORES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+            />
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -254,13 +251,11 @@ export default function ThemeEditorPage() {
                 <p className="text-xs font-semibold text-slate-500">{connected ? "Connected" : "Select store"}</p>
               </div>
             </div>
-            <select
+            <ShopifyStoreSelect
               value={store}
-              onChange={e => handleStoreChange(e.target.value)}
+              onChange={handleStoreChange}
               className="max-w-[130px] rounded-xl border border-slate-200 bg-white px-2 py-2 text-xs font-bold outline-none"
-            >
-              {STORES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+            />
           </div>
         </header>
 

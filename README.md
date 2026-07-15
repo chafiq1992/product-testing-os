@@ -54,6 +54,17 @@ Set these env vars for the backend:
 - `SHOPIFY_OAUTH_STORES`: comma-separated store labels that should use OAuth tokens (default behavior in code: `irrakids,irranova,mmd`)
 - `SHOPIFY_OAUTH_SCOPES`: comma-separated scopes. Defaults now include orders, order edits, products, content/pages, inventory, locations, customers, files, publications, and themes.
 - `BASE_URL`: your public backend base URL so redirect URIs are correct
+- `OAUTH_STATE_SECRET`: stable random secret used to sign OAuth state. Store it in Secret Manager.
+- `DATABASE_URL`: shared PostgreSQL database used to persist per-store OAuth tokens across Cloud Run instances and revisions.
+
+`SHOPIFY_OAUTH_STORES` is also the runtime store registry used by the frontend. To add `beitii`, configure:
+
+- `SHOPIFY_OAUTH_STORES=irrakids,irranova,mmd,beitii`
+- `SHOPIFY_SHOP_DOMAIN_BEITII=beitii.myshopify.com`
+- `SHOPIFY_CLIENT_ID_BEITII=...`
+- `SHOPIFY_CLIENT_SECRET_BEITII=...`
+
+Store suffixes are uppercase. The backend temporarily accepts lowercase suffixes for migration and reports a warning on `GET /api/shopify/stores`, but new configuration should always use uppercase names. After the Cloud Run revision is updated, every frontend store selector loads the new label at runtime; a frontend rebuild is not required.
 
 In the Dev Dashboard app settings, set the **redirect URI** to:
 

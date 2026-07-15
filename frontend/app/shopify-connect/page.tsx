@@ -2,60 +2,76 @@
 
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useShopifyStores } from "@/lib/shopifyStores"
 
-function selectedStore(){
-  try{ return typeof window!=='undefined'? (localStorage.getItem('ptos_store')||'irrakids') : 'irrakids' }catch{ return 'irrakids' }
+function selectedStore() {
+  try {
+    if (typeof window === "undefined") return "irrakids"
+    const fromQuery = new URLSearchParams(window.location.search).get("store")
+    return (fromQuery || localStorage.getItem("ptos_store") || "irrakids").trim().toLowerCase()
+  } catch {
+    return "irrakids"
+  }
 }
 
-export default function ShopifyConnectPage(){
+export default function ShopifyConnectPage() {
   const [store, setStore] = useState("irrakids")
   const [shop, setShop] = useState("")
   const [connected, setConnected] = useState(false)
   const [connectedShop, setConnectedShop] = useState<string | null>(null)
   const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
-  const base = useMemo(()=> process.env.NEXT_PUBLIC_API_BASE_URL || "", [])
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const base = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL || "", [])
+  const { stores, registry, loading: storesLoading, error: storesError } = useShopifyStores(store)
+  const selectedConfig = stores.find(item => item.label === store)
 
-  useEffect(()=>{
-    try{
-      const s = selectedStore()
-      setStore(s)
-    }catch{}
-  },[])
+  useEffect(() => {
+    setStore(selectedStore())
+  }, [])
 
-  async function refresh(){
-    try{
-      const qp = `?store=${encodeURIComponent(store)}`
-      const res = await fetch(`${base}/api/shopify/oauth/status${qp}`)
-      const j = await res.json()
-      const d = j?.data || {}
-      setConnected(!!d?.connected)
-      setConnectedShop(d?.shop || null)
-      setCallbackUrl(d?.callback_url || null)
-    }catch{
+  useEffect(() => {
+    setShop(selectedConfig?.shop || "")
+  }, [store, selectedConfig?.shop])
+
+  async function refresh() {
+    try {
+      setStatusError(null)
+      const response = await fetch(`${base}/api/shopify/oauth/status?store=${encodeURIComponent(store)}`, { cache: "no-store" })
+      const payload = await response.json()
+      if (!response.ok || payload?.error) throw new Error(payload?.error || `Request failed (${response.status})`)
+      const data = payload?.data || {}
+      setConnected(Boolean(data.connected))
+      setConnectedShop(data.shop || null)
+      setCallbackUrl(data.callback_url || registry.callback_url || null)
+    } catch (err: any) {
       setConnected(false)
       setConnectedShop(null)
-      setCallbackUrl(null)
+      setCallbackUrl(registry.callback_url || null)
+      setStatusError(String(err?.message || err || "Unable to load connection status"))
     }
   }
 
-  useEffect(()=>{
+  useEffect(() => {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[store])
+  }, [store])
 
-  function onConnect(){
-    const s = (shop || "").trim()
-    if(!s){
-      alert("Please enter your shop domain (example: irranova.myshopify.com)")
+  function changeStore(value: string) {
+    setStore(value)
+    try { localStorage.setItem("ptos_store", value) } catch {}
+  }
+
+  function onConnect() {
+    const domain = shop.trim().toLowerCase()
+    if (!domain) {
+      alert("Please enter your shop domain (example: beitii.myshopify.com)")
       return
     }
-    try{
-      localStorage.setItem("ptos_store", store)
-    }catch{}
-    // Backend endpoint does the redirect to Shopify (OAuth).
-    const url = `${base}/api/shopify/oauth/start?store=${encodeURIComponent(store)}&shop=${encodeURIComponent(s)}`
-    window.location.href = url
+    try { localStorage.setItem("ptos_store", store) } catch {}
+    window.location.href = `${base}/api/shopify/oauth/start?store=${encodeURIComponent(store)}&shop=${encodeURIComponent(domain)}`
   }
+
+  const credentialsReady = selectedConfig?.credentials_configured !== false
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-900">
@@ -70,47 +86,61 @@ export default function ShopifyConnectPage(){
       <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
         <div className="bg-white border rounded-xl p-4">
           <div className="text-sm text-slate-700">
-            Use this page to install your Dev Dashboard app on a store and mint a per-store Admin API access token.
+            Stores are loaded at runtime from <code>SHOPIFY_OAUTH_STORES</code>. Each label uses its own Shopify Dev Dashboard app credentials.
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Store label (internal)</label>
-              <select value={store} onChange={(e)=> {
-                const v = e.target.value
-                setStore(v)
-                try{ localStorage.setItem("ptos_store", v) }catch{}
-              }} className="w-full rounded-lg border px-3 py-2 text-sm">
-                <option value="irrakids">irrakids</option>
-                <option value="irranova">irranova</option>
-                <option value="mmd">mmd</option>
+              <select
+                value={store}
+                onChange={event => changeStore(event.target.value)}
+                disabled={storesLoading}
+                className="w-full rounded-lg border px-3 py-2 text-sm disabled:opacity-60"
+              >
+                {stores.map(item => <option key={item.label} value={item.label}>{item.label}</option>)}
               </select>
-              <div className="text-[11px] text-slate-500 mt-1">This must match what your app uses (e.g. in the Confirmation store dropdown).</div>
+              <div className="text-[11px] text-slate-500 mt-1">Add new labels in Cloud Run; no frontend rebuild is required.</div>
             </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Shop domain</label>
               <input
                 value={shop}
-                onChange={(e)=>setShop(e.target.value)}
-                placeholder="irranova.myshopify.com"
+                onChange={event => setShop(event.target.value)}
+                placeholder="beitii.myshopify.com"
                 className="w-full rounded-lg border px-3 py-2 text-sm"
               />
             </div>
 
+            {!credentialsReady && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                Missing Cloud Run configuration: {(selectedConfig?.missing_env || []).join(", ")}
+              </div>
+            )}
+            {(selectedConfig?.warnings || []).map(warning => (
+              <div key={warning} className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{warning}</div>
+            ))}
+            {registry.persistent_token_storage === false && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                OAuth tokens are using temporary Cloud Run storage. Configure <code>DATABASE_URL</code> before relying on this connection in production.
+              </div>
+            )}
+            {(storesError || statusError) && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{storesError || statusError}</div>
+            )}
+
             <div className="flex items-center gap-2">
-              <button onClick={onConnect} className="rounded-lg px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white">
+              <button disabled={!credentialsReady || storesLoading} onClick={onConnect} className="rounded-lg px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50">
                 Connect (OAuth install)
               </button>
-              <button onClick={refresh} className="rounded-lg px-3 py-2 text-sm font-semibold border bg-white hover:bg-slate-50">
-                Refresh status
-              </button>
+              <button onClick={refresh} className="rounded-lg px-3 py-2 text-sm font-semibold border bg-white hover:bg-slate-50">Refresh status</button>
             </div>
 
             <div className="rounded-lg border bg-slate-50 p-3 text-sm">
               <div><span className="font-semibold">Status:</span> {connected ? "Connected" : "Not connected"}</div>
-              <div className="text-slate-600 text-[13px] mt-1">Shop: {connectedShop || "—"}</div>
-              <div className="text-slate-600 text-[13px] mt-1 break-all">Whitelisted callback URL: {callbackUrl || "—"}</div>
+              <div className="text-slate-600 text-[13px] mt-1">Shop: {connectedShop || selectedConfig?.shop || "—"}</div>
+              <div className="text-slate-600 text-[13px] mt-1 break-all">Whitelisted callback URL: {callbackUrl || registry.callback_url || "—"}</div>
             </div>
           </div>
         </div>

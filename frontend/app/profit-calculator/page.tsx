@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
+import ShopifyStoreSelect from "@/components/ShopifyStoreSelect"
 import { ArrowUp, DollarSign, RefreshCw, Rocket, Save } from "lucide-react"
 import {
   fetchMetaCampaigns,
@@ -497,20 +498,16 @@ export default function ProfitCalculatorPage() {
           <h1 className="font-semibold text-lg">Profit calculator</h1>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <select
+          <ShopifyStoreSelect
             value={store}
-            onChange={(e) => {
-              const v = e.target.value
+            onChange={(v) => {
               setStore(v)
               try {
                 localStorage.setItem("ptos_store", v)
               } catch {}
             }}
             className="rounded-xl border px-2 py-1 text-sm bg-white"
-          >
-            <option value="irrakids">irrakids</option>
-            <option value="irranova">irranova</option>
-          </select>
+          />
 
           <div className="flex items-center gap-1">
             <select
