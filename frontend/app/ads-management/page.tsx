@@ -284,6 +284,7 @@ export default function AdsManagementPage(){
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
   const [profitMode, setProfitMode] = useState<boolean>(false)
   const [profitProductCosts, setProfitProductCosts] = useState<Record<string, string>>({})
+  const [profitProductPrices, setProfitProductPrices] = useState<Record<string, string>>({})
   const [profitServiceCost, setProfitServiceCost] = useState<number>(70)
   const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
   const [profitLoading, setProfitLoading] = useState<Record<string, boolean>>({})
@@ -670,6 +671,8 @@ export default function AdsManagementPage(){
     setProfitLoading(prev=> ({ ...prev, [productId]: true }))
     try{
       let brief = productBriefs[productId]
+      const priceOverride = profitProductPrices[productId]
+      const hasPriceOverride = typeof priceOverride === 'string' && priceOverride.trim() !== ''
       const paidOrdersPromise = loadPaidOrdersForProduct(productId).then(paidOrders => {
         // Show the count as soon as Shopify answers; inventory/price hydration
         // should not hold back the value the user is waiting for.
@@ -677,12 +680,12 @@ export default function AdsManagementPage(){
         return paidOrders
       })
       let briefPromise: Promise<any | null> = Promise.resolve(null)
-      if(!brief || brief.price == null){
+      if(!hasPriceOverride && (!brief || brief.price == null)){
         briefPromise = loadProductBriefForProduct(productId).catch(()=> null)
       }
       const [paidOrders, nextBrief] = await Promise.all([paidOrdersPromise, briefPromise])
       if(nextBrief) brief = nextBrief
-      const productPrice = Number((brief as any)?.price || 0)
+      const productPrice = hasPriceOverride ? Number(priceOverride) : Number((brief as any)?.price || 0)
       const spendMad = Number(spendUsd||0) * 10
       const productCost = Number(profitProductCosts[productId] || 0)
       const costPerOrder = productCost + Number(profitServiceCost||0)
@@ -695,6 +698,17 @@ export default function AdsManagementPage(){
     }finally{
       setProfitLoading(prev=> ({ ...prev, [productId]: false }))
     }
+  }
+
+  function updateProfitProductPrice(productId: string, value: string){
+    setProfitProductPrices(prev=> ({ ...prev, [productId]: value }))
+    // A displayed result was calculated with the previous selling price.
+    setProfitResults(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
   }
 
   function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>): string[]{
@@ -2488,7 +2502,7 @@ export default function AdsManagementPage(){
                   const groupSelection = getGroupSelectionState(d.rows)
                   const paidOrders = profitPaidCounts[pid]
                   const profitResult = profitResults[pid]
-                  const productPrice = Number((brief as any)?.price || profitResult?.productPrice || 0)
+                  const priceDraft = profitProductPrices[pid]
                   const spendMad = Number(m.spend||0) * 10
                   const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
                   return (
@@ -2534,9 +2548,20 @@ export default function AdsManagementPage(){
                                   className="w-14 bg-transparent outline-none text-right font-semibold"
                                 />
                               </label>
+                              <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
+                                <span>Selling price</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={priceDraft ?? ((brief as any)?.price != null ? String((brief as any).price) : '')}
+                                  placeholder="0"
+                                  onChange={(e)=> updateProfitProductPrice(pid, e.target.value)}
+                                  className="w-16 bg-transparent outline-none text-right font-semibold"
+                                />
+                              </label>
                               <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrders!=null ? fmtInt(paidOrders) : '—'}</span>
                               <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMad).toLocaleString()} MAD</span>
-                              <span className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5">Price {productPrice>0 ? `${Math.round(productPrice).toLocaleString()} MAD` : '—'}</span>
                               {profitResult && (
                                 <span className={`rounded px-1.5 py-0.5 font-bold ${profitResult.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                                   Profit {Math.round(profitResult.profit).toLocaleString()} MAD
@@ -2826,7 +2851,7 @@ export default function AdsManagementPage(){
                 const hydratingOrders = !!hydrating.orders
                 const paidOrdersSelf = pidSelf ? profitPaidCounts[pidSelf] : undefined
                 const profitResultSelf = pidSelf ? profitResults[pidSelf] : undefined
-                const productPriceSelf = Number((briefSelf as any)?.price || profitResultSelf?.productPrice || 0)
+                const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
                 const spendMadSelf = Number(c.spend||0) * 10
                 const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
@@ -2926,9 +2951,20 @@ export default function AdsManagementPage(){
                               className="w-14 bg-transparent outline-none text-right font-semibold"
                             />
                           </label>
+                          <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
+                            <span>Selling price</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={priceDraftSelf ?? ((briefSelf as any)?.price != null ? String((briefSelf as any).price) : '')}
+                              placeholder="0"
+                              onChange={(e)=> updateProfitProductPrice(pidSelf, e.target.value)}
+                              className="w-16 bg-transparent outline-none text-right font-semibold"
+                            />
+                          </label>
                           <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrdersSelf!=null ? fmtInt(paidOrdersSelf) : '—'}</span>
                           <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMadSelf).toLocaleString()} MAD</span>
-                          <span className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5">Price {productPriceSelf>0 ? `${Math.round(productPriceSelf).toLocaleString()} MAD` : '—'}</span>
                           {profitResultSelf && (
                             <span className={`rounded px-1.5 py-0.5 font-bold ${profitResultSelf.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                               Profit {Math.round(profitResultSelf.profit).toLocaleString()} MAD
