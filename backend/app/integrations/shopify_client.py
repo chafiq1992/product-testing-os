@@ -3011,7 +3011,7 @@ def count_paid_orders_by_product_search(
     *,
     store: str | None = None,
 ) -> int:
-    """Count paid orders with Shopify's order search, matching Admin's product_id filter.
+    """Count paid orders with Shopify's server-side order count.
 
     This mirrors Admin queries like:
     product_id:"123" processed_at:>="YYYY-MM-DD" processed_at:<="YYYY-MM-DD" financial_status:"paid"
@@ -3025,34 +3025,33 @@ def count_paid_orders_by_product_search(
         'financial_status:"paid"'
     )
     gql = """
-    query PaidOrdersForProduct($query: String!, $first: Int!, $after: String) {
-      orders(first: $first, after: $after, query: $query, sortKey: PROCESSED_AT) {
-        edges {
-          cursor
-          node { id }
-        }
-        pageInfo { hasNextPage endCursor }
+    query PaidOrdersCountForProduct($query: String!, $limit: Int) {
+      ordersCount(query: $query, limit: $limit) {
+        count
+        precision
       }
     }
     """
-    total = 0
-    after = None
-    seen: set[str] = set()
-    while True:
-        data = _gql_store(store, gql, {"query": query, "first": 250, "after": after})
-        conn = (data or {}).get("orders") or {}
-        edges = conn.get("edges") or []
-        for edge in edges:
-            oid = str(((edge or {}).get("node") or {}).get("id") or "")
-            if oid and oid not in seen:
-                seen.add(oid)
-                total += 1
-        page_info = conn.get("pageInfo") or {}
-        if not page_info.get("hasNextPage"):
-            break
-        after = page_info.get("endCursor")
-        if not after:
-            break
+    started = time.time()
+    timeout_s = max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12"))
+    data = _gql_store_once(
+        store,
+        gql,
+        {"query": query, "limit": None},
+        timeout=timeout_s,
+    )
+    count_obj = (data or {}).get("ordersCount") or {}
+    precision = str(count_obj.get("precision") or "").upper()
+    if precision and precision != "EXACT":
+        raise RuntimeError(f"Shopify returned a non-exact paid-order count ({precision})")
+    total = int(count_obj.get("count") or 0)
+    _perf_log.info(
+        "orders_count.paid store=%s pid=%s total=%d elapsed_ms=%d",
+        store,
+        ident,
+        total,
+        int((time.time() - started) * 1000),
+    )
     return total
 
 
@@ -3095,10 +3094,10 @@ def count_paid_orders_by_product_or_variant_processed_batch(
             )
         for key, val in searched.items():
             out[key] = int(val or 0)
-        if any(int(v or 0) > 0 for v in searched.values()):
-            targets = {tid: key for tid, key in targets.items() if int(out.get(key, 0) or 0) <= 0}
-            if not targets:
-                return out
+        # ordersCount is authoritative even when the exact answer is zero.
+        # The previous zero path downloaded every order in the selected period
+        # merely to confirm that zero, which made profit calculation very slow.
+        return out
     except Exception:
         pass
 

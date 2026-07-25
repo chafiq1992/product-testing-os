@@ -670,20 +670,24 @@ export default function AdsManagementPage(){
     setProfitLoading(prev=> ({ ...prev, [productId]: true }))
     try{
       let brief = productBriefs[productId]
+      const paidOrdersPromise = loadPaidOrdersForProduct(productId).then(paidOrders => {
+        // Show the count as soon as Shopify answers; inventory/price hydration
+        // should not hold back the value the user is waiting for.
+        setProfitPaidCounts(prev=> ({ ...prev, [productId]: paidOrders }))
+        return paidOrders
+      })
+      let briefPromise: Promise<any | null> = Promise.resolve(null)
       if(!brief || brief.price == null){
-        try{
-          const nextBrief = await loadProductBriefForProduct(productId)
-          if(nextBrief) brief = nextBrief
-        }catch{}
+        briefPromise = loadProductBriefForProduct(productId).catch(()=> null)
       }
-      const paidOrders = await loadPaidOrdersForProduct(productId)
+      const [paidOrders, nextBrief] = await Promise.all([paidOrdersPromise, briefPromise])
+      if(nextBrief) brief = nextBrief
       const productPrice = Number((brief as any)?.price || 0)
       const spendMad = Number(spendUsd||0) * 10
       const productCost = Number(profitProductCosts[productId] || 0)
       const costPerOrder = productCost + Number(profitServiceCost||0)
       const costsMad = costPerOrder * paidOrders
       const profit = (productPrice * paidOrders) - spendMad - costsMad
-      setProfitPaidCounts(prev=> ({ ...prev, [productId]: paidOrders }))
       setProfitResults(prev=> ({
         ...prev,
         [productId]: { paidOrders, productPrice, spendUsd: Number(spendUsd||0), spendMad, costsMad, profit },

@@ -683,12 +683,16 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     params: dict = {
         "level": "campaign",
         "fields": "campaign_id,campaign_name,spend" if profit_only else "campaign_id,campaign_name,spend,actions,ctr,cpp",
-        # Filter to active and paused campaigns
-        "filtering": json.dumps([
-            {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
-        ]),
         "limit": 250,
     }
+    # The regular dashboard is an operational view, so it only needs campaigns
+    # that are currently active or paused. Profit mode is a financial view:
+    # campaigns that were archived after spending in the selected range must
+    # still be included or the product's Meta spend will be understated.
+    if not profit_only:
+        params["filtering"] = json.dumps([
+            {"field": "campaign.effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
+        ])
     # Prefer explicit time_range if provided
     if since and until:
         params["time_range"] = json.dumps({"since": since, "until": until})
@@ -697,25 +701,26 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
 
     # Insights and campaign metadata are independent Meta reads. Fetch them in
     # parallel so page latency is the slower request, not the sum of both.
-    cparams = {
+    cparams: dict = {
         "fields": "id,name,effective_status,configured_status" if profit_only else "id,name,effective_status,configured_status,created_time",
-        "filtering": json.dumps([
-            {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
-        ]),
         "limit": 500,
     }
+    if not profit_only:
+        cparams["filtering"] = json.dumps([
+            {"field": "effective_status", "operator": "IN", "value": ["ACTIVE", "PAUSED"]}
+        ])
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=2) as executor:
-        insights_future = executor.submit(_get, f"act_{acct}/insights", params)
-        campaigns_future = executor.submit(_get, f"act_{acct}/campaigns", cparams)
-        res = insights_future.result()
+        # Both edges are paginated. Reading only their first page silently
+        # dropped spend once an account had more than 250 campaign insight rows.
+        insights_future = executor.submit(_list_graph_edge_all, f"act_{acct}/insights", params)
+        campaigns_future = executor.submit(_list_graph_edge_all, f"act_{acct}/campaigns", cparams)
+        rows = insights_future.result()
         try:
-            cres = campaigns_future.result()
-            crows = (cres or {}).get("data") or []
+            crows = campaigns_future.result()
         except Exception:
             crows = []
 
-    rows = (res or {}).get("data") or []
     # Shape current statuses for these campaigns
     status_map: dict[str, str] = {}
     try:

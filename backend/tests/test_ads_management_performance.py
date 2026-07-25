@@ -190,3 +190,80 @@ def test_meta_ad_account_list_paginates_and_merges_business_accounts(monkeypatch
         "business-1/owned_ad_accounts",
         "business-1/client_ad_accounts",
     }
+
+
+def test_profit_campaigns_include_historical_statuses_and_every_insights_page(monkeypatch):
+    calls = []
+
+    def fake_get(path, params=None):
+        params = dict(params or {})
+        calls.append((path, params))
+        after = params.get("after")
+        if path == "act_123/insights" and not after:
+            return {
+                "data": [{"campaign_id": "1", "campaign_name": "Product 99 active", "spend": "500"}],
+                "paging": {
+                    "cursors": {"after": "insights-page-2"},
+                    "next": "https://graph.facebook.com/v20.0/act_123/insights?after=insights-page-2",
+                },
+            }
+        if path == "act_123/insights" and after == "insights-page-2":
+            return {
+                "data": [{"campaign_id": "2", "campaign_name": "Product 99 archived", "spend": "900"}],
+            }
+        if path == "act_123/campaigns" and not after:
+            return {
+                "data": [{"id": "1", "name": "Product 99 active", "effective_status": "ACTIVE"}],
+                "paging": {
+                    "cursors": {"after": "campaigns-page-2"},
+                    "next": "https://graph.facebook.com/v20.0/act_123/campaigns?after=campaigns-page-2",
+                },
+            }
+        if path == "act_123/campaigns" and after == "campaigns-page-2":
+            return {
+                "data": [{"id": "2", "name": "Product 99 archived", "effective_status": "ARCHIVED"}],
+            }
+        raise AssertionError(f"unexpected Meta path: {path} {params}")
+
+    monkeypatch.setattr(meta_client, "ACCESS", "test-token")
+    monkeypatch.setattr(meta_client, "_get", fake_get)
+
+    result = meta_client.list_active_campaigns_with_insights(
+        ad_account_id="123",
+        since="2026-07-01",
+        until="2026-07-14",
+        profit_only=True,
+    )
+
+    assert [row["campaign_id"] for row in result] == ["1", "2"]
+    assert sum(row["spend"] for row in result) == 1400
+    assert result[1]["status"] == "ARCHIVED"
+    assert any(path == "act_123/insights" and params.get("after") == "insights-page-2" for path, params in calls)
+    assert all("filtering" not in params for _path, params in calls)
+
+
+def test_paid_product_order_count_uses_one_exact_server_side_count(monkeypatch):
+    calls = []
+
+    def fake_gql(_store, query, variables, *, timeout):
+        calls.append((query, variables, timeout))
+        return {"ordersCount": {"count": 37, "precision": "EXACT"}}
+
+    monkeypatch.setattr(shopify_client, "_gql_store_once", fake_gql)
+
+    count = shopify_client.count_paid_orders_by_product_search(
+        "123",
+        "2026-07-01",
+        "2026-07-14",
+        store="irrakids",
+    )
+
+    assert count == 37
+    assert len(calls) == 1
+    query, variables, timeout = calls[0]
+    assert "ordersCount" in query
+    assert 'product_id:"123"' in variables["query"]
+    assert 'processed_at:>="2026-07-01"' in variables["query"]
+    assert 'financial_status:"paid"' in variables["query"]
+    assert variables["limit"] is None
+    assert timeout >= 3
