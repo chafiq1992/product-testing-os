@@ -95,6 +95,8 @@ function normalizeStoreList(values?: string[], options?: Array<{ value: string }
 type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
 const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
 type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
+type CampaignOwnerFilter = CampaignOwner|'unassigned'|''
+type CampaignStatusFilter = 'all'|'active'|'paused'
 type CampaignMetaState = CampaignMetaRecord & { product_life_checks?: Record<string, Record<string, boolean>> }
 
 function mergeCampaignMetaRecords(current: Record<string, CampaignMetaState>, incoming: Record<string, CampaignMetaRecord>): Record<string, CampaignMetaState>{
@@ -229,7 +231,7 @@ export default function AdsManagementPage(){
   }
   const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
   const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
-  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, price?: number|null }>>({})
+  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null }>>({})
   const [productHydrating, setProductHydrating] = useState<Record<string, { brief?: boolean, orders?: boolean }>>({})
   const [visibleProductIds, setVisibleProductIds] = useState<Record<string, true>>({})
   const hydratedProductIdsRef = useRef<Set<string>>(new Set())
@@ -319,7 +321,9 @@ export default function AdsManagementPage(){
   })
   const [groupTarget, setGroupTarget] = useState<string>('') // product id
   const [campaignMeta, setCampaignMeta] = useState<Record<string, CampaignMetaState>>({})
-  const [ownerFilter, setOwnerFilter] = useState<CampaignOwner|''>('')
+  const [ownerFilter, setOwnerFilter] = useState<CampaignOwnerFilter>('')
+  const [statusFilter, setStatusFilter] = useState<CampaignStatusFilter>('all')
+  const [ownerSaveError, setOwnerSaveError] = useState<string>('')
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
@@ -352,9 +356,23 @@ export default function AdsManagementPage(){
     const q = (searchActive||'').trim().toLowerCase()
     if(focusId) base = base.filter(r => String(r.campaign_id||'') === focusId)
     else if(q) base = base.filter(r => String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q))
-    if(!ownerFilter) return base
-    return base.filter(r => ownerOfRow(r) === ownerFilter)
-  }, [items, campaignMeta, ownerFilter, searchActive, searchFocusId])
+    if(statusFilter !== 'all'){
+      base = base.filter(r => statusFilter === 'active' ? isCampaignActive(r) : !isCampaignActive(r))
+    }
+    if(ownerFilter === 'unassigned') return base.filter(r => !ownerOfRow(r))
+    if(ownerFilter) return base.filter(r => ownerOfRow(r) === ownerFilter)
+    return base
+  }, [items, campaignMeta, ownerFilter, statusFilter, searchActive, searchFocusId, manualIds])
+
+  const statusStats = useMemo(()=> {
+    let active = 0
+    let paused = 0
+    for(const row of (items || [])){
+      if(isCampaignActive(row)) active += 1
+      else paused += 1
+    }
+    return { all: active + paused, active, paused }
+  }, [items])
 
   // Fallback lookup: product id -> first manual-mapped campaign count (avoids O(n) scan per call)
   const manualCountsByPid = useMemo(()=>{
@@ -442,45 +460,76 @@ export default function AdsManagementPage(){
     return (CAMPAIGN_OWNERS as readonly string[]).includes(s) ? (s as CampaignOwner) : ''
   }
 
+  function isCampaignActive(row: MetaCampaignRow): boolean{
+    return String(row?.status || '').trim().toUpperCase() === 'ACTIVE'
+  }
+
+  function productOwnerKey(productId: string): string{
+    return `product-owner:${String(productId || '').trim()}`
+  }
+
   function ownerOfKey(key: string): CampaignOwner|''{
     return normalizeOwner((campaignMeta as any)[String(key||'')]?.owner)
   }
 
   function ownerOfRow(row: MetaCampaignRow): CampaignOwner|''{
+    const productId = getProductIdForRow(row)
     const campaignKey = String((row as any)?.campaign_id || '').trim()
     const nameKey = String((row as any)?.name || '').trim()
-    return ownerOfKey(campaignKey) || ownerOfKey(nameKey)
+    return (productId ? ownerOfKey(productOwnerKey(productId)) : '') || ownerOfKey(campaignKey) || ownerOfKey(nameKey)
   }
 
-  function ownerValueForRows(rows: MetaCampaignRow[]): CampaignOwner|'mixed'|''{
+  function ownerValueForRows(rows: MetaCampaignRow[], productId?: string): CampaignOwner|'mixed'|''{
+    const productOwner = productId ? ownerOfKey(productOwnerKey(productId)) : ''
+    if(productOwner) return productOwner
     const owners = Array.from(new Set((rows||[]).map(r => ownerOfRow(r)).filter(Boolean)))
     if(owners.length === 0) return ''
     if(owners.length === 1) return owners[0] as CampaignOwner
     return 'mixed'
   }
 
-  async function saveCampaignOwner(campaignKey: string, owner: string){
-    const key = String(campaignKey||'').trim()
+  async function saveCampaignOwner(row: MetaCampaignRow, owner: string){
+    const productId = getProductIdForRow(row)
+    if(productId){
+      await saveOwnerForRows([row], owner, productId)
+      return
+    }
+    const key = String((row as any)?.campaign_id || (row as any)?.name || '').trim()
     const nextOwner = normalizeOwner(owner)
     if(!key) return
+    setOwnerSaveError('')
     setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), owner: nextOwner } }))
     try{
-      await campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })
-    }catch{}
+      const result = await campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })
+      if((result as any)?.error) throw new Error((result as any).error)
+    }catch{
+      setOwnerSaveError('The campaign owner could not be saved. Refresh and try again.')
+    }
   }
 
-  async function saveOwnerForRows(rows: MetaCampaignRow[], owner: string){
+  async function saveOwnerForRows(rows: MetaCampaignRow[], owner: string, productId?: string){
     const nextOwner = normalizeOwner(owner)
-    const keys = Array.from(new Set((rows||[]).map(r => String((r as any).campaign_id || (r as any).name || '').trim()).filter(Boolean)))
+    const resolvedProductId = String(productId || getProductIdForRow((rows || [])[0]) || '').trim()
+    const groupRows = resolvedProductId
+      ? (items || []).filter(row => getProductIdForRow(row) === resolvedProductId)
+      : (rows || [])
+    const keys = Array.from(new Set(groupRows.map(r => String((r as any).campaign_id || (r as any).name || '').trim()).filter(Boolean)))
+    const productKey = resolvedProductId ? productOwnerKey(resolvedProductId) : ''
+    const persistenceKeys = productKey ? [productKey, ...keys] : keys
     if(keys.length === 0) return
+    setOwnerSaveError('')
     setCampaignMeta(prev => {
       const out = { ...prev }
-      for(const key of keys){
+      for(const key of persistenceKeys){
         out[key] = { ...(out[key] || {}), owner: nextOwner }
       }
       return out
     })
-    await Promise.allSettled(keys.map(key => campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })))
+    const results = await Promise.allSettled(
+      persistenceKeys.map(key => campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store }))
+    )
+    const failed = results.some(result => result.status === 'rejected' || !!(result.status === 'fulfilled' && (result.value as any)?.error))
+    if(failed) setOwnerSaveError('Some campaign owners could not be saved. Refresh and try again.')
   }
 
   function computeRange(preset: string){
@@ -1340,8 +1389,6 @@ export default function AdsManagementPage(){
     if(!pid) return null
     const brief = productBriefs[pid]
     if(!brief) return null
-    // Prefer size-level zero count if available; fallback to variant-level
-    if(typeof (brief as any).zero_sizes === 'number') return Number((brief as any).zero_sizes||0)
     return typeof brief.zero_variants==='number'? Number(brief.zero_variants||0) : null
   }
   function getTrueCpp(row: MetaCampaignRow){
@@ -1457,7 +1504,7 @@ export default function AdsManagementPage(){
       }catch{}
       const brief = productBriefs[p.productId]
       const inventory = brief && typeof brief.total_available==='number' ? Number(brief.total_available||0) : null
-      const zero_variant = brief ? (typeof (brief as any).zero_sizes==='number' ? Number((brief as any).zero_sizes||0) : (typeof brief.zero_variants==='number' ? Number(brief.zero_variants||0) : null)) : null
+      const zero_variant = brief && typeof brief.zero_variants==='number' ? Number(brief.zero_variants||0) : null
       const active = p.rows.filter(r=> String(r.status||'').toUpperCase()==='ACTIVE').length
       const paused = p.rows.length - active
       return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
@@ -1831,6 +1878,12 @@ export default function AdsManagementPage(){
     const data = variantInventoryCache[pid] || null
     const loading = variantInventoryLoading[pid]
     const rect = invHover.rect
+    const alertVariants = data
+      ? data.colors.reduce((count, color) => count + data.sizes.reduce((inner, size) => {
+          const row = data.matrix[color] || {}
+          return inner + (Object.prototype.hasOwnProperty.call(row, size) && Number(row[size]) <= 0 ? 1 : 0)
+        }, 0), 0)
+      : 0
     // Position tooltip below the hovered element
     const top = rect.bottom + 4
     const left = Math.max(4, rect.left - 60)
@@ -1845,6 +1898,12 @@ export default function AdsManagementPage(){
         {!loading && !data && <div className="text-slate-400 py-2 px-3">No data</div>}
         {!loading && data && data.sizes.length === 0 && <div className="text-slate-400 py-2 px-3">No variants</div>}
         {!loading && data && data.sizes.length > 0 && (
+          <>
+          {alertVariants > 0 && (
+            <div className="mb-2 rounded-md bg-rose-50 px-2 py-1 font-semibold text-rose-700">
+              {alertVariants} {alertVariants === 1 ? 'variant needs' : 'variants need'} attention (0 or negative)
+            </div>
+          )}
           <table className="border-collapse w-full">
             <thead>
               <tr>
@@ -1859,11 +1918,15 @@ export default function AdsManagementPage(){
                 <tr key={color} className="border-b border-slate-50 last:border-b-0">
                   <td className="px-1.5 py-0.5 text-slate-600 font-medium whitespace-nowrap">{color}</td>
                   {data.sizes.map(size => {
-                    const qty = (data.matrix[color] || {})[size] ?? 0
-                    const bg = qty === 0 ? 'bg-red-100 text-red-700' : qty <= 2 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                    const row = data.matrix[color] || {}
+                    const hasVariant = Object.prototype.hasOwnProperty.call(row, size)
+                    const qty = hasVariant ? Number(row[size]) : null
+                    const bg = hasVariant && Number(qty) <= 0
+                      ? 'bg-rose-600 text-white ring-1 ring-rose-700'
+                      : 'bg-slate-100 text-slate-700'
                     return (
                       <td key={size} className="px-1.5 py-0.5 text-center">
-                        <span className={`inline-block min-w-[22px] px-1 py-0.5 rounded text-[10px] font-bold ${bg}`}>{qty}</span>
+                        <span className={`inline-block min-w-[22px] px-1 py-0.5 rounded text-[10px] font-bold ${bg}`}>{hasVariant ? qty : '—'}</span>
                       </td>
                     )
                   })}
@@ -1871,6 +1934,7 @@ export default function AdsManagementPage(){
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     )
@@ -1905,18 +1969,44 @@ export default function AdsManagementPage(){
             onChange={(next) => { setSelectedAdAccounts(next); try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{} }}
             className="min-w-[180px]"
           />
-          <div className="flex items-center gap-1 rounded-xl border bg-white px-1 py-1">
+          <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1 shadow-sm" aria-label="Filter campaigns by status">
+            <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Status</span>
+            <button
+              onClick={()=> setStatusFilter('all')}
+              aria-pressed={statusFilter === 'all'}
+              className={`px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='all' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+            >All {statusStats.all}</button>
+            <button
+              onClick={()=> setStatusFilter('active')}
+              aria-pressed={statusFilter === 'active'}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='active' ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-700 hover:bg-emerald-50'}`}
+            ><span className={`h-2 w-2 rounded-full ${statusFilter==='active' ? 'bg-white' : 'bg-emerald-500'}`}/>Active {statusStats.active}</button>
+            <button
+              onClick={()=> setStatusFilter('paused')}
+              aria-pressed={statusFilter === 'paused'}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='paused' ? 'bg-slate-700 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-100'}`}
+            ><span className={`h-2 w-2 rounded-full ${statusFilter==='paused' ? 'bg-white' : 'bg-slate-500'}`}/>Paused {statusStats.paused}</button>
+          </div>
+          <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1 shadow-sm" aria-label="Filter campaigns by owner">
+            <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Owner</span>
             <button
               onClick={()=> setOwnerFilter('')}
-              className={`px-2 py-0.5 rounded-lg text-xs font-semibold ${ownerFilter==='' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+              aria-pressed={ownerFilter === ''}
+              className={`px-2 py-1 rounded-lg text-xs font-semibold ${ownerFilter==='' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
             >All</button>
             {CAMPAIGN_OWNERS.map(owner => (
               <button
                 key={owner}
                 onClick={()=> setOwnerFilter(owner)}
-                className={`px-2 py-0.5 rounded-lg text-xs font-semibold capitalize ${ownerFilter===owner ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-blue-50'}`}
+                aria-pressed={ownerFilter === owner}
+                className={`px-2 py-1 rounded-lg text-xs font-semibold capitalize ${ownerFilter===owner ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-blue-50'}`}
               >{owner}</button>
             ))}
+            <button
+              onClick={()=> setOwnerFilter('unassigned')}
+              aria-pressed={ownerFilter === 'unassigned'}
+              className={`px-2 py-1 rounded-lg text-xs font-semibold ${ownerFilter==='unassigned' ? 'bg-amber-500 text-white' : 'text-amber-700 hover:bg-amber-50'}`}
+            >Unassigned</button>
           </div>
           <label className={`inline-flex items-center gap-2 rounded-xl border px-2 py-1 text-sm bg-white ${profitMode ? 'border-emerald-300 text-emerald-700' : 'text-slate-600'}`}>
             <input
@@ -2175,8 +2265,8 @@ export default function AdsManagementPage(){
       </header>
 
       <div className="px-1.5 py-0.5">
-        {error && (
-          <div className="mb-2 text-xs text-red-600">{error}</div>
+        {(error || ownerSaveError) && (
+          <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{error || ownerSaveError}</div>
         )}
         {/* Compact Summary Bar */}
         <div className="mb-2 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 text-white px-4 py-2">
@@ -2187,6 +2277,15 @@ export default function AdsManagementPage(){
               <span className="opacity-70">{datePreset==='custom'? `${customStart||'—'}→${customEnd||'—'}` : presetLabel(datePreset)}</span>
               <span className="opacity-50">•</span>
               <span className="opacity-70">{selectedStores.join(', ')||'—'}</span>
+              {statusFilter !== 'all' && (
+                <>
+                  <span className="opacity-50">•</span>
+                  <span className="inline-flex items-center gap-1 font-semibold capitalize">
+                    <span className={`h-2 w-2 rounded-full ${statusFilter === 'active' ? 'bg-emerald-300' : 'bg-slate-200'}`}/>
+                    {statusFilter}
+                  </span>
+                </>
+              )}
               {ownerFilter && (
                 <>
                   <span className="opacity-50">•</span>
@@ -2492,12 +2591,13 @@ export default function AdsManagementPage(){
                   const hydrating = productHydrating[pid] || {}
                   const hydratingBrief = !!hydrating.brief
                   const hydratingOrders = !!hydrating.orders
+                  const hasInventoryAlert = zeros != null && Number(zeros) > 0
                   const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                   const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                   const active = Number((m as any).active||0)
                   const paused = Number((m as any).paused||0)
                   const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
-                  const statusClass = active===0 ? 'bg-slate-200 text-slate-700' : (paused===0 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800')
+                  const statusClass = active===0 ? 'bg-slate-700 text-white ring-slate-300' : (paused===0 ? 'bg-emerald-600 text-white ring-emerald-300' : 'bg-amber-500 text-white ring-amber-300')
                   const noteVal = groupNotes[pid] || ''
                   const groupSelection = getGroupSelectionState(d.rows)
                   const paidOrders = profitPaidCounts[pid]
@@ -2520,7 +2620,7 @@ export default function AdsManagementPage(){
                         <td className="px-1 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
+                            <img src={img} alt="product" className={`w-[72px] h-[72px] rounded-lg object-cover border shadow-sm ${hasInventoryAlert ? 'ring-2 ring-rose-500 ring-offset-1' : ''}`} />
                           ) : (
                             <span className={`inline-block w-[72px] h-[72px] rounded-lg border ${hydratingBrief ? 'bg-slate-100 animate-pulse' : 'bg-slate-50'}`} />
                           )}
@@ -2534,6 +2634,12 @@ export default function AdsManagementPage(){
                             >{groupExpanded[pid]? '▾' : '▸'}</button>}
                             <span className="font-medium text-xs">{d.primary.name || `Product ${pid}`}</span>
                             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{d.rows.length} camps</span>
+                            {hasInventoryAlert && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
+                                <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse"/>
+                                {zeros} variants at 0 or below
+                              </span>
+                            )}
                           </div>
                           {profitMode && (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
@@ -2571,15 +2677,18 @@ export default function AdsManagementPage(){
                           )}
                         </td>
                         <td className="px-1 py-0.5">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${statusClass}`}>{statusLabel}</span>
+                          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ring-2 ring-inset ${statusClass}`}>
+                            <span className="h-2 w-2 rounded-full bg-white"/>
+                            {statusLabel}
+                          </span>
                         </td>
                         <td className="px-1 py-0.5">
                           {(()=>{
-                            const owner = ownerValueForRows(d.rows)
+                            const owner = ownerValueForRows(d.rows, pid)
                             return (
                               <select
                                 value={owner === 'mixed' ? '' : owner}
-                                onChange={(e)=> saveOwnerForRows(d.rows, e.target.value)}
+                                onChange={(e)=> saveOwnerForRows(d.rows, e.target.value, pid)}
                                 className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
                                 title={owner === 'mixed' ? 'Mixed owners' : 'Campaign owner'}
                               >
@@ -2627,7 +2736,7 @@ export default function AdsManagementPage(){
                         </td>
                         {!profitMode && (
                           <>
-                            <td className="px-1 py-0.5 text-right">
+                            <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
                               <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                                 onMouseEnter={(e) => {
                                   const rect = e.currentTarget.getBoundingClientRect()
@@ -2854,6 +2963,7 @@ export default function AdsManagementPage(){
                 const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
                 const spendMadSelf = Number(c.spend||0) * 10
                 const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
+                const hasInventoryAlert = zeros != null && zeros > 0
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
                 return (
@@ -2869,7 +2979,7 @@ export default function AdsManagementPage(){
                     <td className="px-1.5 py-0.5">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
+                        <img src={img} alt="product" className={`w-[72px] h-[72px] rounded-lg object-cover border shadow-sm ${hasInventoryAlert ? 'ring-2 ring-rose-500 ring-offset-1' : ''}`} />
                       ) : (
                         hasAnyPid && hydratingBrief ? (
                           <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-100 border animate-pulse" />
@@ -2923,6 +3033,12 @@ export default function AdsManagementPage(){
                           className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
                         >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>}
                         <span>{c.name||'-'}</span>
+                        {hasInventoryAlert && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
+                            <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse"/>
+                            {zeros} variants at 0 or below
+                          </span>
+                        )}
                       </div>
                       {!profitMode && (()=>{
                         const rk = String(rowKey)
@@ -3060,11 +3176,14 @@ export default function AdsManagementPage(){
                       {(()=>{
                         const st = (c.status||'').toUpperCase()
                         const active = st==='ACTIVE'
-                        const color = active? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                        const color = active? 'bg-emerald-600 text-white ring-emerald-300' : 'bg-slate-700 text-white ring-slate-300'
                         const cid = String(c.campaign_id||'')
                         return (
                           <div className="flex items-center gap-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${color}`}>{active? 'Active' : 'Paused'}</span>
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ring-2 ring-inset ${color}`}>
+                              <span className="h-2 w-2 rounded-full bg-white"/>
+                              {active? 'Active' : 'Paused'}
+                            </span>
                             {c.campaign_id && (
                               <label className="inline-flex items-center cursor-pointer">
                                 <input
@@ -3100,7 +3219,7 @@ export default function AdsManagementPage(){
                     <td className="px-1 py-0.5">
                       <select
                         value={ownerOfRow(c)}
-                        onChange={(e)=> saveCampaignOwner(rowKey, e.target.value)}
+                        onChange={(e)=> saveCampaignOwner(c, e.target.value)}
                         className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
                       >
                         <option value="">No owner</option>
@@ -3147,7 +3266,7 @@ export default function AdsManagementPage(){
                     </td>
                     {!profitMode && (
                       <>
-                        <td className="px-1 py-0.5 text-right">
+                        <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
                           {hasAnyPid ? (
                             <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                               onMouseEnter={(e) => {
