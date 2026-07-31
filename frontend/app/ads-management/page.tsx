@@ -1439,9 +1439,11 @@ export default function AdsManagementPage(){
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const totalDays = Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000) + 1)
-    const points = Array.from({ length: totalDays }, (_, index) => {
+    const visibleDays = Math.min(22, totalDays)
+    const points = Array.from({ length: visibleDays }, (_, index) => {
+      const dayNumber = totalDays - index
       const date = new Date(start)
-      date.setDate(start.getDate() + index)
+      date.setDate(start.getDate() + dayNumber - 1)
       const day = localDateKey(date)
       let actions = 0
       let notes = 0
@@ -1451,8 +1453,8 @@ export default function AdsManagementPage(){
         actions += counts.actions
         notes += counts.notes
       }
-      return { day, dayNumber: index + 1, actions, notes }
-    }).reverse()
+      return { day, dayNumber, actions, notes }
+    })
     return (
       <div className="flex items-start gap-2" title={`${totalDays} campaign days`}>
         <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">Day {totalDays}</span>
@@ -1466,9 +1468,9 @@ export default function AdsManagementPage(){
                 key={point.day}
                 type="button"
                 onClick={()=> openLifeDay(point.day, campaigns)}
-                className={`h-[18px] min-w-[18px] shrink-0 rounded-full px-0.5 text-center text-[8px] font-bold leading-[18px] text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
+                className={`relative h-[18px] min-w-[18px] shrink-0 rounded-full px-0.5 text-center text-[8px] font-bold leading-[18px] text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
                   changed ? 'bg-orange-500' : 'bg-emerald-500'
-                } ${hasNotes ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${
+                } ${hasNotes ? "ring-2 ring-blue-500 ring-offset-1 after:absolute after:-right-0.5 after:-top-0.5 after:h-1.5 after:w-1.5 after:rounded-full after:bg-blue-600 after:ring-1 after:ring-white after:content-['']" : ''} ${
                   isLatest ? 'scale-110 outline outline-2 outline-violet-600 outline-offset-1' : ''
                 }`}
                 title={`Day ${point.dayNumber} · ${point.day} · ${point.actions} actions · ${point.notes} notes`}
