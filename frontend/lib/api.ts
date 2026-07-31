@@ -461,6 +461,7 @@ export type CampaignMetaRecord = {
   supply_available?: string,
   owner?: string,
   timeline?: Array<{ text:string, at:string }>,
+  life_activity_days?: Record<string, { actions: number, notes: number }>,
   product_life_checks?: Record<string, any>,
   timeline_entries?: number,
   incomplete_tasks?: number,

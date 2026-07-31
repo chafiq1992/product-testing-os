@@ -3138,7 +3138,8 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                 result["product_id"] = pid
                 result["campaign_ids"] = [str(c.get("campaign_id", "")) for c in rows]
 
-                # Save analysis to group timeline
+                # Save the group analysis on each concrete campaign. Product-group
+                # timelines are retired in favor of per-campaign daily activity.
                 try:
                     timeline_text = json.dumps({
                         "type": "analysis",
@@ -3150,9 +3151,12 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                         "source": "bulk_analyze_all",
                         "job_id": job_id,
                     }, ensure_ascii=False)
-                    db.append_group_timeline(store, pid, timeline_text)
+                    for campaign in rows:
+                        campaign_key = str(campaign.get("campaign_id") or campaign.get("name") or "").strip()
+                        if campaign_key:
+                            db.append_campaign_timeline(store, campaign_key, timeline_text)
                 except Exception as te:
-                    logger.warning("Failed to save bulk analysis to group timeline: %s", te)
+                    logger.warning("Failed to save bulk analysis to campaign timelines: %s", te)
 
                 all_analyses.append(result)
 
@@ -3193,7 +3197,7 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
         except Exception:
             pass
 
-        # --- Step 7: Save tasks to group timelines ---
+        # --- Step 7: Save tasks to concrete campaign timelines ---
         tasks = tasks_result.get("tasks") or []
         for task in tasks:
             # Map task.campaigns (names) -> product IDs
@@ -3239,10 +3243,7 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                         "source": "bulk_analyze_all",
                         "job_id": job_id,
                     }, ensure_ascii=False)
-                    db.append_group_timeline(store, tpid, task_entry)
-                    # Also attach the same task to each concrete campaign in the
-                    # group so the campaign-row task icon and timeline are useful
-                    # even when the product group is collapsed or unavailable.
+                    # Attach the task to each concrete campaign in the product group.
                     for g in all_groups:
                         if str(g.get("product_id") or "") != str(tpid):
                             continue

@@ -505,21 +505,32 @@ def _campaign_meta_summary(value: dict) -> dict:
     summary = {key: val for key, val in (value or {}).items() if key != "timeline"}
     incomplete_tasks = 0
     timeline_entries = 0
+    life_activity_days: Dict[str, dict] = {}
     for entry in ((value or {}).get("timeline") or []):
         if not isinstance(entry, dict):
             continue
         timeline_entries += 1
         text = entry.get("text")
-        if not isinstance(text, str) or '"type":"task"' not in text.replace(" ", ""):
+        if not isinstance(text, str):
             continue
         try:
-            task = json.loads(text)
-            if task.get("type") == "task" and not task.get("done"):
+            payload = json.loads(text)
+            entry_type = str(payload.get("type") or "")
+            if entry_type == "task" and not payload.get("done"):
                 incomplete_tasks += 1
+            if entry_type in ("campaign_action", "life_note"):
+                day = str(payload.get("day") or entry.get("at") or "")[:10]
+                if day:
+                    bucket = life_activity_days.setdefault(day, {"actions": 0, "notes": 0})
+                    bucket["actions" if entry_type == "campaign_action" else "notes"] += 1
         except Exception:
-            continue
+            day = str(entry.get("at") or "")[:10]
+            if day and text.strip():
+                bucket = life_activity_days.setdefault(day, {"actions": 0, "notes": 0})
+                bucket["notes"] += 1
     summary["timeline_entries"] = timeline_entries
     summary["incomplete_tasks"] = incomplete_tasks
+    summary["life_activity_days"] = life_activity_days
     return summary
 
 
@@ -953,30 +964,6 @@ def get_latest_bulk_analysis_job(store: str | None) -> dict | None:
             except Exception:
                 continue
         return None
-
-
-def append_group_timeline(store: str | None, product_id: str, text: str) -> dict:
-    """Append a timeline note to a product-group timeline; returns updated meta dict.
-    Uses campaign_meta with key 'group:{product_id}' to leverage existing infrastructure.
-    """
-    if not isinstance(product_id, str) or not product_id.strip():
-        return {}
-    return append_campaign_timeline(store, f"group:{product_id.strip()}", text)
-
-
-def get_group_timeline(store: str | None, product_id: str) -> list:
-    """Read the timeline entries for a product group."""
-    if not isinstance(product_id, str) or not product_id.strip():
-        return []
-    key = f"campaign_meta:group:{product_id.strip()}"
-    try:
-        existing = get_app_setting(store, key) or {}
-        if not isinstance(existing, dict):
-            return []
-        tl = existing.get("timeline")
-        return list(tl) if isinstance(tl, list) else []
-    except Exception:
-        return []
 
 
 def upsert_campaign_mapping(store: str | None, campaign_key: str, kind: str, target_id: str) -> dict:

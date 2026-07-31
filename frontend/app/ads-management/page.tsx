@@ -1,8 +1,8 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Settings, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, productLifeInstructionsGet, productLifeInstructionsSet, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
@@ -98,6 +98,43 @@ type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
 type CampaignOwnerFilter = CampaignOwner|'unassigned'|''
 type CampaignStatusFilter = 'all'|'active'|'paused'
 type CampaignMetaState = CampaignMetaRecord & { product_life_checks?: Record<string, Record<string, boolean>> }
+type LifeCampaignRef = { id: string, name: string, createdTime?: string }
+type LifeDayState = { open: boolean, date: string, campaigns: LifeCampaignRef[] }
+
+function localDateKey(input: Date | string = new Date()): string{
+  const date = input instanceof Date ? input : new Date(input)
+  if(Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function lifeEntryPayload(text?: string): any | null{
+  try{
+    const parsed = JSON.parse(String(text || ''))
+    return parsed && typeof parsed === 'object' ? parsed : null
+  }catch{
+    return null
+  }
+}
+
+function lifeActivityForDay(meta: CampaignMetaState | undefined, day: string): { actions: number, notes: number }{
+  if(Array.isArray(meta?.timeline)){
+    let actions = 0
+    let notes = 0
+    for(const entry of meta.timeline){
+      const payload = lifeEntryPayload(entry.text)
+      const entryDay = String(payload?.day || entry.at || '').slice(0, 10)
+      if(entryDay !== day) continue
+      if(payload?.type === 'campaign_action') actions += 1
+      else if(payload?.type === 'life_note' || !payload) notes += 1
+    }
+    return { actions, notes }
+  }
+  const saved = meta?.life_activity_days?.[day]
+  return { actions: Number(saved?.actions || 0), notes: Number(saved?.notes || 0) }
+}
 
 function mergeCampaignMetaRecords(current: Record<string, CampaignMetaState>, incoming: Record<string, CampaignMetaRecord>): Record<string, CampaignMetaState>{
   const next = { ...current }
@@ -328,13 +365,12 @@ export default function AdsManagementPage(){
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
   const [timelineDraft, setTimelineDraft] = useState<string>('')
+  const [lifeDay, setLifeDay] = useState<LifeDayState>({ open: false, date: '', campaigns: [] })
+  const [lifeDayLoading, setLifeDayLoading] = useState<boolean>(false)
+  const [lifeDaySaving, setLifeDaySaving] = useState<boolean>(false)
   const browserTz = useMemo(()=>{
     try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined }catch{ return undefined }
   }, [])
-  // Product Life state
-  const [plInstructions, setPlInstructions] = useState<Record<string, string[]>>({ testing: [], action1: [], micro_scaling: [], macro_scaling: [] })
-  const [plSettingsOpen, setPlSettingsOpen] = useState<boolean>(false)
-  const [plHover, setPlHover] = useState<{ key:string, phase:string, rect?:DOMRect }|null>(null)
   // Search state
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [searchActive, setSearchActive] = useState<string>('')  // confirmed filter
@@ -425,9 +461,11 @@ export default function AdsManagementPage(){
     for(const r of (items||[])){
       const owner = ownerOfRow(r)
       if(!owner) continue
+      const rowSpend = Number(r.spend||0)
+      if(!Number.isFinite(rowSpend) || rowSpend <= 0) continue
       const s = stats[owner]
       s.campaigns += 1
-      s.spend += Number(r.spend||0)
+      s.spend += rowSpend
       const pid = getProductIdForRow(r)
       if(pid){
         if(!seenPids[owner].has(pid)){
@@ -1090,10 +1128,6 @@ export default function AdsManagementPage(){
           if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id, store: v.store || primaryStore }
         }
         allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
-        // Extract product life instructions from bundle (last one wins – they're global per store)
-        if(bundle?.product_life_instructions?.phases){
-          setPlInstructions(bundle.product_life_instructions.phases)
-        }
       }
 
       // If extra stores selected, load their mappings + meta too (fast DB calls)
@@ -1309,6 +1343,144 @@ export default function AdsManagementPage(){
     }
   }
 
+  async function openLifeDay(date: string, rows: MetaCampaignRow[]){
+    const campaigns: LifeCampaignRef[] = []
+    const seen = new Set<string>()
+    for(const row of (rows || [])){
+      const id = String(row.campaign_id || row.name || '').trim()
+      if(!id || seen.has(id)) continue
+      seen.add(id)
+      campaigns.push({
+        id,
+        name: String(row.name || id),
+        createdTime: String((row as any).created_time || ''),
+      })
+    }
+    if(campaigns.length === 0) return
+    setLifeDay({ open: true, date, campaigns })
+    setLifeDayLoading(true)
+    try{
+      const results = await Promise.allSettled(campaigns.map(campaign => campaignMetaGet(campaign.id, store)))
+      const incoming: Record<string, CampaignMetaRecord> = {}
+      results.forEach((result, index) => {
+        if(result.status === 'fulfilled' && (result.value as any)?.data){
+          incoming[campaigns[index].id] = (result.value as any).data
+        }
+      })
+      if(Object.keys(incoming).length > 0){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, incoming))
+      }
+    }finally{
+      setLifeDayLoading(false)
+    }
+  }
+
+  async function appendLifeEntry(campaignKey: string, day: string, payload: Record<string, any>){
+    const key = String(campaignKey || '').trim()
+    if(!key || !day) return
+    const current = Array.isArray(campaignMeta[key]?.timeline) ? [...(campaignMeta[key]?.timeline || [])] : []
+    const today = localDateKey()
+    const at = day === today ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString()
+    const timeline = [...current, { at, text: JSON.stringify({ ...payload, day }) }]
+    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), timeline } }))
+    const result = await campaignMetaUpsert({ campaign_key: key, timeline, store })
+    if((result as any)?.error) throw new Error((result as any).error)
+    if((result as any)?.data){
+      setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+    }
+  }
+
+  async function deleteLifeNote(campaignKey: string, entryIndex: number){
+    const key = String(campaignKey || '').trim()
+    const timeline = [...(campaignMeta[key]?.timeline || [])]
+    if(entryIndex < 0 || entryIndex >= timeline.length) return
+    const payload = lifeEntryPayload(timeline[entryIndex]?.text)
+    if(payload && payload.type !== 'life_note') return
+    timeline.splice(entryIndex, 1)
+    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), timeline } }))
+    const result = await campaignMetaUpsert({ campaign_key: key, timeline, store })
+    if((result as any)?.error) throw new Error((result as any).error)
+    if((result as any)?.data){
+      setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+    }
+  }
+
+  async function recordCampaignAction(campaignKey: string, action: string, label: string, details: Record<string, any> = {}){
+    const key = String(campaignKey || '').trim()
+    if(!key) return
+    try{
+      const result = await campaignTimelineAdd({
+        campaign_key: key,
+        store,
+        text: JSON.stringify({
+          type: 'campaign_action',
+          day: localDateKey(),
+          action,
+          label,
+          ...details,
+        }),
+      })
+      if((result as any)?.data){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+      }
+    }catch{}
+  }
+
+  function renderLifeDays(rows: MetaCampaignRow[]){
+    const campaigns = (rows || []).filter(Boolean)
+    if(campaigns.length === 0) return <span className="text-slate-400">—</span>
+    const creationDates = campaigns
+      .map(row => new Date(String((row as any).created_time || '')))
+      .filter(date => !Number.isNaN(date.getTime()))
+    const start = creationDates.length > 0
+      ? new Date(Math.min(...creationDates.map(date => date.getTime())))
+      : new Date()
+    start.setHours(0, 0, 0, 0)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const totalDays = Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000) + 1)
+    const points = Array.from({ length: totalDays }, (_, index) => {
+      const date = new Date(start)
+      date.setDate(start.getDate() + index)
+      const day = localDateKey(date)
+      let actions = 0
+      let notes = 0
+      for(const campaign of campaigns){
+        const key = String(campaign.campaign_id || campaign.name || '')
+        const counts = lifeActivityForDay(campaignMeta[key], day)
+        actions += counts.actions
+        notes += counts.notes
+      }
+      return { day, dayNumber: index + 1, actions, notes }
+    }).reverse()
+    return (
+      <div className="flex items-start gap-2" title={`${totalDays} campaign days`}>
+        <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">Day {totalDays}</span>
+        <div className="flex max-w-[270px] flex-wrap gap-0.5 py-1">
+          {points.map(point => {
+            const changed = point.actions > 0
+            const hasNotes = point.notes > 0
+            const isLatest = point.dayNumber === totalDays
+            return (
+              <button
+                key={point.day}
+                type="button"
+                onClick={()=> openLifeDay(point.day, campaigns)}
+                className={`h-[18px] min-w-[18px] shrink-0 rounded-full px-0.5 text-center text-[8px] font-bold leading-[18px] text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
+                  changed ? 'bg-orange-500' : 'bg-emerald-500'
+                } ${hasNotes ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${
+                  isLatest ? 'scale-110 outline outline-2 outline-violet-600 outline-offset-1' : ''
+                }`}
+                title={`Day ${point.dayNumber} · ${point.day} · ${point.actions} actions · ${point.notes} notes`}
+                aria-label={`Open day ${point.dayNumber}, ${point.actions} actions and ${point.notes} notes`}
+              >{point.dayNumber}</button>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   useEffect(()=>{ // initialize custom range defaults
     const { start, end } = computeRange('last_7d_incl_today')
     setCustomStart(start)
@@ -1491,16 +1663,12 @@ export default function AdsManagementPage(){
       const cpp = purchases>0 ? (spend / purchases) : null
       let ctr: number | null = null
       try{
-        const sumSpend = spend
-        const ctrSpend = p.rows.reduce((acc,r)=> {
-          const v = (r.ctr==null ? null : Number(r.ctr))
-          if(v==null) return acc
-          const w = Number(r.spend||0)
-          return acc + (v * (w||0))
-        }, 0)
-        const ctrCount = p.rows.reduce((acc,r)=> (r.ctr==null ? acc : acc+1), 0)
-        if(sumSpend>0 && ctrSpend>0) ctr = ctrSpend / sumSpend
-        else if(ctrCount>0) ctr = p.rows.reduce((acc,r)=> acc + (r.ctr==null?0:Number(r.ctr)), 0) / ctrCount
+        const spendingCtrs = p.rows
+          .filter(r => Number(r.spend||0) > 0 && r.ctr != null && Number.isFinite(Number(r.ctr)))
+          .map(r => Number(r.ctr))
+        if(spendingCtrs.length > 0){
+          ctr = spendingCtrs.reduce((sum, value)=> sum + value, 0) / spendingCtrs.length
+        }
       }catch{}
       const brief = productBriefs[p.productId]
       const inventory = brief && typeof brief.total_available==='number' ? Number(brief.total_available||0) : null
@@ -2071,9 +2239,6 @@ export default function AdsManagementPage(){
               </div>
             )}
           </div>
-          <button onClick={()=>setPlSettingsOpen(true)} className="rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm" title="Product Life Settings">
-            <Settings className="w-4 h-4"/>
-          </button>
           {/* ── Analyze Selected button ── */}
           {(selectedCount > 0 || multiAnalysisLoading) && (
             <button
@@ -2482,7 +2647,7 @@ export default function AdsManagementPage(){
               <tr className="text-left">
                 <th className="px-1 py-0.5 font-semibold w-6"></th>
                 <th className="px-1 py-0.5 font-semibold w-[80px]"></th>
-                <th className="px-1 py-0.5 font-semibold">
+                <th className="w-[250px] max-w-[250px] px-1 py-0.5 font-semibold">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
@@ -2553,7 +2718,7 @@ export default function AdsManagementPage(){
                         {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
                       </button>
                     </th>
-                    <th className="px-1 py-0.5 font-semibold text-violet-700" style={{minWidth:'80px', maxWidth:'100px'}}>Life</th>
+                    <th className="w-[300px] max-w-[300px] px-1 py-0.5 font-semibold text-violet-700">Life days</th>
                   </>
                 )}
                 <th className="px-1 py-0.5 font-semibold text-right w-[70px]"></th>
@@ -2582,7 +2747,7 @@ export default function AdsManagementPage(){
                   const orders = m.orders
                   const trueCppVal = m.trueCpp
                   const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
-                  const ctr = m.ctr!=null? `${(m.ctr*100).toFixed(2)}%` : '—'
+                  const ctr = m.ctr!=null? `${m.ctr.toFixed(2)}%` : '—'
                   const cpp = m.cpp!=null? `$${m.cpp.toFixed(2)}` : '—'
                   const brief = productBriefs[pid]
                   const img = brief? brief.image : null
@@ -2620,26 +2785,22 @@ export default function AdsManagementPage(){
                         <td className="px-1 py-0.5">
                           {img ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className={`w-[72px] h-[72px] rounded-lg object-cover border shadow-sm ${hasInventoryAlert ? 'ring-2 ring-rose-500 ring-offset-1' : ''}`} />
+                            <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                           ) : (
                             <span className={`inline-block w-[72px] h-[72px] rounded-lg border ${hydratingBrief ? 'bg-slate-100 animate-pulse' : 'bg-slate-50'}`} />
                           )}
                         </td>
-                        <td className="px-1 py-0.5 whitespace-nowrap">
-                          <div className="flex items-center gap-1">
+                        <td className="w-[250px] max-w-[250px] whitespace-normal px-1 py-0.5 align-top">
+                          <div className="flex items-start gap-1">
                             {!profitMode && <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
-                              className="px-1 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
+                              className="shrink-0 px-1 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
                               title="Show merged campaigns"
                             >{groupExpanded[pid]? '▾' : '▸'}</button>}
-                            <span className="font-medium text-xs">{d.primary.name || `Product ${pid}`}</span>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">{d.rows.length} camps</span>
-                            {hasInventoryAlert && (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
-                                <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse"/>
-                                {zeros} variants at 0 or below
-                              </span>
-                            )}
+                            <div className="min-w-0 flex-1">
+                              <span className="break-words text-xs font-medium leading-tight">{d.primary.name || `Product ${pid}`}</span>
+                              <span className="ml-1 inline-flex shrink-0 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] text-indigo-700">{d.rows.length} camps</span>
+                            </div>
                           </div>
                           {profitMode && (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
@@ -2754,55 +2915,8 @@ export default function AdsManagementPage(){
                                 )}
                               </div>
                             </td>
-                            <td className="px-1.5 py-0.5">
-                              {(()=>{
-                            const firstCampaign = d.rows[0]
-                            const ct = (firstCampaign as any)?.created_time
-                            if(!ct) return <span className="text-slate-400 text-xs">—</span>
-                            const startDate = new Date(ct)
-                            const now = new Date()
-                            const daysSinceCreation = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000*60*60*24)))
-                            const phases = [
-                              { key: 'testing', label: 'Test', days: 3, start: 0 },
-                              { key: 'action1', label: 'Act1', days: 3, start: 3 },
-                              { key: 'micro_scaling', label: 'Micro', days: 7, start: 6 },
-                              { key: 'macro_scaling', label: 'Macro', days: 999, start: 13 },
-                            ]
-                            const currentPhaseIdx = daysSinceCreation >= 13 ? 3 : daysSinceCreation >= 6 ? 2 : daysSinceCreation >= 3 ? 1 : 0
-                            const campaignKey = String(firstCampaign.campaign_id || pid)
-                            const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
-                            return (
-                              <div className="flex gap-0.5 relative" style={{minWidth:'80px', maxWidth:'100px'}}>
-                                {phases.map((ph, idx) => {
-                                  const phChecks = checks[ph.key] || {}
-                                  const insts = plInstructions[ph.key] || []
-                                  const checkedCount = insts.filter((_:any, i:number) => phChecks[String(i)]).length
-                                  const mostChecked = insts.length > 0 && checkedCount >= Math.ceil(insts.length / 2)
-                                  const isCurrent = idx === currentPhaseIdx
-                                  const isPast = idx < currentPhaseIdx
-                                  const isFuture = idx > currentPhaseIdx
-                                  let bg = 'bg-slate-200'
-                                  if(isCurrent) bg = 'bg-green-300'
-                                  else if(isPast && mostChecked) bg = 'bg-green-700'
-                                  else if(isPast && !mostChecked) bg = 'bg-amber-400'
-                                  return (
-                                    <div
-                                      key={ph.key}
-                                      className={`flex-1 h-5 ${bg} ${idx===0?'rounded-l':''} ${idx===3?'rounded-r':''} cursor-pointer relative group/pl`}
-                                      title={`${ph.label} (Day ${ph.start}+)`}
-                                      onMouseEnter={(e) => {
-                                        const rect = e.currentTarget.getBoundingClientRect()
-                                        setPlHover({ key: campaignKey, phase: ph.key, rect })
-                                      }}
-                                      onMouseLeave={() => setPlHover(null)}
-                                    >
-                                      <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white/80 select-none">{ph.label}</span>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )
-                              })()}
+                            <td className="w-[300px] max-w-[300px] px-1.5 py-0.5 align-top">
+                              {renderLifeDays(d.rows)}
                             </td>
                           </>
                         )}
@@ -2853,25 +2967,6 @@ export default function AdsManagementPage(){
                             }}
                             className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
                           ><BarChart3 className="w-3.5 h-3.5"/></button>}
-                          {/* Group Timeline button with red badge */}
-                          {!profitMode && (()=>{
-                            const groupKey = `group:${pid}`
-                            const incompleteTasks = incompleteTaskCount(campaignMeta[groupKey])
-                            return (
-                              <button
-                                title="Group Timeline"
-                                onClick={()=> openCampaignTimeline({ id: groupKey, name: d.primary.name || `Product ${pid}` })}
-                                className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
-                              >
-                                <Clock className="w-3.5 h-3.5"/>
-                                {incompleteTasks > 0 && (
-                                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[9px] font-bold flex items-center justify-center shadow-sm animate-bounce" style={{animationDuration:'2s'}}>
-                                    {incompleteTasks}
-                                  </span>
-                                )}
-                              </button>
-                            )
-                          })()}
                           {!profitMode && <button
                             disabled={analysisLoading===pid}
                             onClick={async()=>{
@@ -2979,7 +3074,7 @@ export default function AdsManagementPage(){
                     <td className="px-1.5 py-0.5">
                       {img ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="product" className={`w-[72px] h-[72px] rounded-lg object-cover border shadow-sm ${hasInventoryAlert ? 'ring-2 ring-rose-500 ring-offset-1' : ''}`} />
+                        <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
                       ) : (
                         hasAnyPid && hydratingBrief ? (
                           <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-100 border animate-pulse" />
@@ -2988,8 +3083,8 @@ export default function AdsManagementPage(){
                         )
                       )}
                     </td>
-                    <td className="px-1.5 py-0.5 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
+                    <td className="w-[250px] max-w-[250px] whitespace-normal px-1.5 py-0.5 align-top">
+                      <div className="flex items-start gap-2">
                         {!profitMode && <button
                           onClick={async()=>{
                             const cid = String(c.campaign_id||'')
@@ -3032,13 +3127,7 @@ export default function AdsManagementPage(){
                           }}
                           className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
                         >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>}
-                        <span>{c.name||'-'}</span>
-                        {hasInventoryAlert && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
-                            <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse"/>
-                            {zeros} variants at 0 or below
-                          </span>
-                        )}
+                        <span className="min-w-0 flex-1 break-words leading-tight">{c.name||'-'}</span>
                       </div>
                       {!profitMode && (()=>{
                         const rk = String(rowKey)
@@ -3201,6 +3290,12 @@ export default function AdsManagementPage(){
                                         alert(`Failed: ${(res as any).error}`)
                                       } else {
                                         setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
+                                        void recordCampaignAction(
+                                          cid,
+                                          next === 'ACTIVE' ? 'campaign_turned_on' : 'campaign_turned_off',
+                                          `Campaign ${next === 'ACTIVE' ? 'turned on' : 'turned off'}`,
+                                          { entity: 'campaign', campaign_name: c.name || '', previous_status: st, next_status: next },
+                                        )
                                       }
                                     }catch(e:any){ alert(`Failed to update status: ${e?.message||e}`) }
                                     finally{ setTogglingCampaign(prev=> ({ ...prev, [cid]: false })) }
@@ -3294,53 +3389,8 @@ export default function AdsManagementPage(){
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="px-1.5 py-0.5">
-                          {(()=>{
-                        const ct = (c as any)?.created_time
-                        if(!ct) return <span className="text-slate-400 text-xs">—</span>
-                        const startDate = new Date(ct)
-                        const now = new Date()
-                        const daysSinceCreation = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000*60*60*24)))
-                        const phases = [
-                          { key: 'testing', label: 'Test', days: 3, start: 0 },
-                          { key: 'action1', label: 'Act1', days: 3, start: 3 },
-                          { key: 'micro_scaling', label: 'Micro', days: 7, start: 6 },
-                          { key: 'macro_scaling', label: 'Macro', days: 999, start: 13 },
-                        ]
-                        const currentPhaseIdx = daysSinceCreation >= 13 ? 3 : daysSinceCreation >= 6 ? 2 : daysSinceCreation >= 3 ? 1 : 0
-                        const campaignKey = String(c.campaign_id || rowKey)
-                        const checks = (campaignMeta[campaignKey]?.product_life_checks || {}) as Record<string, Record<string, boolean>>
-                        return (
-                          <div className="flex gap-0.5 relative" style={{minWidth:'80px', maxWidth:'100px'}}>
-                            {phases.map((ph, idx) => {
-                              const phChecks = checks[ph.key] || {}
-                              const insts = plInstructions[ph.key] || []
-                              const checkedCount = insts.filter((_:any, i:number) => phChecks[String(i)]).length
-                              const mostChecked = insts.length > 0 && checkedCount >= Math.ceil(insts.length / 2)
-                              const isCurrent = idx === currentPhaseIdx
-                              const isPast = idx < currentPhaseIdx
-                              let bg = 'bg-slate-200'
-                              if(isCurrent) bg = 'bg-green-300'
-                              else if(isPast && mostChecked) bg = 'bg-green-700'
-                              else if(isPast && !mostChecked) bg = 'bg-amber-400'
-                              return (
-                                <div
-                                  key={ph.key}
-                                  className={`flex-1 h-5 ${bg} ${idx===0?'rounded-l':''} ${idx===3?'rounded-r':''} cursor-pointer relative`}
-                                  title={`${ph.label} (Day ${ph.start}+)`}
-                                  onMouseEnter={(e) => {
-                                    const rect = e.currentTarget.getBoundingClientRect()
-                                    setPlHover({ key: campaignKey, phase: ph.key, rect })
-                                  }}
-                                  onMouseLeave={() => setPlHover(null)}
-                                >
-                                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white/80 select-none">{ph.label}</span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )
-                          })()}
+                        <td className="w-[300px] max-w-[300px] px-1.5 py-0.5 align-top">
+                          {renderLifeDays([c])}
                         </td>
                       </>
                     )}
@@ -3561,6 +3611,12 @@ export default function AdsManagementPage(){
                                                       alert(`Failed: ${(res as any).error}`)
                                                     } else {
                                                       setAdsetsByCampaign(prev=> ({ ...prev, [cid]: (prev[cid]||[]).map(x=> x.adset_id===aid? { ...x, status: next } : x) }))
+                                                      void recordCampaignAction(
+                                                        cid,
+                                                        next === 'ACTIVE' ? 'adset_turned_on' : 'adset_turned_off',
+                                                        `Ad set “${a.name || aid}” ${next === 'ACTIVE' ? 'turned on' : 'turned off'}`,
+                                                        { entity: 'adset', adset_id: aid, adset_name: a.name || '', previous_status: ast, next_status: next },
+                                                      )
                                                     }
                                                   }catch(e:any){
                                                     alert(`Failed to update ad set status: ${e?.message||e}`)
@@ -3804,125 +3860,259 @@ export default function AdsManagementPage(){
         }}
       />
 
-      {/* Product Life Hover Tooltip */}
-      {plHover && plHover.rect && (()=>{
-        const phaseLabels: Record<string,string> = { testing: 'Testing Phase', action1: 'Action 1 Phase', micro_scaling: 'Micro Scaling', macro_scaling: 'Macro Scaling' }
-        const insts = plInstructions[plHover.phase] || []
-        const campaignKey = plHover.key
-        const checks = ((campaignMeta[campaignKey] as any)?.product_life_checks || {}) as Record<string, Record<string, boolean>>
-        const phChecks = checks[plHover.phase] || {}
-        const top = plHover.rect.bottom + 8
-        const left = Math.max(8, Math.min(plHover.rect.left, window.innerWidth - 340))
-        return (
-          <div
-            className="fixed z-[9999] bg-white border border-slate-200 rounded-xl shadow-2xl p-4"
-            style={{ top, left, minWidth: 280, maxWidth: 340 }}
-            onMouseEnter={() => {/* keep open */}}
-            onMouseLeave={() => setPlHover(null)}
-          >
-            <div className="font-semibold text-sm text-violet-700 mb-2">{phaseLabels[plHover.phase] || plHover.phase}</div>
-            {insts.length === 0 ? (
-              <p className="text-xs text-slate-400">No instructions set. Use the ⚙ Settings button to add phase instructions.</p>
+      <LifeDayModal
+        state={lifeDay}
+        meta={campaignMeta}
+        loading={lifeDayLoading}
+        saving={lifeDaySaving}
+        onClose={()=> setLifeDay({ open: false, date: '', campaigns: [] })}
+        onAddNote={async(campaignKey, text)=>{
+          try{
+            setLifeDaySaving(true)
+            await appendLifeEntry(campaignKey, lifeDay.date, {
+              type: 'life_note',
+              id: `life-note-${Date.now()}`,
+              text,
+            })
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+        onAddAction={async(campaignKey, action, details)=>{
+          try{
+            setLifeDaySaving(true)
+            const labels: Record<string, string> = {
+              budget_increased: 'Campaign budget increased',
+              budget_decreased: 'Campaign budget decreased',
+              creative_changed: 'Campaign creative changed',
+              targeting_changed: 'Campaign targeting changed',
+              other_change: 'Campaign change recorded',
+            }
+            await appendLifeEntry(campaignKey, lifeDay.date, {
+              type: 'campaign_action',
+              id: `life-action-${Date.now()}`,
+              action,
+              label: labels[action] || 'Campaign change recorded',
+              details,
+              entity: 'campaign',
+            })
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+        onDeleteNote={async(campaignKey, entryIndex)=>{
+          try{
+            setLifeDaySaving(true)
+            await deleteLifeNote(campaignKey, entryIndex)
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+      />
+
+    </div>
+  )
+}
+
+function LifeDayModal({ state, meta, loading, saving, onClose, onAddNote, onAddAction, onDeleteNote }: {
+  state: LifeDayState,
+  meta: Record<string, CampaignMetaState>,
+  loading: boolean,
+  saving: boolean,
+  onClose: ()=>void,
+  onAddNote: (campaignKey: string, text: string)=>Promise<void>,
+  onAddAction: (campaignKey: string, action: string, details: string)=>Promise<void>,
+  onDeleteNote: (campaignKey: string, entryIndex: number)=>Promise<void>,
+}){
+  const [campaignKey, setCampaignKey] = useState('')
+  const [noteDraft, setNoteDraft] = useState('')
+  const [actionType, setActionType] = useState('budget_increased')
+  const [actionDetails, setActionDetails] = useState('')
+
+  useEffect(()=>{
+    if(!state.open) return
+    setCampaignKey(state.campaigns[0]?.id || '')
+    setNoteDraft('')
+    setActionType('budget_increased')
+    setActionDetails('')
+  }, [state.open, state.date, state.campaigns])
+
+  useEffect(()=>{
+    if(!state.open) return
+    const onKeyDown = (event: KeyboardEvent) => { if(event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [state.open, onClose])
+
+  if(!state.open) return null
+
+  const events: Array<{
+    campaignKey: string,
+    campaignName: string,
+    entryIndex: number,
+    at: string,
+    kind: 'action'|'note',
+    label: string,
+    details: string,
+  }> = []
+  for(const campaign of state.campaigns){
+    const timeline = meta[campaign.id]?.timeline || []
+    timeline.forEach((entry, entryIndex) => {
+      const payload = lifeEntryPayload(entry.text)
+      const day = String(payload?.day || entry.at || '').slice(0, 10)
+      if(day !== state.date) return
+      if(payload?.type === 'campaign_action'){
+        const detailParts = [
+          payload.adset_name ? `Ad set: ${payload.adset_name}` : '',
+          payload.previous_status && payload.next_status ? `${payload.previous_status} → ${payload.next_status}` : '',
+          typeof payload.details === 'string' ? payload.details : '',
+        ].filter(Boolean)
+        events.push({
+          campaignKey: campaign.id,
+          campaignName: campaign.name,
+          entryIndex,
+          at: entry.at,
+          kind: 'action',
+          label: String(payload.label || payload.action || 'Campaign action'),
+          details: detailParts.join(' · '),
+        })
+      }else if(payload?.type === 'life_note' || !payload){
+        events.push({
+          campaignKey: campaign.id,
+          campaignName: campaign.name,
+          entryIndex,
+          at: entry.at,
+          kind: 'note',
+          label: String(payload?.text || entry.text || ''),
+          details: '',
+        })
+      }
+    })
+  }
+  events.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+
+  const selectedCampaign = campaignKey || state.campaigns[0]?.id || ''
+  const dateLabel = (()=> {
+    try{
+      return new Date(`${state.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })
+    }catch{
+      return state.date
+    }
+  })()
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/60 p-4" onMouseDown={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Campaign activity for ${state.date}`}
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onMouseDown={(event)=> event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between border-b bg-gradient-to-r from-violet-700 to-indigo-600 px-5 py-4 text-white">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-violet-100">Campaign life day</div>
+            <h2 className="mt-0.5 text-lg font-bold">{dateLabel}</h2>
+            <div className="mt-2 flex items-center gap-3 text-xs text-violet-100">
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400"/>Normal day</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-orange-400"/>Action recorded</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-blue-300"/>Has note</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-2xl leading-none text-white/80 hover:bg-white/10 hover:text-white" aria-label="Close">×</button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[1.2fr_0.8fr]">
+          <div className="min-h-0 overflow-y-auto border-r p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900">Notes and actions</h3>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">{events.length} records</span>
+            </div>
+            {loading ? (
+              <div className="rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500 animate-pulse">Loading day records…</div>
+            ) : events.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No notes or actions recorded for this day.</div>
             ) : (
-              <ul className="space-y-1.5">
-                {insts.map((inst: string, i: number) => {
-                  const checked = !!phChecks[String(i)]
-                  return (
-                    <li key={i} className="flex items-start gap-2">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={async (e) => {
-                          const val = e.target.checked
-                          const newPhChecks = { ...phChecks, [String(i)]: val }
-                          const newChecks = { ...checks, [plHover.phase]: newPhChecks }
-                          setCampaignMeta(prev => ({
-                            ...prev,
-                            [campaignKey]: { ...(prev[campaignKey] || {}), product_life_checks: newChecks }
-                          }))
-                          try {
-                            await campaignMetaUpsert({ campaign_key: campaignKey, product_life_checks: newChecks, store } as any)
-                          } catch {}
-                        }}
-                        className="mt-0.5 accent-violet-600 w-4 h-4 rounded"
-                      />
-                      <span className={`text-xs ${checked ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{inst}</span>
-                    </li>
-                  )
-                })}
-              </ul>
+              <div className="space-y-2">
+                {events.map(event => (
+                  <div key={`${event.campaignKey}-${event.entryIndex}`} className={`rounded-xl border p-3 ${event.kind === 'action' ? 'border-orange-200 bg-orange-50' : 'border-blue-200 bg-blue-50'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${event.kind === 'action' ? 'bg-orange-500' : 'bg-blue-500'}`}/>
+                          <span className={`text-[10px] font-bold uppercase tracking-wide ${event.kind === 'action' ? 'text-orange-700' : 'text-blue-700'}`}>{event.kind}</span>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">{event.label}</div>
+                        {event.details && <div className="mt-1 text-xs text-slate-600">{event.details}</div>}
+                        <div className="mt-2 truncate text-[10px] text-slate-500">{event.campaignName}</div>
+                      </div>
+                      {event.kind === 'note' && (
+                        <button
+                          disabled={saving}
+                          onClick={()=> onDeleteNote(event.campaignKey, event.entryIndex)}
+                          className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-100 disabled:opacity-50"
+                        >Delete</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
-        )
-      })()}
 
-      {/* Product Life Settings Modal */}
-      {plSettingsOpen && (
-        <div className="fixed inset-0 z-[9998] bg-black/50 flex items-center justify-center" onClick={() => setPlSettingsOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-slate-900">Product Life Settings</h2>
-              <button onClick={() => setPlSettingsOpen(false)} className="text-slate-400 hover:text-slate-700 text-xl">✕</button>
-            </div>
-            <p className="text-sm text-slate-500 mb-4">Configure instructions for each phase. These instructions will appear when hovering over the Product Life progress bar.</p>
-            {(['testing', 'action1', 'micro_scaling', 'macro_scaling'] as const).map(phase => {
-              const labels: Record<string,string> = { testing: '🧪 Testing Phase (Day 0-2)', action1: '⚡ Action 1 Phase (Day 3-5)', micro_scaling: '📈 Micro Scaling (Day 6-12)', macro_scaling: '🚀 Macro Scaling (Day 13+)' }
-              const insts = plInstructions[phase] || []
-              return (
-                <div key={phase} className="mb-4 p-3 border rounded-xl bg-slate-50">
-                  <div className="font-semibold text-sm text-slate-800 mb-2">{labels[phase]}</div>
-                  {insts.map((inst, i) => (
-                    <div key={i} className="flex items-center gap-2 mb-1">
-                      <span className="text-xs text-slate-500 w-5">{i+1}.</span>
-                      <input
-                        value={inst}
-                        onChange={(e) => {
-                          const newInsts = [...insts]
-                          newInsts[i] = e.target.value
-                          setPlInstructions(prev => ({ ...prev, [phase]: newInsts }))
-                        }}
-                        className="flex-1 rounded border px-2 py-1 text-sm bg-white"
-                      />
-                      <button
-                        onClick={() => {
-                          const newInsts = insts.filter((_: any, j: number) => j !== i)
-                          setPlInstructions(prev => ({ ...prev, [phase]: newInsts }))
-                        }}
-                        className="text-rose-400 hover:text-rose-600 text-xs px-1"
-                      >✕</button>
-                    </div>
-                  ))}
-                  <button
-                    onClick={() => setPlInstructions(prev => ({ ...prev, [phase]: [...(prev[phase] || []), ''] }))}
-                    className="mt-1 text-xs text-violet-600 hover:text-violet-800"
-                  >+ Add instruction</button>
-                </div>
-              )
-            })}
-            <div className="flex justify-end gap-2 mt-4">
-              <button onClick={() => setPlSettingsOpen(false)} className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-sm">Cancel</button>
+          <div className="min-h-0 overflow-y-auto bg-slate-50 p-4">
+            <label className="mb-3 block">
+              <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Campaign</span>
+              <select value={selectedCampaign} onChange={(event)=> setCampaignKey(event.target.value)} className="w-full rounded-lg border bg-white px-3 py-2 text-sm">
+                {state.campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+              </select>
+            </label>
+
+            <div className="rounded-xl border bg-white p-3">
+              <div className="text-sm font-bold text-slate-800">Add a note</div>
+              <textarea
+                value={noteDraft}
+                onChange={(event)=> setNoteDraft(event.target.value)}
+                placeholder="What did the team observe on this day?"
+                className="mt-2 min-h-20 w-full resize-y rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"
+              />
               <button
-                onClick={async () => {
-                  try {
-                    // Filter out empty instructions
-                    const cleaned: Record<string, string[]> = {}
-                    for (const [k, v] of Object.entries(plInstructions)) {
-                      cleaned[k] = (v || []).filter((s: string) => s.trim() !== '')
-                    }
-                    setPlInstructions(cleaned)
-                    await productLifeInstructionsSet({ phases: cleaned, store })
-                    setPlSettingsOpen(false)
-                  } catch (e: any) {
-                    alert('Failed to save: ' + (e?.message || e))
-                  }
+                disabled={saving || !selectedCampaign || !noteDraft.trim()}
+                onClick={async()=>{
+                  await onAddNote(selectedCampaign, noteDraft.trim())
+                  setNoteDraft('')
                 }}
-                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold text-sm"
-              >Save Instructions</button>
+                className="mt-2 w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+              >{saving ? 'Saving…' : 'Save note'}</button>
+            </div>
+
+            <div className="mt-3 rounded-xl border bg-white p-3">
+              <div className="text-sm font-bold text-slate-800">Record a campaign change</div>
+              <select value={actionType} onChange={(event)=> setActionType(event.target.value)} className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm">
+                <option value="budget_increased">Budget increased</option>
+                <option value="budget_decreased">Budget decreased</option>
+                <option value="creative_changed">Creative changed</option>
+                <option value="targeting_changed">Targeting changed</option>
+                <option value="other_change">Other change</option>
+              </select>
+              <input
+                value={actionDetails}
+                onChange={(event)=> setActionDetails(event.target.value)}
+                placeholder="Optional details, e.g. $20 → $30"
+                className="mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-400"
+              />
+              <button
+                disabled={saving || !selectedCampaign}
+                onClick={async()=>{
+                  await onAddAction(selectedCampaign, actionType, actionDetails.trim())
+                  setActionDetails('')
+                }}
+                className="mt-2 w-full rounded-lg bg-orange-500 px-3 py-2 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50"
+              >{saving ? 'Saving…' : 'Record change'}</button>
             </div>
           </div>
         </div>
-      )}
-
+      </div>
     </div>
   )
 }
