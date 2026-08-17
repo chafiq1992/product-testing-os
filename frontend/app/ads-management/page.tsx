@@ -2158,7 +2158,26 @@ export default function AdsManagementPage(){
     )
   }
 
-  const tableColSpan = profitMode ? 9 : 15
+  const profitSummary = useMemo(()=>{
+    return Object.entries(profitResults).reduce((summary, [productId, result])=>{
+      const availableItems = Math.max(0, Number(productBriefs[productId]?.total_available || 0))
+      const inventoryWorth = availableItems * Math.max(0, Number(result.productPrice || 0))
+      summary.calculatedProducts += 1
+      summary.availableItems += availableItems
+      summary.inventoryWorth += inventoryWorth
+      summary.totalProfit += Number(result.profit || 0)
+      summary.netInventoryMoney = summary.inventoryWorth - summary.totalProfit
+      return summary
+    }, {
+      calculatedProducts: 0,
+      availableItems: 0,
+      inventoryWorth: 0,
+      totalProfit: 0,
+      netInventoryMoney: 0,
+    })
+  }, [profitResults, productBriefs])
+
+  const tableColSpan = profitMode ? 10 : 15
 
   return (
     <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
@@ -2543,6 +2562,38 @@ export default function AdsManagementPage(){
             </div>
           </div>
         </div>
+        {profitMode && (
+          <div className="mb-2 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-bold text-slate-800">Calculated products profit summary</div>
+                <div className="text-[11px] text-slate-500">Only products with a completed profit calculation are included.</div>
+              </div>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                {profitSummary.calculatedProducts} calculated
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <div className="rounded-lg bg-indigo-50 px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">Available inventory</div>
+                <div className="mt-0.5 text-lg font-bold text-indigo-800">{fmtInt(profitSummary.availableItems)} items</div>
+              </div>
+              <div className="rounded-lg bg-blue-50 px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-500">Total inventory worth</div>
+                <div className="mt-0.5 text-lg font-bold text-blue-800">{Math.round(profitSummary.inventoryWorth).toLocaleString()} MAD</div>
+              </div>
+              <div className={`rounded-lg px-3 py-2 ${profitSummary.totalProfit >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                <div className={`text-[10px] font-semibold uppercase tracking-wide ${profitSummary.totalProfit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>Total profit</div>
+                <div className={`mt-0.5 text-lg font-bold ${profitSummary.totalProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{Math.round(profitSummary.totalProfit).toLocaleString()} MAD</div>
+              </div>
+              <div className="rounded-lg bg-amber-50 px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">Net inventory money</div>
+                <div className="mt-0.5 text-lg font-bold text-amber-800">{Math.round(profitSummary.netInventoryMoney).toLocaleString()} MAD</div>
+                <div className="text-[10px] text-amber-600">Inventory worth − total profit</div>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Search + Toolbar */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-2">
           {/* Search Bar */}
@@ -2757,6 +2808,9 @@ export default function AdsManagementPage(){
                     {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
                   </button>
                 </th>
+                {profitMode && (
+                  <th className="min-w-[145px] px-1 py-0.5 font-semibold text-right text-indigo-700">Inventory value</th>
+                )}
                 {!profitMode && (
                   <>
                     <th className="px-1 py-0.5 font-semibold text-indigo-700 text-right">
@@ -2823,6 +2877,11 @@ export default function AdsManagementPage(){
                   const priceDraft = profitProductPrices[pid]
                   const spendMad = Number(m.spend||0) * 10
                   const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
+                  const inventorySellingPrice = typeof priceDraft === 'string' && priceDraft.trim() !== ''
+                    ? Math.max(0, Number(priceDraft || 0))
+                    : Math.max(0, Number((brief as any)?.price || 0))
+                  const inventoryItems = inv == null ? null : Math.max(0, Number(inv || 0))
+                  const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventorySellingPrice
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr ref={registerProductRow(pid)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
@@ -2956,6 +3015,19 @@ export default function AdsManagementPage(){
                             orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
                           )}
                         </td>
+                        {profitMode && (
+                          <td className="px-1 py-0.5 text-right">
+                            {inventoryItems == null ? (
+                              hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
+                            ) : (
+                              <div title={`${fmtInt(inventoryItems)} items × ${inventorySellingPrice.toLocaleString()} MAD`}>
+                                <div className="font-semibold text-indigo-700">{fmtInt(inventoryItems)} items</div>
+                                <div className="text-[10px] text-slate-500">× {inventorySellingPrice.toLocaleString()} MAD</div>
+                                <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorth || 0)).toLocaleString()} MAD</div>
+                              </div>
+                            )}
+                          </td>
+                        )}
                         {!profitMode && (
                           <>
                             <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
@@ -3132,6 +3204,11 @@ export default function AdsManagementPage(){
                 const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
                 const spendMadSelf = Number(c.spend||0) * 10
                 const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
+                const inventorySellingPriceSelf = typeof priceDraftSelf === 'string' && priceDraftSelf.trim() !== ''
+                  ? Math.max(0, Number(priceDraftSelf || 0))
+                  : Math.max(0, Number((briefSelf as any)?.price || 0))
+                const inventoryItemsSelf = inv == null ? null : Math.max(0, Number(inv || 0))
+                const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventorySellingPriceSelf
                 const hasInventoryAlert = zeros != null && zeros > 0
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
@@ -3441,6 +3518,19 @@ export default function AdsManagementPage(){
                         orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
                       )}
                     </td>
+                    {profitMode && (
+                      <td className="px-1 py-0.5 text-right">
+                        {inventoryItemsSelf == null ? (
+                          hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
+                        ) : (
+                          <div title={`${fmtInt(inventoryItemsSelf)} items × ${inventorySellingPriceSelf.toLocaleString()} MAD`}>
+                            <div className="font-semibold text-indigo-700">{fmtInt(inventoryItemsSelf)} items</div>
+                            <div className="text-[10px] text-slate-500">× {inventorySellingPriceSelf.toLocaleString()} MAD</div>
+                            <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorthSelf || 0)).toLocaleString()} MAD</div>
+                          </div>
+                        )}
+                      </td>
+                    )}
                     {!profitMode && (
                       <>
                         <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
