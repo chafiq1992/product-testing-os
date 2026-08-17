@@ -2,6 +2,16 @@ from app import db
 from app.integrations import meta_client, shopify_client
 
 
+class _FakeShopifyResponse:
+    def __init__(self, orders, next_page=None):
+        self.content = b"{}"
+        self._orders = orders
+        self.headers = {"Link": next_page} if next_page else {}
+
+    def json(self):
+        return {"orders": self._orders}
+
+
 def test_bulk_app_settings_round_trip():
     db.set_app_settings("perf-test", {"a": {"value": 1}, "b": 0})
 
@@ -265,5 +275,61 @@ def test_paid_product_order_count_uses_one_exact_server_side_count(monkeypatch):
     assert 'product_id:"123"' in variables["query"]
     assert 'processed_at:>="2026-07-01"' in variables["query"]
     assert 'financial_status:"paid"' in variables["query"]
+    assert 'financial_status:"partially_paid"' in variables["query"]
+    assert 'tag:"DELIVERED"' in variables["query"]
+    assert " OR " in variables["query"]
     assert variables["limit"] is None
     assert timeout >= 3
+
+
+def test_effective_paid_status_includes_delivered_without_double_counting(monkeypatch):
+    orders = [
+        {"id": 1, "financial_status": "paid", "tags": "", "line_items": [{"product_id": 123}]},
+        {"id": 2, "financial_status": "pending", "tags": "DELIVERED", "line_items": [{"product_id": 123}]},
+        {"id": 3, "financial_status": "paid", "tags": "DELIVERED", "line_items": [{"product_id": 123}]},
+        {"id": 4, "financial_status": "pending", "tags": "delivery attempted", "line_items": [{"product_id": 123}]},
+        {
+            "id": 5,
+            "cancelled_at": "2026-07-02",
+            "financial_status": "pending",
+            "tags": "DELIVERED",
+            "line_items": [{"product_id": 123}],
+        },
+    ]
+    monkeypatch.setattr(shopify_client, "_processed_window_iso", lambda *_args, **_kwargs: ("start", "end"))
+    monkeypatch.setattr(
+        shopify_client,
+        "_rest_get_store_raw",
+        lambda *_args, **_kwargs: _FakeShopifyResponse(orders),
+    )
+
+    result = shopify_client.count_orders_and_paid_by_product_or_variant_processed_batch(
+        ["123"], "2026-07-01", "2026-07-14", store="irrakids", include_closed=True
+    )
+
+    assert result == {"123": {"orders_total": 4, "paid_orders_total": 3}}
+
+
+def test_paid_order_rest_fallback_includes_delivered_without_double_counting(monkeypatch):
+    orders = [
+        {"id": 1, "financial_status": "paid", "tags": "DELIVERED", "line_items": [{"variant_id": 456}]},
+        {"id": 2, "financial_status": "pending", "tags": ["delivered"], "line_items": [{"variant_id": 456}]},
+        {"id": 3, "financial_status": "pending", "tags": "NOT_DELIVERED", "line_items": [{"variant_id": 456}]},
+    ]
+    monkeypatch.setattr(
+        shopify_client,
+        "count_paid_orders_by_product_search",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("use REST fallback")),
+    )
+    monkeypatch.setattr(shopify_client, "_processed_window_iso", lambda *_args, **_kwargs: ("start", "end"))
+    monkeypatch.setattr(
+        shopify_client,
+        "_rest_get_store_raw",
+        lambda *_args, **_kwargs: _FakeShopifyResponse(orders),
+    )
+
+    result = shopify_client.count_paid_orders_by_product_or_variant_processed_batch(
+        ["456"], "2026-07-01", "2026-07-14", store="irrakids", include_closed=True
+    )
+
+    assert result == {"456": 2}

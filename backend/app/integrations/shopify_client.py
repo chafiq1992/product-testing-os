@@ -738,6 +738,23 @@ def _tags_to_string(tags: list[str] | None) -> str:
         return ""
 
 
+def _order_counts_as_paid(order: dict | None) -> bool:
+    """Treat Shopify-paid and DELIVERED-tagged orders as one paid order."""
+    try:
+        order = order or {}
+        financial_status = str(order.get("financial_status") or "").strip().lower()
+        if financial_status in ("paid", "partially_paid"):
+            return True
+        tags = order.get("tags")
+        if isinstance(tags, str):
+            tag_items = _tags_to_list(tags)
+        else:
+            tag_items = [str(tag).strip() for tag in (tags or [])]
+        return any(tag.casefold() == "delivered" for tag in tag_items)
+    except Exception:
+        return False
+
+
 def _is_cod_tag(tag: str) -> bool:
     """Match tags like: 'cod 23/12/25' (dd/mm/yy)."""
     try:
@@ -2880,7 +2897,7 @@ def get_product_variants_inventory(numeric_product_id: str, *, store: str | None
 
 
 def count_paid_orders_by_title(title_contains: str, created_at_min: str, created_at_max: str, *, store: str | None = None, include_closed: bool = True) -> int:
-    """Count PAID orders (financial_status == paid/partially_paid) created within [created_at_min, created_at_max]
+    """Count paid or DELIVERED-tagged orders created within [created_at_min, created_at_max]
     that include the given numeric product/variant ID in line items.
 
     Notes:
@@ -2909,8 +2926,7 @@ def count_paid_orders_by_title(title_contains: str, created_at_min: str, created
             try:
                 if o.get("cancelled_at"):
                     continue
-                fs = str(o.get("financial_status") or "").strip().lower()
-                if fs not in ("paid", "partially_paid"):
+                if not _order_counts_as_paid(o):
                     continue
                 items = o.get("line_items") or []
                 matched = False
@@ -3011,10 +3027,14 @@ def count_paid_orders_by_product_search(
     *,
     store: str | None = None,
 ) -> int:
-    """Count paid orders with Shopify's server-side order count.
+    """Count paid or DELIVERED-tagged orders with Shopify's server-side count.
 
     This mirrors Admin queries like:
-    product_id:"123" processed_at:>="YYYY-MM-DD" processed_at:<="YYYY-MM-DD" financial_status:"paid"
+    product_id:"123" processed_at:>="YYYY-MM-DD" processed_at:<="YYYY-MM-DD"
+    (financial_status:"paid" OR financial_status:"partially_paid" OR tag:"DELIVERED")
+
+    Shopify applies the OR expression to each order before counting, so an order
+    that is both paid and tagged DELIVERED is counted only once.
     """
     ident = str(numeric_id or "").strip()
     if not ident.isdigit():
@@ -3022,7 +3042,7 @@ def count_paid_orders_by_product_search(
     query = (
         f'product_id:"{ident}" '
         f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
-        'financial_status:"paid"'
+        '(financial_status:"paid" OR financial_status:"partially_paid" OR tag:"DELIVERED")'
     )
     gql = """
     query PaidOrdersCountForProduct($query: String!, $limit: Int) {
@@ -3063,7 +3083,7 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     store: str | None = None,
     include_closed: bool = True,
 ) -> dict[str, int]:
-    """Count PAID orders (financial_status == paid/partially_paid) for many numeric product/variant IDs
+    """Count paid or DELIVERED-tagged orders for many numeric product/variant IDs
     in one scan of orders filtered by processed_at date range (YYYY-MM-DD).
 
     Returns a mapping { id_str: count } for every numeric id in `numeric_ids`.
@@ -3127,8 +3147,7 @@ def count_paid_orders_by_product_or_variant_processed_batch(
             try:
                 if o.get("cancelled_at"):
                     continue
-                fs = str(o.get("financial_status") or "").strip().lower()
-                if fs not in ("paid", "partially_paid"):
+                if not _order_counts_as_paid(o):
                     continue
                 matched: set[int] = set()
                 for li in (o.get("line_items") or []):
@@ -3167,7 +3186,7 @@ def count_orders_and_paid_by_product_or_variant_processed_batch(
 
     Uses processed_at date range (YYYY-MM-DD) and counts:
       - orders_total: any non-cancelled order that contains product_id or variant_id
-      - paid_orders_total: subset where financial_status in (paid, partially_paid)
+      - paid_orders_total: subset paid in Shopify or tagged DELIVERED
 
     Returns:
       { id_str: { "orders_total": int, "paid_orders_total": int } }
@@ -3194,7 +3213,7 @@ def count_orders_and_paid_by_product_or_variant_processed_batch(
         "processed_at_min": processed_min_iso,
         "processed_at_max": processed_max_iso,
         "order": "processed_at asc",
-        "fields": "id,cancelled_at,financial_status,line_items",
+        "fields": "id,cancelled_at,financial_status,tags,line_items",
     }
     page_info = None
     while True:
@@ -3213,8 +3232,7 @@ def count_orders_and_paid_by_product_or_variant_processed_batch(
             try:
                 if o.get("cancelled_at"):
                     continue
-                fs = str(o.get("financial_status") or "").strip().lower()
-                is_paid = fs in ("paid", "partially_paid")
+                is_paid = _order_counts_as_paid(o)
                 matched: set[int] = set()
                 for li in (o.get("line_items") or []):
                     try:
