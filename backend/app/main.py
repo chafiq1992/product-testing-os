@@ -28,6 +28,7 @@ from app.integrations.shopify_client import get_products_brief, count_paid_order
 from app.integrations.shopify_client import count_orders_by_product_processed
 from app.integrations.shopify_client import count_orders_by_product_or_variant_processed, count_orders_by_product_or_variant_processed_batch
 from app.integrations.shopify_client import count_orders_and_paid_by_product_or_variant_processed_batch
+from app.integrations.shopify_client import count_fulfilled_and_paid_orders_by_product_or_variant_processed_batch
 from app.integrations.shopify_client import list_product_ids_in_collection
 from app.integrations.shopify_client import count_orders_by_collection_processed
 from app.integrations.shopify_client import count_items_by_collection_processed
@@ -1577,6 +1578,61 @@ async def api_orders_count_paid_by_title(req: OrdersCountRequest):
         shaped: dict[str, int] = {}
         for n in raw_names:
             shaped[n] = int((out or {}).get(n, 0) or 0)
+        return {"data": shaped}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
+@app.post("/api/shopify/orders_delivery_rate_by_title")
+async def api_orders_delivery_rate_by_title(req: OrdersCountRequest):
+    """Return fulfilled and paid/DELIVERED order counts for numeric product IDs."""
+    try:
+        start = req.start
+        end = req.end
+        store = _canonical_store_label(req.store)
+        include_closed = bool(req.include_closed) if req.include_closed is not None else True
+        raw_names = [str(value or "").strip() for value in (req.names or []) if str(value or "").strip()]
+        if len(raw_names) > 400:
+            raw_names = raw_names[:400]
+        names = sorted(set(raw_names))
+        numeric = [name for name in names if name.isdigit()]
+        s_date = (start or "").split("T")[0] if isinstance(start, str) and "-" in start else (start or "")
+        e_date = (end or "").split("T")[0] if isinstance(end, str) and "-" in end else (end or "")
+        key = _cache_key("shopify_orders_delivery_rate_by_title", {
+            "store": store or None,
+            "start": s_date,
+            "end": e_date,
+            "include_closed": include_closed,
+            "names": names,
+        })
+
+        def _compute_sync():
+            return count_fulfilled_and_paid_orders_by_product_or_variant_processed_batch(
+                numeric,
+                s_date,
+                e_date,
+                store=store,
+                include_closed=include_closed,
+            )
+
+        async def _compute():
+            return await run_in_threadpool(_compute_sync)
+
+        counts = await _cached(key, 60, _compute)
+        shaped: dict[str, dict[str, Any]] = {}
+        for name in raw_names:
+            record = (counts or {}).get(name) or {}
+            fulfilled_orders = int(record.get("fulfilled_orders", 0) or 0)
+            paid_or_delivered_orders = min(
+                fulfilled_orders,
+                int(record.get("paid_or_delivered_orders", 0) or 0),
+            )
+            rate = (paid_or_delivered_orders / fulfilled_orders * 100.0) if fulfilled_orders else 0.0
+            shaped[name] = {
+                "fulfilled_orders": fulfilled_orders,
+                "paid_or_delivered_orders": paid_or_delivered_orders,
+                "delivery_rate": round(rate, 2),
+            }
         return {"data": shaped}
     except Exception as e:
         return {"error": str(e), "data": {}}

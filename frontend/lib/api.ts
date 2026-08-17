@@ -805,6 +805,21 @@ export async function shopifyOrdersCountPaidByTitle(payload:{ names: string[], s
   })
 }
 
+export type ShopifyProductDeliveryRate = {
+  fulfilled_orders: number
+  paid_or_delivered_orders: number
+  delivery_rate: number
+}
+
+export async function shopifyOrdersDeliveryRateByTitle(payload:{ names: string[], start: string, end: string, store?: string, include_closed?: boolean }){
+  const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: 'processed' }
+  const url = `${base}/api/shopify/orders_delivery_rate_by_title`
+  return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
+    const {data} = await axios.post(url, body)
+    return data as { data: { [name:string]: ShopifyProductDeliveryRate }, error?: string }
+  })
+}
+
 export async function shopifyProductsBrief(payload:{ ids: string[], store?: string, fresh_inventory?: boolean }){
   const body = { ...payload, store: payload.store ?? selectedStore() }
   const url = `${base}/api/shopify/products_brief`

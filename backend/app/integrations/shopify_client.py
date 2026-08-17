@@ -3174,6 +3174,168 @@ def count_paid_orders_by_product_or_variant_processed_batch(
     return out
 
 
+def count_fulfilled_and_paid_orders_by_product_search(
+    numeric_id: str,
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+) -> dict[str, int]:
+    """Count fulfilled orders and their paid/DELIVERED subset for one product."""
+    ident = str(numeric_id or "").strip()
+    if not ident.isdigit():
+        return {"fulfilled_orders": 0, "paid_or_delivered_orders": 0}
+
+    base_query = (
+        f'product_id:"{ident}" '
+        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
+        '-status:"cancelled" fulfillment_status:"fulfilled"'
+    )
+    fulfilled_query = base_query
+    paid_or_delivered_query = (
+        f'{base_query} '
+        '(financial_status:"paid" OR financial_status:"partially_paid" OR tag:"DELIVERED")'
+    )
+    gql = """
+    query ProductDeliveryRateCounts(
+      $fulfilledQuery: String!,
+      $paidOrDeliveredQuery: String!,
+      $limit: Int
+    ) {
+      fulfilled: ordersCount(query: $fulfilledQuery, limit: $limit) {
+        count
+        precision
+      }
+      paidOrDelivered: ordersCount(query: $paidOrDeliveredQuery, limit: $limit) {
+        count
+        precision
+      }
+    }
+    """
+    timeout_s = max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12"))
+    data = _gql_store_once(
+        store,
+        gql,
+        {
+            "fulfilledQuery": fulfilled_query,
+            "paidOrDeliveredQuery": paid_or_delivered_query,
+            "limit": None,
+        },
+        timeout=timeout_s,
+    )
+    fulfilled_obj = (data or {}).get("fulfilled") or {}
+    paid_or_delivered_obj = (data or {}).get("paidOrDelivered") or {}
+    for label, count_obj in (
+        ("fulfilled", fulfilled_obj),
+        ("paid-or-delivered", paid_or_delivered_obj),
+    ):
+        precision = str(count_obj.get("precision") or "").upper()
+        if precision and precision != "EXACT":
+            raise RuntimeError(f"Shopify returned a non-exact {label} order count ({precision})")
+    fulfilled_orders = int(fulfilled_obj.get("count") or 0)
+    paid_or_delivered_orders = min(
+        fulfilled_orders,
+        int(paid_or_delivered_obj.get("count") or 0),
+    )
+    return {
+        "fulfilled_orders": fulfilled_orders,
+        "paid_or_delivered_orders": paid_or_delivered_orders,
+    }
+
+
+def count_fulfilled_and_paid_orders_by_product_or_variant_processed_batch(
+    numeric_ids: list[str],
+    processed_min_date: str,
+    processed_max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = True,
+) -> dict[str, dict[str, int]]:
+    """Count fulfilled orders and the paid/DELIVERED subset for each product ID.
+
+    One order increments each count at most once per matching product, even when
+    it is both paid in Shopify and tagged DELIVERED.
+    """
+    targets: dict[int, str] = {}
+    for raw in (numeric_ids or []):
+        try:
+            value = str(raw or "").strip()
+            if value.isdigit():
+                targets[int(value)] = value
+        except Exception:
+            continue
+    out: dict[str, dict[str, int]] = {
+        value: {"fulfilled_orders": 0, "paid_or_delivered_orders": 0}
+        for value in targets.values()
+    }
+    if not targets:
+        return out
+
+    try:
+        for key in targets.values():
+            out[key] = count_fulfilled_and_paid_orders_by_product_search(
+                key,
+                processed_min_date,
+                processed_max_date,
+                store=store,
+            )
+        return out
+    except Exception:
+        pass
+
+    processed_min_iso, processed_max_iso = _processed_window_iso(store, processed_min_date, processed_max_date)
+    from urllib.parse import urlencode
+    fields = "id,cancelled_at,financial_status,fulfillment_status,tags,line_items"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        "processed_at_min": processed_min_iso,
+        "processed_at_max": processed_max_iso,
+        "order": "processed_at asc",
+        "fields": fields,
+    }
+    page_info = None
+    while True:
+        query_params = params.copy()
+        if page_info:
+            query_params = {"page_info": page_info, "limit": 250, "fields": fields}
+        response = _rest_get_store_raw(store, "/orders.json?" + urlencode(query_params))
+        try:
+            data = response.json() if response.content else {}
+        except Exception:
+            data = {}
+        for order in (data or {}).get("orders") or []:
+            try:
+                if order.get("cancelled_at"):
+                    continue
+                if str(order.get("fulfillment_status") or "").strip().lower() != "fulfilled":
+                    continue
+                matched: set[int] = set()
+                for line_item in order.get("line_items") or []:
+                    try:
+                        product_id = int((line_item or {}).get("product_id") or 0)
+                        variant_id = int((line_item or {}).get("variant_id") or 0)
+                        if product_id in targets:
+                            matched.add(product_id)
+                        if variant_id in targets:
+                            matched.add(variant_id)
+                    except Exception:
+                        continue
+                for target_id in matched:
+                    key = targets.get(target_id)
+                    if not key:
+                        continue
+                    out[key]["fulfilled_orders"] += 1
+                    if _order_counts_as_paid(order):
+                        out[key]["paid_or_delivered_orders"] += 1
+            except Exception:
+                continue
+        page_info = _parse_link_next(response.headers.get("Link"))
+        if not page_info:
+            break
+    return out
+
+
 def count_orders_and_paid_by_product_or_variant_processed_batch(
     numeric_ids: list[str],
     processed_min_date: str,

@@ -333,3 +333,93 @@ def test_paid_order_rest_fallback_includes_delivered_without_double_counting(mon
     )
 
     assert result == {"456": 2}
+
+
+def test_delivery_rate_server_count_filters_to_fulfilled_paid_or_delivered_orders(monkeypatch):
+    calls = []
+
+    def fake_gql(_store, query, variables, *, timeout):
+        calls.append((query, variables, timeout))
+        return {
+            "fulfilled": {"count": 10, "precision": "EXACT"},
+            "paidOrDelivered": {"count": 7, "precision": "EXACT"},
+        }
+
+    monkeypatch.setattr(shopify_client, "_gql_store_once", fake_gql)
+
+    result = shopify_client.count_fulfilled_and_paid_orders_by_product_search(
+        "123", "2026-07-01", "2026-07-14", store="irrakids"
+    )
+
+    assert result == {"fulfilled_orders": 10, "paid_or_delivered_orders": 7}
+    assert len(calls) == 1
+    query, variables, timeout = calls[0]
+    assert "fulfilled: ordersCount" in query
+    assert "paidOrDelivered: ordersCount" in query
+    assert 'product_id:"123"' in variables["fulfilledQuery"]
+    assert 'fulfillment_status:"fulfilled"' in variables["fulfilledQuery"]
+    assert 'tag:"DELIVERED"' in variables["paidOrDeliveredQuery"]
+    assert 'financial_status:"paid"' in variables["paidOrDeliveredQuery"]
+    assert timeout >= 3
+
+
+def test_delivery_rate_rest_fallback_counts_each_fulfilled_order_once(monkeypatch):
+    orders = [
+        {
+            "id": 1,
+            "financial_status": "paid",
+            "fulfillment_status": "fulfilled",
+            "tags": "DELIVERED",
+            "line_items": [{"product_id": 123}, {"product_id": 123}],
+        },
+        {
+            "id": 2,
+            "financial_status": "pending",
+            "fulfillment_status": "fulfilled",
+            "tags": "DELIVERED",
+            "line_items": [{"product_id": 123}],
+        },
+        {
+            "id": 3,
+            "financial_status": "pending",
+            "fulfillment_status": "fulfilled",
+            "tags": "",
+            "line_items": [{"product_id": 123}],
+        },
+        {
+            "id": 4,
+            "financial_status": "paid",
+            "fulfillment_status": "partial",
+            "tags": "DELIVERED",
+            "line_items": [{"product_id": 123}],
+        },
+        {
+            "id": 5,
+            "cancelled_at": "2026-07-03",
+            "financial_status": "paid",
+            "fulfillment_status": "fulfilled",
+            "tags": "DELIVERED",
+            "line_items": [{"product_id": 123}],
+        },
+    ]
+    paths = []
+    monkeypatch.setattr(
+        shopify_client,
+        "count_fulfilled_and_paid_orders_by_product_search",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("use REST fallback")),
+    )
+    monkeypatch.setattr(shopify_client, "_processed_window_iso", lambda *_args, **_kwargs: ("start", "end"))
+
+    def fake_get(_store, path):
+        paths.append(path)
+        return _FakeShopifyResponse(orders)
+
+    monkeypatch.setattr(shopify_client, "_rest_get_store_raw", fake_get)
+
+    result = shopify_client.count_fulfilled_and_paid_orders_by_product_or_variant_processed_batch(
+        ["123"], "2026-07-01", "2026-07-14", store="irrakids", include_closed=True
+    )
+
+    assert result == {"123": {"fulfilled_orders": 3, "paid_or_delivered_orders": 2}}
+    assert "fulfillment_status" in paths[0]
+    assert "tags" in paths[0]

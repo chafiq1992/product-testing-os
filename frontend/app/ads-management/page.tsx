@@ -1,13 +1,14 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, Truck, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
 type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
 type AdsetOrdersInfo = { count:number, orders: AttributedOrder[] }
+type DeliveryRateResult = { fulfilledOrders:number, paidOrDeliveredOrders:number, rate:number }
 
 function adsetUtmTrueCpp(spendInput: number, ordersInfo?: AdsetOrdersInfo): number | null{
   if(!ordersInfo) return null
@@ -328,6 +329,8 @@ export default function AdsManagementPage(){
   const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
   const [profitLoading, setProfitLoading] = useState<Record<string, boolean>>({})
   const [profitResults, setProfitResults] = useState<Record<string, { paidOrders:number, productPrice:number, spendUsd:number, spendMad:number, costsMad:number, profit:number }>>({})
+  const [deliveryRateLoading, setDeliveryRateLoading] = useState<Record<string, boolean>>({})
+  const [deliveryRateResults, setDeliveryRateResults] = useState<Record<string, DeliveryRateResult>>({})
   // AI Campaign Analyzer state
   const [analysisOpen, setAnalysisOpen] = useState<boolean>(false)
   const [analysisLoading, setAnalysisLoading] = useState<string|null>(null) // campaign key being analyzed
@@ -742,6 +745,51 @@ export default function AdsManagementPage(){
     const fallbackStores = storesForProduct(productId, true).filter(st => !primaryKeys.has(String(st || '')))
     if(fallbackStores.length === 0) return primaryTotal
     return primaryTotal + await paidOrdersForStores(productId, fallbackStores)
+  }
+
+  async function deliveryRateForStores(productId: string, storesToUse: Array<string | undefined>): Promise<DeliveryRateResult>{
+    const { start, end } = effectiveYmdRange(datePreset)
+    const results = await Promise.allSettled(storesToUse.map(st =>
+      shopifyOrdersDeliveryRateByTitle({ names: [productId], start, end, store: st, include_closed: true })
+    ))
+    const totals = results.reduce((acc, result) => {
+      if(result.status !== 'fulfilled') return acc
+      const record = ((result.value as any)?.data||{})[productId] || {}
+      acc.fulfilledOrders += Number(record.fulfilled_orders || 0)
+      acc.paidOrDeliveredOrders += Number(record.paid_or_delivered_orders || 0)
+      return acc
+    }, { fulfilledOrders: 0, paidOrDeliveredOrders: 0 })
+    const paidOrDeliveredOrders = Math.min(totals.fulfilledOrders, totals.paidOrDeliveredOrders)
+    return {
+      fulfilledOrders: totals.fulfilledOrders,
+      paidOrDeliveredOrders,
+      rate: totals.fulfilledOrders > 0 ? (paidOrDeliveredOrders / totals.fulfilledOrders) * 100 : 0,
+    }
+  }
+
+  async function loadDeliveryRateForProduct(pid: string): Promise<DeliveryRateResult>{
+    const productId = String(pid||'').trim()
+    if(!productId) return { fulfilledOrders: 0, paidOrDeliveredOrders: 0, rate: 0 }
+    const primaryStores = storesForProduct(productId, false)
+    const primaryResult = await deliveryRateForStores(productId, primaryStores)
+    if(primaryResult.fulfilledOrders > 0) return primaryResult
+
+    const primaryKeys = new Set(primaryStores.map(st => String(st || '')))
+    const fallbackStores = storesForProduct(productId, true).filter(st => !primaryKeys.has(String(st || '')))
+    if(fallbackStores.length === 0) return primaryResult
+    return deliveryRateForStores(productId, fallbackStores)
+  }
+
+  async function calculateDeliveryRate(pid: string){
+    const productId = String(pid||'').trim()
+    if(!productId) return
+    setDeliveryRateLoading(prev=> ({ ...prev, [productId]: true }))
+    try{
+      const result = await loadDeliveryRateForProduct(productId)
+      setDeliveryRateResults(prev=> ({ ...prev, [productId]: result }))
+    }finally{
+      setDeliveryRateLoading(prev=> ({ ...prev, [productId]: false }))
+    }
   }
 
   async function loadProductBriefForProduct(productId: string): Promise<any | null>{
@@ -2129,6 +2177,7 @@ export default function AdsManagementPage(){
               const normalized = normalizeStoreList(next, storeOptions)
               const finalStores = normalized.length ? normalized : ['irrakids']
               setSelectedStores(finalStores)
+              setDeliveryRateResults({})
               try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
             }}
           />
@@ -2187,6 +2236,7 @@ export default function AdsManagementPage(){
                 setProfitMode(next)
                 setProfitPaidCounts({})
                 setProfitResults({})
+                setDeliveryRateResults({})
                 setSortKey('spend')
                 setSortDir('desc')
                 setShopifyCounts({})
@@ -2221,7 +2271,7 @@ export default function AdsManagementPage(){
             </div>
           )}
           <div className="flex items-center gap-2">
-            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
+            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); setDeliveryRateResults({}); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
               <option value="today">Today</option>
               <option value="yesterday">Yesterday</option>
               <option value="last_3d_incl_today">Last 3 days (including today)</option>
@@ -2234,9 +2284,9 @@ export default function AdsManagementPage(){
             </select>
             {datePreset==='custom' && (
               <div className="flex items-center gap-1 text-sm">
-                <input type="date" value={customStart} onChange={(e)=> setCustomStart(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
+                <input type="date" value={customStart} onChange={(e)=>{ setCustomStart(e.target.value); setDeliveryRateResults({}) }} className="rounded-xl border px-2 py-1 bg-white" />
                 <span>to</span>
-                <input type="date" value={customEnd} onChange={(e)=> setCustomEnd(e.target.value)} className="rounded-xl border px-2 py-1 bg-white" />
+                <input type="date" value={customEnd} onChange={(e)=>{ setCustomEnd(e.target.value); setDeliveryRateResults({}) }} className="rounded-xl border px-2 py-1 bg-white" />
                 <button onClick={()=> load('custom', { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">Apply</button>
               </div>
             )}
@@ -2769,6 +2819,7 @@ export default function AdsManagementPage(){
                   const groupSelection = getGroupSelectionState(d.rows)
                   const paidOrders = profitPaidCounts[pid]
                   const profitResult = profitResults[pid]
+                  const deliveryRateResult = deliveryRateResults[pid]
                   const priceDraft = profitProductPrices[pid]
                   const spendMad = Number(m.spend||0) * 10
                   const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
@@ -2830,6 +2881,14 @@ export default function AdsManagementPage(){
                                 />
                               </label>
                               <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrders!=null ? fmtInt(paidOrders) : '—'}</span>
+                              {deliveryRateResult && (
+                                <span
+                                  className="rounded bg-cyan-50 text-cyan-700 px-1.5 py-0.5 font-semibold"
+                                  title={`${deliveryRateResult.paidOrDeliveredOrders} paid or DELIVERED orders from ${deliveryRateResult.fulfilledOrders} fulfilled orders`}
+                                >
+                                  Delivery {deliveryRateResult.rate.toFixed(1)}% ({deliveryRateResult.paidOrDeliveredOrders}/{deliveryRateResult.fulfilledOrders})
+                                </span>
+                              )}
                               <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMad).toLocaleString()} MAD</span>
                               {profitResult && (
                                 <span className={`rounded px-1.5 py-0.5 font-bold ${profitResult.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
@@ -2925,16 +2984,28 @@ export default function AdsManagementPage(){
                         <td className="px-1 py-0.5 text-right">
                           <div className="flex items-center justify-end gap-1">
                           {profitMode && (
-                            <button
-                              title="Calculate profit"
-                              disabled={!!profitLoading[pid]}
-                              onClick={()=> calculateGroupProfit(pid, Number(m.spend||0))}
-                              className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                                profitLoading[pid]
-                                  ? 'bg-emerald-300 animate-pulse cursor-wait'
-                                  : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
-                              }`}
-                            ><Calculator className="w-3.5 h-3.5"/></button>
+                            <>
+                              <button
+                                title="Calculate profit"
+                                disabled={!!profitLoading[pid]}
+                                onClick={()=> calculateGroupProfit(pid, Number(m.spend||0))}
+                                className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                                  profitLoading[pid]
+                                    ? 'bg-emerald-300 animate-pulse cursor-wait'
+                                    : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
+                                }`}
+                              ><Calculator className="w-3.5 h-3.5"/></button>
+                              <button
+                                title="Calculate delivery rate"
+                                disabled={!!deliveryRateLoading[pid]}
+                                onClick={()=> calculateDeliveryRate(pid)}
+                                className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                                  deliveryRateLoading[pid]
+                                    ? 'bg-cyan-300 animate-pulse cursor-wait'
+                                    : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 hover:shadow-md'
+                                }`}
+                              ><Truck className="w-3.5 h-3.5"/></button>
+                            </>
                           )}
                           {!profitMode && <button
                             title="Performance"
@@ -3057,6 +3128,7 @@ export default function AdsManagementPage(){
                 const hydratingOrders = !!hydrating.orders
                 const paidOrdersSelf = pidSelf ? profitPaidCounts[pidSelf] : undefined
                 const profitResultSelf = pidSelf ? profitResults[pidSelf] : undefined
+                const deliveryRateResultSelf = pidSelf ? deliveryRateResults[pidSelf] : undefined
                 const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
                 const spendMadSelf = Number(c.spend||0) * 10
                 const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
@@ -3171,6 +3243,14 @@ export default function AdsManagementPage(){
                             />
                           </label>
                           <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrdersSelf!=null ? fmtInt(paidOrdersSelf) : '—'}</span>
+                          {deliveryRateResultSelf && (
+                            <span
+                              className="rounded bg-cyan-50 text-cyan-700 px-1.5 py-0.5 font-semibold"
+                              title={`${deliveryRateResultSelf.paidOrDeliveredOrders} paid or DELIVERED orders from ${deliveryRateResultSelf.fulfilledOrders} fulfilled orders`}
+                            >
+                              Delivery {deliveryRateResultSelf.rate.toFixed(1)}% ({deliveryRateResultSelf.paidOrDeliveredOrders}/{deliveryRateResultSelf.fulfilledOrders})
+                            </span>
+                          )}
                           <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMadSelf).toLocaleString()} MAD</span>
                           {profitResultSelf && (
                             <span className={`rounded px-1.5 py-0.5 font-bold ${profitResultSelf.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
@@ -3399,16 +3479,28 @@ export default function AdsManagementPage(){
                     <td className="px-1 py-0.5 text-right">
                       <div className="flex items-center justify-end gap-1">
                       {profitMode && !isChild && pidSelf && (
-                        <button
-                          title="Calculate profit"
-                          disabled={!!profitLoading[pidSelf]}
-                          onClick={()=> calculateGroupProfit(pidSelf, Number(c.spend||0))}
-                          className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                            profitLoading[pidSelf]
-                              ? 'bg-emerald-300 animate-pulse cursor-wait'
-                              : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
-                          }`}
-                        ><Calculator className="w-3.5 h-3.5"/></button>
+                        <>
+                          <button
+                            title="Calculate profit"
+                            disabled={!!profitLoading[pidSelf]}
+                            onClick={()=> calculateGroupProfit(pidSelf, Number(c.spend||0))}
+                            className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                              profitLoading[pidSelf]
+                                ? 'bg-emerald-300 animate-pulse cursor-wait'
+                                : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
+                            }`}
+                          ><Calculator className="w-3.5 h-3.5"/></button>
+                          <button
+                            title="Calculate delivery rate"
+                            disabled={!!deliveryRateLoading[pidSelf]}
+                            onClick={()=> calculateDeliveryRate(pidSelf)}
+                            className={`p-1.5 rounded text-white shadow-sm transition-all ${
+                              deliveryRateLoading[pidSelf]
+                                ? 'bg-cyan-300 animate-pulse cursor-wait'
+                                : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 hover:shadow-md'
+                            }`}
+                          ><Truck className="w-3.5 h-3.5"/></button>
+                        </>
                       )}
                       {!profitMode && !isChild && <button
                         title="Performance"
