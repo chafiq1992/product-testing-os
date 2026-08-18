@@ -328,7 +328,7 @@ export default function AdsManagementPage(){
   const [profitServiceCost, setProfitServiceCost] = useState<number>(70)
   const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
   const [profitLoading, setProfitLoading] = useState<Record<string, boolean>>({})
-  const [profitResults, setProfitResults] = useState<Record<string, { paidOrders:number, productPrice:number, spendUsd:number, spendMad:number, costsMad:number, profit:number }>>({})
+  const [profitResults, setProfitResults] = useState<Record<string, { paidOrders:number, productPrice:number, productCost:number, spendUsd:number, spendMad:number, costsMad:number, profit:number }>>({})
   const [deliveryRateLoading, setDeliveryRateLoading] = useState<Record<string, boolean>>({})
   const [deliveryRateResults, setDeliveryRateResults] = useState<Record<string, DeliveryRateResult>>({})
   // AI Campaign Analyzer state
@@ -828,7 +828,7 @@ export default function AdsManagementPage(){
       const profit = (productPrice * paidOrders) - spendMad - costsMad
       setProfitResults(prev=> ({
         ...prev,
-        [productId]: { paidOrders, productPrice, spendUsd: Number(spendUsd||0), spendMad, costsMad, profit },
+        [productId]: { paidOrders, productPrice, productCost, spendUsd: Number(spendUsd||0), spendMad, costsMad, profit },
       }))
     }finally{
       setProfitLoading(prev=> ({ ...prev, [productId]: false }))
@@ -838,6 +838,17 @@ export default function AdsManagementPage(){
   function updateProfitProductPrice(productId: string, value: string){
     setProfitProductPrices(prev=> ({ ...prev, [productId]: value }))
     // A displayed result was calculated with the previous selling price.
+    setProfitResults(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
+  }
+
+  function updateProfitProductCost(productId: string, value: string){
+    setProfitProductCosts(prev=> ({ ...prev, [productId]: value }))
+    // Require a recalculation so profit and inventory summary use the same cost.
     setProfitResults(prev=> {
       if(!(productId in prev)) return prev
       const next = { ...prev }
@@ -2161,7 +2172,7 @@ export default function AdsManagementPage(){
   const profitSummary = useMemo(()=>{
     return Object.entries(profitResults).reduce((summary, [productId, result])=>{
       const availableItems = Math.max(0, Number(productBriefs[productId]?.total_available || 0))
-      const inventoryWorth = availableItems * Math.max(0, Number(result.productPrice || 0))
+      const inventoryWorth = availableItems * Math.max(0, Number(result.productCost || 0))
       summary.calculatedProducts += 1
       summary.availableItems += availableItems
       summary.inventoryWorth += inventoryWorth
@@ -2579,7 +2590,7 @@ export default function AdsManagementPage(){
                 <div className="mt-0.5 text-lg font-bold text-indigo-800">{fmtInt(profitSummary.availableItems)} items</div>
               </div>
               <div className="rounded-lg bg-blue-50 px-3 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-500">Total inventory worth</div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-500">Total inventory cost value</div>
                 <div className="mt-0.5 text-lg font-bold text-blue-800">{Math.round(profitSummary.inventoryWorth).toLocaleString()} MAD</div>
               </div>
               <div className={`rounded-lg px-3 py-2 ${profitSummary.totalProfit >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
@@ -2589,7 +2600,7 @@ export default function AdsManagementPage(){
               <div className="rounded-lg bg-amber-50 px-3 py-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">Net inventory money</div>
                 <div className="mt-0.5 text-lg font-bold text-amber-800">{Math.round(profitSummary.netInventoryMoney).toLocaleString()} MAD</div>
-                <div className="text-[10px] text-amber-600">Inventory worth − total profit</div>
+                <div className="text-[10px] text-amber-600">Inventory cost value − total profit</div>
               </div>
             </div>
           </div>
@@ -2809,7 +2820,7 @@ export default function AdsManagementPage(){
                   </button>
                 </th>
                 {profitMode && (
-                  <th className="min-w-[145px] px-1 py-0.5 font-semibold text-right text-indigo-700">Inventory value</th>
+                  <th className="min-w-[145px] px-1 py-0.5 font-semibold text-right text-indigo-700">Inventory cost value</th>
                 )}
                 {!profitMode && (
                   <>
@@ -2877,11 +2888,9 @@ export default function AdsManagementPage(){
                   const priceDraft = profitProductPrices[pid]
                   const spendMad = Number(m.spend||0) * 10
                   const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
-                  const inventorySellingPrice = typeof priceDraft === 'string' && priceDraft.trim() !== ''
-                    ? Math.max(0, Number(priceDraft || 0))
-                    : Math.max(0, Number((brief as any)?.price || 0))
+                  const inventoryProductCost = Math.max(0, Number(profitProductCosts[pid] || 0))
                   const inventoryItems = inv == null ? null : Math.max(0, Number(inv || 0))
-                  const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventorySellingPrice
+                  const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventoryProductCost
                   return (
                     <Fragment key={`group-${pid}`}>
                       <tr ref={registerProductRow(pid)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
@@ -2923,7 +2932,7 @@ export default function AdsManagementPage(){
                                   min={0}
                                   value={profitProductCosts[pid] || ''}
                                   placeholder="0"
-                                  onChange={(e)=> setProfitProductCosts(prev=> ({ ...prev, [pid]: e.target.value }))}
+                                  onChange={(e)=> updateProfitProductCost(pid, e.target.value)}
                                   className="w-14 bg-transparent outline-none text-right font-semibold"
                                 />
                               </label>
@@ -3020,9 +3029,9 @@ export default function AdsManagementPage(){
                             {inventoryItems == null ? (
                               hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                             ) : (
-                              <div title={`${fmtInt(inventoryItems)} items × ${inventorySellingPrice.toLocaleString()} MAD`}>
+                              <div title={`${fmtInt(inventoryItems)} items × ${inventoryProductCost.toLocaleString()} MAD product cost`}>
                                 <div className="font-semibold text-indigo-700">{fmtInt(inventoryItems)} items</div>
-                                <div className="text-[10px] text-slate-500">× {inventorySellingPrice.toLocaleString()} MAD</div>
+                                <div className="text-[10px] text-slate-500">× {inventoryProductCost.toLocaleString()} MAD cost</div>
                                 <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorth || 0)).toLocaleString()} MAD</div>
                               </div>
                             )}
@@ -3204,11 +3213,9 @@ export default function AdsManagementPage(){
                 const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
                 const spendMadSelf = Number(c.spend||0) * 10
                 const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
-                const inventorySellingPriceSelf = typeof priceDraftSelf === 'string' && priceDraftSelf.trim() !== ''
-                  ? Math.max(0, Number(priceDraftSelf || 0))
-                  : Math.max(0, Number((briefSelf as any)?.price || 0))
+                const inventoryProductCostSelf = Math.max(0, Number(pidSelf ? profitProductCosts[pidSelf] || 0 : 0))
                 const inventoryItemsSelf = inv == null ? null : Math.max(0, Number(inv || 0))
-                const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventorySellingPriceSelf
+                const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventoryProductCostSelf
                 const hasInventoryAlert = zeros != null && zeros > 0
                 const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
                 const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
@@ -3303,7 +3310,7 @@ export default function AdsManagementPage(){
                               min={0}
                               value={profitProductCosts[pidSelf] || ''}
                               placeholder="0"
-                              onChange={(e)=> setProfitProductCosts(prev=> ({ ...prev, [pidSelf]: e.target.value }))}
+                              onChange={(e)=> updateProfitProductCost(pidSelf, e.target.value)}
                               className="w-14 bg-transparent outline-none text-right font-semibold"
                             />
                           </label>
@@ -3523,9 +3530,9 @@ export default function AdsManagementPage(){
                         {inventoryItemsSelf == null ? (
                           hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                         ) : (
-                          <div title={`${fmtInt(inventoryItemsSelf)} items × ${inventorySellingPriceSelf.toLocaleString()} MAD`}>
+                          <div title={`${fmtInt(inventoryItemsSelf)} items × ${inventoryProductCostSelf.toLocaleString()} MAD product cost`}>
                             <div className="font-semibold text-indigo-700">{fmtInt(inventoryItemsSelf)} items</div>
-                            <div className="text-[10px] text-slate-500">× {inventorySellingPriceSelf.toLocaleString()} MAD</div>
+                            <div className="text-[10px] text-slate-500">× {inventoryProductCostSelf.toLocaleString()} MAD cost</div>
                             <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorthSelf || 0)).toLocaleString()} MAD</div>
                           </div>
                         )}
