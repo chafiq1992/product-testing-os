@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, Truck, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
@@ -324,6 +324,10 @@ export default function AdsManagementPage(){
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
   const [profitMode, setProfitMode] = useState<boolean>(false)
   const [profitProductCosts, setProfitProductCosts] = useState<Record<string, string>>({})
+  const [profitCostSaving, setProfitCostSaving] = useState<Record<string, boolean>>({})
+  const [profitCostSaved, setProfitCostSaved] = useState<Record<string, boolean>>({})
+  const [profitCostErrors, setProfitCostErrors] = useState<Record<string, string>>({})
+  const profitCostsLoadSeq = useRef(0)
   const [profitProductPrices, setProfitProductPrices] = useState<Record<string, string>>({})
   const [profitServiceCost, setProfitServiceCost] = useState<number>(70)
   const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
@@ -835,6 +839,15 @@ export default function AdsManagementPage(){
     }
   }
 
+  function clearProfitResult(productId: string){
+    setProfitResults(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
+  }
+
   function updateProfitProductPrice(productId: string, value: string){
     setProfitProductPrices(prev=> ({ ...prev, [productId]: value }))
     // A displayed result was calculated with the previous selling price.
@@ -848,13 +861,46 @@ export default function AdsManagementPage(){
 
   function updateProfitProductCost(productId: string, value: string){
     setProfitProductCosts(prev=> ({ ...prev, [productId]: value }))
-    // Require a recalculation so profit and inventory summary use the same cost.
-    setProfitResults(prev=> {
+    setProfitCostSaved(prev=> ({ ...prev, [productId]: false }))
+    setProfitCostErrors(prev=> {
       if(!(productId in prev)) return prev
       const next = { ...prev }
       delete next[productId]
       return next
     })
+    // Require a recalculation so profit and inventory summary use the same cost.
+    clearProfitResult(productId)
+  }
+
+  async function saveProfitProductCost(productId: string, value: string){
+    const pid = String(productId || '').trim()
+    if(!pid) return
+    const trimmed = String(value ?? '').trim()
+    const productCost = trimmed === '' ? 0 : Number(trimmed)
+    if(!Number.isFinite(productCost) || productCost < 0){
+      setProfitCostErrors(prev=> ({ ...prev, [pid]: 'Enter a valid cost' }))
+      return
+    }
+    const productStore = normalizeStoreValue(storesForProduct(pid, false)[0]) || store
+    setProfitCostSaving(prev=> ({ ...prev, [pid]: true }))
+    setProfitCostSaved(prev=> ({ ...prev, [pid]: false }))
+    setProfitCostErrors(prev=> {
+      if(!(pid in prev)) return prev
+      const next = { ...prev }
+      delete next[pid]
+      return next
+    })
+    try{
+      const response = await profitCostsUpsert({ product_id: pid, product_cost: productCost, store: productStore })
+      if(response?.error) throw new Error(String(response.error))
+      const savedCost = response?.data?.product_cost
+      setProfitProductCosts(prev=> ({ ...prev, [pid]: String(savedCost ?? productCost) }))
+      setProfitCostSaved(prev=> ({ ...prev, [pid]: true }))
+    }catch(e:any){
+      setProfitCostErrors(prev=> ({ ...prev, [pid]: String(e?.message || 'Save failed') }))
+    }finally{
+      setProfitCostSaving(prev=> ({ ...prev, [pid]: false }))
+    }
   }
 
   function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>): string[]{
@@ -1549,6 +1595,25 @@ export default function AdsManagementPage(){
     // Don't call load() here: the store-scoped bootstrap effect below loads the
     // default ad account first, then fetches campaigns once (avoids duplicate requests).
   },[])
+  useEffect(()=>{
+    const requestSeq = ++profitCostsLoadSeq.current
+    const storesToLoad = uniqueStores([...selectedStores, store]).filter((value): value is string => !!value)
+    ;(async()=>{
+      const results = await Promise.allSettled(storesToLoad.map(selectedStore => profitCostsList(selectedStore)))
+      if(requestSeq !== profitCostsLoadSeq.current) return
+      const loadedCosts: Record<string, string> = {}
+      let loadedAnyStore = false
+      for(const result of results){
+        if(result.status !== 'fulfilled' || result.value?.error) continue
+        loadedAnyStore = true
+        for(const [productId, saved] of Object.entries(result.value?.data || {})){
+          if(productId in loadedCosts || saved?.product_cost == null) continue
+          loadedCosts[productId] = String(saved.product_cost)
+        }
+      }
+      if(loadedAnyStore) setProfitProductCosts(loadedCosts)
+    })()
+  }, [selectedStores, store])
   const initialLoadDone = useRef(false)
   useEffect(()=>{
     const loadAccounts = async () => {
@@ -2930,12 +2995,18 @@ export default function AdsManagementPage(){
                                 <input
                                   type="number"
                                   min={0}
+                                  step="0.01"
                                   value={profitProductCosts[pid] || ''}
                                   placeholder="0"
                                   onChange={(e)=> updateProfitProductCost(pid, e.target.value)}
+                                  onBlur={(e)=> void saveProfitProductCost(pid, e.currentTarget.value)}
+                                  onKeyDown={(e)=> { if(e.key === 'Enter') e.currentTarget.blur() }}
                                   className="w-14 bg-transparent outline-none text-right font-semibold"
                                 />
                               </label>
+                              {profitCostSaving[pid] && <span className="text-amber-600">Saving…</span>}
+                              {!profitCostSaving[pid] && profitCostSaved[pid] && <span className="text-emerald-600">Saved</span>}
+                              {!profitCostSaving[pid] && profitCostErrors[pid] && <span className="text-rose-600" title={profitCostErrors[pid]}>Save failed</span>}
                               <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
                                 <span>Selling price</span>
                                 <input
@@ -3076,6 +3147,14 @@ export default function AdsManagementPage(){
                                     : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
                                 }`}
                               ><Calculator className="w-3.5 h-3.5"/></button>
+                              {profitResult && (
+                                <button
+                                  title="Clear profit result"
+                                  aria-label="Clear profit result"
+                                  onClick={()=> clearProfitResult(pid)}
+                                  className="p-1.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 shadow-sm transition-colors"
+                                ><X className="w-3.5 h-3.5"/></button>
+                              )}
                               <button
                                 title="Calculate delivery rate"
                                 disabled={!!deliveryRateLoading[pid]}
@@ -3308,12 +3387,18 @@ export default function AdsManagementPage(){
                             <input
                               type="number"
                               min={0}
+                              step="0.01"
                               value={profitProductCosts[pidSelf] || ''}
                               placeholder="0"
                               onChange={(e)=> updateProfitProductCost(pidSelf, e.target.value)}
+                              onBlur={(e)=> void saveProfitProductCost(pidSelf, e.currentTarget.value)}
+                              onKeyDown={(e)=> { if(e.key === 'Enter') e.currentTarget.blur() }}
                               className="w-14 bg-transparent outline-none text-right font-semibold"
                             />
                           </label>
+                          {profitCostSaving[pidSelf] && <span className="text-amber-600">Saving…</span>}
+                          {!profitCostSaving[pidSelf] && profitCostSaved[pidSelf] && <span className="text-emerald-600">Saved</span>}
+                          {!profitCostSaving[pidSelf] && profitCostErrors[pidSelf] && <span className="text-rose-600" title={profitCostErrors[pidSelf]}>Save failed</span>}
                           <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
                             <span>Selling price</span>
                             <input
@@ -3587,6 +3672,14 @@ export default function AdsManagementPage(){
                                 : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
                             }`}
                           ><Calculator className="w-3.5 h-3.5"/></button>
+                          {profitResultSelf && (
+                            <button
+                              title="Clear profit result"
+                              aria-label="Clear profit result"
+                              onClick={()=> clearProfitResult(pidSelf)}
+                              className="p-1.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 shadow-sm transition-colors"
+                            ><X className="w-3.5 h-3.5"/></button>
+                          )}
                           <button
                             title="Calculate delivery rate"
                             disabled={!!deliveryRateLoading[pidSelf]}
