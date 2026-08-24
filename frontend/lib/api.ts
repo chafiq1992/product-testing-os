@@ -1553,3 +1553,79 @@ export async function refreshSocialAnalytics(store: string){
   return data as { data?: any, error?: string }
 }
 
+// -------- Governed paid ad launcher --------
+export type AdLauncherJob = {
+  id:string
+  store:string
+  status:'queued'|'running'|'approved'|'rejected'|'failed'|'launching'|'launched'|'launch_failed'
+  stage:string
+  progress:number
+  created_at?:string
+  updated_at?:string
+  launched_at?:string
+  request?:any
+  result?:{
+    product?:any
+    landing_page?:any
+    uploaded_media?:any[]
+    generated_media?:any[]
+    plan?:any
+    review?:any
+    meta?:any
+    model?:string
+    image_model?:string
+    meta_api_version?:string
+  }
+  error?:{type?:string,message?:string}|null
+}
+
+export async function adLauncherConnection(store:string){
+  const { data } = await axios.get(`${base}/api/ad-launcher/connection?store=${encodeURIComponent(store)}`, {
+    headers:{...systemAdminHeaders()}, timeout:60000,
+  })
+  return data as { data?:any, error?:string }
+}
+
+export async function createAdLauncherJob(payload:{
+  store:string
+  product_id:string
+  landing_url?:string
+  total_daily_budget_usd:number
+  ai_generated_adsets:boolean
+  countries:string[]
+  timezone?:string
+  auto_launch?:boolean
+  confirm_live_launch?:boolean
+  files:File[]
+}){
+  const form=new FormData()
+  form.append('store',payload.store)
+  form.append('product_id',payload.product_id)
+  if(payload.landing_url) form.append('landing_url',payload.landing_url)
+  form.append('total_daily_budget_usd',String(payload.total_daily_budget_usd))
+  form.append('ai_generated_adsets',String(!!payload.ai_generated_adsets))
+  form.append('countries',JSON.stringify(payload.countries||['MA']))
+  form.append('timezone',payload.timezone||'Africa/Casablanca')
+  form.append('auto_launch',String(!!payload.auto_launch))
+  form.append('confirm_live_launch',String(!!payload.confirm_live_launch))
+  for(const file of payload.files||[]) form.append('files',file)
+  const {data}=await axios.post(`${base}/api/ad-launcher/jobs`,form,{
+    headers:{...systemAdminHeaders(),'Content-Type':'multipart/form-data'},timeout:300000,
+  })
+  return data as {data?:{job_id:string,status:string},error?:string}
+}
+
+export async function getAdLauncherJob(store:string,jobId:string){
+  const {data}=await axios.get(`${base}/api/ad-launcher/jobs/${encodeURIComponent(jobId)}?store=${encodeURIComponent(store)}`,{
+    headers:{...systemAdminHeaders()},timeout:60000,
+  })
+  return data as {data?:AdLauncherJob,error?:string}
+}
+
+export async function launchAdLauncherJob(store:string,jobId:string){
+  const {data}=await axios.post(`${base}/api/ad-launcher/jobs/${encodeURIComponent(jobId)}/launch`,{store,confirm:true},{
+    headers:{...systemAdminHeaders()},timeout:600000,
+  })
+  return data as {data?:any,error?:string}
+}
+

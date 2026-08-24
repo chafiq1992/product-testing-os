@@ -38,6 +38,42 @@ All dashboard and manual action routes reuse the existing System Health admin
 login (`SYSTEM_ADMIN_USERS`). The operating charter and reviewer rules live in
 `backend/app/social_agent/AGENT.md`.
 
+## AI Meta ad launcher
+
+The administrator page at `"/ad-launcher"` creates governed paid creative tests
+from an existing Shopify product ID and uploaded media. It uses the existing
+System Health administrator login configured by `SYSTEM_ADMIN_USERS`:
+
+- one image creates image ads, one video creates video ads, and 2-10 images
+  create a carousel;
+- a `gpt-5.6-sol` Agents SDK analyst reads the Shopify product, Arabic storefront
+  page, and creative/video frames, then writes two distinct Arabic ad packages;
+- an optional mode uses `gpt-image-2` to create two additional, product-faithful
+  4:5 image ads, producing four ad sets total;
+- a separate structured reviewer plus deterministic checks gates the launch;
+- the Meta campaign uses `OUTCOME_SALES`, Purchase optimization, ABO, a shared
+  broad manual audience, manual Facebook/Instagram feeds, and one ad per ad set;
+- catalog ads, custom/saved/lookalike audiences, campaign-budget allocation,
+  Advantage Audience, automatic placements, carousel reordering, and Meta
+  creative enhancements are not used;
+- the total default budget is USD 9/day, split evenly across the ad sets, and
+  the scheduled start is 23:59 in `Africa/Casablanca`.
+
+The launcher creates the campaign, ad sets, creatives, and ads paused. It only
+activates them after every child object exists and the independent review passed;
+therefore an incomplete Meta API run remains non-spending. Automatic activation
+is optional and requires an explicit confirmation in the UI.
+
+Required configuration is `OPENAI_API_KEY`, `META_ACCESS_TOKEN`,
+`META_AD_ACCOUNT_ID`, `META_PAGE_ID`, and `META_PIXEL_ID`, plus the existing
+Shopify connection and System Health administrator credentials. Set `BASE_URL`
+to the public HTTPS backend URL so Meta can
+fetch uploaded and generated media; localhost URLs are suitable for preview but
+not live delivery. The launcher expects a USD Meta ad account and fails closed
+on another account currency rather than silently misinterpreting the USD budget.
+Per-store Meta variables use the existing uppercase suffix convention, for
+example `META_PIXEL_ID_IRRAKIDS`.
+
 ## Confirmation page (order confirmation team)
 
 The frontend route is `"/confirmation"` (link available on Home).

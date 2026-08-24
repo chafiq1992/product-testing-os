@@ -31,6 +31,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
     MALLOC_ARENA_MAX=2
 
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --compile -r requirements.txt && \

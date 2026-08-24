@@ -117,6 +117,10 @@ app.include_router(_chat.router)
 # isolated in its own package and all operational routes are system-admin gated.
 from app.social_agent.routes import router as _social_agent_router  # noqa: E402
 app.include_router(_social_agent_router)
+
+# Governed paid-ad launcher: Shopify + OpenAI Agents SDK + Meta Marketing API.
+from app.ad_launcher.routes import router as _ad_launcher_router  # noqa: E402
+app.include_router(_ad_launcher_router)
 # Background poller keeps the incident log up to date even when nobody is
 # watching the dashboard, so issues that occurred while the admin was away
 # are still visible (with first/last-seen timestamps) when they return.
