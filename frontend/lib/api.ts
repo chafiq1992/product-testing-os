@@ -1461,6 +1461,7 @@ export type SocialAgentConfig = {
   prepare_minutes_before: number
   creative_variants: number
   minimum_review_score: number
+  max_review_attempts: number
   minimum_inventory: number
   quantity_offer_enabled: boolean
   approved_quantity_offer_ar: string
@@ -1514,7 +1515,7 @@ export async function socialAgentDashboard(store?: string){
 export async function socialAgentCatalog(store?: string, limit=20){
   const s = store ?? selectedStore() ?? 'irrakids'
   const { data } = await axios.get(`${base}/api/social-agent/catalog-preview?store=${encodeURIComponent(s)}&limit=${limit}`, { headers: { ...systemAdminHeaders() }, timeout: 90000 })
-  return data as { data?: { season: string, products: any[], eligible_count: number }, error?: string }
+  return data as { data?: { season: string, products: any[], active_count: number, eligible_count: number }, error?: string }
 }
 
 export async function socialAgentConnection(store?: string){

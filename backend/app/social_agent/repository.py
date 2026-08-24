@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import desc
+from sqlalchemy import and_, desc, or_
 from sqlalchemy.exc import IntegrityError
 
 from app import db
@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "prepare_minutes_before": 60,
     "creative_variants": 2,
     "minimum_review_score": 82,
+    "max_review_attempts": 3,
     "minimum_inventory": 1,
     "quantity_offer_enabled": False,
     "approved_quantity_offer_ar": "",
@@ -85,6 +86,7 @@ def save_config(store: str | None, patch: dict[str, Any]) -> dict[str, Any]:
     current["prepare_minutes_before"] = max(15, min(180, int(current.get("prepare_minutes_before") or 60)))
     current["creative_variants"] = max(2, min(3, int(current.get("creative_variants") or 2)))
     current["minimum_review_score"] = max(60, min(100, int(current.get("minimum_review_score") or 82)))
+    current["max_review_attempts"] = max(1, min(5, int(current.get("max_review_attempts") or 3)))
     current["minimum_inventory"] = max(1, int(current.get("minimum_inventory") or 1))
     current["analytics_lookback_days"] = max(7, min(90, int(current.get("analytics_lookback_days") or 30)))
     db.set_app_setting(canonical_store(store), CONFIG_KEY, current)
@@ -250,6 +252,10 @@ def update_post(post_id: str, **values: Any) -> dict[str, Any] | None:
         if not row:
             return None
         for key, value in values.items():
+            if key == "product" and isinstance(value, dict):
+                row.product_id = str(value.get("id") or "")
+                row.product_json = dumps(value)
+                continue
             attr = mapping.get(key)
             if not attr:
                 continue
@@ -340,17 +346,38 @@ def claim_next_run(store: str | None = None) -> dict[str, Any] | None:
             SocialAgentRun.updated_at < utcnow() - timedelta(minutes=20),
         ).update({"status": "running", "updated_at": utcnow()}, synchronize_session=False)
         session.commit()
-        query = session.query(SocialAgentRun).filter(SocialAgentRun.status.in_(["queued", "running"]))
+        query = session.query(SocialAgentRun).filter(or_(
+            SocialAgentRun.status.in_(["queued", "running"]),
+            and_(
+                SocialAgentRun.status == "completed",
+                SocialAgentRun.updated_at >= utcnow() - timedelta(days=2),
+            ),
+        ))
         if store:
             query = query.filter(SocialAgentRun.store == canonical_store(store))
         rows = query.order_by(SocialAgentRun.created_at.asc()).limit(20).all()
         for row in rows:
             posts = session.query(SocialAgentPost).filter(SocialAgentPost.run_id == row.id).all()
+            max_attempts = int(get_config(row.store).get("max_review_attempts") or 3)
+            retriable_statuses = {"generating", "failed", "rejected"}
+            retriable = any(
+                post.status in retriable_statuses and int(post.attempts or 0) < max_attempts
+                for post in posts
+            )
+            # Re-open a recently completed batch when its reviewer rejected a
+            # slot that still has attempts available. This repairs batches made
+            # by older revisions without retrying stale historical content.
+            latest_schedule = max((post.scheduled_for for post in posts), default=None)
+            if row.status == "completed":
+                if not retriable or not latest_schedule or latest_schedule < utcnow() - timedelta(hours=8):
+                    continue
+                row.status = "running"
+                row.updated_at = utcnow()
+                session.commit()
             terminal = sum(
                 1 for post in posts
-                if post.status not in {"generating", "failed"} or (post.status == "failed" and int(post.attempts or 0) >= 3)
+                if not (post.status in retriable_statuses and int(post.attempts or 0) < max_attempts)
             )
-            retriable = any(post.status in {"generating", "failed"} and int(post.attempts or 0) < 3 for post in posts)
             if len(posts) >= row.target_count and terminal >= row.target_count and not retriable:
                 row.status = "completed"
                 row.completed_count = terminal
@@ -365,6 +392,7 @@ def claim_next_run(store: str | None = None) -> dict[str, Any] | None:
                 session.commit()
                 fresh = session.get(SocialAgentRun, row.id)
                 if fresh:
+                    session.refresh(fresh)
                     return run_to_dict(fresh)
     return None
 
@@ -375,11 +403,16 @@ def refresh_run_progress(run_id: str) -> dict[str, Any] | None:
         if not row:
             return None
         posts = session.query(SocialAgentPost).filter(SocialAgentPost.run_id == run_id).all()
+        max_attempts = int(get_config(row.store).get("max_review_attempts") or 3)
+        retriable_statuses = {"generating", "failed", "rejected"}
         terminal = sum(
             1 for post in posts
-            if post.status not in {"generating", "failed"} or (post.status == "failed" and int(post.attempts or 0) >= 3)
+            if not (post.status in retriable_statuses and int(post.attempts or 0) < max_attempts)
         )
-        retriable = any(post.status in {"generating", "failed"} and int(post.attempts or 0) < 3 for post in posts)
+        retriable = any(
+            post.status in retriable_statuses and int(post.attempts or 0) < max_attempts
+            for post in posts
+        )
         row.completed_count = terminal
         if len(posts) >= row.target_count and terminal >= row.target_count and not retriable:
             row.status = "completed"

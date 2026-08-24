@@ -1,5 +1,11 @@
+from datetime import datetime, timedelta
+from uuid import uuid4
+
+import pytest
+
 from app.social_agent.openai_agents import deterministic_review, sanitize_fusha_strategy
-from app.social_agent import meta
+from app.social_agent import meta, repository
+from app.social_agent import shopify
 from app.social_agent.shopify import rank_products
 
 
@@ -86,6 +92,54 @@ def test_meta_derives_page_token_from_visible_accounts(monkeypatch):
 
     assert resolved["token"] == "page-token"
     assert resolved["instagram_id"] == "ig-1"
+
+
+def test_meta_does_not_inherit_irrakids_credentials_for_another_store(monkeypatch):
+    monkeypatch.setenv("META_ACCESS_TOKEN", "irrakids-token")
+    monkeypatch.setenv("META_PAGE_ID", "irrakids-page")
+    for name in ("META_ACCESS_TOKEN_IRRANOVA", "META_PAGE_ACCESS_TOKEN_IRRANOVA", "META_PAGE_ID_IRRANOVA"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert meta._credentials("irrakids")["page_id"] == "irrakids-page"
+    with pytest.raises(RuntimeError, match="irranova"):
+        meta._credentials("irranova")
+
+
+def test_shopify_catalog_paginates_every_active_product(monkeypatch):
+    calls = []
+
+    def fake_gql(_store, _query, variables):
+        calls.append(variables.get("after"))
+        if variables.get("after") is None:
+            return {"products": {"nodes": [{"id": "one", "status": "ACTIVE"}], "pageInfo": {"hasNextPage": True, "endCursor": "next"}}}
+        return {"products": {"nodes": [{"id": "two", "status": "ACTIVE"}], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+
+    monkeypatch.setattr(shopify, "_gql_store", fake_gql)
+    products = shopify.list_active_products("irrakids", first=50)
+
+    assert [product["id"] for product in products] == ["one", "two"]
+    assert calls == [None, "next"]
+
+
+def test_recent_completed_batch_reopens_for_reviewer_retry():
+    store = f"retry_{uuid4().hex[:10]}"
+    repository.save_config(store, {"max_review_attempts": 3})
+    run = repository.create_run(
+        store, f"{store}:2026-08-24:midday", "midday", 1,
+        {"local_date": "2026-08-24", "products": [_product("first", 10)]},
+    )
+    post = repository.create_post(
+        run_id=run["id"], store=store, slot="midday", position=0,
+        scheduled_for=datetime.utcnow() + timedelta(hours=1),
+        product=_product("first", 10), status="rejected",
+    )
+    repository.update_post(post["id"], attempts=1)
+    repository.update_run(run["id"], status="completed", completed_count=1)
+
+    claimed = repository.claim_next_run(store)
+
+    assert claimed and claimed["id"] == run["id"]
+    assert claimed["status"] == "preparing"
 
 
 def test_fusha_sanitizer_removes_common_dialect_leaks():

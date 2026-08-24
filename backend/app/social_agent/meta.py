@@ -14,19 +14,31 @@ def _suffix(store: str | None) -> str:
 
 
 def _credentials(store: str | None) -> dict[str, str]:
-    suffix = _suffix("irrakids" if (store or "").strip().lower() == "nouralibas" else store)
-    page_token = os.getenv(f"META_PAGE_ACCESS_TOKEN{suffix}", "") or os.getenv("META_PAGE_ACCESS_TOKEN", "")
-    token = page_token or os.getenv(f"META_ACCESS_TOKEN{suffix}", "") or os.getenv("META_ACCESS_TOKEN", "")
-    page_id = os.getenv(f"META_PAGE_ID{suffix}", "") or os.getenv("META_PAGE_ID", "")
-    instagram_id = os.getenv(f"META_INSTAGRAM_ACCOUNT_ID{suffix}", "") or os.getenv("META_INSTAGRAM_ACCOUNT_ID", "")
+    label = (store or "").strip().lower()
+    if label == "nouralibas":
+        label = "irrakids"
+    suffix = _suffix(label)
+    # The historical unsuffixed credentials belong to Irrakids. Never inherit
+    # them for another Shopify store: doing so could publish the right product
+    # to the wrong Facebook Page and Instagram account.
+    allow_legacy = label in {"", "default", "irrakids"}
+    page_token = os.getenv(f"META_PAGE_ACCESS_TOKEN{suffix}", "")
+    token = page_token or os.getenv(f"META_ACCESS_TOKEN{suffix}", "")
+    page_id = os.getenv(f"META_PAGE_ID{suffix}", "")
+    instagram_id = os.getenv(f"META_INSTAGRAM_ACCOUNT_ID{suffix}", "")
+    if allow_legacy:
+        page_token = page_token or os.getenv("META_PAGE_ACCESS_TOKEN", "")
+        token = page_token or token or os.getenv("META_ACCESS_TOKEN", "")
+        page_id = page_id or os.getenv("META_PAGE_ID", "")
+        instagram_id = instagram_id or os.getenv("META_INSTAGRAM_ACCOUNT_ID", "")
     version = os.getenv("META_API_VERSION", "v23.0")
     if not token:
-        raise RuntimeError("META_ACCESS_TOKEN (or META_PAGE_ACCESS_TOKEN) is not configured")
+        raise RuntimeError(f"Meta publishing credentials are not configured for store '{label or 'default'}'")
     if not page_id:
-        raise RuntimeError("META_PAGE_ID is not configured")
+        raise RuntimeError(f"META_PAGE_ID{suffix} is not configured")
     return {
         "token": token, "page_id": page_id, "instagram_id": instagram_id,
-        "version": version, "explicit_page_token": "1" if page_token else "0",
+        "version": version, "explicit_page_token": "1" if page_token else "0", "store": label or "default",
     }
 
 
@@ -88,6 +100,7 @@ def connection(store: str | None) -> dict[str, Any]:
         "page": {"id": page.get("id"), "name": page.get("name")},
         "instagram": instagram,
         "ready": bool(page.get("id") and cfg.get("instagram_id")),
+        "store": cfg.get("store"),
     }
 
 

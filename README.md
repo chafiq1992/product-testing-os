@@ -14,10 +14,14 @@ See `cloudrun/README.md`.
 
 The admin-only page at `/social-agent` runs an autonomous Shopify-to-Meta
 workflow for organic Facebook and Instagram posts. It ranks active products by
-inventory, Moroccan season fit, media quality, and recent rotation; creates two
-OpenAI image candidates per post; requires an independent multimodal review;
-publishes approved media from Shopify Files; and feeds Meta performance metrics
-back into the next creative brief.
+inventory, Moroccan season fit, media quality, and recent rotation. The catalog
+reader paginates every active Shopify product, then excludes out-of-stock items
+and products without usable media or a storefront URL. It creates two OpenAI
+image candidates per post, requires an independent multimodal review, publishes
+approved media from Shopify Files, and feeds Meta performance metrics back into
+the next creative brief. A rejected slot is regenerated with ranked backup
+products up to the configured review-attempt limit; the reviewer is never
+bypassed.
 
 The default schedule is five posts starting at 14:00 and another five starting
 at 18:00 in `Africa/Casablanca`. Preview mode is the safe default. Enable live
@@ -37,6 +41,13 @@ Run service, and creates the `product-testing-os-social-agent` Scheduler job.
 All dashboard and manual action routes reuse the existing System Health admin
 login (`SYSTEM_ADMIN_USERS`). The operating charter and reviewer rules live in
 `backend/app/social_agent/AGENT.md`.
+
+Each store is isolated by its store label. Before enabling another store, its
+Shopify OAuth grant must contain `write_files` and its own Facebook Page and
+Instagram professional account must be configured with uppercase-suffixed
+variables, for example `META_ACCESS_TOKEN_IRRANOVA`, `META_PAGE_ID_IRRANOVA`,
+and optionally `META_INSTAGRAM_ACCOUNT_ID_IRRANOVA`. Unsuffixed historical Meta
+credentials are reserved for Irrakids and are never inherited by another store.
 
 ## AI Meta ad launcher
 

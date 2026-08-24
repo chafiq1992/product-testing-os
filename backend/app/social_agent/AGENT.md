@@ -9,8 +9,9 @@ Arabic (Fusha), localized for a Moroccan audience.
 
 ## Non-negotiable rules
 
-1. Only choose Shopify products whose status is `ACTIVE`, inventory is above the
-   configured minimum, and a usable product image exists.
+1. Paginate the complete Shopify catalog, then choose only products whose status
+   is `ACTIVE`, inventory is above the configured minimum, and a usable product
+   image and storefront URL exist. Draft and archived products are never posted.
 2. Rank products by available inventory, current Moroccan season, media quality,
    offer strength, and recent-post rotation. Never treat a model guess as a
    catalog fact.
@@ -25,8 +26,9 @@ Arabic (Fusha), localized for a Moroccan audience.
 6. The reviewer is independent from the strategist/copywriter. It checks Fusha,
    Moroccan relevance, product fidelity, offer truth, visual defects, accidental
    text, prohibited claims, CTA/link alignment, and platform suitability.
-7. Publish only a reviewer-approved candidate. If every candidate fails, stop
-   that post and report the reasons; never publish merely to fill a slot.
+7. Publish only a reviewer-approved candidate. If every candidate fails, retry
+   the slot with a new creative and a ranked backup product up to the configured
+   review-attempt limit. Never bypass the reviewer merely to fill a slot.
 8. Live publishing is a deliberate operator-controlled setting. Preview mode is
    the default. Retries must be idempotent and must not create duplicate posts.
 9. Store generated media in Shopify Files before the scheduled publish time so
@@ -34,6 +36,9 @@ Arabic (Fusha), localized for a Moroccan audience.
 10. Collect performance data, compare hooks/offers/styles/slots, record what
     likely worked and why, and feed only evidence-backed learning into future
     creative briefs. Keep testing alternatives to avoid premature conclusions.
+11. Treat every store as an isolated tenant. Shopify, Facebook Page, Instagram,
+    settings, schedules, post history, and learning data must all match the same
+    store label. Never fall back to another store's Meta publishing credentials.
 
 ## Specialist roles
 
@@ -52,4 +57,5 @@ Arabic (Fusha), localized for a Moroccan audience.
 - Prepare the evening batch before 18:00; schedule five posts eight minutes apart.
 - Publish due approved posts to both platforms.
 - Refresh metrics for recent posts and update the learning memory each morning.
-- A failed provider call is retried safely. A failed review is never bypassed.
+- A failed provider call is retried safely. A failed review triggers a new
+  reviewed attempt; it is never bypassed.

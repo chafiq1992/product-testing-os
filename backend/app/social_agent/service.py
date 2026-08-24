@@ -61,7 +61,10 @@ def catalog_preview(store: str | None, limit: int = 20) -> dict[str, Any]:
         products, season=season, minimum_inventory=int(config.get("minimum_inventory") or 1),
         recent_ids=repo.recent_product_ids(store),
     )
-    return {"season": season, "products": ranked[:max(1, min(limit, 50))], "eligible_count": len(ranked)}
+    return {
+        "season": season, "products": ranked[:max(1, min(limit, 50))],
+        "active_count": len(products), "eligible_count": len(ranked),
+    }
 
 
 def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> dict[str, Any]:
@@ -82,15 +85,16 @@ def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> 
     # Start with unique high-ranked products. Future versions can intentionally
     # repeat a hero product after performance evidence justifies it.
     selected = products[:target]
+    backups = products[target:target * int(config.get("max_review_attempts") or 3)]
     context = {
         "local_date": local_day.isoformat(), "season": preview.get("season"),
-        "products": selected,
+        "products": selected, "backup_products": backups,
         "scheduled_for": [_scheduled_utc(config, local_day, slot, i).isoformat() + "Z" for i in range(target)],
         "config_snapshot": {
             key: config.get(key) for key in (
                 "timezone", "midday_time", "evening_time", "post_interval_minutes",
                 "creative_variants", "minimum_review_score", "quantity_offer_enabled",
-                "approved_quantity_offer_ar", "brand_notes", "hashtags", "live_publish",
+                "max_review_attempts", "approved_quantity_offer_ar", "brand_notes", "hashtags", "live_publish",
             )
         },
     }
@@ -107,9 +111,15 @@ def prepare_one(run_id: str) -> dict[str, Any]:
     run = repo.get_run(run_id)
     if not run:
         raise RuntimeError("Social batch not found")
+    config = repo.get_config(run.get("store"))
+    max_attempts = int(config.get("max_review_attempts") or 3)
     existing = repo.list_run_posts(run_id)
     retry_post = next(
-        (item for item in existing if item.get("status") in {"generating", "failed"} and int(item.get("attempts") or 0) < 3),
+        (
+            item for item in existing
+            if item.get("status") in {"generating", "failed", "rejected"}
+            and int(item.get("attempts") or 0) < max_attempts
+        ),
         None,
     )
     position = int(retry_post.get("position")) if retry_post else len(existing)
@@ -121,12 +131,16 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         repo.update_run(run_id, status="failed", error={"message": "Batch product plan is incomplete"})
         raise RuntimeError("Batch product plan is incomplete")
     product = products[position]
-    config = repo.get_config(run.get("store"))
+    if retry_post and retry_post.get("status") == "rejected":
+        backup_index = (int(retry_post.get("attempts") or 0) - 1) * int(run.get("target_count") or 0) + position
+        backups = context.get("backup_products") or []
+        if 0 <= backup_index < len(backups):
+            product = backups[backup_index]
     scheduled = _scheduled_utc(
         config, date.fromisoformat(str(context.get("local_date"))), str(run.get("slot")), position,
     )
     post = (
-        repo.update_post(str(retry_post["id"]), status="generating", error=None)
+        repo.update_post(str(retry_post["id"]), status="generating", error=None, product=product)
         if retry_post else
         repo.create_post(
             run_id=run_id, store=str(run.get("store")), slot=str(run.get("slot")),

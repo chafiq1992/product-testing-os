@@ -8,11 +8,12 @@ from typing import Any
 import requests
 
 from app.integrations.shopify_client import _gql_store
+from app import db
 
 
 CATALOG_QUERY = """
-query SocialAgentCatalog($first: Int!, $query: String!) {
-  products(first: $first, query: $query, sortKey: INVENTORY_TOTAL, reverse: true) {
+query SocialAgentCatalog($first: Int!, $after: String, $query: String!) {
+  products(first: $first, after: $after, query: $query, sortKey: INVENTORY_TOTAL, reverse: true) {
     nodes {
       id title handle status totalInventory productType vendor tags descriptionHtml onlineStoreUrl
       featuredMedia {
@@ -33,6 +34,7 @@ query SocialAgentCatalog($first: Int!, $query: String!) {
         }
       }
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -148,9 +150,56 @@ def _normalize_product(node: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_active_products(store: str | None, first: int = 80) -> list[dict[str, Any]]:
-    data = _gql_store(store, CATALOG_QUERY, {"first": max(10, min(first, 150)), "query": "status:active"})
-    nodes = (((data or {}).get("products") or {}).get("nodes") or [])
-    return [_normalize_product(node) for node in nodes if isinstance(node, dict)]
+    """Load the complete active catalog, one Shopify connection page at a time.
+
+    ``first`` is retained as the page-size hint for callers and tests; it is no
+    longer a total-product cap. A hard page guard prevents a malformed Shopify
+    cursor from creating an unbounded loop.
+    """
+    page_size = max(10, min(first, 100))
+    after: str | None = None
+    products: list[dict[str, Any]] = []
+    seen_cursors: set[str] = set()
+    for _ in range(100):
+        data = _gql_store(store, CATALOG_QUERY, {
+            "first": page_size, "after": after, "query": "status:active",
+        })
+        connection = ((data or {}).get("products") or {})
+        products.extend(
+            _normalize_product(node)
+            for node in connection.get("nodes") or []
+            if isinstance(node, dict)
+        )
+        page_info = connection.get("pageInfo") or {}
+        cursor = str(page_info.get("endCursor") or "")
+        if not page_info.get("hasNextPage"):
+            break
+        if not cursor or cursor in seen_cursors:
+            raise RuntimeError("Shopify catalog pagination returned an invalid cursor")
+        seen_cursors.add(cursor)
+        after = cursor
+    else:
+        raise RuntimeError("Shopify active catalog exceeded the 10,000-product safety limit")
+    return products
+
+
+def upload_capability(store: str | None) -> dict[str, Any]:
+    """Report whether the connected Shopify store can host generated assets."""
+    label = (store or "").strip().lower()
+    if label == "nouralibas":
+        label = "irrakids"
+    record = db.get_app_setting(label or "default", "shopify_oauth") or {}
+    scopes = {
+        value.strip().lower()
+        for value in str(record.get("scopes") or "").replace(" ", ",").split(",")
+        if value.strip()
+    }
+    ready = "write_files" in scopes
+    return {
+        "ready": ready,
+        "required_scope": "write_files",
+        "reason": None if ready else "Reconnect Shopify and approve the write_files scope for generated social images.",
+    }
 
 
 def rank_products(

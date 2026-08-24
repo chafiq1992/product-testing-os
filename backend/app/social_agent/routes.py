@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app.social_agent import meta, repository as repo, service
+from app.social_agent import meta, repository as repo, service, shopify
 from app.system_health_routes import _get_admin
 
 
@@ -68,16 +68,24 @@ async def get_catalog_preview(request: Request, store: str, limit: int = 20):
     try:
         return {"data": await run_in_threadpool(service.catalog_preview, store, limit)}
     except Exception as error:
-        return {"error": str(error), "data": {"products": [], "eligible_count": 0}}
+        return {"error": str(error), "data": {"products": [], "active_count": 0, "eligible_count": 0}}
 
 
 @router.get("/connection")
 async def get_connection(request: Request, store: str):
     _require_admin(request)
+    shopify_status = await run_in_threadpool(shopify.upload_capability, store)
     try:
-        return {"data": await run_in_threadpool(meta.connection, store)}
+        meta_status = await run_in_threadpool(meta.connection, store)
+        return {"data": {
+            **meta_status, "meta_ready": bool(meta_status.get("ready")),
+            "shopify": shopify_status,
+            "ready": bool(meta_status.get("ready") and shopify_status.get("ready")),
+        }}
     except Exception as error:
-        return {"error": str(error), "data": {"ready": False}}
+        return {"error": str(error), "data": {
+            "ready": False, "meta_ready": False, "shopify": shopify_status,
+        }}
 
 
 @router.put("/config")
@@ -85,8 +93,21 @@ async def put_config(request: Request, body: ConfigBody):
     _require_admin(request)
     requested_live = bool(body.patch.get("live_publish"))
     current = repo.get_config(body.store)
+    requested_enabled = bool(body.patch.get("enabled", current.get("enabled")))
+    if (requested_enabled or requested_live) and not shopify.upload_capability(body.store).get("ready"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Store '{repo.canonical_store(body.store)}' needs Shopify write_files permission before automation can be enabled",
+        )
     if requested_live and not current.get("live_publish") and not body.confirm_live_publish:
         raise HTTPException(status_code=400, detail="confirm_live_publish=true is required to enable live posting")
+    if requested_live and not current.get("live_publish"):
+        try:
+            connection = await run_in_threadpool(meta.connection, body.store)
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        if not connection.get("ready"):
+            raise HTTPException(status_code=400, detail="The selected store needs its own Facebook Page and Instagram connection")
     config = repo.save_config(body.store, body.patch)
     armed = repo.arm_preview_posts(body.store) if config.get("live_publish") and not current.get("live_publish") else 0
     return {"data": {"config": config, "armed_preview_posts": armed}}
