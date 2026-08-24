@@ -1449,3 +1449,107 @@ export async function systemHealthClearIncidents(){
   return data as { data?: { cleared: number }, error?: string }
 }
 
+// -------- Autonomous organic social agent --------
+export type SocialAgentConfig = {
+  enabled: boolean
+  live_publish: boolean
+  timezone: string
+  midday_time: string
+  evening_time: string
+  batch_size: number
+  post_interval_minutes: number
+  prepare_minutes_before: number
+  creative_variants: number
+  minimum_review_score: number
+  minimum_inventory: number
+  quantity_offer_enabled: boolean
+  approved_quantity_offer_ar: string
+  brand_notes: string
+  hashtags: string[]
+  analytics_lookback_days: number
+}
+
+export type SocialAgentPost = {
+  id: string
+  run_id: string
+  store: string
+  slot: 'midday'|'evening'
+  position: number
+  status: string
+  scheduled_for: string
+  product_id: string
+  product: any
+  strategy: any
+  assets: any[]
+  review: any
+  platforms: any
+  metrics: any
+  error?: any
+}
+
+export type SocialAgentDashboard = {
+  config: SocialAgentConfig
+  learning: any
+  runs: any[]
+  posts: SocialAgentPost[]
+  best_posts: SocialAgentPost[]
+  stats: {
+    generated: number
+    review_approved: number
+    published: number
+    rejected: number
+    total_reach: number
+    total_interactions: number
+    engagement_rate: number
+  }
+  scheduler: { endpoint: string, secret_configured: boolean, last_analytics: any }
+}
+
+export async function socialAgentDashboard(store?: string){
+  const s = store ?? selectedStore() ?? 'irrakids'
+  const { data } = await axios.get(`${base}/api/social-agent/dashboard?store=${encodeURIComponent(s)}`, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: SocialAgentDashboard, error?: string }
+}
+
+export async function socialAgentCatalog(store?: string, limit=20){
+  const s = store ?? selectedStore() ?? 'irrakids'
+  const { data } = await axios.get(`${base}/api/social-agent/catalog-preview?store=${encodeURIComponent(s)}&limit=${limit}`, { headers: { ...systemAdminHeaders() }, timeout: 90000 })
+  return data as { data?: { season: string, products: any[], eligible_count: number }, error?: string }
+}
+
+export async function socialAgentConnection(store?: string){
+  const s = store ?? selectedStore() ?? 'irrakids'
+  const { data } = await axios.get(`${base}/api/social-agent/connection?store=${encodeURIComponent(s)}`, { headers: { ...systemAdminHeaders() }, timeout: 60000 })
+  return data as { data?: any, error?: string }
+}
+
+export async function saveSocialAgentConfig(store: string, patch: Partial<SocialAgentConfig>, confirmLive=false){
+  const { data } = await axios.put(`${base}/api/social-agent/config`, { store, patch, confirm_live_publish: confirmLive }, { headers: { ...systemAdminHeaders() } })
+  return data as { data?: { config: SocialAgentConfig, armed_preview_posts: number }, error?: string }
+}
+
+export async function queueSocialAgentBatch(store: string, slot: 'midday'|'evening', prepareOneNow=true){
+  const { data } = await axios.post(`${base}/api/social-agent/batches`, { store, slot, prepare_one_now: prepareOneNow }, { headers: { ...systemAdminHeaders() }, timeout: 600000 })
+  return data as { data?: any, error?: string }
+}
+
+export async function prepareNextSocialPost(store: string){
+  const { data } = await axios.post(`${base}/api/social-agent/prepare-next`, { store }, { headers: { ...systemAdminHeaders() }, timeout: 600000 })
+  return data as { data?: any, error?: string }
+}
+
+export async function publishDueSocialPosts(store: string){
+  const { data } = await axios.post(`${base}/api/social-agent/publish-due`, { store }, { headers: { ...systemAdminHeaders() }, timeout: 300000 })
+  return data as { data?: any[], error?: string }
+}
+
+export async function publishSocialPost(store: string, postId: string, force=false){
+  const { data } = await axios.post(`${base}/api/social-agent/posts/${encodeURIComponent(postId)}/publish`, { store, force, confirm: true }, { headers: { ...systemAdminHeaders() }, timeout: 300000 })
+  return data as { data?: SocialAgentPost, error?: string }
+}
+
+export async function refreshSocialAnalytics(store: string){
+  const { data } = await axios.post(`${base}/api/social-agent/analytics`, { store }, { headers: { ...systemAdminHeaders() }, timeout: 300000 })
+  return data as { data?: any, error?: string }
+}
+

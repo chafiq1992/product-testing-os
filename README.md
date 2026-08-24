@@ -10,6 +10,34 @@ FastAPI + Celery backend, Next.js frontend wizard, and Cloud Run deploy scripts.
 ## Cloud Run
 See `cloudrun/README.md`.
 
+## Organic social agent
+
+The admin-only page at `/social-agent` runs an autonomous Shopify-to-Meta
+workflow for organic Facebook and Instagram posts. It ranks active products by
+inventory, Moroccan season fit, media quality, and recent rotation; creates two
+OpenAI image candidates per post; requires an independent multimodal review;
+publishes approved media from Shopify Files; and feeds Meta performance metrics
+back into the next creative brief.
+
+The default schedule is five posts starting at 14:00 and another five starting
+at 18:00 in `Africa/Casablanca`. Preview mode is the safe default. Enable live
+publishing per store from the page only after its Shopify and Meta connection
+checks pass. Exact quantity-offer wording must be approved in page settings;
+otherwise only real Shopify compare-at markdowns can be advertised.
+
+Cloud Run scales to zero, so the durable scheduler is an authenticated Cloud
+Scheduler call every five minutes. After deploying the app, run:
+
+```bash
+bash cloudrun/setup-social-agent-scheduler.sh
+```
+
+The script creates/uses `SOCIAL_AGENT_SCHEDULER_SECRET`, maps it into the Cloud
+Run service, and creates the `product-testing-os-social-agent` Scheduler job.
+All dashboard and manual action routes reuse the existing System Health admin
+login (`SYSTEM_ADMIN_USERS`). The operating charter and reviewer rules live in
+`backend/app/social_agent/AGENT.md`.
+
 ## Confirmation page (order confirmation team)
 
 The frontend route is `"/confirmation"` (link available on Home).

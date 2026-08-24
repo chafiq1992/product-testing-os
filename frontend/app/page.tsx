@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useState } from 'react'
-import { Rocket, Plus, ExternalLink } from 'lucide-react'
+import { Rocket, Plus, ExternalLink, Share2 } from 'lucide-react'
 import { listFlows, saveDraft, deleteFlow } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -96,6 +96,9 @@ export default function HomePage(){
           </Link>
           <Link href="/system-health" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white">
             System Health
+          </Link>
+          <Link href="/social-agent" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
+            <Share2 className="w-4 h-4"/> Social Agent
           </Link>
           <button onClick={()=>setShowNew(true)} className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             <Plus className="w-4 h-4"/> New flow

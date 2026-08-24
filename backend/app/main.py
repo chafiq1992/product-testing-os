@@ -112,6 +112,11 @@ app.include_router(_system_health_router)
 # Internal chat / inbox (vendor + agent DMs over WebSocket; no WhatsApp API)
 from app import chat as _chat  # noqa: E402
 app.include_router(_chat.router)
+
+# Autonomous Shopify -> Facebook/Instagram organic social agent. The feature is
+# isolated in its own package and all operational routes are system-admin gated.
+from app.social_agent.routes import router as _social_agent_router  # noqa: E402
+app.include_router(_social_agent_router)
 # Background poller keeps the incident log up to date even when nobody is
 # watching the dashboard, so issues that occurred while the admin was away
 # are still visible (with first/last-seen timestamps) when they return.
