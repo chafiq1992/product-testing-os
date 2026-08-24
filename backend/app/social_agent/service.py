@@ -43,9 +43,19 @@ def _parse_hhmm(value: str, fallback: str) -> dt_time:
 def _scheduled_utc(config: dict[str, Any], local_day: date, slot: str, position: int) -> datetime:
     base_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
     base_time = _parse_hhmm(str(base_value or ""), "14:00" if slot == "midday" else "18:00")
-    local_dt = datetime.combine(local_day, base_time, tzinfo=_tz(config)) + timedelta(
-        minutes=int(config.get("post_interval_minutes") or 8) * position
+    interval = (
+        int(config.get("midday_post_interval_minutes") or 8)
+        if slot == "midday" else int(config.get("post_interval_minutes") or 30)
     )
+    local_dt = datetime.combine(local_day, base_time, tzinfo=_tz(config)) + timedelta(minutes=interval * position)
+    if slot == "evening":
+        end_time = _parse_hhmm(str(config.get("evening_end_time") or ""), "23:59")
+        end_local = datetime.combine(local_day, end_time, tzinfo=_tz(config))
+        if local_dt > end_local:
+            raise ValueError(
+                "The evening batch does not fit inside the configured posting window; "
+                "reduce posts or interval, or move the evening end later"
+            )
     return local_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
@@ -92,7 +102,8 @@ def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> 
         "scheduled_for": [_scheduled_utc(config, local_day, slot, i).isoformat() + "Z" for i in range(target)],
         "config_snapshot": {
             key: config.get(key) for key in (
-                "timezone", "midday_time", "evening_time", "post_interval_minutes",
+                "timezone", "midday_time", "evening_time", "evening_end_time",
+                "midday_post_interval_minutes", "post_interval_minutes",
                 "creative_variants", "minimum_review_score", "quantity_offer_enabled",
                 "max_review_attempts", "approved_quantity_offer_ar", "brand_notes", "hashtags", "live_publish",
             )
@@ -197,7 +208,8 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                 reviewed.sort(key=lambda item: int((item.get("review") or {}).get("score") or 0), reverse=True)
                 approved = [item for item in reviewed if (item.get("review") or {}).get("decision") == "approve"]
         if not approved:
-            review_summary = {"decision": "reject", "candidates": [
+            strongest_review = dict((reviewed[0].get("review") or {}) if reviewed else {})
+            review_summary = {**strongest_review, "decision": "reject", "selected_candidate": None, "candidates": [
                 {"candidate": x["candidate"], **(x.get("review") or {})} for x in reviewed
             ]}
             post = repo.update_post(post["id"], status="rejected", review=review_summary)
@@ -217,10 +229,9 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                 "direction": directions[int(item["candidate"]) - 1], "review": item.get("review"),
                 "copy_repaired": bool(item.get("copy_repaired")), "shopify": uploaded,
             })
+        winner_review = dict(approved[0].get("review") or {})
         review_summary = {
-            "decision": "approve", "selected_candidate": winner_number,
-            "score": int((approved[0].get("review") or {}).get("score") or 0),
-            "summary_en": (approved[0].get("review") or {}).get("summary_en"),
+            **winner_review, "decision": "approve", "selected_candidate": winner_number,
             "candidates": [{"candidate": x["candidate"], **(x.get("review") or {})} for x in reviewed],
         }
         status = "approved" if config.get("live_publish") else "preview_ready"
@@ -367,11 +378,18 @@ def scheduler_tick(store: str | None = None) -> dict[str, Any]:
         if not config.get("enabled"):
             continue
         local_now = datetime.now(_tz(config))
-        for slot, fallback in (("midday", "14:00"), ("evening", "18:00")):
+        for slot, fallback in (("midday", "14:00"), ("evening", "17:00")):
             slot_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
             slot_local = datetime.combine(local_now.date(), _parse_hhmm(str(slot_value or ""), fallback), tzinfo=_tz(config))
             opens = slot_local - timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
-            closes = slot_local + timedelta(minutes=45)
+            closes = (
+                datetime.combine(
+                    local_now.date(),
+                    _parse_hhmm(str(config.get("evening_end_time") or ""), "23:59"),
+                    tzinfo=_tz(config),
+                )
+                if slot == "evening" else slot_local + timedelta(minutes=45)
+            )
             if opens <= local_now <= closes:
                 try:
                     item["queued"].append(queue_batch(store_name, slot, local_now.date()))

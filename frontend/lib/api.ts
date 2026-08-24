@@ -1456,7 +1456,9 @@ export type SocialAgentConfig = {
   timezone: string
   midday_time: string
   evening_time: string
+  evening_end_time: string
   batch_size: number
+  midday_post_interval_minutes: number
   post_interval_minutes: number
   prepare_minutes_before: number
   creative_variants: number

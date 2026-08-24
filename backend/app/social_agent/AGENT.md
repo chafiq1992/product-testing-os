@@ -20,9 +20,11 @@ Arabic (Fusha), localized for a Moroccan audience.
 4. A markdown claim is allowed only when Shopify has a higher compare-at price.
    A quantity offer is allowed only when the operator entered the exact approved
    Arabic offer in settings.
-5. Generate two distinct image candidates per post. Preserve the exact product,
-   colors, construction, logos, and proportions. Do not add people unless the
-   source and product context safely support them.
+5. Generate two distinct image candidates per post. The Shopify product is
+   immutable evidence: preserve its exact pixels, colors, construction, logos,
+   garment/set-piece count, and proportions. AI may create the atmosphere,
+   background, lighting, frame, and overlays, but it must not redraw, squash,
+   stretch, merge, duplicate, remove, or invent any product detail.
 6. The reviewer is independent from the strategist/copywriter. It checks Fusha,
    Moroccan relevance, product fidelity, offer truth, visual defects, accidental
    text, prohibited claims, CTA/link alignment, and platform suitability.
@@ -39,6 +41,9 @@ Arabic (Fusha), localized for a Moroccan audience.
 11. Treat every store as an isolated tenant. Shopify, Facebook Page, Instagram,
     settings, schedules, post history, and learning data must all match the same
     store label. Never fall back to another store's Meta publishing credentials.
+12. A product-fidelity mismatch or malformed visual is a hard rejection, even
+    when the aggregate review score would otherwise pass. The reviewer records a
+    category breakdown and English reasoning that operators can inspect.
 
 ## Specialist roles
 
@@ -54,7 +59,9 @@ Arabic (Fusha), localized for a Moroccan audience.
 ## Daily operating rhythm (Africa/Casablanca)
 
 - Prepare the midday batch before 14:00; schedule five posts eight minutes apart.
-- Prepare the evening batch before 18:00; schedule five posts eight minutes apart.
+- Prepare the evening batch before 17:00; schedule five posts at 17:00, 17:30,
+  18:00, 18:30, and 19:00. Keep the recovery window open until 23:59 without
+  creating a second batch or duplicate posts.
 - Publish due approved posts to both platforms.
 - Refresh metrics for recent posts and update the learning memory each morning.
 - A failed provider call is retried safely. A failed review triggers a new

@@ -6,10 +6,12 @@ import mimetypes
 import os
 import re
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import requests
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.integrations.openai_client import (
@@ -48,11 +50,29 @@ STRATEGY_SCHEMA = {
 REVIEW_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["decision", "score", "summary_en", "arabic_errors", "visual_errors", "factual_risks", "strengths", "repair_instruction"],
+    "required": [
+        "decision", "score", "summary_en", "score_reasoning_en", "score_breakdown",
+        "source_product_differences", "arabic_errors", "visual_errors", "factual_risks",
+        "strengths", "repair_instruction",
+    ],
     "properties": {
         "decision": {"type": "string", "enum": ["approve", "reject"]},
         "score": {"type": "integer", "minimum": 0, "maximum": 100},
         "summary_en": {"type": "string"},
+        "score_reasoning_en": {"type": "string"},
+        "score_breakdown": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["product_fidelity", "realism", "geometry", "text_logo_integrity", "copy_factuality"],
+            "properties": {
+                "product_fidelity": {"type": "integer", "minimum": 0, "maximum": 100},
+                "realism": {"type": "integer", "minimum": 0, "maximum": 100},
+                "geometry": {"type": "integer", "minimum": 0, "maximum": 100},
+                "text_logo_integrity": {"type": "integer", "minimum": 0, "maximum": 100},
+                "copy_factuality": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+        },
+        "source_product_differences": {"type": "array", "items": {"type": "string"}},
         "arabic_errors": {"type": "array", "items": {"type": "string"}},
         "visual_errors": {"type": "array", "items": {"type": "string"}},
         "factual_risks": {"type": "array", "items": {"type": "string"}},
@@ -203,6 +223,54 @@ def _download_source(url: str) -> tuple[bytes, str]:
     return response.content, mime
 
 
+def _source_preserving_composite(source: bytes, generated_data_url: str, candidate_number: int) -> str:
+    """Put untouched Shopify source pixels over an AI-created atmospheric backdrop.
+
+    Image generation is useful for art direction, but it is not allowed to redraw
+    the product. The generated image is therefore reduced to a blurred color and
+    lighting treatment while the complete source photo is scaled proportionally
+    and placed on top without stretching or generative edits.
+    """
+    generated, _ = data_url_bytes(generated_data_url)
+    with Image.open(BytesIO(generated)) as generated_image:
+        backdrop = ImageOps.fit(
+            ImageOps.exif_transpose(generated_image).convert("RGB"),
+            (1024, 1280),
+            method=Image.Resampling.LANCZOS,
+        ).filter(ImageFilter.GaussianBlur(radius=48))
+
+    canvas = backdrop.convert("RGBA")
+    tint = (255, 255, 255, 150) if candidate_number % 2 else (248, 244, 238, 135)
+    canvas = Image.alpha_composite(canvas, Image.new("RGBA", canvas.size, tint))
+
+    with Image.open(BytesIO(source)) as source_image:
+        exact_source = ImageOps.exif_transpose(source_image).convert("RGBA")
+        exact_source.thumbnail((872, 1032), Image.Resampling.LANCZOS)
+
+    frame_padding = 18
+    frame_size = (exact_source.width + frame_padding * 2, exact_source.height + frame_padding * 2)
+    left = (canvas.width - frame_size[0]) // 2
+    top = (canvas.height - frame_size[1]) // 2
+
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        (left + 8, top + 18, left + frame_size[0] + 8, top + frame_size[1] + 18),
+        radius=30,
+        fill=(15, 23, 42, 75),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=22))
+    canvas = Image.alpha_composite(canvas, shadow)
+
+    frame = Image.new("RGBA", frame_size, (255, 255, 255, 255))
+    frame.alpha_composite(exact_source, (frame_padding, frame_padding))
+    canvas.alpha_composite(frame, (left, top))
+
+    output = BytesIO()
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=5), reraise=True)
 def generate_candidate(product: dict[str, Any], strategy: dict[str, Any], direction: str, candidate_number: int) -> str:
     source_url = str(((product.get("images") or [{}])[0]).get("url") or "")
@@ -216,18 +284,19 @@ def generate_candidate(product: dict[str, Any], strategy: dict[str, Any], direct
             handle.write(source)
             temp_path = handle.name
         prompt = (
-            "Create a high-converting organic Instagram and Facebook ecommerce image in a portrait 4:5-safe composition.\n"
+            "Create a premium, photorealistic atmospheric backdrop for an organic Instagram and Facebook ecommerce image.\n"
             f"Creative direction: {direction}\n"
             f"Product: {product.get('title')}\n"
             f"Campaign angle: {strategy.get('angle')}\n"
             f"Candidate: {candidate_number}\n\n"
-            "PRODUCT FIDELITY IS MANDATORY: preserve the exact real product identity, colors, silhouette, proportions, "
-            "materials, texture, stitching, printed marks, logo placement, parts, and variant shown in the supplied image. "
-            "Do not invent accessories, product features, variants, packaging, people, testimonials, ratings, prices, "
-            "discount numbers, logos, watermarks, or claims. Remove only the old background and unrelated clutter. "
-            "Use premium commercial lighting, a strong focal hierarchy, generous safe margins, realistic contact shadows, "
-            "and a polished Moroccan ecommerce aesthetic. Do not render any words, letters, numbers, badges, UI, or CTA "
-            "inside the image. The caption will carry all copy. Output one finished ad image."
+            "The source product is immutable evidence, not inspiration. Do not redraw, reshape, squash, stretch, duplicate, "
+            "remove, restyle, recolor, or reinterpret it. Do not change the number of products or garments. Do not invent "
+            "a logo, embroidery, print, seam, fastener, pocket, brim, sleeve, accessory, person, package, or feature. "
+            "For hats, preserve the exact crown and brim geometry. For clothing sets, preserve every supplied piece, garment "
+            "type, color, construction detail, and logo exactly. Build only complementary background, lighting, shadows, and "
+            "non-text decorative overlays around a clear central product area. Do not render words, letters, numbers, badges, "
+            "UI, prices, ratings, watermarks, or CTA. The final renderer will place the original Shopify reference pixels over "
+            "this atmosphere, so keep the composition clean, realistic, and product-first."
         )
         with open(temp_path, "rb") as image_file:
             result = client.images.edit(
@@ -242,7 +311,7 @@ def generate_candidate(product: dict[str, Any], strategy: dict[str, Any], direct
         data_url = _openai_image_result_to_data_url(result)
         if not data_url:
             raise RuntimeError("OpenAI returned no usable image")
-        return data_url
+        return _source_preserving_composite(source, data_url, candidate_number)
     finally:
         if temp_path:
             try:
@@ -294,34 +363,58 @@ def review_candidate(
     config: dict[str, Any], candidate_number: int,
 ) -> dict[str, Any]:
     blockers = deterministic_review(product, strategy, config)
-    source_url = str(((product.get("images") or [{}])[0]).get("url") or "")
+    source_urls = [
+        str(item.get("url") or "") for item in (product.get("images") or [])[:3]
+        if str(item.get("url") or "")
+    ]
     context = {
         "candidate_number": candidate_number,
         "product": product,
         "strategy": strategy,
         "minimum_score": int(config.get("minimum_review_score") or 82),
         "deterministic_blockers": blockers,
-        "image_order": ["source Shopify product", "generated candidate"],
+        "image_order": [f"Shopify source reference {index + 1}" for index in range(len(source_urls))]
+        + ["generated candidate under review"],
+        "hard_fidelity_rule": (
+            "Any difference in product shape, proportions, colors, logo/text, construction details, or set-piece count; "
+            "any squashing, stretching, merging, duplication, malformed geometry, or invented detail requires rejection."
+        ),
     }
     system = (
         "You are an independent senior ecommerce creative reviewer and publication gate. "
-        "Compare the generated candidate with the source product. Reject any changed product identity, color, geometry, "
-        "logo, quantity, physical detail, malformed anatomy, visual artifact, accidental/gibberish text, misleading offer, "
-        "unsupported claim, wrong link, non-Fusha customer copy, or unreadable/low-quality composition. "
+        "Inspect every supplied Shopify reference before scoring, then compare the generated candidate side by side. "
+        "The product is immutable evidence. Reject any changed identity, color, silhouette, proportions, geometry, logo, "
+        "embroidery, print, texture, seam, fastener, pocket, brim, sleeve, quantity, garment type, set-piece count, or other "
+        "physical detail. Reject squashed, stretched, merged, duplicated, missing, floating, melted, asymmetric, or otherwise "
+        "malformed product geometry. Reject invented branding, text, accessories, models, packaging, or product features. "
+        "A source photo preserved proportionally inside a tasteful frame or overlay is valid; score the product itself, not "
+        "the unchanged source background. Also reject visual artifacts, accidental/gibberish text, misleading offers, "
+        "unsupported claims, wrong links, non-Fusha customer copy, or unreadable/low-quality composition. "
         "The target is a Moroccan audience, but customer copy must be Modern Standard Arabic, not Darija. "
-        "Any deterministic blocker requires rejection. Approve only when score reaches the supplied minimum. "
-        "Be strict and explain findings in English."
+        "List every observable product mismatch in source_product_differences. Any deterministic blocker, source product "
+        "difference, or visual error requires rejection regardless of the total score. Product fidelity and text/logo "
+        "integrity must each be at least 95, and geometry must be at least 90. Approve only when the total score reaches the "
+        "supplied minimum. Explain the total and every category score concretely in English."
     )
     result = _response_json(
         name="social_creative_review", schema=REVIEW_SCHEMA, system=system,
         user="Review this post package:\n" + json.dumps(context, ensure_ascii=False),
-        images=[source_url, candidate_data_url],
+        images=source_urls + [candidate_data_url],
     )
-    if blockers:
+    breakdown = result.get("score_breakdown") if isinstance(result.get("score_breakdown"), dict) else {}
+    fidelity_blockers = list(result.get("source_product_differences") or []) + list(result.get("visual_errors") or [])
+    if int(breakdown.get("product_fidelity") or 0) < 95:
+        fidelity_blockers.append("Product fidelity score is below the mandatory 95/100 threshold")
+    if int(breakdown.get("geometry") or 0) < 90:
+        fidelity_blockers.append("Product geometry score is below the mandatory 90/100 threshold")
+    if int(breakdown.get("text_logo_integrity") or 0) < 95:
+        fidelity_blockers.append("Text/logo integrity score is below the mandatory 95/100 threshold")
+    fidelity_blockers = list(dict.fromkeys(str(item) for item in fidelity_blockers if str(item).strip()))
+    if blockers or fidelity_blockers:
         result["decision"] = "reject"
         result["score"] = min(int(result.get("score") or 0), 59)
         risks = list(result.get("factual_risks") or [])
-        result["factual_risks"] = list(dict.fromkeys(risks + blockers))
+        result["factual_risks"] = list(dict.fromkeys(risks + blockers + fidelity_blockers))
     if int(result.get("score") or 0) < int(config.get("minimum_review_score") or 82):
         result["decision"] = "reject"
     return result

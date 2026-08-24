@@ -17,9 +17,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "live_publish": False,
     "timezone": "Africa/Casablanca",
     "midday_time": "14:00",
-    "evening_time": "18:00",
+    "evening_time": "17:00",
+    "evening_end_time": "23:59",
     "batch_size": 5,
-    "post_interval_minutes": 8,
+    "midday_post_interval_minutes": 8,
+    "post_interval_minutes": 30,
     "prepare_minutes_before": 60,
     "creative_variants": 2,
     "minimum_review_score": 82,
@@ -82,7 +84,10 @@ def save_config(store: str | None, patch: dict[str, Any]) -> dict[str, Any]:
         if key in allowed:
             current[key] = value
     current["batch_size"] = max(1, min(5, int(current.get("batch_size") or 5)))
-    current["post_interval_minutes"] = max(2, min(60, int(current.get("post_interval_minutes") or 8)))
+    current["midday_post_interval_minutes"] = max(
+        2, min(60, int(current.get("midday_post_interval_minutes") or 8))
+    )
+    current["post_interval_minutes"] = max(2, min(60, int(current.get("post_interval_minutes") or 30)))
     current["prepare_minutes_before"] = max(15, min(180, int(current.get("prepare_minutes_before") or 60)))
     current["creative_variants"] = max(2, min(3, int(current.get("creative_variants") or 2)))
     current["minimum_review_score"] = max(60, min(100, int(current.get("minimum_review_score") or 82)))

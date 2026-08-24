@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.social_agent.openai_agents import deterministic_review, sanitize_fusha_strategy
-from app.social_agent import meta, repository
+from app.social_agent import meta, openai_agents, repository, service
 from app.social_agent import shopify
 from app.social_agent.shopify import rank_products
 
@@ -151,3 +152,79 @@ def test_fusha_sanitizer_removes_common_dialect_leaks():
     assert result["hook_ar"] == "نزهة جميلة الآن"
     assert "بدلاً من" in result["caption_ar"]
     assert "+" not in result["caption_ar"]
+
+
+def test_evening_batch_uses_five_thirty_minute_slots_inside_recovery_window():
+    config = {
+        "timezone": "Africa/Casablanca",
+        "evening_time": "17:00",
+        "evening_end_time": "23:59",
+        "post_interval_minutes": 30,
+    }
+
+    scheduled = [service._scheduled_utc(config, date(2026, 8, 24), "evening", index) for index in range(5)]
+    local = [value.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Africa/Casablanca")) for value in scheduled]
+
+    assert [value.strftime("%H:%M") for value in local] == ["17:00", "17:30", "18:00", "18:30", "19:00"]
+    assert all((later - earlier) == timedelta(minutes=30) for earlier, later in zip(scheduled, scheduled[1:]))
+
+
+def test_midday_keeps_its_independent_spacing():
+    config = {
+        "timezone": "Africa/Casablanca",
+        "midday_time": "14:00",
+        "midday_post_interval_minutes": 8,
+        "post_interval_minutes": 30,
+    }
+
+    first = service._scheduled_utc(config, date(2026, 8, 24), "midday", 0)
+    second = service._scheduled_utc(config, date(2026, 8, 24), "midday", 1)
+
+    assert second - first == timedelta(minutes=8)
+
+
+def test_reviewer_hard_rejects_product_geometry_or_fidelity_mismatch(monkeypatch):
+    captured = {}
+
+    def fake_response_json(**kwargs):
+        captured["images"] = kwargs.get("images")
+        return {
+            "decision": "approve",
+            "score": 94,
+            "summary_en": "Attractive, but the hat geometry changed.",
+            "score_reasoning_en": "The brim is compressed and merged with a duplicate layer.",
+            "score_breakdown": {
+                "product_fidelity": 55,
+                "realism": 75,
+                "geometry": 40,
+                "text_logo_integrity": 100,
+                "copy_factuality": 100,
+            },
+            "source_product_differences": ["The brim shape differs from the Shopify reference."],
+            "arabic_errors": [],
+            "visual_errors": ["The brim is squashed and merged."],
+            "factual_risks": [],
+            "strengths": ["Clean background"],
+            "repair_instruction": "Keep the source hat unchanged and regenerate only the surrounding atmosphere.",
+        }
+
+    monkeypatch.setattr(openai_agents, "_response_json", fake_response_json)
+    product = _product("hat", 20, title="Baby hat")
+    product["images"].append({"url": "https://cdn.shopify.com/hat-side.jpg"})
+    strategy = {
+        "caption_ar": f"قبعة أنيقة للأطفال.\n{product['url']}",
+        "offer_type": "none",
+    }
+
+    result = openai_agents.review_candidate(
+        product, strategy, "data:image/png;base64,AAAA", {"minimum_review_score": 82}, 1,
+    )
+
+    assert result["decision"] == "reject"
+    assert result["score"] == 59
+    assert "The brim is squashed and merged." in result["factual_risks"]
+    assert captured["images"] == [
+        "https://cdn.shopify.com/product.jpg",
+        "https://cdn.shopify.com/hat-side.jpg",
+        "data:image/png;base64,AAAA",
+    ]
