@@ -77,6 +77,24 @@ def _arabic_ratio(value: str) -> tuple[int, float]:
     return arabic, arabic / max(letters, 1)
 
 
+def _prune_hidden_page_content(soup: BeautifulSoup) -> None:
+    """Remove inactive UI states so reviewers only receive user-visible page evidence."""
+    hidden_classes = {"hidden", "cod-hidden", "d-none", "is-hidden"}
+    for element in list(soup.find_all(True)):
+        if element.parent is None:
+            continue
+        classes = {str(item).strip().lower() for item in (element.get("class") or [])}
+        style = re.sub(r"\s+", "", str(element.get("style") or "").lower())
+        if (
+            element.has_attr("hidden")
+            or str(element.get("aria-hidden") or "").strip().lower() == "true"
+            or bool(classes & hidden_classes)
+            or "display:none" in style
+            or "visibility:hidden" in style
+        ):
+            element.decompose()
+
+
 def _normalize_host(value: str | None) -> str:
     host = str(value or "").strip().rstrip(".").lower()
     try:
@@ -179,6 +197,7 @@ def _landing_evidence(store: str | None, product: dict[str, Any], override: str 
         soup = BeautifulSoup(response.text[:1_500_000], "html.parser")
         for element in soup(["script", "style", "noscript", "svg"]):
             element.decompose()
+        _prune_hidden_page_content(soup)
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         meta_description = soup.find("meta", attrs={"name": re.compile("description", re.I)})
         description = str(meta_description.get("content") or "") if meta_description else ""
@@ -288,6 +307,11 @@ def _crop_to_four_five(data: bytes) -> bytes:
         return output.getvalue()
 
 
+def _image_dimensions(data: bytes) -> tuple[int, int]:
+    with Image.open(BytesIO(data)) as image:
+        return int(image.width), int(image.height)
+
+
 def _generated_image(
     product: dict[str, Any], prompt: str, *, base_url: str, candidate: int,
 ) -> tuple[dict[str, Any], str]:
@@ -327,6 +351,7 @@ def _generated_image(
             raise RuntimeError("OpenAI returned no usable generated image")
         content_type = match.group(1)
         data = _crop_to_four_five(base64.b64decode(match.group(2)))
+        width, height = _image_dimensions(data)
         content_type = "image/png"
         filename = f"ad_launcher_ai_{uuid4().hex}_{candidate}.png"
         path = repo.save_asset(filename, data, content_type)
@@ -338,6 +363,8 @@ def _generated_image(
             size=len(data),
             kind="image",
             source="ai_generated",
+            width=width,
+            height=height,
         ).model_dump(mode="json")
         return asset, _data_url(data, content_type)
     finally:
@@ -414,6 +441,7 @@ def prepare_job(job_id: str, store: str | None) -> None:
 
         context = _context(request_data, product, landing, media_format)
         draft = agents.analyze_campaign(context, analysis_images)
+        draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
 
         generated_media: list[dict[str, Any]] = []
         if request_data.get("ai_generated_adsets"):
@@ -429,13 +457,25 @@ def prepare_job(job_id: str, store: str | None) -> None:
                 generated_media.append(asset)
                 analysis_images.append(data_url)
 
+        context["generated_creative_evidence"] = [
+            {
+                "image_number": index,
+                "width": int(asset.get("width") or 0),
+                "height": int(asset.get("height") or 0),
+                "machine_verified_aspect_ratio": "4:5"
+                if int(asset.get("width") or 0) * 5 == int(asset.get("height") or 0) * 4
+                else "invalid",
+            }
+            for index, asset in enumerate(generated_media, start=1)
+        ]
+
         repo.update_job(store, job_id, {"stage": "independent_review", "progress": 76})
         blockers = agents.deterministic_blockers(
             draft,
             expected_adsets=4 if request_data.get("ai_generated_adsets") else 2,
             expected_format=media_format,
             requested_countries=request_data.get("countries") or ["MA"],
-            generated_media_count=len(generated_media),
+            generated_media=generated_media,
         )
         if not landing.get("arabic_ready_hint"):
             blockers.append(
@@ -481,7 +521,10 @@ def prepare_job(job_id: str, store: str | None) -> None:
             "generated_media": generated_media,
             "plan": plan.model_dump(mode="json"),
             "review": review.model_dump(mode="json"),
-            "model": agents.MODEL,
+            "model": agents.COPY_MODEL,
+            "model_reasoning_effort": agents.COPY_REASONING_EFFORT,
+            "review_model": agents.REVIEW_MODEL,
+            "review_reasoning_effort": agents.REVIEW_REASONING_EFFORT,
             "image_model": os.getenv("AD_LAUNCHER_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
             "meta_api_version": os.getenv("AD_LAUNCHER_META_API_VERSION", "v26.0"),
         }

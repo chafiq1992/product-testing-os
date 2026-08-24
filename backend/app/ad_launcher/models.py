@@ -105,6 +105,8 @@ class MediaAsset(StrictModel):
     size: int = Field(ge=1)
     kind: Literal["image", "video"]
     source: Literal["uploaded", "ai_generated"] = "uploaded"
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
 
 
 class PreparedAdSet(StrictModel):

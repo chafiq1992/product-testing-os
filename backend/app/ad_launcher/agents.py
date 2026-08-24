@@ -10,7 +10,12 @@ from agents import Agent, ModelSettings, Runner
 from app.ad_launcher.models import CampaignDraft, ReviewDecision
 
 
-MODEL = os.getenv("AD_LAUNCHER_MODEL", "gpt-5.6-sol")
+COPY_MODEL = os.getenv("AD_LAUNCHER_COPY_MODEL", "gpt-5.6-sol")
+COPY_REASONING_EFFORT = os.getenv("AD_LAUNCHER_COPY_REASONING_EFFORT", "high")
+REVIEW_MODEL = os.getenv("AD_LAUNCHER_REVIEW_MODEL", os.getenv("AD_LAUNCHER_MODEL", "gpt-5.6-sol"))
+REVIEW_REASONING_EFFORT = os.getenv("AD_LAUNCHER_REVIEW_REASONING_EFFORT", "high")
+# Backwards-compatible display value for jobs created before copy/review model metadata was split.
+MODEL = COPY_MODEL
 REVIEW_THRESHOLD = int(os.getenv("AD_LAUNCHER_REVIEW_THRESHOLD", "85") or "85")
 
 
@@ -25,8 +30,9 @@ Hard requirements:
   clinical outcomes, materials, features, prices, or social proof.
 - Avoid Meta policy risks: personal-attribute assertions, shaming, sensational claims, unrealistic outcomes, and
   misleading before/after language.
-- Recommend one shared BROAD audience. Country is an operator constraint. Choose age and gender only from product fit,
-  keep a wide population, and never use interests, behaviours, lookalikes, saved audiences, or custom audiences.
+- Recommend one shared BROAD audience. Country is an operator constraint. This launcher's broad-test standard is ages
+  18-65 and all genders; never use interests, behaviours, lookalikes, saved audiences, or custom audiences. Explain who
+  is most likely to buy in the rationale without narrowing Meta delivery to that persona.
 - The first two ad sets use the uploaded creative format. They must test meaningfully different message angles while
   holding audience, destination, budget method, placements, and creative asset constant.
 - If exactly four ad sets are requested, ad sets three and four are AI-generated image tests. For each, write an expert
@@ -34,7 +40,9 @@ Hard requirements:
   composition, product fidelity, realistic lighting and shadows, strong visual hierarchy, safe margins, no fake people
   or testimonials, no invented product details, no watermark, and no rendered words or prices.
 - If two ad sets are requested, do not output any AI-generated ad set.
-- Keep copy persuasive and specific without hype. Make the opening line carry the hook and end with a clear shopping CTA.
+- Write conversion-focused Arabic headlines and primary text with a concrete product-led hook, natural Moroccan-market
+  phrasing in Modern Standard Arabic, scannable benefits, and a clear shopping CTA. Keep it persuasive and specific
+  without hype, and make each uploaded-creative angle meaningfully different.
 - detected_format must exactly match the operator-provided creative classification.
 - destination_is_ready is false if the supplied page evidence is not Arabic, is unavailable, or materially contradicts
   the Shopify product facts.
@@ -47,18 +55,29 @@ You are the independent senior paid-social reviewer and the final publication ga
 Audit the supplied draft against the original Shopify facts, landing-page evidence, uploaded creative or extracted video
 frames, and any generated images.
 
-Reject when any material issue exists: invented or unverifiable claim, misleading product depiction, non-Arabic or weak
-Arabic copy, malformed text in an image, wrong destination, landing page not ready in Arabic, Meta policy risk, narrow
-audience, interest/custom/lookalike targeting, inconsistent audiences, wrong ad-set count/origin, wrong creative format,
-missing media, poor mobile composition, or a deterministic blocker supplied by the application.
+Reject when a material issue makes an ad false, policy-unsafe, structurally invalid, or impossible to publish: an invented
+or contradicted claim, misleading product depiction, non-Arabic or unusably weak copy, malformed text in an image, wrong
+destination or product, Meta policy risk, narrow or inconsistent audiences, forbidden targeting, wrong ad-set
+count/origin, wrong creative format, missing media, poor mobile composition, or a deterministic blocker supplied by the
+application.
+
+Evidence rules:
+- Treat machine-verified image dimensions and aspect ratios in generated_creative_evidence as authoritative. Do not infer
+  a different aspect ratio from the visual preview.
+- Hidden modal, inactive error-state, or incidental sitewide footer text is not a blocker when the Arabic product page,
+  product details, price, and purchase CTA are usable and the ads do not rely on that incidental text.
+- An included/free-accessory statement is compatible with a fixed-price bundle that visibly includes that accessory.
+  Reject it only when Shopify or the destination says the accessory is excluded, costs extra, or is not supplied.
+- Separate launch blockers from optimization advice. Put non-blocking imperfections in findings or required_fixes and do
+  not reject an otherwise truthful, usable package for them.
 
 Approve only when the package is genuinely ready to create as a controlled Meta creative test. A score below the
 configured threshold is always a rejection. Explain findings plainly; do not repair or silently rewrite the draft.
 """.strip()
 
 
-def _settings() -> ModelSettings:
-    return ModelSettings(reasoning={"effort": "high"}, verbosity="low")
+def _settings(reasoning_effort: str) -> ModelSettings:
+    return ModelSettings(reasoning={"effort": reasoning_effort}, verbosity="low")
 
 
 def _agent_input(context: dict[str, Any], image_data_urls: list[str], label: str) -> list[dict[str, Any]]:
@@ -76,8 +95,8 @@ def analyze_campaign(context: dict[str, Any], image_data_urls: list[str]) -> Cam
     agent = Agent(
         name="Paid Social Creative Analyst",
         instructions=ANALYZER_INSTRUCTIONS,
-        model=MODEL,
-        model_settings=_settings(),
+        model=COPY_MODEL,
+        model_settings=_settings(COPY_REASONING_EFFORT),
         output_type=CampaignDraft,
     )
     result = Runner.run_sync(
@@ -89,6 +108,18 @@ def analyze_campaign(context: dict[str, Any], image_data_urls: list[str]) -> Cam
     if isinstance(output, CampaignDraft):
         return output
     return CampaignDraft.model_validate(output)
+
+
+def enforce_broad_audience(draft: CampaignDraft, requested_countries: list[str]) -> CampaignDraft:
+    """Apply the launcher's deterministic broad-test controls after AI planning."""
+    countries = list(dict.fromkeys(str(code).strip().upper() for code in requested_countries if str(code).strip()))
+    audience = draft.audience.model_copy(update={
+        "country_codes": countries,
+        "age_min": 18,
+        "age_max": 65,
+        "gender": "all",
+    })
+    return draft.model_copy(update={"audience": audience})
 
 
 def _arabic_ratio(value: str) -> float:
@@ -103,7 +134,8 @@ def deterministic_blockers(
     expected_adsets: int,
     expected_format: str,
     requested_countries: list[str],
-    generated_media_count: int,
+    generated_media_count: int | None = None,
+    generated_media: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     blockers: list[str] = []
     if len(draft.adsets) != expected_adsets:
@@ -119,10 +151,16 @@ def deterministic_blockers(
     expected_countries = sorted(set(code.upper() for code in requested_countries))
     if actual_countries != expected_countries:
         blockers.append("The agent changed the operator-selected country targeting")
-    if draft.audience.age_max - draft.audience.age_min < 20:
-        blockers.append("The recommended age range is too narrow for the required broad test")
-    if expected_adsets == 4 and generated_media_count != 2:
+    if (draft.audience.age_min, draft.audience.age_max, draft.audience.gender) != (18, 65, "all"):
+        blockers.append("The audience must use the launcher's fully broad ages 18-65 and all-genders standard")
+    generated_count = len(generated_media) if generated_media is not None else int(generated_media_count or 0)
+    if expected_adsets == 4 and generated_count != 2:
         blockers.append("Two approved AI-generated images are required for the four-ad-set mode")
+    for index, asset in enumerate(generated_media or [], start=1):
+        width = int(asset.get("width") or 0)
+        height = int(asset.get("height") or 0)
+        if width <= 0 or height <= 0 or width * 5 != height * 4:
+            blockers.append(f"AI-generated image {index} is not machine-verified as exact 4:5")
     for index, item in enumerate(draft.adsets, start=1):
         if _arabic_ratio(item.headline_ar) < 0.65:
             blockers.append(f"Ad set {index} headline is not predominantly Arabic")
@@ -154,8 +192,8 @@ def review_campaign(
     agent = Agent(
         name="Independent Meta Ads Reviewer",
         instructions=REVIEWER_INSTRUCTIONS,
-        model=MODEL,
-        model_settings=_settings(),
+        model=REVIEW_MODEL,
+        model_settings=_settings(REVIEW_REASONING_EFFORT),
         output_type=ReviewDecision,
     )
     result = Runner.run_sync(

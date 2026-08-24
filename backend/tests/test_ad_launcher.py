@@ -82,7 +82,7 @@ def _draft(adset_count: int = 2) -> CampaignDraft:
         ),
         audience=AudiencePlan(
             country_codes=["MA"],
-            age_min=21,
+            age_min=18,
             age_max=65,
             gender="all",
             audience_label="Broad Morocco adults",
@@ -176,6 +176,37 @@ def test_landing_evidence_accepts_irrakids_arabic_storefront(monkeypatch):
     assert evidence["fetch_error"] is None
 
 
+def test_landing_evidence_excludes_inactive_hidden_error_states(monkeypatch):
+    arabic_product_copy = "هذا طقم صيفي مكون من ثلاث قطع بتفاصيل واضحة ومقاسات متعددة. " * 5
+
+    class Response:
+        status_code = 200
+        url = "https://ar.irraki.com/products/verified-product"
+        text = (
+            "<html><title>طقم صيفي</title><body>"
+            f"<main>{arabic_product_copy}</main>"
+            "<div class='cod-modal-overlay cod-hidden'>"
+            "Order creation was not successful. Please contact support."
+            "</div></body></html>"
+        )
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(service, "_get_store_config", lambda store: {"SHOP": "irrakids.myshopify.com"})
+    monkeypatch.setattr(service.requests, "get", lambda *args, **kwargs: Response())
+
+    _, evidence = service._landing_evidence(
+        "irrakids",
+        {"url": "https://irrakids.myshopify.com/products/verified-product"},
+        "https://ar.irraki.com/products/verified-product",
+    )
+
+    assert "Order creation was not successful" not in evidence["text_excerpt"]
+    assert evidence["arabic_ready_hint"] is True
+
+
 def test_schedule_uses_2359_and_rolls_after_cutoff():
     zone = ZoneInfo("Africa/Casablanca")
     before = datetime(2026, 8, 24, 12, 0, tzinfo=zone)
@@ -202,6 +233,63 @@ def test_deterministic_review_gate_enforces_structure_and_generated_images():
         generated_media_count=1,
     )
     assert "Two approved AI-generated images are required for the four-ad-set mode" in blockers
+
+
+def test_copy_agent_is_pinned_to_gpt_5_6_sol_with_high_reasoning(monkeypatch):
+    captured: dict = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class Result:
+        final_output = _draft(2)
+
+    monkeypatch.setattr(agents, "Agent", FakeAgent)
+    monkeypatch.setattr(agents.Runner, "run_sync", lambda *args, **kwargs: Result())
+
+    agents.analyze_campaign({}, [])
+
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["model_settings"].reasoning.effort == "high"
+
+
+def test_broad_audience_controls_are_enforced_after_ai_planning():
+    draft = _draft(2)
+    draft.audience = draft.audience.model_copy(update={"age_min": 18, "age_max": 54, "gender": "women"})
+
+    controlled = agents.enforce_broad_audience(draft, ["ma"])
+
+    assert controlled.audience.country_codes == ["MA"]
+    assert controlled.audience.age_min == 18
+    assert controlled.audience.age_max == 65
+    assert controlled.audience.gender == "all"
+
+
+def test_generated_media_dimensions_are_machine_checked():
+    valid = agents.deterministic_blockers(
+        _draft(4),
+        expected_adsets=4,
+        expected_format="image",
+        requested_countries=["MA"],
+        generated_media=[
+            {"width": 1024, "height": 1280},
+            {"width": 1024, "height": 1280},
+        ],
+    )
+    invalid = agents.deterministic_blockers(
+        _draft(4),
+        expected_adsets=4,
+        expected_format="image",
+        requested_countries=["MA"],
+        generated_media=[
+            {"width": 768, "height": 1024},
+            {"width": 1024, "height": 1280},
+        ],
+    )
+
+    assert not any("4:5" in blocker for blocker in valid)
+    assert "AI-generated image 1 is not machine-verified as exact 4:5" in invalid
 
 
 def test_budget_and_targeting_stay_broad_and_manual():
@@ -262,6 +350,8 @@ def test_gpt_image_2_edit_omits_unsupported_input_fidelity(monkeypatch):
     assert captured["size"] == "1024x1280"
     assert "input_fidelity" not in captured
     assert asset["content_type"] == "image/png"
+    assert asset["width"] == 64
+    assert asset["height"] == 80
 
 
 def test_launch_claim_is_single_use():

@@ -1574,6 +1574,9 @@ export type AdLauncherJob = {
     review?:any
     meta?:any
     model?:string
+    model_reasoning_effort?:string
+    review_model?:string
+    review_reasoning_effort?:string
     image_model?:string
     meta_api_version?:string
   }
