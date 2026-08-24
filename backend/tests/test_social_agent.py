@@ -1,4 +1,5 @@
 from app.social_agent.openai_agents import deterministic_review
+from app.social_agent import meta
 from app.social_agent.shopify import rank_products
 
 
@@ -67,3 +68,21 @@ def test_reviewer_accepts_catalog_backed_markdown_copy():
     }
 
     assert deterministic_review(product, strategy, {}) == []
+
+
+def test_meta_derives_page_token_from_visible_accounts(monkeypatch):
+    monkeypatch.setattr(meta, "_credentials", lambda _store: {
+        "token": "user-token", "page_id": "page-1", "instagram_id": "",
+        "version": "v23.0", "explicit_page_token": "0",
+    })
+    monkeypatch.setattr(meta, "_call", lambda _method, _cfg, path, _payload=None: {
+        "data": [{
+            "id": "page-1", "access_token": "page-token",
+            "instagram_business_account": {"id": "ig-1"},
+        }]
+    } if path == "me/accounts" else {})
+
+    resolved = meta._page_credentials("irrakids")
+
+    assert resolved["token"] == "page-token"
+    assert resolved["instagram_id"] == "ig-1"

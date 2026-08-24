@@ -15,7 +15,8 @@ def _suffix(store: str | None) -> str:
 
 def _credentials(store: str | None) -> dict[str, str]:
     suffix = _suffix("irrakids" if (store or "").strip().lower() == "nouralibas" else store)
-    token = os.getenv(f"META_PAGE_ACCESS_TOKEN{suffix}", "") or os.getenv(f"META_ACCESS_TOKEN{suffix}", "") or os.getenv("META_PAGE_ACCESS_TOKEN", "") or os.getenv("META_ACCESS_TOKEN", "")
+    page_token = os.getenv(f"META_PAGE_ACCESS_TOKEN{suffix}", "") or os.getenv("META_PAGE_ACCESS_TOKEN", "")
+    token = page_token or os.getenv(f"META_ACCESS_TOKEN{suffix}", "") or os.getenv("META_ACCESS_TOKEN", "")
     page_id = os.getenv(f"META_PAGE_ID{suffix}", "") or os.getenv("META_PAGE_ID", "")
     instagram_id = os.getenv(f"META_INSTAGRAM_ACCOUNT_ID{suffix}", "") or os.getenv("META_INSTAGRAM_ACCOUNT_ID", "")
     version = os.getenv("META_API_VERSION", "v23.0")
@@ -23,7 +24,10 @@ def _credentials(store: str | None) -> dict[str, str]:
         raise RuntimeError("META_ACCESS_TOKEN (or META_PAGE_ACCESS_TOKEN) is not configured")
     if not page_id:
         raise RuntimeError("META_PAGE_ID is not configured")
-    return {"token": token, "page_id": page_id, "instagram_id": instagram_id, "version": version}
+    return {
+        "token": token, "page_id": page_id, "instagram_id": instagram_id,
+        "version": version, "explicit_page_token": "1" if page_token else "0",
+    }
 
 
 def _call(method: str, cfg: dict[str, str], path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -43,8 +47,39 @@ def _call(method: str, cfg: dict[str, str], path: str, payload: dict[str, Any] |
     return body if isinstance(body, dict) else {}
 
 
-def connection(store: str | None) -> dict[str, Any]:
+def _page_credentials(store: str | None) -> dict[str, str]:
+    """Resolve a Page access token without persisting or exposing it.
+
+    Meta's Page and Instagram publishing endpoints expect the Page credential
+    returned by ``/me/accounts`` when the configured secret is a user token.
+    System-user and already-configured Page tokens continue to work as-is.
+    """
     cfg = _credentials(store)
+    if cfg.get("explicit_page_token") == "1":
+        return cfg
+    try:
+        accounts = _call("GET", cfg, "me/accounts", {
+            "fields": "id,access_token,instagram_business_account{id}", "limit": 100,
+        })
+        for account in accounts.get("data") or []:
+            if str(account.get("id") or "") != cfg["page_id"]:
+                continue
+            access_token = str(account.get("access_token") or "")
+            if access_token:
+                cfg["token"] = access_token
+            instagram = account.get("instagram_business_account") or {}
+            if not cfg.get("instagram_id") and instagram.get("id"):
+                cfg["instagram_id"] = str(instagram["id"])
+            break
+    except Exception:
+        # A Page/system-user token might not have a meaningful /me/accounts
+        # edge. The direct token remains the correct fallback in that case.
+        pass
+    return cfg
+
+
+def connection(store: str | None) -> dict[str, Any]:
+    cfg = _page_credentials(store)
     page = _call("GET", cfg, cfg["page_id"], {"fields": "id,name,instagram_business_account{id,username,name,profile_picture_url}"})
     instagram = page.get("instagram_business_account") or {}
     if not cfg.get("instagram_id") and instagram.get("id"):
@@ -67,7 +102,7 @@ def _instagram_id(cfg: dict[str, str]) -> str:
 
 
 def publish_facebook_image(store: str | None, *, image_url: str, caption: str) -> dict[str, Any]:
-    cfg = _credentials(store)
+    cfg = _page_credentials(store)
     facebook = _call("POST", cfg, f"{cfg['page_id']}/photos", {
         "url": image_url, "caption": caption, "published": "true",
     })
@@ -75,7 +110,7 @@ def publish_facebook_image(store: str | None, *, image_url: str, caption: str) -
 
 
 def publish_instagram_image(store: str | None, *, image_url: str, caption: str, alt_text: str) -> dict[str, Any]:
-    cfg = _credentials(store)
+    cfg = _page_credentials(store)
     ig_id = _instagram_id(cfg)
     container = _call("POST", cfg, f"{ig_id}/media", {
         "image_url": image_url, "caption": caption,
@@ -98,7 +133,7 @@ def publish_image(store: str | None, *, image_url: str, caption: str, alt_text: 
 
 
 def publish_video(store: str | None, *, video_url: str, caption: str) -> dict[str, Any]:
-    cfg = _credentials(store)
+    cfg = _page_credentials(store)
     facebook = _call("POST", cfg, f"{cfg['page_id']}/videos", {"file_url": video_url, "description": caption})
     ig_id = _instagram_id(cfg)
     container = _call("POST", cfg, f"{ig_id}/media", {
@@ -131,7 +166,7 @@ def _summary_count(value: Any) -> int:
 
 
 def collect_post_metrics(store: str | None, platforms: dict[str, Any]) -> dict[str, Any]:
-    cfg = _credentials(store)
+    cfg = _page_credentials(store)
     result: dict[str, Any] = {"facebook": {}, "instagram": {}}
     fb_id = str(((platforms.get("facebook") or {}).get("id")) or "")
     if fb_id:
