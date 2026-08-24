@@ -134,7 +134,7 @@ export default function AdLauncherPage(){
         if(result.error||!result.data)throw new Error(result.error||'Job unavailable')
         setJob(result.data)
         const terminal=['rejected','failed','launched','launch_failed'].includes(result.data.status)
-          ||(result.data.status==='approved'&&!result.data.request?.auto_launch)
+          ||(result.data.status==='approved'&&!result.data.request?.auto_launch&&result.data.stage!=='meta_retry_queued')
         if(!terminal)timer=setTimeout(poll,2200)
         else refreshProductCards()
       }catch(err:any){if(alive)setError(String(err?.response?.data?.detail||err?.message||err))}
@@ -175,8 +175,10 @@ export default function AdLauncherPage(){
   }
 
   async function retryJob(){
-    if(!jobId||!job||!['failed','rejected'].includes(job.status))return
-    const warning=job.request?.auto_launch?' If the review passes, the original auto-launch setting can create the Meta campaign.':''
+    if(!jobId||!job||!['failed','rejected','launch_failed'].includes(job.status))return
+    const warning=job.status==='launch_failed'
+      ?' The approved analysis, copy, images, and review will be kept; only the Meta launch will run again.'
+      :job.request?.auto_launch?' If the review passes, the original auto-launch setting can create the Meta campaign.':''
     if(!window.confirm(`Resume this job from its latest successful checkpoint?${warning}`))return
     setBusy('retry');setError('')
     try{
@@ -290,7 +292,7 @@ export default function AdLauncherPage(){
         {['queued','running','launching'].includes(job.status)&&<div className="flex items-center gap-3 border-b p-5 text-sm text-slate-600"><Loader2 className="h-5 w-5 animate-spin text-violet-600"/> The creative team is working. This log updates as evidence and decisions become available.</div>}
         {!!job.activity?.length&&<div className="p-5"><div className="flex flex-wrap items-end justify-between gap-2"><div><h4 className="font-bold text-slate-950">Explainable creation log</h4><p className="mt-1 text-xs text-slate-500">Concise evidence and decision summaries are shown; private hidden chain-of-thought is never displayed.</p></div><span className="text-xs text-slate-400">{job.activity.length} updates</span></div><div className="mt-4 space-y-3">{job.activity.map((item,index)=><div key={`${item.at}-${index}`} className="flex gap-3 rounded-2xl border bg-slate-50 p-4"><div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.status==='failed'||item.status==='attention'?'bg-rose-500':item.status==='running'?'animate-pulse bg-amber-500':'bg-emerald-500'}`}/><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-bold text-slate-900">{item.title}</span>{item.source==='openai_reasoning_summary'&&<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold uppercase text-violet-700">AI reasoning summary</span>}</div><p className="mt-1 whitespace-pre-line text-sm leading-6 text-slate-600">{item.summary}</p>{item.at&&<div className="mt-2 text-[10px] text-slate-400">{new Date(item.at).toLocaleTimeString()}</div>}</div></div>)}</div></div>}
         {job.error&&<div className="m-5 rounded-2xl bg-rose-50 p-4 text-sm text-rose-700"><b>{job.error.type||'Error'}:</b> {job.error.message}</div>}
-        {['failed','rejected'].includes(job.status)&&<div className="border-t p-5"><button onClick={retryJob} disabled={busy==='retry'} className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy==='retry'?<Loader2 className="h-4 w-4 animate-spin"/>:<Sparkles className="h-4 w-4"/>} Resume from saved checkpoint</button><p className="mt-2 text-xs text-slate-500">Completed evidence, copy, and generated images are reused when available.</p></div>}
+        {['failed','rejected','launch_failed'].includes(job.status)&&<div className="border-t p-5"><button onClick={retryJob} disabled={busy==='retry'} className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy==='retry'?<Loader2 className="h-4 w-4 animate-spin"/>:<Sparkles className="h-4 w-4"/>} {job.status==='launch_failed'?'Retry Meta launch':'Resume from saved checkpoint'}</button><p className="mt-2 text-xs text-slate-500">{job.status==='launch_failed'?'The approved plan is kept; only media transfer and Meta campaign creation run again.':'Completed evidence, copy, and generated images are reused when available.'}</p></div>}
       </Card>}
 
       {review&&plan&&<>

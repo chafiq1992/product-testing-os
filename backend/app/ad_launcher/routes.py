@@ -63,6 +63,14 @@ def _prepare_and_optionally_launch(job_id: str, store: str, auto_launch: bool, r
                 pass
 
 
+def _retry_meta_launch(job_id: str, store: str) -> None:
+    try:
+        service.launch_job(job_id, store)
+    except Exception:
+        # launch_job persists a safe paused/failed state and an activity entry for polling clients.
+        pass
+
+
 @router.get("/connection")
 async def get_connection(request: Request, store: str, ad_account_id: str | None = None):
     _require_admin(request)
@@ -223,13 +231,22 @@ async def retry_job(request: Request, job_id: str, body: LaunchConfirmation):
     try:
         job = await run_in_threadpool(service.retry_job, job_id, body.store)
         request_data = dict(job.get("request") or {})
-        threading.Thread(
-            target=_prepare_and_optionally_launch,
-            args=(job_id, repo.canonical_store(body.store), bool(request_data.get("auto_launch")), True),
-            daemon=True,
-            name=f"ad-launcher-retry-{job_id[:8]}",
-        ).start()
-        return {"data": {"job_id": job_id, "status": "queued"}}
+        store = repo.canonical_store(body.store)
+        if job.get("stage") == "meta_retry_queued":
+            threading.Thread(
+                target=_retry_meta_launch,
+                args=(job_id, store),
+                daemon=True,
+                name=f"ad-launcher-meta-retry-{job_id[:8]}",
+            ).start()
+        else:
+            threading.Thread(
+                target=_prepare_and_optionally_launch,
+                args=(job_id, store, bool(request_data.get("auto_launch")), True),
+                daemon=True,
+                name=f"ad-launcher-retry-{job_id[:8]}",
+            ).start()
+        return {"data": {"job_id": job_id, "status": job.get("status") or "queued"}}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

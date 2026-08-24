@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import mimetypes
 import os
 import re
 import time
@@ -47,12 +48,28 @@ def _safe_error(response: requests.Response, path: str) -> RuntimeError:
         code = error.get("code")
         subcode = error.get("error_subcode")
         details = ", ".join(part for part in [f"code {code}" if code else "", f"subcode {subcode}" if subcode else ""] if part)
-        return RuntimeError(f"Meta API rejected {path}: {message}{f' ({details})' if details else ''}")
+        guidance = ""
+        if code == 3 and path.rstrip("/").endswith("/adimages"):
+            guidance = (
+                " The selected Meta app/token cannot upload ad images. Ensure the app has the Marketing API "
+                "use case, the token has ads_management, and the app has Standard Access for its own accounts "
+                "or Advanced Access for client accounts."
+            )
+        return RuntimeError(
+            f"Meta API rejected {path}: {message}{f' ({details})' if details else ''}{guidance}"
+        )
     except Exception:
         return RuntimeError(f"Meta API rejected {path}: HTTP {response.status_code}")
 
 
-def _request(method: str, cfg: dict[str, str], path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _request(
+    method: str,
+    cfg: dict[str, str],
+    path: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    files: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     url = f"https://graph.facebook.com/{cfg['api_version']}/{path.lstrip('/')}"
     values = {**(payload or {}), "access_token": cfg["access_token"]}
     kwargs: dict[str, Any] = {"timeout": 120}
@@ -60,6 +77,8 @@ def _request(method: str, cfg: dict[str, str], path: str, payload: dict[str, Any
         kwargs["params"] = values
     else:
         kwargs["data"] = values
+        if files:
+            kwargs["files"] = files
     response = requests.request(method.upper(), url, **kwargs)
     if not response.ok:
         raise _safe_error(response, path)
@@ -255,8 +274,46 @@ def _feature_opt_outs(media_type: str) -> dict[str, dict[str, str]]:
     return {name: {"enroll_status": "OPT_OUT"} for name in configured}
 
 
+def _download_image(url: str) -> tuple[str, bytes, str]:
+    """Fetch one already-validated public image for Meta's multipart upload edge."""
+    try:
+        response = requests.get(url, timeout=(15, 90), allow_redirects=False, stream=True)
+    except requests.RequestException as error:
+        raise RuntimeError(f"Could not download the prepared creative for Meta: {error}") from error
+    if not response.ok:
+        raise RuntimeError(f"Could not download the prepared creative for Meta: HTTP {response.status_code}")
+    content_type = str(response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise RuntimeError(f"Prepared creative returned unsupported image content type: {content_type or 'unknown'}")
+    limit = 30 * 1024 * 1024
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        size += len(chunk)
+        if size > limit:
+            raise RuntimeError("Prepared creative exceeds Meta's 30 MB image upload limit")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data:
+        raise RuntimeError("Prepared creative download was empty")
+    raw_name = urlparse(url).path.rsplit("/", 1)[-1]
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:180].strip("._")
+    extension = mimetypes.guess_extension(content_type) or ".jpg"
+    if not safe_name or not safe_name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        safe_name = f"creative{extension}"
+    return safe_name, data, content_type
+
+
 def _upload_image(cfg: dict[str, str], url: str) -> str:
-    result = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adimages", {"url": url})
+    filename, data, content_type = _download_image(url)
+    result = _request(
+        "POST",
+        cfg,
+        f"act_{cfg['ad_account_id']}/adimages",
+        files={"filename": (filename, data, content_type)},
+    )
     images = result.get("images") or {}
     item = next(iter(images.values()), None) if isinstance(images, dict) else None
     image_hash = str((item or {}).get("hash") or "")
@@ -286,13 +343,33 @@ def _upload_video(cfg: dict[str, str], url: str, title: str) -> str:
     raise RuntimeError("Timed out while Meta processed the uploaded video")
 
 
-def _story_spec(cfg: dict[str, str], adset: PreparedAdSet, landing_url: str) -> dict[str, Any]:
+def _prepare_media(cfg: dict[str, str], plan: PreparedCampaign) -> dict[str, dict[str, str]]:
+    """Upload all unique media before a campaign is created, preventing orphan campaigns on upload failure."""
+    handles: dict[str, dict[str, str]] = {"images": {}, "videos": {}}
+    for adset in plan.adsets:
+        if adset.media_type == "video":
+            for url in adset.media_urls:
+                if url not in handles["videos"]:
+                    handles["videos"][url] = _upload_video(cfg, url, adset.name)
+        else:
+            for url in adset.media_urls:
+                if url not in handles["images"]:
+                    handles["images"][url] = _upload_image(cfg, url)
+    return handles
+
+
+def _story_spec(
+    cfg: dict[str, str],
+    adset: PreparedAdSet,
+    landing_url: str,
+    media_handles: dict[str, dict[str, str]],
+) -> dict[str, Any]:
     identity: dict[str, Any] = {"page_id": cfg["page_id"]}
     if cfg.get("instagram_actor_id"):
         identity["instagram_actor_id"] = cfg["instagram_actor_id"]
     cta = {"type": adset.call_to_action, "value": {"link": landing_url}}
     if adset.media_type == "image":
-        image_hash = _upload_image(cfg, adset.media_urls[0])
+        image_hash = media_handles["images"][adset.media_urls[0]]
         identity["link_data"] = {
             "image_hash": image_hash,
             "link": landing_url,
@@ -302,7 +379,7 @@ def _story_spec(cfg: dict[str, str], adset: PreparedAdSet, landing_url: str) -> 
             "call_to_action": cta,
         }
     elif adset.media_type == "video":
-        video_id = _upload_video(cfg, adset.media_urls[0], adset.name)
+        video_id = media_handles["videos"][adset.media_urls[0]]
         identity["video_data"] = {
             "video_id": video_id,
             "message": adset.primary_text_ar,
@@ -314,7 +391,7 @@ def _story_spec(cfg: dict[str, str], adset: PreparedAdSet, landing_url: str) -> 
         children: list[dict[str, Any]] = []
         for url in adset.media_urls:
             children.append({
-                "image_hash": _upload_image(cfg, url),
+                "image_hash": media_handles["images"][url],
                 "link": landing_url,
                 "name": adset.headline_ar,
                 "description": adset.description_ar,
@@ -353,6 +430,9 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
             "Configure a USD ad account or add an explicit reviewed currency conversion before launch."
         )
 
+    # Finish every media transfer first so a token, app-capability, or file error cannot leave another
+    # empty campaign behind. Meta's current ad-image edge receives the actual file, not its remote URL.
+    media_handles = _prepare_media(cfg, plan)
     requests_log: list[dict[str, Any]] = []
     campaign_payload = {
         "name": plan.campaign_name,
@@ -397,7 +477,7 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
                 raise RuntimeError(f"Meta did not return an ID for ad set {index}")
 
             destination = _append_utm(plan.landing_url, campaign_id, index, adset_plan.angle)
-            story = _story_spec(cfg, adset_plan, destination)
+            story = _story_spec(cfg, adset_plan, destination, media_handles)
             creative_payload = {
                 "name": f"{adset_plan.name} Creative",
                 "object_story_spec": json.dumps(story, ensure_ascii=False),

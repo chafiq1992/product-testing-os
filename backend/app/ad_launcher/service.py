@@ -681,8 +681,33 @@ def retry_job(job_id: str, store: str | None) -> dict[str, Any]:
     job = repo.get_job(store, job_id)
     if not job:
         raise ValueError("Ad launcher job not found")
-    if job.get("status") not in {"failed", "rejected"}:
-        raise ValueError("Only failed or review-rejected preparation jobs can be resumed")
+    if job.get("status") not in {"failed", "rejected", "launch_failed"}:
+        raise ValueError("Only failed, review-rejected, or Meta launch-failed jobs can be resumed")
+
+    retry_count = int(job.get("retry_count") or 0) + 1
+    if job.get("status") == "launch_failed":
+        result = dict(job.get("result") or {})
+        review = dict(result.get("review") or {})
+        if not review.get("approved") or not result.get("plan"):
+            raise ValueError("The saved campaign no longer has an approved launch plan")
+        updated = repo.update_job(store, job_id, {
+            "status": "approved",
+            "stage": "meta_retry_queued",
+            "progress": 100,
+            "error": None,
+            "retry_count": retry_count,
+        })
+        repo.add_activity(
+            store,
+            job_id,
+            stage="meta_retry_queued",
+            title=f"Meta-only retry {retry_count} requested",
+            summary=(
+                "The approved product analysis, copy, review, generated media, and launch plan were retained. "
+                "Only media transfer and Meta object creation will run again."
+            ),
+        )
+        return updated
 
     checkpoint = dict(job.get("checkpoint") or {})
     result = dict(job.get("result") or {})
@@ -705,7 +730,6 @@ def retry_job(job_id: str, store: str | None) -> dict[str, Any]:
         if summaries.get("creative_strategy"):
             checkpoint.setdefault("strategy_reasoning", summaries["creative_strategy"])
 
-    retry_count = int(job.get("retry_count") or 0) + 1
     updated = repo.update_job(store, job_id, {
         "status": "queued",
         "stage": "resume_queued",

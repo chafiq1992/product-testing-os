@@ -439,6 +439,30 @@ def test_rejected_job_resume_seeds_completed_checkpoints():
     assert resumed["retry_count"] == 1
 
 
+def test_launch_failed_retry_keeps_approved_plan_and_skips_agent_work():
+    job_id = str(uuid4())
+    saved_result = {
+        "plan": _plan(2).model_dump(mode="json"),
+        "review": {"approved": True, "score": 92},
+        "reasoning_summaries": {"review": ["Approved controlled campaign."]},
+    }
+    repository.create_job("irrakids", job_id, {"product_id": "123456789", "auto_launch": True})
+    repository.update_job("irrakids", job_id, {
+        "status": "launch_failed",
+        "stage": "meta_failed_paused",
+        "result": saved_result,
+        "error": {"type": "RuntimeError", "message": "Meta image upload failed"},
+    })
+
+    resumed = service.retry_job(job_id, "irrakids")
+
+    assert resumed["status"] == "approved"
+    assert resumed["stage"] == "meta_retry_queued"
+    assert resumed["result"] == saved_result
+    assert resumed["error"] is None
+    assert resumed["retry_count"] == 1
+
+
 def test_product_cards_keep_latest_setup_per_store_product():
     product_id = "777888999"
     first_id = str(uuid4())
@@ -488,6 +512,56 @@ def test_meta_connection_discovers_accounts_and_respects_selection(monkeypatch):
     assert result["account"]["name"] == "Store Two"
 
 
+def test_meta_image_upload_sends_multipart_bytes_not_remote_url(monkeypatch):
+    class ImageResponse:
+        ok = True
+        headers = {"content-type": "image/jpeg"}
+
+        @staticmethod
+        def iter_content(chunk_size=0):
+            return iter([b"prepared-image-bytes"])
+
+    captured: dict = {}
+    monkeypatch.setattr(meta.requests, "get", lambda *args, **kwargs: ImageResponse())
+
+    def fake_request(method, cfg, path, payload=None, *, files=None):
+        captured.update({"method": method, "path": path, "payload": payload, "files": files})
+        return {"images": {"creative.jpg": {"hash": "verified-hash"}}}
+
+    monkeypatch.setattr(meta, "_request", fake_request)
+    image_hash = meta._upload_image({"ad_account_id": "42"}, "https://app.example/uploads/creative.jpg")
+
+    assert image_hash == "verified-hash"
+    assert captured["path"] == "act_42/adimages"
+    assert captured["payload"] is None
+    filename, data, content_type = captured["files"]["filename"]
+    assert filename == "creative.jpg"
+    assert data == b"prepared-image-bytes"
+    assert content_type == "image/jpeg"
+
+
+def test_meta_media_preflight_fails_before_campaign_creation(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
+        "access_token": "token", "ad_account_id": "42", "page_id": "84",
+        "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
+    })
+
+    def fake_request(method, cfg, path, payload=None):
+        calls.append((method, path))
+        return {"account_status": 1, "currency": "USD"}
+
+    monkeypatch.setattr(meta, "_request", fake_request)
+    monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: (_ for _ in ()).throw(
+        RuntimeError("image upload capability rejected")
+    ))
+
+    with pytest.raises(RuntimeError, match="image upload capability rejected"):
+        meta.create_sales_test_campaign(_plan(2))
+
+    assert calls == [("GET", "act_42")]
+
+
 def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch):
     calls: list[tuple[str, str, dict]] = []
     counters = {"campaigns": 0, "adsets": 0, "adcreatives": 0, "ads": 0}
@@ -505,7 +579,11 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
         }
 
     monkeypatch.setattr(meta, "_require_config", fake_config)
-    monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url: {
+    handles = {"images": {url: f"hash-{index}" for index, url in enumerate(
+        [item.media_urls[0] for item in _plan(2).adsets], start=1
+    )}, "videos": {}}
+    monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: handles)
+    monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url, media_handles: {
         "page_id": cfg["page_id"],
         "link_data": {"link": url, "message": adset.primary_text_ar},
     })
@@ -560,7 +638,8 @@ def test_meta_failure_never_activates_campaign(monkeypatch):
         "access_token": "token", "ad_account_id": "42", "page_id": "84",
         "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
     })
-    monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url: {"page_id": "84"})
+    monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: {"images": {}, "videos": {}})
+    monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url, media_handles: {"page_id": "84"})
 
     def fake_request(method, cfg, path, payload=None):
         payload = dict(payload or {})
