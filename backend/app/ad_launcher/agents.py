@@ -77,7 +77,21 @@ configured threshold is always a rejection. Explain findings plainly; do not rep
 
 
 def _settings(reasoning_effort: str) -> ModelSettings:
-    return ModelSettings(reasoning={"effort": reasoning_effort}, verbosity="low")
+    return ModelSettings(reasoning={"effort": reasoning_effort, "summary": "auto"}, verbosity="low")
+
+
+def _reasoning_summaries(result: Any) -> list[str]:
+    """Extract API-provided summaries; raw hidden reasoning is never exposed."""
+    summaries: list[str] = []
+    for item in getattr(result, "new_items", []) or []:
+        if getattr(item, "type", "") != "reasoning_item":
+            continue
+        raw_item = getattr(item, "raw_item", None)
+        for summary in getattr(raw_item, "summary", []) or []:
+            text = str(getattr(summary, "text", "") or "").strip()
+            if text and text not in summaries:
+                summaries.append(text[:4000])
+    return summaries[:4]
 
 
 def _agent_input(context: dict[str, Any], image_data_urls: list[str], label: str) -> list[dict[str, Any]]:
@@ -91,7 +105,9 @@ def _agent_input(context: dict[str, Any], image_data_urls: list[str], label: str
     return [{"role": "user", "content": content}]
 
 
-def analyze_campaign(context: dict[str, Any], image_data_urls: list[str]) -> CampaignDraft:
+def analyze_campaign_with_summary(
+    context: dict[str, Any], image_data_urls: list[str],
+) -> tuple[CampaignDraft, list[str]]:
     agent = Agent(
         name="Paid Social Creative Analyst",
         instructions=ANALYZER_INSTRUCTIONS,
@@ -105,9 +121,13 @@ def analyze_campaign(context: dict[str, Any], image_data_urls: list[str]) -> Cam
         max_turns=4,
     )
     output = result.final_output
-    if isinstance(output, CampaignDraft):
-        return output
-    return CampaignDraft.model_validate(output)
+    draft = output if isinstance(output, CampaignDraft) else CampaignDraft.model_validate(output)
+    return draft, _reasoning_summaries(result)
+
+
+def analyze_campaign(context: dict[str, Any], image_data_urls: list[str]) -> CampaignDraft:
+    draft, _ = analyze_campaign_with_summary(context, image_data_urls)
+    return draft
 
 
 def enforce_broad_audience(draft: CampaignDraft, requested_countries: list[str]) -> CampaignDraft:
@@ -173,12 +193,12 @@ def deterministic_blockers(
     return list(dict.fromkeys(blockers))
 
 
-def review_campaign(
+def review_campaign_with_summary(
     context: dict[str, Any],
     draft: CampaignDraft,
     image_data_urls: list[str],
     blockers: list[str],
-) -> ReviewDecision:
+) -> tuple[ReviewDecision, list[str]]:
     review_context = {
         **context,
         "draft": draft.model_dump(mode="json"),
@@ -205,4 +225,15 @@ def review_campaign(
     review = output if isinstance(output, ReviewDecision) else ReviewDecision.model_validate(output)
     combined = list(dict.fromkeys(list(review.blockers) + blockers))
     approved = bool(review.approved and review.score >= REVIEW_THRESHOLD and not combined)
-    return review.model_copy(update={"approved": approved, "blockers": combined})
+    decision = review.model_copy(update={"approved": approved, "blockers": combined})
+    return decision, _reasoning_summaries(result)
+
+
+def review_campaign(
+    context: dict[str, Any],
+    draft: CampaignDraft,
+    image_data_urls: list[str],
+    blockers: list[str],
+) -> ReviewDecision:
+    review, _ = review_campaign_with_summary(context, draft, image_data_urls, blockers)
+    return review

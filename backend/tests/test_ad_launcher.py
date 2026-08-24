@@ -107,6 +107,7 @@ def _plan(adset_count: int = 2) -> PreparedCampaign:
         product_title="Verified product",
         landing_url="https://shop.example/ar/products/verified-product",
         store="irrakids",
+        meta_ad_account_id="42",
         timezone="Africa/Casablanca",
         scheduled_start="2026-08-24T23:59:00+01:00",
         total_daily_budget_usd=9.0,
@@ -252,6 +253,29 @@ def test_copy_agent_is_pinned_to_gpt_5_6_sol_with_high_reasoning(monkeypatch):
 
     assert captured["model"] == "gpt-5.6-sol"
     assert captured["model_settings"].reasoning.effort == "high"
+    assert captured["model_settings"].reasoning.summary == "auto"
+
+
+def test_only_api_provided_reasoning_summaries_are_exposed():
+    class Summary:
+        text = "Compared the product facts with the uploaded carousel and selected two distinct angles."
+
+    class RawItem:
+        summary = [Summary()]
+
+    class ReasoningItem:
+        type = "reasoning_item"
+        raw_item = RawItem()
+
+    class MessageItem:
+        type = "message_output_item"
+
+    class Result:
+        new_items = [ReasoningItem(), MessageItem()]
+
+    assert agents._reasoning_summaries(Result()) == [
+        "Compared the product facts with the uploaded carousel and selected two distinct angles."
+    ]
 
 
 def test_broad_audience_controls_are_enforced_after_ai_planning():
@@ -364,18 +388,123 @@ def test_launch_claim_is_single_use():
         repository.claim_job_launch("irrakids", job_id)
 
 
+def test_job_activity_records_safe_progress_summaries():
+    job_id = str(uuid4())
+    repository.create_job("irranova", job_id, {"product_id": "123", "meta_ad_account_id": "99"})
+    repository.add_activity(
+        "irranova",
+        job_id,
+        stage="creative_analysis",
+        title="Creative strategy completed",
+        summary="Two evidence-grounded angles were selected.",
+        source="structured_output_summary",
+    )
+
+    job = repository.get_job("irranova", job_id)
+
+    assert job["store"] == "irranova"
+    assert [item["stage"] for item in job["activity"]] == ["queued", "creative_analysis"]
+    assert job["activity"][-1]["summary"] == "Two evidence-grounded angles were selected."
+
+
+def test_rejected_job_resume_seeds_completed_checkpoints():
+    job_id = str(uuid4())
+    request_data = {
+        "product_id": "987654321",
+        "media": [{"kind": "image", "filename": "saved.jpg", "url": "https://app.example/uploads/saved.jpg"}],
+        "countries": ["MA"],
+    }
+    repository.create_job("irrakids", job_id, request_data)
+    repository.update_job("irrakids", job_id, {
+        "status": "rejected",
+        "result": {
+            "product": {"numeric_id": "987654321", "title": "Saved product"},
+            "landing_page": {"arabic_ready_hint": True},
+            "generated_media": [],
+            "plan": {
+                "landing_url": "https://ar.irraki.com/products/saved-product",
+                "analysis": _draft(2).model_dump(mode="json"),
+            },
+            "reasoning_summaries": {"creative_strategy": ["Selected two controlled angles."]},
+        },
+    })
+
+    resumed = service.retry_job(job_id, "irrakids")
+
+    assert resumed["status"] == "queued"
+    assert resumed["result"] is None
+    assert resumed["checkpoint"]["product"]["title"] == "Saved product"
+    assert resumed["checkpoint"]["media_format"] == "image"
+    assert resumed["checkpoint"]["draft"]["campaign_name"] == _draft(2).campaign_name
+    assert resumed["retry_count"] == 1
+
+
+def test_product_cards_keep_latest_setup_per_store_product():
+    product_id = "777888999"
+    first_id = str(uuid4())
+    latest_id = str(uuid4())
+    repository.create_job("mmd", first_id, {"product_id": product_id, "media": [{"kind": "image"}]})
+    repository.create_job("mmd", latest_id, {
+        "product_id": product_id,
+        "meta_ad_account_id": "55",
+        "total_daily_budget_usd": 12,
+        "media": [{"kind": "image", "url": "https://app.example/latest.jpg"}],
+    })
+    repository.update_job("mmd", latest_id, {
+        "status": "approved",
+        "result": {"product": {"title": "Latest saved setup", "images": []}, "review": {"score": 91}},
+    })
+
+    cards = repository.list_product_cards("mmd")
+    matching = [card for card in cards if card["product_id"] == product_id]
+
+    assert len(matching) == 1
+    assert matching[0]["job_id"] == latest_id
+    assert matching[0]["product_title"] == "Latest saved setup"
+    assert matching[0]["request"]["meta_ad_account_id"] == "55"
+
+
+def test_meta_connection_discovers_accounts_and_respects_selection(monkeypatch):
+    monkeypatch.setenv("META_ACCESS_TOKEN_IRRAKIDS", "token")
+    monkeypatch.setenv("META_AD_ACCOUNT_ID_IRRAKIDS", "42")
+    monkeypatch.setenv("META_PAGE_ID_IRRAKIDS", "84")
+    monkeypatch.setenv("META_PIXEL_ID_IRRAKIDS", "126")
+
+    def fake_request(method, cfg, path, payload=None):
+        if path == "me/adaccounts":
+            return {"data": [
+                {"id": "act_42", "name": "Store One", "account_status": 1, "currency": "USD"},
+                {"id": "act_99", "name": "Store Two", "account_status": 1, "currency": "USD"},
+            ]}
+        assert path == "act_99"
+        return {"id": "act_99", "name": "Store Two", "account_status": 1, "currency": "USD"}
+
+    monkeypatch.setattr(meta, "_request", fake_request)
+    result = meta.connection("irrakids", "99")
+
+    assert result["ready"] is True
+    assert result["selected_account_id"] == "99"
+    assert [item["account_id"] for item in result["accounts"]] == ["42", "99"]
+    assert result["account"]["name"] == "Store Two"
+
+
 def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch):
     calls: list[tuple[str, str, dict]] = []
     counters = {"campaigns": 0, "adsets": 0, "adcreatives": 0, "ads": 0}
+    selected: dict[str, str | None] = {}
 
-    monkeypatch.setattr(meta, "_require_config", lambda store: {
-        "access_token": "token",
-        "ad_account_id": "42",
-        "page_id": "84",
-        "instagram_actor_id": "",
-        "pixel_id": "126",
-        "api_version": "v26.0",
-    })
+    def fake_config(store, ad_account_id=None):
+        selected.update({"store": store, "ad_account_id": ad_account_id})
+        return {
+            "access_token": "token",
+            "ad_account_id": str(ad_account_id or "42"),
+            "page_id": "84",
+            "instagram_actor_id": "",
+            "pixel_id": "126",
+            "api_version": "v26.0",
+        }
+
+    monkeypatch.setattr(meta, "_require_config", fake_config)
     monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url: {
         "page_id": cfg["page_id"],
         "link_data": {"link": url, "message": adset.primary_text_ar},
@@ -395,6 +524,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     monkeypatch.setattr(meta, "_request", fake_request)
     result = meta.create_sales_test_campaign(_plan(2))
 
+    assert selected == {"store": "irrakids", "ad_account_id": "42"}
     campaign_create = next(payload for method, path, payload in calls if path.endswith("/campaigns"))
     assert campaign_create["status"] == "PAUSED"
     assert campaign_create["objective"] == "OUTCOME_SALES"
@@ -426,7 +556,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
 
 def test_meta_failure_never_activates_campaign(monkeypatch):
     calls: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(meta, "_require_config", lambda store: {
+    monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
         "access_token": "token", "ad_account_id": "42", "page_id": "84",
         "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
     })

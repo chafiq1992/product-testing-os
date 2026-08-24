@@ -23,8 +23,13 @@ def _env(name: str, store: str | None, default: str = "") -> str:
     return str((os.getenv(f"{name}{suffix}") if suffix else None) or os.getenv(name, default) or "").strip()
 
 
-def _config(store: str | None) -> dict[str, str]:
-    account = _env("META_AD_ACCOUNT_ID", store).removeprefix("act_")
+def _account_id(value: str | None) -> str:
+    normalized = str(value or "").strip().removeprefix("act_")
+    return normalized if re.fullmatch(r"\d+", normalized) else ""
+
+
+def _config(store: str | None, ad_account_id: str | None = None) -> dict[str, str]:
+    account = _account_id(ad_account_id) or _account_id(_env("META_AD_ACCOUNT_ID", store))
     return {
         "access_token": _env("META_ACCESS_TOKEN", store),
         "ad_account_id": account,
@@ -65,8 +70,8 @@ def _request(method: str, cfg: dict[str, str], path: str, payload: dict[str, Any
         raise RuntimeError(f"Meta API returned invalid JSON for {path}") from error
 
 
-def _require_config(store: str | None) -> dict[str, str]:
-    cfg = _config(store)
+def _require_config(store: str | None, ad_account_id: str | None = None) -> dict[str, str]:
+    cfg = _config(store, ad_account_id)
     missing = [
         name for name, value in (
             ("META_ACCESS_TOKEN", cfg["access_token"]),
@@ -80,8 +85,31 @@ def _require_config(store: str | None) -> dict[str, str]:
     return cfg
 
 
-def connection(store: str | None) -> dict[str, Any]:
-    cfg = _config(store)
+def _available_ad_accounts(cfg: dict[str, str]) -> list[dict[str, Any]]:
+    result = _request("GET", cfg, "me/adaccounts", {
+        "fields": "id,name,account_status,currency,timezone_name",
+        "limit": "200",
+    })
+    accounts: list[dict[str, Any]] = []
+    for raw in result.get("data") or []:
+        if not isinstance(raw, dict):
+            continue
+        account_id = _account_id(str(raw.get("id") or ""))
+        if not account_id:
+            continue
+        accounts.append({
+            "id": f"act_{account_id}",
+            "account_id": account_id,
+            "name": str(raw.get("name") or f"Ad account {account_id}"),
+            "account_status": raw.get("account_status"),
+            "currency": str(raw.get("currency") or "").upper(),
+            "timezone_name": raw.get("timezone_name"),
+        })
+    return accounts
+
+
+def connection(store: str | None, ad_account_id: str | None = None) -> dict[str, Any]:
+    cfg = _config(store, ad_account_id)
     missing = [
         name for name, value in (
             ("META_ACCESS_TOKEN", cfg["access_token"]),
@@ -90,12 +118,50 @@ def connection(store: str | None) -> dict[str, Any]:
             ("META_PIXEL_ID", cfg["pixel_id"]),
         ) if not value
     ]
+    accounts: list[dict[str, Any]] = []
+    discovery_error: str | None = None
+    if cfg["access_token"]:
+        try:
+            accounts = _available_ad_accounts(cfg)
+        except Exception as error:
+            discovery_error = str(error)
+    if not cfg["ad_account_id"] and accounts:
+        preferred = next(
+            (
+                item for item in accounts
+                if str(item.get("account_status") or "") in {"1", "ACTIVE"}
+                and str(item.get("currency") or "").upper() == "USD"
+            ),
+            accounts[0],
+        )
+        cfg["ad_account_id"] = str(preferred.get("account_id") or "")
+    if cfg["ad_account_id"]:
+        missing = [name for name in missing if name != "META_AD_ACCOUNT_ID"]
+    if not cfg["ad_account_id"] and "META_AD_ACCOUNT_ID" not in missing:
+        missing.append("META_AD_ACCOUNT_ID")
     if missing:
-        return {"ready": False, "missing": missing, "api_version": cfg["api_version"]}
+        return {
+            "ready": False,
+            "missing": missing,
+            "api_version": cfg["api_version"],
+            "accounts": accounts,
+            "selected_account_id": cfg["ad_account_id"] or None,
+            "error": discovery_error,
+        }
     try:
         account = _request("GET", cfg, f"act_{cfg['ad_account_id']}", {
             "fields": "id,name,account_status,currency,timezone_name",
         })
+        selected_id = _account_id(str(account.get("id") or cfg["ad_account_id"]))
+        if selected_id and not any(item.get("account_id") == selected_id for item in accounts):
+            accounts.append({
+                "id": f"act_{selected_id}",
+                "account_id": selected_id,
+                "name": str(account.get("name") or f"Ad account {selected_id}"),
+                "account_status": account.get("account_status"),
+                "currency": str(account.get("currency") or "").upper(),
+                "timezone_name": account.get("timezone_name"),
+            })
         active = bool(str(account.get("account_status") or "") in {"1", "ACTIVE"})
         currency = str(account.get("currency") or "").upper()
         return {
@@ -103,6 +169,8 @@ def connection(store: str | None) -> dict[str, Any]:
             "missing": [],
             "api_version": cfg["api_version"],
             "account": account,
+            "accounts": accounts,
+            "selected_account_id": selected_id,
             "page_id": cfg["page_id"],
             "pixel_configured": bool(cfg["pixel_id"]),
             "error": (
@@ -111,7 +179,14 @@ def connection(store: str | None) -> dict[str, Any]:
             ),
         }
     except Exception as error:
-        return {"ready": False, "missing": [], "api_version": cfg["api_version"], "error": str(error)}
+        return {
+            "ready": False,
+            "missing": [],
+            "api_version": cfg["api_version"],
+            "accounts": accounts,
+            "selected_account_id": cfg["ad_account_id"] or None,
+            "error": str(error),
+        }
 
 
 def _append_utm(url: str, campaign_id: str, adset_index: int, angle: str) -> str:
@@ -265,7 +340,7 @@ def _budget_minor(total_usd: float, count: int) -> list[int]:
 
 def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
     _require_public_media(plan)
-    cfg = _require_config(plan.store)
+    cfg = _require_config(plan.store, plan.meta_ad_account_id)
     account = _request("GET", cfg, f"act_{cfg['ad_account_id']}", {
         "fields": "id,name,account_status,currency,timezone_name",
     })

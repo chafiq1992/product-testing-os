@@ -1567,6 +1567,14 @@ export type AdLauncherJob = {
   updated_at?:string
   launched_at?:string
   request?:any
+  activity?:Array<{
+    at?:string
+    stage?:string
+    status?:string
+    title?:string
+    summary?:string
+    source?:string
+  }>
   result?:{
     product?:any
     landing_page?:any
@@ -1579,14 +1587,33 @@ export type AdLauncherJob = {
     model_reasoning_effort?:string
     review_model?:string
     review_reasoning_effort?:string
+    reasoning_summaries?:{
+      creative_strategy?:string[]
+      independent_review?:string[]
+    }
     image_model?:string
     meta_api_version?:string
   }
   error?:{type?:string,message?:string}|null
 }
 
-export async function adLauncherConnection(store:string){
-  const { data } = await axios.get(`${base}/api/ad-launcher/connection?store=${encodeURIComponent(store)}`, {
+export type AdLauncherProductCard = {
+  job_id:string
+  store:string
+  status:string
+  created_at?:string
+  updated_at?:string
+  product_id:string
+  product_title:string
+  cover_url?:string|null
+  review_score?:number|null
+  request:any
+}
+
+export async function adLauncherConnection(store:string,adAccountId?:string){
+  const params=new URLSearchParams({store})
+  if(adAccountId) params.set('ad_account_id',adAccountId)
+  const { data } = await axios.get(`${base}/api/ad-launcher/connection?${params.toString()}`, {
     headers:{...systemAdminHeaders()}, timeout:60000,
   })
   return data as { data?:any, error?:string }
@@ -1594,6 +1621,8 @@ export async function adLauncherConnection(store:string){
 
 export async function createAdLauncherJob(payload:{
   store:string
+  ad_account_id?:string
+  source_job_id?:string
   product_id:string
   landing_url?:string
   total_daily_budget_usd:number
@@ -1606,8 +1635,10 @@ export async function createAdLauncherJob(payload:{
 }){
   const form=new FormData()
   form.append('store',payload.store)
+  if(payload.ad_account_id) form.append('ad_account_id',payload.ad_account_id)
   form.append('product_id',payload.product_id)
   if(payload.landing_url) form.append('landing_url',payload.landing_url)
+  if(payload.source_job_id) form.append('source_job_id',payload.source_job_id)
   form.append('total_daily_budget_usd',String(payload.total_daily_budget_usd))
   form.append('ai_generated_adsets',String(!!payload.ai_generated_adsets))
   form.append('countries',JSON.stringify(payload.countries||['MA']))
@@ -1626,6 +1657,21 @@ export async function getAdLauncherJob(store:string,jobId:string){
     headers:{...systemAdminHeaders()},timeout:60000,
   })
   return data as {data?:AdLauncherJob,error?:string}
+}
+
+export async function getAdLauncherProductCards(store?:string){
+  const query=store?`?store=${encodeURIComponent(store)}`:''
+  const {data}=await axios.get(`${base}/api/ad-launcher/product-cards${query}`,{
+    headers:{...systemAdminHeaders()},timeout:60000,
+  })
+  return data as {data?:AdLauncherProductCard[],error?:string}
+}
+
+export async function retryAdLauncherJob(store:string,jobId:string){
+  const {data}=await axios.post(`${base}/api/ad-launcher/jobs/${encodeURIComponent(jobId)}/retry`,{store,confirm:true},{
+    headers:{...systemAdminHeaders()},timeout:60000,
+  })
+  return data as {data?:{job_id:string,status:string},error?:string}
 }
 
 export async function launchAdLauncherJob(store:string,jobId:string){

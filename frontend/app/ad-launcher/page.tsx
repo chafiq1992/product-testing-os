@@ -8,8 +8,8 @@ import {
 } from 'lucide-react'
 import ShopifyStoreSelect from '@/components/ShopifyStoreSelect'
 import {
-  adLauncherConnection,createAdLauncherJob,getAdLauncherJob,launchAdLauncherJob,
-  systemHealthLogin,systemHealthMe,type AdLauncherJob,
+  adLauncherConnection,createAdLauncherJob,getAdLauncherJob,getAdLauncherProductCards,launchAdLauncherJob,retryAdLauncherJob,
+  systemHealthLogin,systemHealthMe,type AdLauncherJob,type AdLauncherProductCard,
 } from '@/lib/api'
 
 function Card({children,className=''}:{children:React.ReactNode,className?:string}){
@@ -62,9 +62,12 @@ function MediaPreview({url,type,name}:{url:string,type:string,name:string}){
 export default function AdLauncherPage(){
   const [authed,setAuthed]=useState<boolean|null>(null)
   const [store,setStore]=useState('irrakids')
+  const [adAccountId,setAdAccountId]=useState('')
   const [productId,setProductId]=useState('')
   const [landingUrl,setLandingUrl]=useState('')
   const [files,setFiles]=useState<File[]>([])
+  const [savedMedia,setSavedMedia]=useState<any[]>([])
+  const [sourceJobId,setSourceJobId]=useState('')
   const [budget,setBudget]=useState(9)
   const [countries,setCountries]=useState('MA')
   const [aiMode,setAiMode]=useState(false)
@@ -72,6 +75,8 @@ export default function AdLauncherPage(){
   const [connection,setConnection]=useState<any>(null)
   const [jobId,setJobId]=useState('')
   const [job,setJob]=useState<AdLauncherJob|null>(null)
+  const [productCards,setProductCards]=useState<AdLauncherProductCard[]>([])
+  const [pollNonce,setPollNonce]=useState(0)
   const [busy,setBusy]=useState('')
   const [error,setError]=useState('')
 
@@ -82,8 +87,41 @@ export default function AdLauncherPage(){
 
   useEffect(()=>{
     if(!authed)return
-    adLauncherConnection(store).then(result=>setConnection(result.data||{ready:false,error:result.error})).catch(()=>setConnection({ready:false}))
-  },[authed,store])
+    let alive=true
+    adLauncherConnection(store,adAccountId||undefined).then(result=>{
+      if(!alive)return
+      const data=result.data||{ready:false,error:result.error}
+      setConnection(data)
+      if(!adAccountId){
+        const accounts=Array.isArray(data.accounts)?data.accounts:[]
+        let remembered=''
+        try{remembered=localStorage.getItem(`ptos_meta_account_${store}`)||''}catch{}
+        const validRemembered=accounts.some((item:any)=>String(item.account_id)===remembered)
+        const next=(validRemembered?remembered:String(data.selected_account_id||accounts[0]?.account_id||''))
+        if(next)setAdAccountId(next)
+      }
+    }).catch(()=>{if(alive)setConnection({ready:false})})
+    return()=>{alive=false}
+  },[authed,store,adAccountId])
+
+  async function refreshProductCards(){
+    try{
+      const result=await getAdLauncherProductCards()
+      if(result.data)setProductCards(result.data)
+    }catch{}
+  }
+
+  useEffect(()=>{if(authed)refreshProductCards()},[authed])
+
+  function selectStore(value:string){
+    setStore(value);setAdAccountId('');setConnection(null);setProductId('');setLandingUrl('');setFiles([]);setSavedMedia([]);setSourceJobId('')
+    try{localStorage.setItem('ptos_store',value)}catch{}
+  }
+
+  function selectAdAccount(value:string){
+    setAdAccountId(value);setConnection(null)
+    try{localStorage.setItem(`ptos_meta_account_${store}`,value)}catch{}
+  }
 
   useEffect(()=>{
     if(!jobId||!authed)return
@@ -98,29 +136,32 @@ export default function AdLauncherPage(){
         const terminal=['rejected','failed','launched','launch_failed'].includes(result.data.status)
           ||(result.data.status==='approved'&&!result.data.request?.auto_launch)
         if(!terminal)timer=setTimeout(poll,2200)
+        else refreshProductCards()
       }catch(err:any){if(alive)setError(String(err?.response?.data?.detail||err?.message||err))}
     }
     poll()
     return()=>{alive=false;if(timer)clearTimeout(timer)}
-  },[jobId,store,authed])
+  },[jobId,store,authed,pollNonce])
 
   const media=useMemo(()=>{
-    const images=files.filter(file=>file.type.startsWith('image/')).length
-    const videos=files.filter(file=>file.type.startsWith('video/')).length
-    if(videos===1&&files.length===1)return {valid:true,label:'Video ad',icon:Film}
-    if(images===1&&files.length===1)return {valid:true,label:'Image ad',icon:ImageIcon}
-    if(images===files.length&&images>=2&&images<=10)return {valid:true,label:`Carousel · ${images} cards`,icon:Layers3}
-    return {valid:false,label:files.length?'Unsupported mix':'No creative selected',icon:UploadCloud}
-  },[files])
+    const items=files.length?files:savedMedia
+    const images=items.filter((item:any)=>files.length?item.type.startsWith('image/'):item.kind==='image').length
+    const videos=items.filter((item:any)=>files.length?item.type.startsWith('video/'):item.kind==='video').length
+    const saved=!files.length&&savedMedia.length?' · saved creative':''
+    if(videos===1&&items.length===1)return {valid:true,label:`Video ad${saved}`,icon:Film}
+    if(images===1&&items.length===1)return {valid:true,label:`Image ad${saved}`,icon:ImageIcon}
+    if(images===items.length&&images>=2&&images<=10)return {valid:true,label:`Carousel · ${images} cards${saved}`,icon:Layers3}
+    return {valid:false,label:items.length?'Unsupported mix':'No creative selected',icon:UploadCloud}
+  },[files,savedMedia])
 
   async function analyze(){
     setError('');setJob(null);setJobId('')
-    if(!productId.trim()||!media.valid){setError('Enter a Shopify product ID and choose one valid creative format.');return}
+    if(!productId.trim()||!media.valid||!adAccountId){setError('Choose a store and Meta ad account, enter a Shopify product ID, and select one valid creative format.');return}
     if(autoLaunch&&!window.confirm('Arm automatic LIVE scheduling? The campaign will be activated after reviewer approval and start at 23:59.'))return
     setBusy('analyze')
     try{
       const result=await createAdLauncherJob({
-        store,product_id:productId.trim(),landing_url:landingUrl.trim()||undefined,
+        store,ad_account_id:adAccountId,source_job_id:sourceJobId||undefined,product_id:productId.trim(),landing_url:landingUrl.trim()||undefined,
         total_daily_budget_usd:budget,ai_generated_adsets:aiMode,
         countries:countries.split(',').map(value=>value.trim().toUpperCase()).filter(Boolean),
         timezone:'Africa/Casablanca',auto_launch:autoLaunch,confirm_live_launch:autoLaunch,files,
@@ -131,6 +172,40 @@ export default function AdLauncherPage(){
       if(err?.response?.status===401)setAuthed(false)
       setError(String(err?.response?.data?.detail||err?.message||err))
     }finally{setBusy('')}
+  }
+
+  async function retryJob(){
+    if(!jobId||!job||!['failed','rejected'].includes(job.status))return
+    const warning=job.request?.auto_launch?' If the review passes, the original auto-launch setting can create the Meta campaign.':''
+    if(!window.confirm(`Resume this job from its latest successful checkpoint?${warning}`))return
+    setBusy('retry');setError('')
+    try{
+      const result=await retryAdLauncherJob(store,jobId)
+      if(result.error)throw new Error(result.error)
+      const latest=await getAdLauncherJob(store,jobId)
+      if(latest.data)setJob(latest.data)
+      setPollNonce(value=>value+1)
+    }catch(err:any){setError(String(err?.response?.data?.detail||err?.message||err))}
+    finally{setBusy('')}
+  }
+
+  function loadProductCard(card:AdLauncherProductCard){
+    const request=card.request||{}
+    const nextStore=String(card.store||'irrakids')
+    const nextAccount=String(request.meta_ad_account_id||'')
+    setJobId('');setJob(null);setError('');setFiles([])
+    setStore(nextStore);setAdAccountId(nextAccount);setConnection(null)
+    setProductId(String(request.product_id||card.product_id||''))
+    setLandingUrl(String(request.landing_url||''))
+    setBudget(Number(request.total_daily_budget_usd||9))
+    setCountries((request.countries||['MA']).join(','))
+    setAiMode(!!request.ai_generated_adsets);setAutoLaunch(!!request.auto_launch)
+    setSavedMedia(Array.isArray(request.media)?request.media:[]);setSourceJobId(card.job_id)
+    try{
+      localStorage.setItem('ptos_store',nextStore)
+      if(nextAccount)localStorage.setItem(`ptos_meta_account_${nextStore}`,nextAccount)
+    }catch{}
+    window.scrollTo({top:0,behavior:'smooth'})
   }
 
   async function launch(){
@@ -157,7 +232,11 @@ export default function AdLauncherPage(){
       <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-7">
         <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-violet-600 text-white"><Rocket className="h-5 w-5"/></div><div><h1 className="font-bold text-slate-950">AI Meta Ad Launcher</h1><p className="text-xs text-slate-500">Shopify evidence → creative team → reviewer → scheduled Sales campaign</p></div></div>
         <div className="flex items-center gap-2">
-          <ShopifyStoreSelect value={store} onChange={value=>{setStore(value);try{localStorage.setItem('ptos_store',value)}catch{}}} disabled={!!jobId} className="rounded-xl border bg-white px-3 py-2 text-sm font-medium"/>
+          <ShopifyStoreSelect value={store} onChange={selectStore} disabled={!!jobId} className="rounded-xl border bg-white px-3 py-2 text-sm font-medium"/>
+          <select value={adAccountId} onChange={event=>selectAdAccount(event.target.value)} disabled={!!jobId||!connection?.accounts?.length} aria-label="Meta ad account" className="max-w-64 rounded-xl border bg-white px-3 py-2 text-sm font-medium disabled:opacity-50">
+            <option value="">Choose Meta ad account</option>
+            {(connection?.accounts||[]).map((account:any)=><option key={account.account_id} value={account.account_id}>{account.name} · {account.currency||'—'} · act_{account.account_id}</option>)}
+          </select>
           <Link href="/" className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white"><ArrowLeft className="h-4 w-4"/> Home</Link>
         </div>
       </div>
@@ -167,7 +246,7 @@ export default function AdLauncherPage(){
       <section className="overflow-hidden rounded-[2rem] bg-slate-950 p-6 text-white md:p-9">
         <div className="grid gap-7 lg:grid-cols-[1.25fr_.75fr] lg:items-end">
           <div><div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-violet-200"><Sparkles className="h-3.5 w-3.5"/> Creative-test operating system</div><h2 className="mt-5 max-w-4xl text-3xl font-bold tracking-tight md:text-5xl">Launch controlled Meta tests without surrendering the creative.</h2><p className="mt-4 max-w-3xl text-sm leading-6 text-slate-300">One Sales campaign. Two uploaded-creative ad sets—or four with two additional GPT Image tests. Shared broad audience, ABO budget, manual feeds, no catalog, no Advantage audience, and no Meta creative enhancements.</p></div>
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-5"><div className="flex items-center justify-between"><span className="text-sm text-slate-300">Meta connection</span>{connection?.ready?<CheckCircle2 className="h-5 w-5 text-emerald-300"/>:<AlertTriangle className="h-5 w-5 text-amber-300"/>}</div><div className="mt-3 font-semibold">{connection?.ready?`${connection.account?.name||'Ad account'} · ${connection.account?.currency||'USD'}`:'Needs Meta token, account, page, and pixel'}</div><div className="mt-1 text-xs text-slate-400">Marketing API {connection?.api_version||'v26.0'}</div></div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-5"><div className="flex items-center justify-between"><span className="text-sm text-slate-300">Store workspace · {store}</span>{connection?.ready?<CheckCircle2 className="h-5 w-5 text-emerald-300"/>:<AlertTriangle className="h-5 w-5 text-amber-300"/>}</div><div className="mt-3 font-semibold">{connection?.ready?`${connection.account?.name||'Ad account'} · ${connection.account?.currency||'USD'}`:'Needs a connected Meta token, ad account, page, and pixel'}</div><div className="mt-1 text-xs text-slate-400">act_{adAccountId||'—'} · Marketing API {connection?.api_version||'v26.0'}</div></div>
         </div>
       </section>
 
@@ -188,10 +267,11 @@ export default function AdLauncherPage(){
           <div><h3 className="text-xl font-bold text-slate-950">2. Creative input</h3><p className="mt-1 text-sm text-slate-500">One image, one video, or 2–10 images interpreted as one carousel.</p></div>
           <label className="mt-5 flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center hover:border-violet-400 hover:bg-violet-50">
             <UploadCloud className="h-8 w-8 text-violet-600"/><span className="mt-3 font-semibold text-slate-800">Choose creative files</span><span className="mt-1 text-xs text-slate-500">JPG, PNG, WebP, MP4, MOV, or WebM</span>
-            <input type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm" disabled={!!jobId} onChange={event=>setFiles(Array.from(event.target.files||[]))} className="hidden"/>
+            <input type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm" disabled={!!jobId} onChange={event=>{setFiles(Array.from(event.target.files||[]));setSavedMedia([]);setSourceJobId('')}} className="hidden"/>
           </label>
           <div className={`mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${media.valid?'bg-emerald-50 text-emerald-700':'bg-slate-100 text-slate-500'}`}><Icon className="h-4 w-4"/>{media.label}</div>
           {!!files.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{files.map(file=><div key={`${file.name}-${file.size}`} className="flex justify-between rounded-lg border px-3 py-2"><span className="truncate">{file.name}</span><span>{(file.size/1024/1024).toFixed(1)} MB</span></div>)}</div>}
+          {!files.length&&!!savedMedia.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{savedMedia.map((item:any)=><div key={item.filename} className="flex justify-between rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2"><span className="truncate">{item.filename}</span><span>Saved</span></div>)}</div>}
         </Card>
       </div>
 
@@ -207,8 +287,10 @@ export default function AdLauncherPage(){
       {job&&<Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b p-5"><div><div className="flex items-center gap-3"><h3 className="font-bold text-slate-950">Campaign job</h3><Status status={job.status}/></div><p className="mt-1 text-xs text-slate-500">{job.stage?.replaceAll('_',' ')} · {job.id}</p></div><span className="text-sm font-bold text-slate-500">{job.progress||0}%</span></div>
         <div className="h-2 bg-slate-100"><div className="h-full bg-violet-600 transition-all" style={{width:`${job.progress||0}%`}}/></div>
-        {['queued','running','launching'].includes(job.status)&&<div className="flex items-center gap-3 p-6 text-sm text-slate-600"><Loader2 className="h-5 w-5 animate-spin text-violet-600"/> The creative team is working. Image generation can take several minutes.</div>}
+        {['queued','running','launching'].includes(job.status)&&<div className="flex items-center gap-3 border-b p-5 text-sm text-slate-600"><Loader2 className="h-5 w-5 animate-spin text-violet-600"/> The creative team is working. This log updates as evidence and decisions become available.</div>}
+        {!!job.activity?.length&&<div className="p-5"><div className="flex flex-wrap items-end justify-between gap-2"><div><h4 className="font-bold text-slate-950">Explainable creation log</h4><p className="mt-1 text-xs text-slate-500">Concise evidence and decision summaries are shown; private hidden chain-of-thought is never displayed.</p></div><span className="text-xs text-slate-400">{job.activity.length} updates</span></div><div className="mt-4 space-y-3">{job.activity.map((item,index)=><div key={`${item.at}-${index}`} className="flex gap-3 rounded-2xl border bg-slate-50 p-4"><div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.status==='failed'||item.status==='attention'?'bg-rose-500':item.status==='running'?'animate-pulse bg-amber-500':'bg-emerald-500'}`}/><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="text-sm font-bold text-slate-900">{item.title}</span>{item.source==='openai_reasoning_summary'&&<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold uppercase text-violet-700">AI reasoning summary</span>}</div><p className="mt-1 whitespace-pre-line text-sm leading-6 text-slate-600">{item.summary}</p>{item.at&&<div className="mt-2 text-[10px] text-slate-400">{new Date(item.at).toLocaleTimeString()}</div>}</div></div>)}</div></div>}
         {job.error&&<div className="m-5 rounded-2xl bg-rose-50 p-4 text-sm text-rose-700"><b>{job.error.type||'Error'}:</b> {job.error.message}</div>}
+        {['failed','rejected'].includes(job.status)&&<div className="border-t p-5"><button onClick={retryJob} disabled={busy==='retry'} className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy==='retry'?<Loader2 className="h-4 w-4 animate-spin"/>:<Sparkles className="h-4 w-4"/>} Resume from saved checkpoint</button><p className="mt-2 text-xs text-slate-500">Completed evidence, copy, and generated images are reused when available.</p></div>}
       </Card>}
 
       {review&&plan&&<>
@@ -230,6 +312,8 @@ export default function AdLauncherPage(){
       </>}
 
       {job?.status==='launched'&&job.result?.meta&&<Card className="border-emerald-200 bg-emerald-50 p-6"><div className="flex items-start gap-3"><CheckCircle2 className="mt-1 h-7 w-7 text-emerald-600"/><div><h3 className="text-xl font-bold text-emerald-950">Campaign scheduled successfully</h3><p className="mt-1 text-sm text-emerald-800">Campaign {job.result.meta.campaign_id} is active with a future start at {new Date(job.result.meta.scheduled_start).toLocaleString()}.</p><div className="mt-4 flex flex-wrap gap-2">{job.result.meta.adsets?.map((item:any)=><span key={item.adset_id} className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs text-emerald-800">Ad set {item.index} · ${Number(item.daily_budget_usd).toFixed(2)}</span>)}</div></div></div></Card>}
+
+      <Card className="p-6"><div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-xl font-bold text-slate-950">Saved product launch cards</h3><p className="mt-1 text-sm text-slate-500">Open a card to restore every input and its saved creative files, then edit or launch a fresh test.</p></div><button onClick={refreshProductCards} className="rounded-xl border px-3 py-2 text-xs font-bold text-slate-600">Refresh</button></div>{productCards.length?<div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{productCards.map(card=><button key={`${card.store}-${card.product_id}`} onClick={()=>loadProductCard(card)} className="overflow-hidden rounded-2xl border bg-white text-left transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-md">{card.cover_url?<img src={card.cover_url} alt={card.product_title} className="aspect-video w-full bg-slate-100 object-cover"/>:<div className="flex aspect-video items-center justify-center bg-slate-100 text-slate-400"><ImageIcon/></div>}<div className="p-4"><div className="flex items-center justify-between gap-2"><span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold uppercase text-violet-700">{card.store}</span><span className="text-[10px] font-bold uppercase text-slate-400">{card.status.replaceAll('_',' ')}</span></div><h4 className="mt-3 line-clamp-2 font-bold text-slate-950">{card.product_title}</h4><p className="mt-1 text-xs text-slate-500">Product {card.product_id}</p><div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-600"><span className="rounded-lg bg-slate-100 px-2 py-1">${Number(card.request?.total_daily_budget_usd||9)}/day</span><span className="rounded-lg bg-slate-100 px-2 py-1">{card.request?.ai_generated_adsets?'4':'2'} ad sets</span>{card.review_score!=null&&<span className="rounded-lg bg-slate-100 px-2 py-1">Review {card.review_score}/100</span>}</div><div className="mt-4 text-xs font-bold text-violet-600">Restore inputs →</div></div></button>)}</div>:<div className="mt-5 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">Completed and in-progress products will appear here automatically.</div>}</Card>
     </main>
   </div>
 }

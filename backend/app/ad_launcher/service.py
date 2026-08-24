@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from app.ad_launcher import agents, meta, repository as repo
-from app.ad_launcher.models import MediaAsset, PreparedAdSet, PreparedCampaign
+from app.ad_launcher.models import CampaignDraft, MediaAsset, PreparedAdSet, PreparedCampaign
 from app.integrations.openai_client import (
     DEFAULT_IMAGE_MODEL,
     _openai_image_result_to_data_url,
@@ -416,19 +416,66 @@ def _context(
     }
 
 
-def prepare_job(job_id: str, store: str | None) -> None:
+def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
     job = repo.get_job(store, job_id)
     if not job:
         return
     request_data = dict(job.get("request") or {})
+    checkpoint = dict(job.get("checkpoint") or {}) if resume else {}
     try:
         repo.update_job(store, job_id, {"status": "running", "stage": "shopify_product", "progress": 8, "error": None})
-        product = get_product(store, str(request_data.get("product_id") or ""))
-        landing_url, landing = _landing_evidence(store, product, request_data.get("landing_url"))
+        repo.add_activity(
+            store,
+            job_id,
+            stage="shopify_product",
+            status="running",
+            title="Restoring saved evidence" if checkpoint.get("product") else "Reading Shopify and destination evidence",
+            summary=(
+                "The launcher is resuming from the latest successful checkpoint and will repeat only missing stages."
+                if checkpoint.get("product")
+                else "The launcher is verifying the selected store's product record and public Arabic destination before writing any claims."
+            ),
+        )
         media = request_data.get("media") or []
-        media_format = classify_media(media)
+        if checkpoint.get("product") and checkpoint.get("landing") and checkpoint.get("media_format"):
+            product = dict(checkpoint["product"])
+            landing = dict(checkpoint["landing"])
+            landing_url = str(checkpoint.get("landing_url") or request_data.get("landing_url") or product.get("url") or "")
+            media_format = str(checkpoint["media_format"])
+        else:
+            product = get_product(store, str(request_data.get("product_id") or ""))
+            landing_url, landing = _landing_evidence(store, product, request_data.get("landing_url"))
+            media_format = classify_media(media)
+            checkpoint.update({
+                "product": product,
+                "landing": landing,
+                "landing_url": landing_url,
+                "media_format": media_format,
+            })
+            repo.update_job(store, job_id, {"checkpoint": checkpoint})
+        repo.add_activity(
+            store,
+            job_id,
+            stage="shopify_product",
+            title="Shopify evidence verified",
+            summary=(
+                f"Verified {product.get('title') or 'the selected product'}, a reachable Arabic destination "
+                f"(HTTP {landing.get('http_status') or 'unknown'}), and {len(media)} uploaded asset(s) classified as {media_format}."
+            ),
+        )
 
         repo.update_job(store, job_id, {"stage": "creative_analysis", "progress": 22})
+        repo.add_activity(
+            store,
+            job_id,
+            stage="creative_analysis",
+            status="running",
+            title="Analyzing creative and writing ad directions",
+            summary=(
+                f"{agents.COPY_MODEL} with {agents.COPY_REASONING_EFFORT} reasoning is comparing Shopify facts, "
+                "landing-page evidence, and the uploaded creative before producing Arabic headlines and primary text."
+            ),
+        )
         analysis_images: list[str] = []
         reference_url = str(((product.get("images") or [{}])[0]).get("url") or "")
         if reference_url:
@@ -440,14 +487,58 @@ def prepare_job(job_id: str, store: str | None) -> None:
             analysis_images.extend(_image_asset_data(item) for item in media)
 
         context = _context(request_data, product, landing, media_format)
-        draft = agents.analyze_campaign(context, analysis_images)
-        draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
+        if checkpoint.get("draft"):
+            draft = CampaignDraft.model_validate(checkpoint["draft"])
+            strategy_reasoning = [str(item) for item in checkpoint.get("strategy_reasoning") or []]
+        else:
+            draft, strategy_reasoning = agents.analyze_campaign_with_summary(context, analysis_images)
+            draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
+            checkpoint.update({
+                "draft": draft.model_dump(mode="json"),
+                "strategy_reasoning": strategy_reasoning,
+            })
+            repo.update_job(store, job_id, {"checkpoint": checkpoint})
+        strategy_summary = "\n\n".join(strategy_reasoning) or (
+            f"Selected angles: {', '.join(item.angle for item in draft.adsets)}. "
+            f"Testing hypothesis: {draft.testing_hypothesis}"
+        )
+        repo.add_activity(
+            store,
+            job_id,
+            stage="creative_analysis",
+            title="Creative strategy restored from checkpoint" if resume and checkpoint.get("draft") else "Creative strategy and Arabic copy completed",
+            summary=strategy_summary,
+            source="openai_reasoning_summary" if strategy_reasoning else "structured_output_summary",
+        )
 
         generated_media: list[dict[str, Any]] = []
+        for saved_asset in checkpoint.get("generated_media") or []:
+            try:
+                data_url = _image_asset_data(saved_asset)
+                width = int(saved_asset.get("width") or 0)
+                height = int(saved_asset.get("height") or 0)
+                if width > 0 and height > 0 and width * 5 == height * 4:
+                    generated_media.append(dict(saved_asset))
+                    analysis_images.append(data_url)
+            except Exception:
+                continue
         if request_data.get("ai_generated_adsets"):
             repo.update_job(store, job_id, {"stage": "ai_image_generation", "progress": 48})
+            repo.add_activity(
+                store,
+                job_id,
+                stage="ai_image_generation",
+                status="running",
+                title="Restoring and completing image tests" if generated_media else "Generating two controlled image tests",
+                summary=(
+                    f"Reusing {len(generated_media)} verified image(s) and generating only the missing tests."
+                    if generated_media
+                    else "Two product-faithful, text-free image directions are being generated and then normalized to exact 4:5 dimensions."
+                ),
+            )
             ai_drafts = [item for item in draft.adsets if item.origin == "ai_generated"]
-            for index, item in enumerate(ai_drafts[:2], start=1):
+            completed = len(generated_media)
+            for index, item in enumerate(ai_drafts[completed:2], start=completed + 1):
                 asset, data_url = _generated_image(
                     product,
                     str(item.image_prompt or ""),
@@ -456,6 +547,18 @@ def prepare_job(job_id: str, store: str | None) -> None:
                 )
                 generated_media.append(asset)
                 analysis_images.append(data_url)
+                checkpoint["generated_media"] = generated_media
+                repo.update_job(store, job_id, {"checkpoint": checkpoint})
+            dimensions = ", ".join(
+                f"{item.get('width')}×{item.get('height')}" for item in generated_media
+            )
+            repo.add_activity(
+                store,
+                job_id,
+                stage="ai_image_generation",
+                title="Generated images verified",
+                summary=f"Created {len(generated_media)} image tests. Machine-verified dimensions: {dimensions}.",
+            )
 
         context["generated_creative_evidence"] = [
             {
@@ -470,6 +573,14 @@ def prepare_job(job_id: str, store: str | None) -> None:
         ]
 
         repo.update_job(store, job_id, {"stage": "independent_review", "progress": 76})
+        repo.add_activity(
+            store,
+            job_id,
+            stage="independent_review",
+            status="running",
+            title="Running independent publication review",
+            summary="The reviewer is checking factuality, Arabic copy, product fidelity, audience controls, media format, and Meta launch structure.",
+        )
         blockers = agents.deterministic_blockers(
             draft,
             expected_adsets=4 if request_data.get("ai_generated_adsets") else 2,
@@ -481,7 +592,17 @@ def prepare_job(job_id: str, store: str | None) -> None:
             blockers.append(
                 "The destination page could not be independently verified as a reachable Arabic Shopify page"
             )
-        review = agents.review_campaign(context, draft, analysis_images, blockers)
+        review, review_reasoning = agents.review_campaign_with_summary(context, draft, analysis_images, blockers)
+        review_summary = "\n\n".join(review_reasoning) or review.summary
+        repo.add_activity(
+            store,
+            job_id,
+            stage="independent_review",
+            status="completed" if review.approved else "attention",
+            title=f"Independent review {'approved' if review.approved else 'rejected'} the package",
+            summary=f"{review_summary}\n\nPublication score: {review.score}/100.",
+            source="openai_reasoning_summary" if review_reasoning else "structured_output_summary",
+        )
 
         prepared_adsets: list[PreparedAdSet] = []
         uploaded_urls = [str(item.get("url") or "") for item in media]
@@ -507,6 +628,7 @@ def prepare_job(job_id: str, store: str | None) -> None:
             product_title=str(product.get("title") or "Product"),
             landing_url=landing_url,
             store=repo.canonical_store(store),
+            meta_ad_account_id=str(request_data.get("meta_ad_account_id") or "").strip() or None,
             timezone=str(request_data.get("timezone") or "Africa/Casablanca"),
             scheduled_start=scheduled_start(str(request_data.get("timezone") or "Africa/Casablanca")),
             total_daily_budget_usd=_number(request_data.get("total_daily_budget_usd"), 9.0),
@@ -525,6 +647,10 @@ def prepare_job(job_id: str, store: str | None) -> None:
             "model_reasoning_effort": agents.COPY_REASONING_EFFORT,
             "review_model": agents.REVIEW_MODEL,
             "review_reasoning_effort": agents.REVIEW_REASONING_EFFORT,
+            "reasoning_summaries": {
+                "creative_strategy": strategy_reasoning,
+                "independent_review": review_reasoning,
+            },
             "image_model": os.getenv("AD_LAUNCHER_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
             "meta_api_version": os.getenv("AD_LAUNCHER_META_API_VERSION", "v26.0"),
         }
@@ -536,11 +662,67 @@ def prepare_job(job_id: str, store: str | None) -> None:
             "result": result,
         })
     except Exception as error:
+        repo.add_activity(
+            store,
+            job_id,
+            stage="failed",
+            status="failed",
+            title="Campaign preparation stopped",
+            summary=f"{type(error).__name__}: {str(error)[:1200]}",
+        )
         repo.update_job(store, job_id, {
             "status": "failed",
             "stage": "failed",
             "error": {"type": type(error).__name__, "message": str(error)[:2500]},
         })
+
+
+def retry_job(job_id: str, store: str | None) -> dict[str, Any]:
+    job = repo.get_job(store, job_id)
+    if not job:
+        raise ValueError("Ad launcher job not found")
+    if job.get("status") not in {"failed", "rejected"}:
+        raise ValueError("Only failed or review-rejected preparation jobs can be resumed")
+
+    checkpoint = dict(job.get("checkpoint") or {})
+    result = dict(job.get("result") or {})
+    request_data = dict(job.get("request") or {})
+    plan = dict(result.get("plan") or {})
+    if result:
+        if result.get("product"):
+            checkpoint.setdefault("product", result["product"])
+        if result.get("landing_page"):
+            checkpoint.setdefault("landing", result["landing_page"])
+        if plan.get("landing_url"):
+            checkpoint.setdefault("landing_url", plan["landing_url"])
+        if request_data.get("media"):
+            checkpoint.setdefault("media_format", classify_media(request_data["media"]))
+        if plan.get("analysis"):
+            checkpoint.setdefault("draft", plan["analysis"])
+        if result.get("generated_media"):
+            checkpoint.setdefault("generated_media", result["generated_media"])
+        summaries = dict(result.get("reasoning_summaries") or {})
+        if summaries.get("creative_strategy"):
+            checkpoint.setdefault("strategy_reasoning", summaries["creative_strategy"])
+
+    retry_count = int(job.get("retry_count") or 0) + 1
+    updated = repo.update_job(store, job_id, {
+        "status": "queued",
+        "stage": "resume_queued",
+        "progress": 0,
+        "error": None,
+        "result": None,
+        "checkpoint": checkpoint,
+        "retry_count": retry_count,
+    })
+    repo.add_activity(
+        store,
+        job_id,
+        stage="resume_queued",
+        title=f"Resume attempt {retry_count} requested",
+        summary="Saved inputs and completed checkpoints were retained. Processing will continue from the first missing stage.",
+    )
+    return updated
 
 
 def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
@@ -557,6 +739,14 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         raise ValueError("The independent reviewer did not approve this campaign")
     plan = PreparedCampaign.model_validate(result.get("plan") or {})
     repo.claim_job_launch(store, job_id)
+    repo.add_activity(
+        store,
+        job_id,
+        stage="meta_creation",
+        status="running",
+        title="Creating the campaign in the selected Meta account",
+        summary=f"The transactional launch is using Meta account act_{plan.meta_ad_account_id or 'configured-default'} and will keep the campaign paused until every child object exists.",
+    )
     try:
         meta_result = meta.create_sales_test_campaign(plan)
         result["meta"] = meta_result
@@ -566,8 +756,23 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
             "result": result,
             "launched_at": repo.utc_now(),
         })
+        repo.add_activity(
+            store,
+            job_id,
+            stage="scheduled",
+            title="Meta campaign created and scheduled",
+            summary=f"Campaign {meta_result.get('campaign_id')} was activated with future delivery at {meta_result.get('scheduled_start')}.",
+        )
         return meta_result
     except Exception as error:
+        repo.add_activity(
+            store,
+            job_id,
+            stage="meta_failed_paused",
+            status="failed",
+            title="Meta launch did not complete",
+            summary=f"The campaign was left paused. {type(error).__name__}: {str(error)[:1200]}",
+        )
         repo.update_job(store, job_id, {
             "status": "launch_failed",
             "stage": "meta_failed_paused",
@@ -577,5 +782,5 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         raise
 
 
-def connection(store: str | None) -> dict[str, Any]:
-    return meta.connection(store)
+def connection(store: str | None, ad_account_id: str | None = None) -> dict[str, Any]:
+    return meta.connection(store, ad_account_id)

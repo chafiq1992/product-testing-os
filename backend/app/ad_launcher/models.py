@@ -129,6 +129,7 @@ class PreparedCampaign(StrictModel):
     product_title: str
     landing_url: str
     store: str
+    meta_ad_account_id: str | None = None
     timezone: str
     scheduled_start: str
     total_daily_budget_usd: float = Field(gt=0)
