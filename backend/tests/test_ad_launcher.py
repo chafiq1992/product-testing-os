@@ -126,6 +126,56 @@ def test_media_classification_is_deterministic():
         service.classify_media([{"kind": "video"}, {"kind": "video"}])
 
 
+def test_landing_host_accepts_verified_locale_and_www_subdomains():
+    allowed = {"irraki.com", "irrakids.myshopify.com"}
+
+    assert service._landing_host_is_allowed("ar.irraki.com", allowed)
+    assert service._landing_host_is_allowed("www.irraki.com", allowed)
+    assert service._landing_host_is_allowed("irraki.com", allowed)
+    assert service._landing_host_is_allowed("AR.IRRAKI.COM.", allowed)
+    assert service._landing_host_is_allowed("www.irraki.com", {"ar.irraki.com"})
+
+
+def test_landing_host_rejects_lookalikes_and_shopify_tenant_subdomains():
+    allowed = {"irraki.com", "irrakids.myshopify.com"}
+
+    assert not service._landing_host_is_allowed("irraki.com.evil.example", allowed)
+    assert not service._landing_host_is_allowed("fakeirraki.com", allowed)
+    assert not service._landing_host_is_allowed("evil.irrakids.myshopify.com", {"irrakids.myshopify.com"})
+
+
+def test_irrakids_verified_public_domain_is_available_without_runtime_env(monkeypatch):
+    monkeypatch.setattr(service, "_get_store_config", lambda store: {"SHOP": "irrakids.myshopify.com"})
+    monkeypatch.delenv("SHOPIFY_PUBLIC_DOMAIN_IRRAKIDS", raising=False)
+    monkeypatch.delenv("SHOPIFY_PUBLIC_DOMAIN", raising=False)
+
+    assert "irraki.com" in service._allowed_landing_hosts("irrakids", "")
+
+
+def test_landing_evidence_accepts_irrakids_arabic_storefront(monkeypatch):
+    class Response:
+        status_code = 200
+        url = "https://ar.irraki.com/products/girls-round-neck-t-shirt"
+        text = "<html><title>قميص بناتي</title><body>تفاصيل المنتج الأصلية</body></html>"
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(service, "_get_store_config", lambda store: {"SHOP": "irrakids.myshopify.com"})
+    monkeypatch.setattr(service.requests, "get", lambda *args, **kwargs: Response())
+
+    landing_url, evidence = service._landing_evidence(
+        "irrakids",
+        {"url": "https://irrakids.myshopify.com/products/girls-round-neck-t-shirt"},
+        "https://ar.irraki.com/products/girls-round-neck-t-shirt",
+    )
+
+    assert landing_url == "https://ar.irraki.com/products/girls-round-neck-t-shirt"
+    assert evidence["http_status"] == 200
+    assert evidence["fetch_error"] is None
+
+
 def test_schedule_uses_2359_and_rolls_after_cutoff():
     zone = ZoneInfo("Africa/Casablanca")
     before = datetime(2026, 8, 24, 12, 0, tzinfo=zone)

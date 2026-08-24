@@ -52,6 +52,14 @@ query AdLauncherProduct($id: ID!) {
 """
 
 
+# These are verified custom storefront domains for stores bundled with this app.
+# Environment variables can add domains for other deployments.
+_KNOWN_PUBLIC_STORE_DOMAINS: dict[str, tuple[str, ...]] = {
+    "irrakids": ("irraki.com",),
+    "nouralibas": ("irraki.com",),
+}
+
+
 def _number(value: Any, fallback: float) -> float:
     try:
         return float(value)
@@ -69,10 +77,48 @@ def _arabic_ratio(value: str) -> tuple[int, float]:
     return arabic, arabic / max(letters, 1)
 
 
+def _normalize_host(value: str | None) -> str:
+    host = str(value or "").strip().rstrip(".").lower()
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
+def _storefront_domain_root(host: str) -> str:
+    """Collapse only conventional storefront prefixes, never Shopify tenancy."""
+    normalized = _normalize_host(host)
+    if normalized.endswith(".myshopify.com"):
+        return normalized
+    labels = normalized.split(".")
+    prefix = labels[0] if labels else ""
+    is_locale = bool(re.fullmatch(r"[a-z]{2}(?:-[a-z]{2})?", prefix))
+    if len(labels) >= 3 and (prefix == "www" or is_locale):
+        return ".".join(labels[1:])
+    return normalized
+
+
+def _landing_host_is_allowed(candidate: str | None, allowed_hosts: set[str]) -> bool:
+    candidate_host = _normalize_host(candidate)
+    if not candidate_host:
+        return False
+    for allowed in allowed_hosts:
+        trusted_host = _normalize_host(allowed)
+        if candidate_host == trusted_host:
+            return True
+        # A Shopify tenant hostname is not the parent of a custom storefront.
+        if trusted_host.endswith(".myshopify.com"):
+            continue
+        root = _storefront_domain_root(trusted_host)
+        if candidate_host == root or candidate_host.endswith(f".{root}"):
+            return True
+    return False
+
+
 def _allowed_landing_hosts(store: str | None, product_url: str) -> set[str]:
     hosts: set[str] = set()
     try:
-        host = (urlparse(product_url).hostname or "").lower()
+        host = _normalize_host(urlparse(product_url).hostname)
         if host:
             hosts.add(host)
     except Exception:
@@ -81,14 +127,16 @@ def _allowed_landing_hosts(store: str | None, product_url: str) -> set[str]:
         cfg = _get_store_config(store)
         shop = str(cfg.get("SHOP") or "").replace("https://", "").replace("http://", "").split("/", 1)[0]
         if shop:
-            hosts.add(shop.lower())
+            hosts.add(_normalize_host(shop))
     except Exception:
         pass
+    store_key = str(store or "").strip().lower()
+    hosts.update(_KNOWN_PUBLIC_STORE_DOMAINS.get(store_key, ()))
     suffix = re.sub(r"[^A-Z0-9]", "_", str(store or "").upper()).strip("_")
     for key in (f"SHOPIFY_PUBLIC_DOMAIN_{suffix}" if suffix else "", "SHOPIFY_PUBLIC_DOMAIN"):
-        value = str(os.getenv(key, "") or "").strip()
-        if value:
-            host = (urlparse(value if "://" in value else f"https://{value}").hostname or "").lower()
+        for value in str(os.getenv(key, "") or "").split(","):
+            value = value.strip()
+            host = _normalize_host(urlparse(value if "://" in value else f"https://{value}").hostname)
             if host:
                 hosts.add(host)
     return hosts
@@ -101,7 +149,7 @@ def _landing_evidence(store: str | None, product: dict[str, Any], override: str 
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("A valid public Shopify Arabic landing URL is required")
     allowed_hosts = _allowed_landing_hosts(store, product_url)
-    if allowed_hosts and parsed.hostname.lower() not in allowed_hosts:
+    if allowed_hosts and not _landing_host_is_allowed(parsed.hostname, allowed_hosts):
         raise ValueError("The destination URL must use the selected Shopify store's public domain")
 
     evidence: dict[str, Any] = {
@@ -124,8 +172,8 @@ def _landing_evidence(store: str | None, product: dict[str, Any], override: str 
         )
         evidence["http_status"] = response.status_code
         response.raise_for_status()
-        final_host = (urlparse(response.url).hostname or "").lower()
-        if allowed_hosts and final_host not in allowed_hosts:
+        final_host = urlparse(response.url).hostname
+        if allowed_hosts and not _landing_host_is_allowed(final_host, allowed_hosts):
             raise ValueError("The Shopify destination redirected to an unapproved domain")
         evidence["final_url"] = response.url
         soup = BeautifulSoup(response.text[:1_500_000], "html.parser")
@@ -145,6 +193,8 @@ def _landing_evidence(store: str | None, product: dict[str, Any], override: str 
             "arabic_ratio": round(ratio, 4),
             "arabic_ready_hint": bool(count >= 80 and ratio >= 0.15),
         })
+    except ValueError:
+        raise
     except Exception as error:
         evidence["fetch_error"] = f"{type(error).__name__}: {error}"[:1200]
     return landing_url, evidence
