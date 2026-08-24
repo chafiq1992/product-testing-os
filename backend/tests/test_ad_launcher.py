@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import datetime
 from io import BytesIO
@@ -179,6 +180,38 @@ def test_generated_image_crop_is_exactly_four_by_five():
     cropped = service._crop_to_four_five(source.getvalue())
     with Image.open(BytesIO(cropped)) as image:
         assert image.size == (1024, 1280)
+
+
+def test_gpt_image_2_edit_omits_unsupported_input_fidelity(monkeypatch):
+    reference = BytesIO()
+    Image.new("RGB", (64, 64), "#ffffff").save(reference, format="PNG")
+    generated = BytesIO()
+    Image.new("RGB", (64, 80), "#5544aa").save(generated, format="PNG")
+    result_data_url = "data:image/png;base64," + base64.b64encode(generated.getvalue()).decode("ascii")
+    captured: dict = {}
+
+    monkeypatch.setenv("AD_LAUNCHER_IMAGE_MODEL", "gpt-image-2")
+    monkeypatch.delenv("AD_LAUNCHER_IMAGE_SIZE", raising=False)
+    monkeypatch.setattr(service, "_download_reference_image", lambda url: (reference.getvalue(), "image/png"))
+    monkeypatch.setattr(service, "_openai_image_result_to_data_url", lambda response: result_data_url)
+    monkeypatch.setattr(service.repo, "save_asset", lambda filename, data, content_type: f"/uploads/{filename}")
+
+    def fake_edit(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(service.client.images, "edit", fake_edit)
+    asset, _ = service._generated_image(
+        {"images": [{"url": "https://cdn.shopify.com/product.png"}]},
+        "Create a faithful product photograph.",
+        base_url="https://app.example",
+        candidate=1,
+    )
+
+    assert captured["model"] == "gpt-image-2"
+    assert captured["size"] == "1024x1280"
+    assert "input_fidelity" not in captured
+    assert asset["content_type"] == "image/png"
 
 
 def test_launch_claim_is_single_use():

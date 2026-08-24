@@ -265,10 +265,9 @@ def _generated_image(
                 model=os.getenv("AD_LAUNCHER_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
                 image=[image_file],
                 prompt=final_prompt,
-                size=os.getenv("AD_LAUNCHER_IMAGE_SIZE", "1024x1536"),
+                size=os.getenv("AD_LAUNCHER_IMAGE_SIZE", "1024x1280"),
                 quality=os.getenv("AD_LAUNCHER_IMAGE_QUALITY", "high"),
                 background="opaque",
-                input_fidelity="high",
                 output_format="png",
                 n=1,
             )
