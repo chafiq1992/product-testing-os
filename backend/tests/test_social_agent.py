@@ -1,4 +1,4 @@
-from app.social_agent.openai_agents import deterministic_review
+from app.social_agent.openai_agents import deterministic_review, sanitize_fusha_strategy
 from app.social_agent import meta
 from app.social_agent.shopify import rank_products
 
@@ -86,3 +86,14 @@ def test_meta_derives_page_token_from_visible_accounts(monkeypatch):
 
     assert resolved["token"] == "page-token"
     assert resolved["instagram_id"] == "ig-1"
+
+
+def test_fusha_sanitizer_removes_common_dialect_leaks():
+    result = sanitize_fusha_strategy({
+        "hook_ar": "خروجة زوينة دابا",
+        "caption_ar": "السعر 34 درهم بدل 99 درهم + توصيل",
+    })
+
+    assert result["hook_ar"] == "نزهة جميلة الآن"
+    assert "بدلاً من" in result["caption_ar"]
+    assert "+" not in result["caption_ar"]

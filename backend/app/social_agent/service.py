@@ -15,6 +15,7 @@ from app.social_agent.openai_agents import (
     create_strategy,
     data_url_bytes,
     generate_candidate,
+    repair_strategy,
     review_candidate,
 )
 
@@ -162,6 +163,25 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                 reviewed.append({"candidate": number, "data_url": data_url, "review": future.result()})
         reviewed.sort(key=lambda item: int((item.get("review") or {}).get("score") or 0), reverse=True)
         approved = [item for item in reviewed if (item.get("review") or {}).get("decision") == "approve"]
+        # If the strongest candidate is visually faithful and only copy/factual
+        # wording failed, repair the strategy and send the same image through a
+        # fresh independent review. Never repair around a visual-fidelity error.
+        if not approved and reviewed:
+            repairable = next(
+                (item for item in reviewed if not ((item.get("review") or {}).get("visual_errors") or [])),
+                None,
+            )
+            if repairable:
+                repaired_strategy = repair_strategy(product, strategy, repairable.get("review") or {}, config)
+                repaired_review = review_candidate(
+                    product, repaired_strategy, repairable["data_url"], config, int(repairable["candidate"]),
+                )
+                repairable["review"] = repaired_review
+                repairable["copy_repaired"] = True
+                strategy = repaired_strategy
+                repo.update_post(post["id"], strategy=strategy)
+                reviewed.sort(key=lambda item: int((item.get("review") or {}).get("score") or 0), reverse=True)
+                approved = [item for item in reviewed if (item.get("review") or {}).get("decision") == "approve"]
         if not approved:
             review_summary = {"decision": "reject", "candidates": [
                 {"candidate": x["candidate"], **(x.get("review") or {})} for x in reviewed
@@ -171,15 +191,17 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         winner_number = int(approved[0]["candidate"])
         assets: list[dict[str, Any]] = []
         for item in sorted(reviewed, key=lambda value: int(value["candidate"])):
-            raw, mime = data_url_bytes(item["data_url"])
-            uploaded = shopify.upload_file_bytes(
-                run.get("store"), filename=_candidate_file_name(post["id"], int(item["candidate"]), mime),
-                content=raw, mime_type=mime, alt_text=strategy.get("alt_text_ar") or product.get("title") or "Product",
-            )
+            uploaded = None
+            if (item.get("review") or {}).get("decision") == "approve":
+                raw, mime = data_url_bytes(item["data_url"])
+                uploaded = shopify.upload_file_bytes(
+                    run.get("store"), filename=_candidate_file_name(post["id"], int(item["candidate"]), mime),
+                    content=raw, mime_type=mime, alt_text=strategy.get("alt_text_ar") or product.get("title") or "Product",
+                )
             assets.append({
                 "candidate": item["candidate"], "selected": int(item["candidate"]) == winner_number,
                 "direction": directions[int(item["candidate"]) - 1], "review": item.get("review"),
-                "shopify": uploaded,
+                "copy_repaired": bool(item.get("copy_repaired")), "shopify": uploaded,
             })
         review_summary = {
             "decision": "approve", "selected_candidate": winner_number,

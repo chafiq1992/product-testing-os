@@ -120,6 +120,26 @@ def _offer_context(product: dict[str, Any], config: dict[str, Any]) -> dict[str,
     }
 
 
+def sanitize_fusha_strategy(strategy: dict[str, Any]) -> dict[str, Any]:
+    """Remove a small set of common Moroccan-dialect leaks deterministically."""
+    cleaned = dict(strategy or {})
+    replacements = {
+        "خروجة": "نزهة",
+        "دابا": "الآن",
+        "بزاف": "كثيراً",
+        "زوين": "جميل",
+        "تسنا": "انتظر",
+    }
+    for field in ("hook_ar", "body_ar", "cta_ar", "caption_ar", "alt_text_ar", "offer_text_ar"):
+        value = str(cleaned.get(field) or "")
+        for source, target in replacements.items():
+            value = value.replace(source, target)
+        value = re.sub(r"(?<!بدلاً من)\bبدل\b", "بدلاً من", value)
+        value = re.sub(r"\s+\+\s+", " و", value)
+        cleaned[field] = value
+    return cleaned
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), reraise=True)
 def create_strategy(
     product: dict[str, Any], config: dict[str, Any], learning: dict[str, Any],
@@ -144,10 +164,36 @@ def create_strategy(
         "Visual directions must preserve the exact source product and request no more than one very short Arabic badge; "
         "prefer no rendered text so the image cannot contain spelling errors. Avoid unsupported superlatives."
     )
-    return _response_json(
+    result = _response_json(
         name="social_strategy", schema=STRATEGY_SCHEMA, system=system,
         user="Create one conversion-focused organic social post from this JSON:\n" + json.dumps(context, ensure_ascii=False),
     )
+    return sanitize_fusha_strategy(result)
+
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=5), reraise=True)
+def repair_strategy(
+    product: dict[str, Any], strategy: dict[str, Any], review: dict[str, Any], config: dict[str, Any],
+) -> dict[str, Any]:
+    context = {
+        "product": {k: v for k, v in product.items() if k not in {"variants", "videos"}},
+        "offer_guardrail": _offer_context(product, config),
+        "draft_strategy": strategy,
+        "review_findings": review,
+    }
+    system = (
+        "You are an independent Modern Standard Arabic editor and ecommerce factuality specialist. "
+        "Repair every reviewer finding while preserving the conversion angle and the exact Shopify URL. "
+        "Use polished Fusha only: no Moroccan Darija. Remove or soften any claim not explicitly supported by the product. "
+        "Respect the offer guardrail exactly and do not change real prices or discount arithmetic. "
+        "Do not add a new fact, guarantee, scarcity statement, delivery promise, review, or superlative. "
+        "Visual directions must continue to forbid changes to the physical product."
+    )
+    result = _response_json(
+        name="repaired_social_strategy", schema=STRATEGY_SCHEMA, system=system,
+        user="Repair this rejected post strategy:\n" + json.dumps(context, ensure_ascii=False),
+    )
+    return sanitize_fusha_strategy(result)
 
 
 def _download_source(url: str) -> tuple[bytes, str]:
