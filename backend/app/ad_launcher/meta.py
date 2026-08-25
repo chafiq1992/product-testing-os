@@ -55,6 +55,12 @@ def _safe_error(response: requests.Response, path: str) -> RuntimeError:
                 "use case, the token has ads_management, and the app has Standard Access for its own accounts "
                 "or Advanced Access for client accounts."
             )
+        if code == 100 and subcode == 1885183:
+            guidance = (
+                " The Meta developer app that issued this token is in Development mode. Open Meta for Developers, "
+                "switch App Mode to Live/Public, confirm ads_management access for this ad account, then regenerate "
+                "the access token from that Live app and retry. The launcher cannot bypass this Meta restriction."
+            )
         return RuntimeError(
             f"Meta API rejected {path}: {message}{f' ({details})' if details else ''}{guidance}"
         )
@@ -434,8 +440,37 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
     # empty campaign behind. Meta's current ad-image edge receives the actual file, not its remote URL.
     media_handles = _prepare_media(cfg, plan)
     requests_log: list[dict[str, Any]] = []
+
+    # Create every ad creative before the campaign. Meta rejects inline posts from Development-mode apps at this
+    # edge (subcode 1885183); front-loading it prevents that account/configuration error from leaving another empty
+    # campaign or a single orphan ad set in Ads Manager.
+    prepared_creatives: list[dict[str, str]] = []
+    for index, adset_plan in enumerate(plan.adsets, start=1):
+        ad_name = adset_plan.ad_name or f"creative {index:02d}"
+        destination = _append_utm(plan.landing_url, plan.campaign_name, index, adset_plan.angle)
+        story = _story_spec(cfg, adset_plan, destination, media_handles)
+        creative_payload = {
+            "name": ad_name,
+            "object_story_spec": json.dumps(story, ensure_ascii=False),
+            "degrees_of_freedom_spec": json.dumps({
+                "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
+            }),
+        }
+        creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", creative_payload)
+        creative_id = str(creative.get("id") or "")
+        if not creative_id:
+            raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
+        prepared_creatives.append({"creative_id": creative_id, "ad_name": ad_name})
+        requests_log.append({
+            "edge": "adcreatives",
+            "index": index,
+            "creative_id": creative_id,
+            "ad_name": ad_name,
+            "status": "READY",
+        })
+
     campaign_payload = {
-        "name": plan.product_id,
+        "name": plan.campaign_name,
         "objective": "OUTCOME_SALES",
         "buying_type": "AUCTION",
         "special_ad_categories": json.dumps([]),
@@ -452,9 +487,12 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     targeting = _targeting(plan)
     try:
-        for index, (adset_plan, budget) in enumerate(zip(plan.adsets, budgets), start=1):
+        for index, (adset_plan, budget, prepared_creative) in enumerate(
+            zip(plan.adsets, budgets, prepared_creatives), start=1
+        ):
             adset_name = f"adset {index:02d} parent"
-            ad_name = adset_plan.ad_name or f"creative {index:02d}"
+            ad_name = prepared_creative["ad_name"]
+            creative_id = prepared_creative["creative_id"]
             adset_payload = {
                 "name": adset_name,
                 "campaign_id": campaign_id,
@@ -477,20 +515,6 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
             adset_id = str(adset.get("id") or "")
             if not adset_id:
                 raise RuntimeError(f"Meta did not return an ID for ad set {index}")
-
-            destination = _append_utm(plan.landing_url, campaign_id, index, adset_plan.angle)
-            story = _story_spec(cfg, adset_plan, destination, media_handles)
-            creative_payload = {
-                "name": ad_name,
-                "object_story_spec": json.dumps(story, ensure_ascii=False),
-                "degrees_of_freedom_spec": json.dumps({
-                    "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
-                }),
-            }
-            creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", creative_payload)
-            creative_id = str(creative.get("id") or "")
-            if not creative_id:
-                raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
 
             ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
                 "name": ad_name,

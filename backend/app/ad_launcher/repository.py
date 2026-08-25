@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from app import db
@@ -12,6 +14,8 @@ from app.storage import save_file
 
 
 JOB_PREFIX = "ad_launcher:job:"
+CAMPAIGN_SEQUENCE_PREFIX = "ad_launcher:campaign_sequence:"
+_CAMPAIGN_SEQUENCE_LOCK = Lock()
 
 
 def canonical_store(store: str | None) -> str:
@@ -25,6 +29,64 @@ def _key(job_id: str) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def campaign_letter(sequence: int) -> str:
+    """Convert a one-based sequence to spreadsheet-style letters: A..Z, AA.."""
+    value = int(sequence)
+    if value < 1:
+        raise ValueError("Campaign sequence must be positive")
+    output = ""
+    while value:
+        value, remainder = divmod(value - 1, 26)
+        output = chr(65 + remainder) + output
+    return output
+
+
+def _letter_sequence(value: str) -> int:
+    sequence = 0
+    for character in str(value or "").upper():
+        if not "A" <= character <= "Z":
+            return 0
+        sequence = sequence * 26 + ord(character) - 64
+    return sequence
+
+
+def reserve_campaign_name(store: str | None, ad_account_id: str | None, product_id: str) -> str:
+    """Reserve the next store/account/product campaign name, such as 123A then 123B."""
+    normalized_store = canonical_store(store)
+    normalized_account = str(ad_account_id or "default").strip().removeprefix("act_") or "default"
+    numeric_id = str(product_id or "").strip().split("/")[-1]
+    if not numeric_id.isdigit():
+        raise ValueError("A numeric Shopify product ID is required for campaign sequencing")
+    sequence_key = f"{CAMPAIGN_SEQUENCE_PREFIX}{normalized_account}:{numeric_id}"
+
+    with _CAMPAIGN_SEQUENCE_LOCK:
+        saved = db.get_app_setting(normalized_store, sequence_key)
+        highest = int(saved or 0) if str(saved or "").isdigit() else 0
+        pattern = re.compile(rf"^{re.escape(numeric_id)}([A-Z]+)$")
+        with db.SessionLocal() as session:
+            rows = (
+                session.query(db.AppSetting)
+                .filter(db.AppSetting.store == normalized_store, db.AppSetting.key.like(f"{JOB_PREFIX}%"))
+                .all()
+            )
+        for row in rows:
+            try:
+                job = json.loads(row.value or "{}")
+                request_data = dict(job.get("request") or {})
+                plan = dict((job.get("result") or {}).get("plan") or {})
+                if str(request_data.get("meta_ad_account_id") or "default") != normalized_account:
+                    continue
+                name = str(request_data.get("campaign_name") or plan.get("campaign_name") or "").upper()
+                match = pattern.fullmatch(name)
+                if match:
+                    highest = max(highest, _letter_sequence(match.group(1)))
+            except Exception:
+                continue
+        next_sequence = highest + 1
+        db.set_app_setting(normalized_store, sequence_key, next_sequence)
+        return f"{numeric_id}{campaign_letter(next_sequence)}"
 
 
 def create_job(store: str | None, job_id: str, request_data: dict[str, Any]) -> dict[str, Any]:

@@ -87,7 +87,10 @@ async def create_job(
     ad_account_id: str | None = Form(None),
     product_id: str = Form(...),
     landing_url: str | None = Form(None),
-    total_daily_budget_usd: float = Form(9.0),
+    total_daily_budget_usd: float | None = Form(None),
+    daily_budget_per_adset_usd: float | None = Form(None),
+    adset_count: int = Form(3),
+    creative_type: str = Form("auto"),
     ai_generated_adsets: bool = Form(False),
     countries: str = Form("MA"),
     timezone: str = Form("Africa/Casablanca"),
@@ -103,10 +106,20 @@ async def create_job(
     normalized_account = str(ad_account_id or "").strip().removeprefix("act_")
     if normalized_account and not normalized_account.isdigit():
         raise HTTPException(status_code=400, detail="ad_account_id must be a numeric Meta ad account ID")
-    if total_daily_budget_usd < (5 if ai_generated_adsets else 3):
-        raise HTTPException(status_code=400, detail="Budget must allow at least $1.00 per ad set")
-    if total_daily_budget_usd > 10_000:
+    if adset_count not in {2, 3}:
+        raise HTTPException(status_code=400, detail="adset_count must be 2 or 3")
+    expected_adsets = adset_count + (2 if ai_generated_adsets else 0)
+    per_adset_budget = float(daily_budget_per_adset_usd) if daily_budget_per_adset_usd is not None else 9.0
+    total_budget = per_adset_budget * expected_adsets
+    if abs(per_adset_budget - 9.0) > 0.001:
+        raise HTTPException(status_code=400, detail="This launcher requires a $9.00 daily budget per ad set")
+    if per_adset_budget < 1:
+        raise HTTPException(status_code=400, detail="Daily budget must be at least $1.00 per ad set")
+    if total_budget > 10_000:
         raise HTTPException(status_code=400, detail="Budget exceeds the launcher safety limit")
+    selected_creative_type = str(creative_type or "auto").strip().lower()
+    if selected_creative_type not in {"auto", "image", "carousel", "video"}:
+        raise HTTPException(status_code=400, detail="creative_type must be image, carousel, or video")
     if auto_launch and not confirm_live_launch:
         raise HTTPException(status_code=400, detail="confirm_live_launch=true is required for automatic live scheduling")
     uploads = list(files or [])
@@ -137,9 +150,10 @@ async def create_job(
         })
 
     assets: list[dict[str, Any]] = []
+    actual_creative_type = ""
     if pending:
         try:
-            service.classify_media(pending)
+            actual_creative_type = service.classify_media(pending)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         for index, item in enumerate(pending):
@@ -161,7 +175,7 @@ async def create_job(
             raise HTTPException(status_code=404, detail="Saved source job was not found for this store")
         assets = [dict(item) for item in ((source_job.get("request") or {}).get("media") or [])]
         try:
-            service.classify_media(assets)
+            actual_creative_type = service.classify_media(assets)
             for asset in assets:
                 filename = str(asset.get("filename") or "").replace("\\", "/").split("/")[-1]
                 repo.load_asset(filename)
@@ -171,13 +185,29 @@ async def create_job(
             raise HTTPException(status_code=400, detail=f"Saved creative files are unavailable: {error}") from error
     else:
         raise HTTPException(status_code=400, detail="Upload creative files or choose a saved product card")
+    if selected_creative_type != "auto" and actual_creative_type != selected_creative_type:
+        requirement = {
+            "image": "exactly one image",
+            "carousel": "2-10 images",
+            "video": "exactly one video",
+        }[selected_creative_type]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected {selected_creative_type} ad requires {requirement}; uploaded files are {actual_creative_type}",
+        )
+
+    campaign_name = repo.reserve_campaign_name(store, normalized_account or None, numeric_id)
 
     request_data = {
         "store": repo.canonical_store(store),
         "meta_ad_account_id": normalized_account or None,
         "product_id": numeric_id,
+        "campaign_name": campaign_name,
         "landing_url": str(landing_url or "").strip() or None,
-        "total_daily_budget_usd": round(float(total_daily_budget_usd), 2),
+        "adset_count": adset_count,
+        "daily_budget_per_adset_usd": round(per_adset_budget, 2),
+        "total_daily_budget_usd": round(total_budget, 2),
+        "creative_type": actual_creative_type,
         "ai_generated_adsets": bool(ai_generated_adsets),
         "countries": _countries(countries),
         "timezone": timezone,

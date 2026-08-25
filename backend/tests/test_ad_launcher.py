@@ -24,7 +24,7 @@ from app.ad_launcher.models import (
 
 
 def _draft(adset_count: int = 3) -> CampaignDraft:
-    adsets = [
+    uploaded_adsets = [
         AdSetDraft(
             name="اختبار الراحة",
             origin="uploaded",
@@ -53,7 +53,9 @@ def _draft(adset_count: int = 3) -> CampaignDraft:
             rationale="This third angle mirrors the reference campaign while holding media and delivery controls constant.",
         ),
     ]
-    if adset_count == 5:
+    uploaded_count = adset_count - 2 if adset_count in {4, 5} else adset_count
+    adsets = uploaded_adsets[:uploaded_count]
+    if adset_count in {4, 5}:
         for index in range(2):
             adsets.append(AdSetDraft(
                 name=f"اختبار الصورة {index + 1}",
@@ -114,7 +116,7 @@ def _plan(adset_count: int = 3) -> PreparedCampaign:
         media_urls=[f"https://shop.example/assets/{index}.jpg"],
     ) for index, item in enumerate(draft.adsets, start=1)]
     return PreparedCampaign(
-        campaign_name="123456789",
+        campaign_name="123456789A",
         product_id="123456789",
         product_title="Verified product",
         landing_url="https://shop.example/ar/products/verified-product",
@@ -122,7 +124,7 @@ def _plan(adset_count: int = 3) -> PreparedCampaign:
         meta_ad_account_id="42",
         timezone="Africa/Casablanca",
         scheduled_start="2026-08-24T23:59:00+01:00",
-        total_daily_budget_usd=9.0,
+        total_daily_budget_usd=9.0 * adset_count,
         audience=draft.audience,
         adsets=prepared,
         analysis=draft,
@@ -156,6 +158,7 @@ def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, fil
 
     monkeypatch.setattr(routes, "_require_admin", lambda request: {"email": "admin@example.com"})
     monkeypatch.setattr(routes.repo, "save_asset", lambda filename, data, content_type: f"/uploads/{filename}")
+    monkeypatch.setattr(routes.repo, "reserve_campaign_name", lambda store, account, product: f"{product}A")
     monkeypatch.setattr(routes.repo, "create_job", fake_create_job)
     monkeypatch.setattr(routes.threading, "Thread", DormantThread)
 
@@ -169,7 +172,13 @@ def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, fil
 
     response = client.post(
         "/api/ad-launcher/jobs",
-        data={"store": "irrakids", "product_id": "123456789"},
+        data={
+            "store": "irrakids",
+            "product_id": "123456789",
+            "creative_type": "image" if file_count == 1 else "carousel",
+            "adset_count": "3",
+            "daily_budget_per_adset_usd": "9",
+        },
         files=files,
     )
 
@@ -177,6 +186,57 @@ def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, fil
     assert response.json()["data"]["status"] == "queued"
     assert len(captured["request"]["media"]) == file_count
     assert all(item["content_type"] == "image/jpeg" for item in captured["request"]["media"])
+    assert captured["request"]["creative_type"] == ("image" if file_count == 1 else "carousel")
+    assert captured["request"]["adset_count"] == 3
+    assert captured["request"]["daily_budget_per_adset_usd"] == 9.0
+    assert captured["request"]["total_daily_budget_usd"] == 27.0
+    assert captured["request"]["campaign_name"].startswith("123456789")
+
+
+def test_campaign_letters_advance_per_product_and_account():
+    product_id = str(uuid4().int)[:14]
+
+    assert repository.campaign_letter(1) == "A"
+    assert repository.campaign_letter(26) == "Z"
+    assert repository.campaign_letter(27) == "AA"
+    assert repository.reserve_campaign_name("irrakids", "42", product_id) == f"{product_id}A"
+    assert repository.reserve_campaign_name("irrakids", "42", product_id) == f"{product_id}B"
+    assert repository.reserve_campaign_name("irrakids", "99", product_id) == f"{product_id}A"
+
+
+def test_create_job_enforces_nine_dollars_and_selected_creative_type(monkeypatch):
+    monkeypatch.setattr(routes, "_require_admin", lambda request: {"email": "admin@example.com"})
+    monkeypatch.setattr(routes.repo, "save_asset", lambda filename, data, content_type: f"/uploads/{filename}")
+    app = FastAPI()
+    app.include_router(routes.router)
+    client = TestClient(app)
+
+    wrong_budget = client.post(
+        "/api/ad-launcher/jobs",
+        data={
+            "store": "irrakids",
+            "product_id": "123456789",
+            "daily_budget_per_adset_usd": "8",
+        },
+    )
+    wrong_format = client.post(
+        "/api/ad-launcher/jobs",
+        data={
+            "store": "irrakids",
+            "product_id": "123456789",
+            "creative_type": "image",
+            "daily_budget_per_adset_usd": "9",
+        },
+        files=[
+            ("files", ("one.jpg", b"one", "image/jpeg")),
+            ("files", ("two.jpg", b"two", "image/jpeg")),
+        ],
+    )
+
+    assert wrong_budget.status_code == 400
+    assert "$9.00" in wrong_budget.json()["detail"]
+    assert wrong_format.status_code == 400
+    assert "Selected image ad requires exactly one image" in wrong_format.json()["detail"]
 
 
 def test_landing_host_accepts_verified_locale_and_www_subdomains():
@@ -271,8 +331,17 @@ def test_schedule_uses_2359_and_rolls_after_cutoff():
 
 def test_deterministic_review_gate_enforces_structure_and_generated_images():
     assert agents.deterministic_blockers(
+        _draft(2),
+        expected_adsets=2,
+        expected_uploaded_adsets=2,
+        expected_format="image",
+        requested_countries=["MA"],
+        generated_media_count=0,
+    ) == []
+    assert agents.deterministic_blockers(
         _draft(3),
         expected_adsets=3,
+        expected_uploaded_adsets=3,
         expected_format="image",
         requested_countries=["MA"],
         generated_media_count=0,
@@ -281,11 +350,24 @@ def test_deterministic_review_gate_enforces_structure_and_generated_images():
     blockers = agents.deterministic_blockers(
         _draft(5),
         expected_adsets=5,
+        expected_uploaded_adsets=3,
         expected_format="image",
         requested_countries=["MA"],
         generated_media_count=1,
     )
-    assert "Two approved AI-generated images are required for the five-ad-set mode" in blockers
+    assert "Expected 2 approved AI-generated image(s); found 1" in blockers
+
+    assert agents.deterministic_blockers(
+        _draft(4),
+        expected_adsets=4,
+        expected_uploaded_adsets=2,
+        expected_format="image",
+        requested_countries=["MA"],
+        generated_media=[
+            {"width": 1024, "height": 1280},
+            {"width": 1024, "height": 1280},
+        ],
+    ) == []
 
 
 def test_copy_agent_is_pinned_to_gpt_5_6_sol_with_high_reasoning(monkeypatch):
@@ -343,9 +425,9 @@ def test_broad_audience_controls_are_enforced_after_ai_planning():
 
 
 def test_reference_campaign_naming_is_deterministic():
-    named = agents.enforce_reference_naming(_draft(3), "gid://shopify/Product/15043841786232")
+    named = agents.enforce_reference_naming(_draft(3), "15043841786232a")
 
-    assert named.campaign_name == "15043841786232"
+    assert named.campaign_name == "15043841786232A"
     assert [item.name for item in named.adsets] == [
         "adset 01 parent",
         "adset 02 parent",
@@ -357,6 +439,7 @@ def test_generated_media_dimensions_are_machine_checked():
     valid = agents.deterministic_blockers(
         _draft(5),
         expected_adsets=5,
+        expected_uploaded_adsets=3,
         expected_format="image",
         requested_countries=["MA"],
         generated_media=[
@@ -367,6 +450,7 @@ def test_generated_media_dimensions_are_machine_checked():
     invalid = agents.deterministic_blockers(
         _draft(5),
         expected_adsets=5,
+        expected_uploaded_adsets=3,
         expected_format="image",
         requested_countries=["MA"],
         generated_media=[
@@ -381,7 +465,7 @@ def test_generated_media_dimensions_are_machine_checked():
 
 def test_budget_and_targeting_stay_broad_and_manual():
     plan = _plan(3)
-    assert meta._budget_minor(9.0, 3) == [300, 300, 300]
+    assert meta._budget_minor(27.0, 3) == [900, 900, 900]
 
     targeting = meta._targeting(plan)
     assert targeting["geo_locations"] == {"countries": ["MA"]}
@@ -504,8 +588,11 @@ def test_rejected_job_resume_seeds_completed_checkpoints():
 
 def test_launch_failed_retry_keeps_approved_plan_and_skips_agent_work():
     job_id = str(uuid4())
+    legacy_plan = _plan(3).model_dump(mode="json")
+    legacy_plan["campaign_name"] = "123456789"
+    legacy_plan["total_daily_budget_usd"] = 9.0
     saved_result = {
-        "plan": _plan(3).model_dump(mode="json"),
+        "plan": legacy_plan,
         "review": {"approved": True, "score": 92},
         "reasoning_summaries": {"review": ["Approved controlled campaign."]},
     }
@@ -521,7 +608,10 @@ def test_launch_failed_retry_keeps_approved_plan_and_skips_agent_work():
 
     assert resumed["status"] == "approved"
     assert resumed["stage"] == "meta_retry_queued"
-    assert resumed["result"] == saved_result
+    assert resumed["result"]["plan"]["campaign_name"].startswith("123456789")
+    assert resumed["result"]["plan"]["campaign_name"] != "123456789"
+    assert resumed["result"]["plan"]["total_daily_budget_usd"] == 27.0
+    assert resumed["request"]["daily_budget_per_adset_usd"] == 9.0
     assert resumed["error"] is None
     assert resumed["retry_count"] == 1
 
@@ -573,6 +663,27 @@ def test_meta_connection_discovers_accounts_and_respects_selection(monkeypatch):
     assert result["selected_account_id"] == "99"
     assert [item["account_id"] for item in result["accounts"]] == ["42", "99"]
     assert result["account"]["name"] == "Store Two"
+
+
+def test_meta_development_mode_error_has_actionable_live_app_guidance():
+    class Response:
+        status_code = 400
+        text = "Bad request"
+
+        @staticmethod
+        def json():
+            return {"error": {
+                "message": "Ads creative post was created by an app that is in development mode.",
+                "code": 100,
+                "error_subcode": 1885183,
+            }}
+
+    error = meta._safe_error(Response(), "act_42/adcreatives")
+
+    assert "Development mode" in str(error)
+    assert "Live/Public" in str(error)
+    assert "regenerate the access token" in str(error)
+    assert "cannot bypass" in str(error)
 
 
 def test_meta_image_upload_sends_multipart_bytes_not_remote_url(monkeypatch):
@@ -668,7 +779,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     assert selected == {"store": "irrakids", "ad_account_id": "42"}
     campaign_create = next(payload for method, path, payload in calls if path.endswith("/campaigns"))
     assert campaign_create["status"] == "PAUSED"
-    assert campaign_create["name"] == "123456789"
+    assert campaign_create["name"] == "123456789A"
     assert campaign_create["objective"] == "OUTCOME_SALES"
     assert campaign_create["is_adset_budget_sharing_enabled"] == "false"
     assert "daily_budget" not in campaign_create
@@ -679,7 +790,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
         "adset 02 parent",
         "adset 03 parent",
     ]
-    assert [int(payload["daily_budget"]) for payload in adset_creates] == [300, 300, 300]
+    assert [int(payload["daily_budget"]) for payload in adset_creates] == [900, 900, 900]
     assert all(payload["status"] == "PAUSED" for payload in adset_creates)
     assert all(payload["is_dynamic_creative"] == "false" for payload in adset_creates)
     assert all(json.loads(payload["promoted_object"])["custom_event_type"] == "PURCHASE" for payload in adset_creates)
@@ -689,11 +800,14 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     creative_creates = [payload for method, path, payload in calls if path.endswith("/adcreatives")]
     assert [payload["name"] for payload in creative_creates] == ["creative 01", "creative 02", "creative 03"]
     assert [payload["name"] for payload in ad_creates] == ["creative 01", "creative 02", "creative 03"]
+    campaign_position = next(index for index, (_, path, _) in enumerate(calls) if path.endswith("/campaigns"))
+    creative_positions = [index for index, (_, path, _) in enumerate(calls) if path.endswith("/adcreatives")]
+    assert creative_positions and max(creative_positions) < campaign_position
     assert all(payload["status"] == "PAUSED" for payload in ad_creates)
     active_updates = [(path, payload) for method, path, payload in calls if payload.get("status") == "ACTIVE"]
     assert active_updates[-1] == ("campaigns-1", {"status": "ACTIVE"})
     assert result["campaign_status"] == "ACTIVE"
-    assert sum(item["daily_budget_usd"] for item in result["adsets"]) == 9.0
+    assert sum(item["daily_budget_usd"] for item in result["adsets"]) == 27.0
     assert result["automation"] == {
         "catalog": False,
         "campaign_budget": False,
@@ -704,7 +818,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     }
 
 
-def test_meta_failure_never_activates_campaign(monkeypatch):
+def test_meta_creative_failure_stops_before_campaign_creation(monkeypatch):
     calls: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
         "access_token": "token", "ad_account_id": "42", "page_id": "84",
@@ -718,16 +832,12 @@ def test_meta_failure_never_activates_campaign(monkeypatch):
         calls.append((method, path, payload))
         if method == "GET":
             return {"account_status": 1, "currency": "USD"}
-        if path.endswith("/campaigns"):
-            return {"id": "campaign-1"}
-        if path.endswith("/adsets"):
-            return {"id": "adset-1"}
         if path.endswith("/adcreatives"):
-            raise RuntimeError("creative rejected")
+            raise RuntimeError("development mode creative rejected")
         return {"id": "unexpected"}
 
     monkeypatch.setattr(meta, "_request", fake_request)
-    with pytest.raises(RuntimeError, match="left PAUSED"):
+    with pytest.raises(RuntimeError, match="development mode creative rejected"):
         meta.create_sales_test_campaign(_plan(3))
 
-    assert not any(path == "campaign-1" and payload.get("status") == "ACTIVE" for _, path, payload in calls)
+    assert not any(path.endswith(("/campaigns", "/adsets", "/ads")) for _, path, _ in calls)

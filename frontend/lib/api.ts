@@ -1625,7 +1625,9 @@ export async function createAdLauncherJob(payload:{
   source_job_id?:string
   product_id:string
   landing_url?:string
-  total_daily_budget_usd:number
+  daily_budget_per_adset_usd:number
+  adset_count:2|3
+  creative_type:'image'|'carousel'|'video'
   ai_generated_adsets:boolean
   countries:string[]
   timezone?:string
@@ -1639,7 +1641,9 @@ export async function createAdLauncherJob(payload:{
   form.append('product_id',payload.product_id)
   if(payload.landing_url) form.append('landing_url',payload.landing_url)
   if(payload.source_job_id) form.append('source_job_id',payload.source_job_id)
-  form.append('total_daily_budget_usd',String(payload.total_daily_budget_usd))
+  form.append('daily_budget_per_adset_usd',String(payload.daily_budget_per_adset_usd))
+  form.append('adset_count',String(payload.adset_count))
+  form.append('creative_type',payload.creative_type)
   form.append('ai_generated_adsets',String(!!payload.ai_generated_adsets))
   form.append('countries',JSON.stringify(payload.countries||['MA']))
   form.append('timezone',payload.timezone||'Africa/Casablanca')

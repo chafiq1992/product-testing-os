@@ -246,6 +246,17 @@ def classify_media(items: list[dict[str, Any]]) -> str:
     raise ValueError("Use exactly one video, exactly one image, or 2-10 images for a carousel; mixed media is not supported")
 
 
+def requested_uploaded_adsets(request_data: dict[str, Any]) -> int:
+    count = int(request_data.get("adset_count") or 3)
+    if count not in {2, 3}:
+        raise ValueError("The launcher requires two or three uploaded-creative ad sets")
+    return count
+
+
+def expected_adsets(request_data: dict[str, Any]) -> int:
+    return requested_uploaded_adsets(request_data) + (2 if request_data.get("ai_generated_adsets") else 0)
+
+
 def _image_asset_data(asset: dict[str, Any]) -> str:
     data = repo.load_asset(str(asset.get("filename") or ""))
     if len(data) > 25 * 1024 * 1024:
@@ -387,7 +398,8 @@ def scheduled_start(timezone_name: str, now: datetime | None = None) -> str:
 def _context(
     request_data: dict[str, Any], product: dict[str, Any], landing: dict[str, Any], media_format: str,
 ) -> dict[str, Any]:
-    expected_adsets = 5 if request_data.get("ai_generated_adsets") else 3
+    uploaded_adsets = requested_uploaded_adsets(request_data)
+    total_adsets = expected_adsets(request_data)
     return {
         "shopify_product": product,
         "landing_page": landing,
@@ -400,7 +412,8 @@ def _context(
             ],
         },
         "operator_constraints": {
-            "expected_adset_count": expected_adsets,
+            "expected_adset_count": total_adsets,
+            "expected_uploaded_adset_count": uploaded_adsets,
             "countries": request_data.get("countries") or ["MA"],
             "objective": "OUTCOME_SALES",
             "conversion_event": "PURCHASE",
@@ -410,10 +423,10 @@ def _context(
             "catalog_dynamic_creative_advantage_audience_advantage_placements_meta_creative_enhancements": "forbidden",
             "destination_language": "Arabic",
             "schedule": "23:59 Africa/Casablanca; delivery begins the following day",
-            "uploaded_adset_origins": ["uploaded", "uploaded", "uploaded"],
-            "optional_adset_origins": ["ai_generated", "ai_generated"] if expected_adsets == 5 else [],
+            "uploaded_adset_origins": ["uploaded"] * uploaded_adsets,
+            "optional_adset_origins": ["ai_generated", "ai_generated"] if total_adsets > uploaded_adsets else [],
             "reference_naming": {
-                "campaign": "numeric Shopify product ID",
+                "campaign": "numeric Shopify product ID plus sequential letters",
                 "adsets": "adset 01 parent, adset 02 parent, ...",
                 "ads": "creative 01, creative 02, ...",
             },
@@ -451,6 +464,9 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
             product = get_product(store, str(request_data.get("product_id") or ""))
             landing_url, landing = _landing_evidence(store, product, request_data.get("landing_url"))
             media_format = classify_media(media)
+            selected_format = str(request_data.get("creative_type") or media_format).lower()
+            if selected_format != media_format:
+                raise ValueError(f"Selected {selected_format} creative does not match uploaded {media_format} media")
             checkpoint.update({
                 "product": product,
                 "landing": landing,
@@ -492,9 +508,9 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
             analysis_images.extend(_image_asset_data(item) for item in media)
 
         context = _context(request_data, product, landing, media_format)
-        expected_adsets = 5 if request_data.get("ai_generated_adsets") else 3
+        requested_adsets = expected_adsets(request_data)
         saved_draft = checkpoint.get("draft")
-        if saved_draft and len(saved_draft.get("adsets") or []) == expected_adsets:
+        if saved_draft and len(saved_draft.get("adsets") or []) == requested_adsets:
             draft = CampaignDraft.model_validate(checkpoint["draft"])
             strategy_reasoning = [str(item) for item in checkpoint.get("strategy_reasoning") or []]
         else:
@@ -502,7 +518,12 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
         draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
         draft = agents.enforce_reference_naming(
             draft,
-            str(product.get("numeric_id") or request_data.get("product_id") or ""),
+            str(
+                request_data.get("campaign_name")
+                or product.get("numeric_id")
+                or request_data.get("product_id")
+                or ""
+            ),
         )
         checkpoint.update({
             "draft": draft.model_dump(mode="json"),
@@ -594,7 +615,8 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
         )
         blockers = agents.deterministic_blockers(
             draft,
-            expected_adsets=5 if request_data.get("ai_generated_adsets") else 3,
+            expected_adsets=expected_adsets(request_data),
+            expected_uploaded_adsets=requested_uploaded_adsets(request_data),
             expected_format=media_format,
             requested_countries=request_data.get("countries") or ["MA"],
             generated_media=generated_media,
@@ -635,7 +657,12 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
             ))
 
         plan = PreparedCampaign(
-            campaign_name=str(product.get("numeric_id") or request_data.get("product_id") or ""),
+            campaign_name=str(
+                request_data.get("campaign_name")
+                or product.get("numeric_id")
+                or request_data.get("product_id")
+                or ""
+            ),
             product_id=str(product.get("numeric_id") or request_data.get("product_id") or ""),
             product_title=str(product.get("title") or "Product"),
             landing_url=landing_url,
@@ -702,12 +729,41 @@ def retry_job(job_id: str, store: str | None) -> dict[str, Any]:
         review = dict(result.get("review") or {})
         if not review.get("approved") or not result.get("plan"):
             raise ValueError("The saved campaign no longer has an approved launch plan")
+        request_data = dict(job.get("request") or {})
+        plan = dict(result.get("plan") or {})
+        product_id = str(plan.get("product_id") or request_data.get("product_id") or "")
+        campaign_name = str(plan.get("campaign_name") or "").upper()
+        if not re.fullmatch(rf"{re.escape(product_id)}[A-Z]+", campaign_name):
+            campaign_name = repo.reserve_campaign_name(
+                store,
+                str(plan.get("meta_ad_account_id") or request_data.get("meta_ad_account_id") or "") or None,
+                product_id,
+            )
+        plan_adsets = list(plan.get("adsets") or [])
+        uploaded_count = sum(1 for item in plan_adsets if item.get("origin") == "uploaded")
+        uploaded_count = uploaded_count if uploaded_count in {2, 3} else 3
+        per_adset_budget = _number(request_data.get("daily_budget_per_adset_usd"), 9.0)
+        creative_type = str(request_data.get("creative_type") or ((plan_adsets or [{}])[0]).get("media_type") or "image")
+        plan.update({
+            "campaign_name": campaign_name,
+            "total_daily_budget_usd": round(per_adset_budget * len(plan_adsets), 2),
+        })
+        request_data.update({
+            "campaign_name": campaign_name,
+            "adset_count": uploaded_count,
+            "daily_budget_per_adset_usd": per_adset_budget,
+            "total_daily_budget_usd": plan["total_daily_budget_usd"],
+            "creative_type": creative_type,
+        })
+        result["plan"] = plan
         updated = repo.update_job(store, job_id, {
             "status": "approved",
             "stage": "meta_retry_queued",
             "progress": 100,
             "error": None,
             "retry_count": retry_count,
+            "request": request_data,
+            "result": result,
         })
         repo.add_activity(
             store,
@@ -716,7 +772,8 @@ def retry_job(job_id: str, store: str | None) -> dict[str, Any]:
             title=f"Meta-only retry {retry_count} requested",
             summary=(
                 "The approved product analysis, copy, review, generated media, and launch plan were retained. "
-                "Only media transfer and Meta object creation will run again."
+                f"Only media transfer and Meta object creation will run again as campaign {campaign_name}, "
+                f"with ${per_adset_budget:.2f}/day on each ad set."
             ),
         )
         return updated
@@ -781,7 +838,10 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         stage="meta_creation",
         status="running",
         title="Creating the campaign in the selected Meta account",
-        summary=f"The transactional launch is using Meta account act_{plan.meta_ad_account_id or 'configured-default'} and will keep the campaign paused until every child object exists.",
+        summary=(
+            f"The launch is using Meta account act_{plan.meta_ad_account_id or 'configured-default'}. "
+            "All ad creatives are created first; only then is the paused campaign hierarchy created and activated."
+        ),
     )
     try:
         meta_result = meta.create_sales_test_campaign(plan)
@@ -801,18 +861,24 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         )
         return meta_result
     except Exception as error:
+        message = str(error)
+        partial_campaign = "left PAUSED" in message
+        failure_stage = "meta_failed_paused" if partial_campaign else "meta_creative_preflight_failed"
         repo.add_activity(
             store,
             job_id,
-            stage="meta_failed_paused",
+            stage=failure_stage,
             status="failed",
             title="Meta launch did not complete",
-            summary=f"The campaign was left paused. {type(error).__name__}: {str(error)[:1200]}",
+            summary=(
+                ("The incomplete campaign remains paused. " if partial_campaign else "No new campaign hierarchy was created. ")
+                + f"{type(error).__name__}: {message[:1200]}"
+            ),
         )
         repo.update_job(store, job_id, {
             "status": "launch_failed",
-            "stage": "meta_failed_paused",
-            "error": {"type": type(error).__name__, "message": str(error)[:2500]},
+            "stage": failure_stage,
+            "error": {"type": type(error).__name__, "message": message[:2500]},
             "result": result,
         })
         raise

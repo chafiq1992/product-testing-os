@@ -76,7 +76,7 @@ class CampaignDraft(StrictModel):
     landing_analysis: LandingAnalysis
     creative_analysis: CreativeAnalysis
     audience: AudiencePlan
-    adsets: list[AdSetDraft] = Field(min_length=3, max_length=5)
+    adsets: list[AdSetDraft] = Field(min_length=2, max_length=5)
     testing_hypothesis: str = Field(min_length=20, max_length=1000)
     operator_notes: list[str] = Field(default_factory=list, max_length=10)
 
@@ -135,5 +135,5 @@ class PreparedCampaign(StrictModel):
     scheduled_start: str
     total_daily_budget_usd: float = Field(gt=0)
     audience: AudiencePlan
-    adsets: list[PreparedAdSet] = Field(min_length=3, max_length=5)
+    adsets: list[PreparedAdSet] = Field(min_length=2, max_length=5)
     analysis: CampaignDraft
