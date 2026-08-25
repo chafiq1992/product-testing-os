@@ -565,38 +565,86 @@ def create_sales_test_campaign(
         _require_public_media(plan)
         media_handles = _prepare_media(cfg, plan)
 
+        creative_ad_errors: list[str] = []
         for index, (adset_plan, item) in enumerate(zip(plan.adsets, created), start=1):
-            if item["creative_id"]:
+            if item["ad_id"]:
                 continue
             destination = _append_utm(plan.landing_url, plan.campaign_name, index, adset_plan.angle)
             story = _story_spec(cfg, adset_plan, destination, media_handles)
-            creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", {
-                "name": item["ad_name"],
-                "object_story_spec": json.dumps(story, ensure_ascii=False),
-                "degrees_of_freedom_spec": json.dumps({
-                    "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
-                }),
-            })
-            creative_id = str(creative.get("id") or "")
-            if not creative_id:
-                raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
-            item["creative_id"] = creative_id
-            requests_log.append({"edge": "adcreatives", **item, "status": "READY"})
+            feature_spec = {
+                "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
+            }
+            standalone_error: Exception | None = None
+            if not item["creative_id"]:
+                try:
+                    creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", {
+                        "name": item["ad_name"],
+                        "object_story_spec": json.dumps(story, ensure_ascii=False),
+                        "degrees_of_freedom_spec": json.dumps(feature_spec),
+                    })
+                    creative_id = str(creative.get("id") or "")
+                    if not creative_id:
+                        raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
+                    item["creative_id"] = creative_id
+                    requests_log.append({"edge": "adcreatives", **item, "status": "READY"})
+                except Exception as error:
+                    standalone_error = error
+
+            if item["creative_id"]:
+                try:
+                    ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
+                        "name": item["ad_name"],
+                        "adset_id": item["adset_id"],
+                        "creative": json.dumps({"creative_id": item["creative_id"]}),
+                        "status": "PAUSED",
+                    })
+                    ad_id = str(ad.get("id") or "")
+                    if not ad_id:
+                        raise RuntimeError(f"Meta did not return an ad ID for ad set {index}")
+                    item["ad_id"] = ad_id
+                    requests_log.append({"edge": "ads", **item, "status": "PAUSED"})
+                except Exception as error:
+                    creative_ad_errors.append(f"ad set {index} ad: {error}")
+                continue
+
+            # Meta also supports creating an ad and configuring its creative inline. This second official route can
+            # complete the hierarchy when standalone AdCreative creation is unavailable for a non-policy reason.
+            try:
+                ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
+                    "name": item["ad_name"],
+                    "adset_id": item["adset_id"],
+                    "creative": json.dumps({
+                        "object_story_spec": story,
+                        "degrees_of_freedom_spec": feature_spec,
+                    }, ensure_ascii=False),
+                    "status": "PAUSED",
+                })
+                ad_id = str(ad.get("id") or "")
+                if not ad_id:
+                    raise RuntimeError(f"Meta did not return an inline-created ad ID for ad set {index}")
+                item["ad_id"] = ad_id
+                try:
+                    details = _request("GET", cfg, ad_id, {"fields": "id,creative{id,name}"})
+                    attached = details.get("creative") or {}
+                    item["creative_id"] = str(
+                        attached.get("id") if isinstance(attached, dict) else attached or ""
+                    )
+                except Exception:
+                    # The ad ID is authoritative even when the follow-up detail read is unavailable.
+                    pass
+                requests_log.append({"edge": "ads_inline_creative", **item, "status": "PAUSED"})
+            except Exception as inline_error:
+                creative_ad_errors.append(
+                    f"ad set {index} creative/ad: standalone failed ({standalone_error}); "
+                    f"inline fallback failed ({inline_error})"
+                )
+
+        if creative_ad_errors:
+            raise RuntimeError("; ".join(creative_ad_errors))
 
         for index, item in enumerate(created, start=1):
-            if item["ad_id"]:
-                continue
-            ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
-                "name": item["ad_name"],
-                "adset_id": item["adset_id"],
-                "creative": json.dumps({"creative_id": item["creative_id"]}),
-                "status": "PAUSED",
-            })
-            ad_id = str(ad.get("id") or "")
-            if not ad_id:
-                raise RuntimeError(f"Meta did not return an ad ID for ad set {index}")
-            item["ad_id"] = ad_id
-            requests_log.append({"edge": "ads", **item, "status": "PAUSED"})
+            if not item["ad_id"]:
+                raise RuntimeError(f"Meta did not create an ad for ad set {index}")
 
         # Transactional activation: the campaign remains paused until every child is ready and active.
         for item in created:

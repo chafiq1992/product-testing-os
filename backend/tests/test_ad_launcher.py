@@ -950,6 +950,8 @@ def test_meta_creative_failure_saves_and_retry_resumes_same_hierarchy(monkeypatc
                 raise RuntimeError("development mode creative rejected")
             counters["adcreatives"] += 1
             return {"id": f"adcreatives-{counters['adcreatives']}"}
+        if path.endswith("/ads") and blocked:
+            raise RuntimeError("development mode inline creative rejected")
         edge = path.rsplit("/", 1)[-1]
         if edge in counters:
             counters[edge] += 1
@@ -963,7 +965,8 @@ def test_meta_creative_failure_saves_and_retry_resumes_same_hierarchy(monkeypatc
     partial = captured.value.partial_result
     assert partial["campaign_id"] == "campaigns-1"
     assert [item["adset_id"] for item in partial["adsets"]] == ["adsets-1", "adsets-2", "adsets-3"]
-    assert not any(path.endswith("/ads") for _, path, _ in calls)
+    assert sum(path.endswith("/ads") for _, path, _ in calls) == 3
+    assert all(not item["ad_id"] for item in partial["adsets"])
 
     blocked = False
     calls.clear()
@@ -975,3 +978,43 @@ def test_meta_creative_failure_saves_and_retry_resumes_same_hierarchy(monkeypatc
     assert counters["adsets"] == 3
     assert sum(path.endswith("/adcreatives") for _, path, _ in calls) == 3
     assert sum(path.endswith("/ads") for _, path, _ in calls) == 3
+
+
+def test_meta_inline_ad_fallback_creates_ads_when_standalone_creative_is_unavailable(monkeypatch):
+    calls: list[tuple[str, str, dict]] = []
+    counters = {"campaigns": 0, "adsets": 0, "ads": 0}
+    monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
+        "access_token": "token", "ad_account_id": "42", "page_id": "84",
+        "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
+    })
+    monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: {"images": {}, "videos": {}})
+    monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url, media_handles: {
+        "page_id": "84", "link_data": {"link": url, "message": adset.primary_text_ar},
+    })
+
+    def fake_request(method, cfg, path, payload=None):
+        payload = dict(payload or {})
+        calls.append((method, path, payload))
+        if method == "GET" and path == "act_42":
+            return {"account_status": 1, "currency": "USD"}
+        if method == "GET" and path.startswith("ads-"):
+            return {"id": path, "creative": {"id": f"inline-creative-{path.split('-')[-1]}"}}
+        if path.endswith("/adcreatives"):
+            raise RuntimeError("standalone creative edge unavailable")
+        edge = path.rsplit("/", 1)[-1]
+        if edge in counters:
+            counters[edge] += 1
+            return {"id": f"{edge}-{counters[edge]}"}
+        return {"success": True}
+
+    monkeypatch.setattr(meta, "_request", fake_request)
+    result = meta.create_sales_test_campaign(_plan(3))
+
+    assert result["campaign_status"] == "ACTIVE"
+    assert [item["ad_id"] for item in result["adsets"]] == ["ads-1", "ads-2", "ads-3"]
+    assert [item["creative_id"] for item in result["adsets"]] == [
+        "inline-creative-1", "inline-creative-2", "inline-creative-3",
+    ]
+    inline_calls = [payload for method, path, payload in calls if path.endswith("/ads")]
+    assert len(inline_calls) == 3
+    assert all("object_story_spec" in json.loads(payload["creative"]) for payload in inline_calls)
