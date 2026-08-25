@@ -421,8 +421,18 @@ def _budget_minor(total_usd: float, count: int) -> list[int]:
     return [base + (1 if index < remainder else 0) for index in range(count)]
 
 
-def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
-    _require_public_media(plan)
+class MetaCampaignSavedError(RuntimeError):
+    """A launch failure that left a resumable PAUSED hierarchy in Meta."""
+
+    def __init__(self, message: str, partial_result: dict[str, Any]):
+        super().__init__(message)
+        self.partial_result = partial_result
+
+
+def create_sales_test_campaign(
+    plan: PreparedCampaign,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     cfg = _require_config(plan.store, plan.meta_ad_account_id)
     account = _request("GET", cfg, f"act_{cfg['ad_account_id']}", {
         "fields": "id,name,account_status,currency,timezone_name",
@@ -436,107 +446,157 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
             "Configure a USD ad account or add an explicit reviewed currency conversion before launch."
         )
 
-    # Finish every media transfer first so a token, app-capability, or file error cannot leave another
-    # empty campaign behind. Meta's current ad-image edge receives the actual file, not its remote URL.
-    media_handles = _prepare_media(cfg, plan)
+    saved = dict(existing or {})
     requests_log: list[dict[str, Any]] = []
-
-    # Create every ad creative before the campaign. Meta rejects inline posts from Development-mode apps at this
-    # edge (subcode 1885183); front-loading it prevents that account/configuration error from leaving another empty
-    # campaign or a single orphan ad set in Ads Manager.
-    prepared_creatives: list[dict[str, str]] = []
-    for index, adset_plan in enumerate(plan.adsets, start=1):
-        ad_name = adset_plan.ad_name or f"creative {index:02d}"
-        destination = _append_utm(plan.landing_url, plan.campaign_name, index, adset_plan.angle)
-        story = _story_spec(cfg, adset_plan, destination, media_handles)
-        creative_payload = {
-            "name": ad_name,
-            "object_story_spec": json.dumps(story, ensure_ascii=False),
-            "degrees_of_freedom_spec": json.dumps({
-                "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
-            }),
-        }
-        creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", creative_payload)
-        creative_id = str(creative.get("id") or "")
-        if not creative_id:
-            raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
-        prepared_creatives.append({"creative_id": creative_id, "ad_name": ad_name})
-        requests_log.append({
-            "edge": "adcreatives",
+    budgets = _budget_minor(plan.total_daily_budget_usd, len(plan.adsets))
+    targeting = _targeting(plan)
+    saved_adsets = {
+        int(item.get("index") or 0): dict(item)
+        for item in (saved.get("adsets") or [])
+        if int(item.get("index") or 0) > 0
+    }
+    created: list[dict[str, Any]] = []
+    for index, (adset_plan, budget) in enumerate(zip(plan.adsets, budgets), start=1):
+        previous = saved_adsets.get(index) or {}
+        created.append({
             "index": index,
-            "creative_id": creative_id,
-            "ad_name": ad_name,
-            "status": "READY",
+            "adset_id": str(previous.get("adset_id") or ""),
+            "creative_id": str(previous.get("creative_id") or ""),
+            "ad_id": str(previous.get("ad_id") or ""),
+            "daily_budget_usd": budget / 100,
+            "media_type": adset_plan.media_type,
+            "origin": adset_plan.origin,
+            "adset_name": f"adset {index:02d} parent",
+            "ad_name": adset_plan.ad_name or f"creative {index:02d}",
         })
 
-    campaign_payload = {
-        "name": plan.campaign_name,
-        "objective": "OUTCOME_SALES",
-        "buying_type": "AUCTION",
-        "special_ad_categories": json.dumps([]),
-        "status": "PAUSED",
-        "is_adset_budget_sharing_enabled": "false",
-    }
-    campaign = _request("POST", cfg, f"act_{cfg['ad_account_id']}/campaigns", campaign_payload)
-    campaign_id = str(campaign.get("id") or "")
-    if not campaign_id:
-        raise RuntimeError("Meta did not return a campaign ID")
-    requests_log.append({"edge": "campaigns", "id": campaign_id, "status": "PAUSED"})
+    campaign_id = str(saved.get("campaign_id") or "")
 
-    budgets = _budget_minor(plan.total_daily_budget_usd, len(plan.adsets))
-    created: list[dict[str, Any]] = []
-    targeting = _targeting(plan)
+    def result_snapshot(*, status: str, incomplete_reason: str | None = None) -> dict[str, Any]:
+        result = {
+            "campaign_id": campaign_id,
+            "campaign_name": plan.campaign_name,
+            "campaign_status": status,
+            "draft_saved": status == "PAUSED",
+            "scheduled_start": plan.scheduled_start,
+            "objective": "OUTCOME_SALES",
+            "budget_mode": "ABO",
+            "total_daily_budget_usd": plan.total_daily_budget_usd,
+            "adsets": [dict(item) for item in created],
+            "account": {k: account.get(k) for k in ("id", "name", "currency", "timezone_name")},
+            "api_version": cfg["api_version"],
+            "automation": {
+                "catalog": False,
+                "campaign_budget": False,
+                "advantage_audience": False,
+                "advantage_placements": False,
+                "creative_feature_opt_outs": True,
+                "carousel_reordering": False,
+            },
+            "requests": list(requests_log),
+        }
+        if incomplete_reason:
+            result["incomplete_reason"] = incomplete_reason
+        return result
+
+    def saved_error(error: Exception) -> MetaCampaignSavedError:
+        reason = str(error)
+        return MetaCampaignSavedError(
+            f"Meta campaign {plan.campaign_name} ({campaign_id}) was saved PAUSED because launch did not complete: {reason}",
+            result_snapshot(status="PAUSED", incomplete_reason=reason),
+        )
+
+    if campaign_id:
+        try:
+            _request("POST", cfg, campaign_id, {"name": plan.campaign_name, "status": "PAUSED"})
+            requests_log.append({"edge": "campaigns", "id": campaign_id, "status": "PAUSED", "resumed": True})
+        except Exception as error:
+            raise saved_error(error) from error
+    else:
+        campaign = _request("POST", cfg, f"act_{cfg['ad_account_id']}/campaigns", {
+            "name": plan.campaign_name,
+            "objective": "OUTCOME_SALES",
+            "buying_type": "AUCTION",
+            "special_ad_categories": json.dumps([]),
+            "status": "PAUSED",
+            "is_adset_budget_sharing_enabled": "false",
+        })
+        campaign_id = str(campaign.get("id") or "")
+        if not campaign_id:
+            raise RuntimeError("Meta did not return a campaign ID")
+        requests_log.append({"edge": "campaigns", "id": campaign_id, "status": "PAUSED"})
+
+    # Persist the complete selected ABO hierarchy before touching media or ad creatives. This deliberately leaves a
+    # visible, non-delivering campaign structure that can be completed manually when a creative capability is blocked.
     try:
-        for index, (adset_plan, budget, prepared_creative) in enumerate(
-            zip(plan.adsets, budgets, prepared_creatives), start=1
-        ):
-            adset_name = f"adset {index:02d} parent"
-            ad_name = prepared_creative["ad_name"]
-            creative_id = prepared_creative["creative_id"]
-            adset_payload = {
-                "name": adset_name,
-                "campaign_id": campaign_id,
-                "daily_budget": str(budget),
-                "billing_event": "IMPRESSIONS",
-                "optimization_goal": "OFFSITE_CONVERSIONS",
-                "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
-                "promoted_object": json.dumps({"pixel_id": cfg["pixel_id"], "custom_event_type": "PURCHASE"}),
-                "destination_type": "WEBSITE",
-                "is_dynamic_creative": "false",
-                "targeting": json.dumps(targeting),
-                "attribution_spec": json.dumps([
-                    {"event_type": "CLICK_THROUGH", "window_days": 7},
-                    {"event_type": "VIEW_THROUGH", "window_days": 1},
-                ]),
-                "start_time": plan.scheduled_start,
-                "status": "PAUSED",
-            }
-            adset = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adsets", adset_payload)
-            adset_id = str(adset.get("id") or "")
-            if not adset_id:
-                raise RuntimeError(f"Meta did not return an ID for ad set {index}")
+        adset_errors: list[str] = []
+        for index, (_, budget, item) in enumerate(zip(plan.adsets, budgets, created), start=1):
+            if item["adset_id"]:
+                continue
+            try:
+                adset = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adsets", {
+                    "name": item["adset_name"],
+                    "campaign_id": campaign_id,
+                    "daily_budget": str(budget),
+                    "billing_event": "IMPRESSIONS",
+                    "optimization_goal": "OFFSITE_CONVERSIONS",
+                    "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+                    "promoted_object": json.dumps({"pixel_id": cfg["pixel_id"], "custom_event_type": "PURCHASE"}),
+                    "destination_type": "WEBSITE",
+                    "is_dynamic_creative": "false",
+                    "targeting": json.dumps(targeting),
+                    "attribution_spec": json.dumps([
+                        {"event_type": "CLICK_THROUGH", "window_days": 7},
+                        {"event_type": "VIEW_THROUGH", "window_days": 1},
+                    ]),
+                    "start_time": plan.scheduled_start,
+                    "status": "PAUSED",
+                })
+                adset_id = str(adset.get("id") or "")
+                if not adset_id:
+                    raise RuntimeError(f"Meta did not return an ID for ad set {index}")
+                item["adset_id"] = adset_id
+                requests_log.append({"edge": "adsets", **item, "status": "PAUSED"})
+            except Exception as error:
+                adset_errors.append(f"ad set {index}: {error}")
+        if adset_errors:
+            raise RuntimeError("; ".join(adset_errors))
 
+        _require_public_media(plan)
+        media_handles = _prepare_media(cfg, plan)
+
+        for index, (adset_plan, item) in enumerate(zip(plan.adsets, created), start=1):
+            if item["creative_id"]:
+                continue
+            destination = _append_utm(plan.landing_url, plan.campaign_name, index, adset_plan.angle)
+            story = _story_spec(cfg, adset_plan, destination, media_handles)
+            creative = _request("POST", cfg, f"act_{cfg['ad_account_id']}/adcreatives", {
+                "name": item["ad_name"],
+                "object_story_spec": json.dumps(story, ensure_ascii=False),
+                "degrees_of_freedom_spec": json.dumps({
+                    "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
+                }),
+            })
+            creative_id = str(creative.get("id") or "")
+            if not creative_id:
+                raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
+            item["creative_id"] = creative_id
+            requests_log.append({"edge": "adcreatives", **item, "status": "READY"})
+
+        for index, item in enumerate(created, start=1):
+            if item["ad_id"]:
+                continue
             ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
-                "name": ad_name,
-                "adset_id": adset_id,
-                "creative": json.dumps({"creative_id": creative_id}),
+                "name": item["ad_name"],
+                "adset_id": item["adset_id"],
+                "creative": json.dumps({"creative_id": item["creative_id"]}),
                 "status": "PAUSED",
             })
             ad_id = str(ad.get("id") or "")
             if not ad_id:
                 raise RuntimeError(f"Meta did not return an ad ID for ad set {index}")
-            created.append({
-                "index": index,
-                "adset_id": adset_id,
-                "creative_id": creative_id,
-                "ad_id": ad_id,
-                "daily_budget_usd": budget / 100,
-                "media_type": adset_plan.media_type,
-                "origin": adset_plan.origin,
-                "adset_name": adset_name,
-                "ad_name": ad_name,
-            })
-            requests_log.append({"edge": "adsets/adcreatives/ads", **created[-1], "status": "PAUSED"})
+            item["ad_id"] = ad_id
+            requests_log.append({"edge": "ads", **item, "status": "PAUSED"})
 
         # Transactional activation: the campaign remains paused until every child is ready and active.
         for item in created:
@@ -545,27 +605,6 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
             _request("POST", cfg, item["adset_id"], {"status": "ACTIVE"})
         _request("POST", cfg, campaign_id, {"status": "ACTIVE"})
     except Exception as error:
-        raise RuntimeError(
-            f"Meta campaign {campaign_id} was left PAUSED because launch did not complete: {error}"
-        ) from error
+        raise saved_error(error) from error
 
-    return {
-        "campaign_id": campaign_id,
-        "campaign_status": "ACTIVE",
-        "scheduled_start": plan.scheduled_start,
-        "objective": "OUTCOME_SALES",
-        "budget_mode": "ABO",
-        "total_daily_budget_usd": plan.total_daily_budget_usd,
-        "adsets": created,
-        "account": {k: account.get(k) for k in ("id", "name", "currency", "timezone_name")},
-        "api_version": cfg["api_version"],
-        "automation": {
-            "catalog": False,
-            "campaign_budget": False,
-            "advantage_audience": False,
-            "advantage_placements": False,
-            "creative_feature_opt_outs": True,
-            "carousel_reordering": False,
-        },
-        "requests": requests_log,
-    }
+    return result_snapshot(status="ACTIVE")

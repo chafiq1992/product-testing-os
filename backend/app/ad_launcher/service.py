@@ -886,14 +886,16 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         job_id,
         stage="meta_creation",
         status="running",
-        title="Creating the campaign in the selected Meta account",
+        title="Saving the paused campaign structure in the selected Meta account",
         summary=(
             f"The launch is using Meta account act_{plan.meta_ad_account_id or 'configured-default'}. "
-            "All ad creatives are created first; only then is the paused campaign hierarchy created and activated."
+            f"Campaign {plan.campaign_name} and all {len(plan.adsets)} ABO ad sets are created PAUSED first. "
+            "Media, creatives, ads, and activation run only after that resumable structure exists."
         ),
     )
+    existing_meta = dict(result.get("meta") or {})
     try:
-        meta_result = meta.create_sales_test_campaign(plan)
+        meta_result = meta.create_sales_test_campaign(plan, existing=existing_meta)
         result["meta"] = meta_result
         repo.update_job(store, job_id, {
             "status": "launched",
@@ -911,16 +913,30 @@ def launch_job(job_id: str, store: str | None) -> dict[str, Any]:
         return meta_result
     except Exception as error:
         message = str(error)
-        partial_campaign = "left PAUSED" in message
-        failure_stage = "meta_failed_paused" if partial_campaign else "meta_creative_preflight_failed"
+        partial_meta = getattr(error, "partial_result", None)
+        saved_meta = dict(partial_meta or existing_meta or {})
+        draft_saved = bool(saved_meta.get("campaign_id"))
+        if draft_saved:
+            saved_meta["campaign_status"] = "PAUSED"
+            saved_meta["draft_saved"] = True
+            saved_meta["incomplete_reason"] = message
+            result["meta"] = saved_meta
+        failure_stage = "meta_draft_saved" if draft_saved else "meta_creation_failed"
         repo.add_activity(
             store,
             job_id,
             stage=failure_stage,
             status="failed",
-            title="Meta launch did not complete",
+            title="PAUSED Meta campaign saved" if draft_saved else "Meta campaign could not be created",
             summary=(
-                ("The incomplete campaign remains paused. " if partial_campaign else "No new campaign hierarchy was created. ")
+                (
+                    f"Campaign {saved_meta.get('campaign_name') or plan.campaign_name} "
+                    f"({saved_meta.get('campaign_id')}) remains PAUSED with "
+                    f"{sum(1 for item in saved_meta.get('adsets') or [] if item.get('adset_id'))} saved ad set(s). "
+                    "Retry will continue this same hierarchy; it will not create a duplicate. "
+                    if draft_saved
+                    else "Meta rejected the request before returning a campaign ID, so no hierarchy could be saved. "
+                )
                 + f"{type(error).__name__}: {message[:1200]}"
             ),
         )

@@ -649,6 +649,61 @@ def test_launch_failed_retry_keeps_approved_plan_and_skips_agent_work():
     assert resumed["retry_count"] == 1
 
 
+def test_launch_failure_persists_paused_meta_hierarchy_for_retry(monkeypatch):
+    job_id = str(uuid4())
+    saved_result = {
+        "plan": _plan(3).model_dump(mode="json"),
+        "review": {"approved": True, "score": 92},
+    }
+    partial = {
+        "campaign_id": "campaign-42",
+        "campaign_name": "123456789A",
+        "campaign_status": "PAUSED",
+        "draft_saved": True,
+        "adsets": [
+            {"index": index, "adset_id": f"adset-{index}", "adset_name": f"adset {index:02d} parent"}
+            for index in range(1, 4)
+        ],
+    }
+    repository.create_job("irrakids", job_id, {
+        "product_id": "123456789",
+        "campaign_name": "123456789A",
+        "adset_count": 3,
+        "daily_budget_per_adset_usd": 9,
+    })
+    repository.update_job("irrakids", job_id, {"status": "approved", "result": saved_result})
+
+    def fail_with_saved_draft(plan, existing=None):
+        assert existing == {}
+        raise meta.MetaCampaignSavedError("creative capability rejected", partial)
+
+    monkeypatch.setattr(meta, "create_sales_test_campaign", fail_with_saved_draft)
+
+    with pytest.raises(meta.MetaCampaignSavedError):
+        service.launch_job(job_id, "irrakids")
+
+    failed = repository.get_job("irrakids", job_id)
+    assert failed["status"] == "launch_failed"
+    assert failed["stage"] == "meta_draft_saved"
+    assert failed["result"]["meta"]["campaign_id"] == "campaign-42"
+    assert failed["result"]["meta"]["draft_saved"] is True
+    assert "3 saved ad set(s)" in failed["activity"][-1]["summary"]
+
+    resumed = service.retry_job(job_id, "irrakids")
+    assert resumed["status"] == "approved"
+    assert resumed["result"]["meta"]["campaign_id"] == "campaign-42"
+
+    def finish_saved_draft(plan, existing=None):
+        assert existing["campaign_id"] == "campaign-42"
+        return {**existing, "campaign_status": "ACTIVE", "draft_saved": False}
+
+    monkeypatch.setattr(meta, "create_sales_test_campaign", finish_saved_draft)
+    launched = service.launch_job(job_id, "irrakids")
+    assert launched["campaign_id"] == "campaign-42"
+    assert launched["campaign_status"] == "ACTIVE"
+    assert repository.get_job("irrakids", job_id)["status"] == "launched"
+
+
 def test_product_cards_keep_latest_setup_per_store_product():
     product_id = "777888999"
     first_id = str(uuid4())
@@ -747,26 +802,44 @@ def test_meta_image_upload_sends_multipart_bytes_not_remote_url(monkeypatch):
     assert content_type == "image/jpeg"
 
 
-def test_meta_media_preflight_fails_before_campaign_creation(monkeypatch):
+def test_meta_media_failure_keeps_complete_paused_hierarchy(monkeypatch):
     calls: list[tuple[str, str]] = []
+    adset_count = 0
     monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
         "access_token": "token", "ad_account_id": "42", "page_id": "84",
         "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
     })
 
     def fake_request(method, cfg, path, payload=None):
+        nonlocal adset_count
         calls.append((method, path))
-        return {"account_status": 1, "currency": "USD"}
+        if method == "GET":
+            return {"account_status": 1, "currency": "USD"}
+        if path.endswith("/campaigns"):
+            return {"id": "campaign-1"}
+        if path.endswith("/adsets"):
+            adset_count += 1
+            return {"id": f"adset-{adset_count}"}
+        return {"success": True}
 
     monkeypatch.setattr(meta, "_request", fake_request)
     monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: (_ for _ in ()).throw(
         RuntimeError("image upload capability rejected")
     ))
 
-    with pytest.raises(RuntimeError, match="image upload capability rejected"):
+    with pytest.raises(meta.MetaCampaignSavedError, match="saved PAUSED") as captured:
         meta.create_sales_test_campaign(_plan(3))
 
-    assert calls == [("GET", "act_42")]
+    partial = captured.value.partial_result
+    assert partial["campaign_id"] == "campaign-1"
+    assert partial["campaign_name"] == "123456789A"
+    assert partial["campaign_status"] == "PAUSED"
+    assert partial["draft_saved"] is True
+    assert [item["adset_id"] for item in partial["adsets"]] == ["adset-1", "adset-2", "adset-3"]
+    assert calls[0] == ("GET", "act_42")
+    assert sum(path.endswith("/campaigns") for _, path in calls) == 1
+    assert sum(path.endswith("/adsets") for _, path in calls) == 3
+    assert not any(path.endswith(("/adcreatives", "/ads")) for _, path in calls)
 
 
 def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch):
@@ -834,12 +907,16 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     assert [payload["name"] for payload in creative_creates] == ["creative 01", "creative 02", "creative 03"]
     assert [payload["name"] for payload in ad_creates] == ["creative 01", "creative 02", "creative 03"]
     campaign_position = next(index for index, (_, path, _) in enumerate(calls) if path.endswith("/campaigns"))
+    adset_positions = [index for index, (_, path, _) in enumerate(calls) if path.endswith("/adsets")]
     creative_positions = [index for index, (_, path, _) in enumerate(calls) if path.endswith("/adcreatives")]
-    assert creative_positions and max(creative_positions) < campaign_position
+    assert adset_positions and creative_positions
+    assert campaign_position < min(adset_positions) < min(creative_positions)
     assert all(payload["status"] == "PAUSED" for payload in ad_creates)
     active_updates = [(path, payload) for method, path, payload in calls if payload.get("status") == "ACTIVE"]
     assert active_updates[-1] == ("campaigns-1", {"status": "ACTIVE"})
     assert result["campaign_status"] == "ACTIVE"
+    assert result["campaign_name"] == "123456789A"
+    assert result["draft_saved"] is False
     assert sum(item["daily_budget_usd"] for item in result["adsets"]) == 27.0
     assert result["automation"] == {
         "catalog": False,
@@ -851,8 +928,10 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
     }
 
 
-def test_meta_creative_failure_stops_before_campaign_creation(monkeypatch):
+def test_meta_creative_failure_saves_and_retry_resumes_same_hierarchy(monkeypatch):
     calls: list[tuple[str, str, dict]] = []
+    blocked = True
+    counters = {"campaigns": 0, "adsets": 0, "adcreatives": 0, "ads": 0}
     monkeypatch.setattr(meta, "_require_config", lambda store, ad_account_id=None: {
         "access_token": "token", "ad_account_id": "42", "page_id": "84",
         "instagram_actor_id": "", "pixel_id": "126", "api_version": "v26.0",
@@ -861,16 +940,38 @@ def test_meta_creative_failure_stops_before_campaign_creation(monkeypatch):
     monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url, media_handles: {"page_id": "84"})
 
     def fake_request(method, cfg, path, payload=None):
+        nonlocal blocked
         payload = dict(payload or {})
         calls.append((method, path, payload))
         if method == "GET":
             return {"account_status": 1, "currency": "USD"}
         if path.endswith("/adcreatives"):
-            raise RuntimeError("development mode creative rejected")
-        return {"id": "unexpected"}
+            if blocked:
+                raise RuntimeError("development mode creative rejected")
+            counters["adcreatives"] += 1
+            return {"id": f"adcreatives-{counters['adcreatives']}"}
+        edge = path.rsplit("/", 1)[-1]
+        if edge in counters:
+            counters[edge] += 1
+            return {"id": f"{edge}-{counters[edge]}"}
+        return {"success": True}
 
     monkeypatch.setattr(meta, "_request", fake_request)
-    with pytest.raises(RuntimeError, match="development mode creative rejected"):
+    with pytest.raises(meta.MetaCampaignSavedError, match="development mode creative rejected") as captured:
         meta.create_sales_test_campaign(_plan(3))
 
-    assert not any(path.endswith(("/campaigns", "/adsets", "/ads")) for _, path, _ in calls)
+    partial = captured.value.partial_result
+    assert partial["campaign_id"] == "campaigns-1"
+    assert [item["adset_id"] for item in partial["adsets"]] == ["adsets-1", "adsets-2", "adsets-3"]
+    assert not any(path.endswith("/ads") for _, path, _ in calls)
+
+    blocked = False
+    calls.clear()
+    result = meta.create_sales_test_campaign(_plan(3), existing=partial)
+
+    assert result["campaign_id"] == "campaigns-1"
+    assert result["campaign_status"] == "ACTIVE"
+    assert counters["campaigns"] == 1
+    assert counters["adsets"] == 3
+    assert sum(path.endswith("/adcreatives") for _, path, _ in calls) == 3
+    assert sum(path.endswith("/ads") for _, path, _ in calls) == 3
