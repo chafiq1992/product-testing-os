@@ -103,7 +103,7 @@ async def create_job(
     normalized_account = str(ad_account_id or "").strip().removeprefix("act_")
     if normalized_account and not normalized_account.isdigit():
         raise HTTPException(status_code=400, detail="ad_account_id must be a numeric Meta ad account ID")
-    if total_daily_budget_usd < (4 if ai_generated_adsets else 2):
+    if total_daily_budget_usd < (5 if ai_generated_adsets else 3):
         raise HTTPException(status_code=400, detail="Budget must allow at least $1.00 per ad set")
     if total_daily_budget_usd > 10_000:
         raise HTTPException(status_code=400, detail="Budget exceeds the launcher safety limit")

@@ -21,7 +21,7 @@ from app.ad_launcher.models import (
 )
 
 
-def _draft(adset_count: int = 2) -> CampaignDraft:
+def _draft(adset_count: int = 3) -> CampaignDraft:
     adsets = [
         AdSetDraft(
             name="اختبار الراحة",
@@ -41,8 +41,17 @@ def _draft(adset_count: int = 2) -> CampaignDraft:
             description_ar="تفاصيل بسيطة وتجربة مريحة",
             rationale="This angle tests practical ease while holding the audience and media constant.",
         ),
+        AdSetDraft(
+            name="اختبار التفاصيل",
+            origin="uploaded",
+            angle="تفاصيل المنتج",
+            headline_ar="تفاصيل واضحة لاختيار أسهل",
+            primary_text_ar="شاهد تفاصيل المنتج العملية بوضوح واختر ما يناسب استخدامك اليومي. تسوقه الآن من متجرنا.",
+            description_ar="تفاصيل واضحة واختيار مطمئن",
+            rationale="This third angle mirrors the reference campaign while holding media and delivery controls constant.",
+        ),
     ]
-    if adset_count == 4:
+    if adset_count == 5:
         for index in range(2):
             adsets.append(AdSetDraft(
                 name=f"اختبار الصورة {index + 1}",
@@ -94,15 +103,16 @@ def _draft(adset_count: int = 2) -> CampaignDraft:
     )
 
 
-def _plan(adset_count: int = 2) -> PreparedCampaign:
+def _plan(adset_count: int = 3) -> PreparedCampaign:
     draft = _draft(adset_count)
     prepared = [PreparedAdSet(
         **item.model_dump(mode="json"),
+        ad_name=f"creative {index:02d}",
         media_type="image",
         media_urls=[f"https://shop.example/assets/{index}.jpg"],
     ) for index, item in enumerate(draft.adsets, start=1)]
     return PreparedCampaign(
-        campaign_name=draft.campaign_name,
+        campaign_name="123456789",
         product_id="123456789",
         product_title="Verified product",
         landing_url="https://shop.example/ar/products/verified-product",
@@ -219,21 +229,21 @@ def test_schedule_uses_2359_and_rolls_after_cutoff():
 
 def test_deterministic_review_gate_enforces_structure_and_generated_images():
     assert agents.deterministic_blockers(
-        _draft(2),
-        expected_adsets=2,
+        _draft(3),
+        expected_adsets=3,
         expected_format="image",
         requested_countries=["MA"],
         generated_media_count=0,
     ) == []
 
     blockers = agents.deterministic_blockers(
-        _draft(4),
-        expected_adsets=4,
+        _draft(5),
+        expected_adsets=5,
         expected_format="image",
         requested_countries=["MA"],
         generated_media_count=1,
     )
-    assert "Two approved AI-generated images are required for the four-ad-set mode" in blockers
+    assert "Two approved AI-generated images are required for the five-ad-set mode" in blockers
 
 
 def test_copy_agent_is_pinned_to_gpt_5_6_sol_with_high_reasoning(monkeypatch):
@@ -244,7 +254,7 @@ def test_copy_agent_is_pinned_to_gpt_5_6_sol_with_high_reasoning(monkeypatch):
             captured.update(kwargs)
 
     class Result:
-        final_output = _draft(2)
+        final_output = _draft(3)
 
     monkeypatch.setattr(agents, "Agent", FakeAgent)
     monkeypatch.setattr(agents.Runner, "run_sync", lambda *args, **kwargs: Result())
@@ -279,7 +289,7 @@ def test_only_api_provided_reasoning_summaries_are_exposed():
 
 
 def test_broad_audience_controls_are_enforced_after_ai_planning():
-    draft = _draft(2)
+    draft = _draft(3)
     draft.audience = draft.audience.model_copy(update={"age_min": 18, "age_max": 54, "gender": "women"})
 
     controlled = agents.enforce_broad_audience(draft, ["ma"])
@@ -290,10 +300,21 @@ def test_broad_audience_controls_are_enforced_after_ai_planning():
     assert controlled.audience.gender == "all"
 
 
+def test_reference_campaign_naming_is_deterministic():
+    named = agents.enforce_reference_naming(_draft(3), "gid://shopify/Product/15043841786232")
+
+    assert named.campaign_name == "15043841786232"
+    assert [item.name for item in named.adsets] == [
+        "adset 01 parent",
+        "adset 02 parent",
+        "adset 03 parent",
+    ]
+
+
 def test_generated_media_dimensions_are_machine_checked():
     valid = agents.deterministic_blockers(
-        _draft(4),
-        expected_adsets=4,
+        _draft(5),
+        expected_adsets=5,
         expected_format="image",
         requested_countries=["MA"],
         generated_media=[
@@ -302,8 +323,8 @@ def test_generated_media_dimensions_are_machine_checked():
         ],
     )
     invalid = agents.deterministic_blockers(
-        _draft(4),
-        expected_adsets=4,
+        _draft(5),
+        expected_adsets=5,
         expected_format="image",
         requested_countries=["MA"],
         generated_media=[
@@ -317,8 +338,8 @@ def test_generated_media_dimensions_are_machine_checked():
 
 
 def test_budget_and_targeting_stay_broad_and_manual():
-    plan = _plan(4)
-    assert meta._budget_minor(9.0, 4) == [225, 225, 225, 225]
+    plan = _plan(3)
+    assert meta._budget_minor(9.0, 3) == [300, 300, 300]
 
     targeting = meta._targeting(plan)
     assert targeting["geo_locations"] == {"countries": ["MA"]}
@@ -330,7 +351,7 @@ def test_budget_and_targeting_stay_broad_and_manual():
 
 
 def test_live_launch_rejects_local_media_urls():
-    plan = _plan(2)
+    plan = _plan(3)
     plan.adsets[0].media_urls = ["http://localhost:8080/uploads/creative.jpg"]
     with pytest.raises(RuntimeError, match="public HTTPS media URL"):
         meta._require_public_media(plan)
@@ -423,9 +444,9 @@ def test_rejected_job_resume_seeds_completed_checkpoints():
             "generated_media": [],
             "plan": {
                 "landing_url": "https://ar.irraki.com/products/saved-product",
-                "analysis": _draft(2).model_dump(mode="json"),
+                "analysis": _draft(3).model_dump(mode="json"),
             },
-            "reasoning_summaries": {"creative_strategy": ["Selected two controlled angles."]},
+            "reasoning_summaries": {"creative_strategy": ["Selected three controlled angles."]},
         },
     })
 
@@ -435,14 +456,14 @@ def test_rejected_job_resume_seeds_completed_checkpoints():
     assert resumed["result"] is None
     assert resumed["checkpoint"]["product"]["title"] == "Saved product"
     assert resumed["checkpoint"]["media_format"] == "image"
-    assert resumed["checkpoint"]["draft"]["campaign_name"] == _draft(2).campaign_name
+    assert resumed["checkpoint"]["draft"]["campaign_name"] == _draft(3).campaign_name
     assert resumed["retry_count"] == 1
 
 
 def test_launch_failed_retry_keeps_approved_plan_and_skips_agent_work():
     job_id = str(uuid4())
     saved_result = {
-        "plan": _plan(2).model_dump(mode="json"),
+        "plan": _plan(3).model_dump(mode="json"),
         "review": {"approved": True, "score": 92},
         "reasoning_summaries": {"review": ["Approved controlled campaign."]},
     }
@@ -557,7 +578,7 @@ def test_meta_media_preflight_fails_before_campaign_creation(monkeypatch):
     ))
 
     with pytest.raises(RuntimeError, match="image upload capability rejected"):
-        meta.create_sales_test_campaign(_plan(2))
+        meta.create_sales_test_campaign(_plan(3))
 
     assert calls == [("GET", "act_42")]
 
@@ -580,7 +601,7 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
 
     monkeypatch.setattr(meta, "_require_config", fake_config)
     handles = {"images": {url: f"hash-{index}" for index, url in enumerate(
-        [item.media_urls[0] for item in _plan(2).adsets], start=1
+        [item.media_urls[0] for item in _plan(3).adsets], start=1
     )}, "videos": {}}
     monkeypatch.setattr(meta, "_prepare_media", lambda cfg, plan: handles)
     monkeypatch.setattr(meta, "_story_spec", lambda cfg, adset, url, media_handles: {
@@ -600,23 +621,32 @@ def test_meta_campaign_is_built_paused_then_campaign_activates_last(monkeypatch)
         return {"success": True}
 
     monkeypatch.setattr(meta, "_request", fake_request)
-    result = meta.create_sales_test_campaign(_plan(2))
+    result = meta.create_sales_test_campaign(_plan(3))
 
     assert selected == {"store": "irrakids", "ad_account_id": "42"}
     campaign_create = next(payload for method, path, payload in calls if path.endswith("/campaigns"))
     assert campaign_create["status"] == "PAUSED"
+    assert campaign_create["name"] == "123456789"
     assert campaign_create["objective"] == "OUTCOME_SALES"
     assert campaign_create["is_adset_budget_sharing_enabled"] == "false"
     assert "daily_budget" not in campaign_create
 
     adset_creates = [payload for method, path, payload in calls if path.endswith("/adsets")]
-    assert [int(payload["daily_budget"]) for payload in adset_creates] == [450, 450]
+    assert [payload["name"] for payload in adset_creates] == [
+        "adset 01 parent",
+        "adset 02 parent",
+        "adset 03 parent",
+    ]
+    assert [int(payload["daily_budget"]) for payload in adset_creates] == [300, 300, 300]
     assert all(payload["status"] == "PAUSED" for payload in adset_creates)
     assert all(payload["is_dynamic_creative"] == "false" for payload in adset_creates)
     assert all(json.loads(payload["promoted_object"])["custom_event_type"] == "PURCHASE" for payload in adset_creates)
     assert all(json.loads(payload["targeting"])["targeting_automation"] == {"advantage_audience": 0} for payload in adset_creates)
 
     ad_creates = [payload for method, path, payload in calls if path.endswith("/ads")]
+    creative_creates = [payload for method, path, payload in calls if path.endswith("/adcreatives")]
+    assert [payload["name"] for payload in creative_creates] == ["creative 01", "creative 02", "creative 03"]
+    assert [payload["name"] for payload in ad_creates] == ["creative 01", "creative 02", "creative 03"]
     assert all(payload["status"] == "PAUSED" for payload in ad_creates)
     active_updates = [(path, payload) for method, path, payload in calls if payload.get("status") == "ACTIVE"]
     assert active_updates[-1] == ("campaigns-1", {"status": "ACTIVE"})
@@ -656,6 +686,6 @@ def test_meta_failure_never_activates_campaign(monkeypatch):
 
     monkeypatch.setattr(meta, "_request", fake_request)
     with pytest.raises(RuntimeError, match="left PAUSED"):
-        meta.create_sales_test_campaign(_plan(2))
+        meta.create_sales_test_campaign(_plan(3))
 
     assert not any(path == "campaign-1" and payload.get("status") == "ACTIVE" for _, path, payload in calls)

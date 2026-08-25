@@ -435,7 +435,7 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
     media_handles = _prepare_media(cfg, plan)
     requests_log: list[dict[str, Any]] = []
     campaign_payload = {
-        "name": plan.campaign_name,
+        "name": plan.product_id,
         "objective": "OUTCOME_SALES",
         "buying_type": "AUCTION",
         "special_ad_categories": json.dumps([]),
@@ -453,8 +453,10 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
     targeting = _targeting(plan)
     try:
         for index, (adset_plan, budget) in enumerate(zip(plan.adsets, budgets), start=1):
+            adset_name = f"adset {index:02d} parent"
+            ad_name = adset_plan.ad_name or f"creative {index:02d}"
             adset_payload = {
-                "name": adset_plan.name,
+                "name": adset_name,
                 "campaign_id": campaign_id,
                 "daily_budget": str(budget),
                 "billing_event": "IMPRESSIONS",
@@ -479,7 +481,7 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
             destination = _append_utm(plan.landing_url, campaign_id, index, adset_plan.angle)
             story = _story_spec(cfg, adset_plan, destination, media_handles)
             creative_payload = {
-                "name": f"{adset_plan.name} Creative",
+                "name": ad_name,
                 "object_story_spec": json.dumps(story, ensure_ascii=False),
                 "degrees_of_freedom_spec": json.dumps({
                     "creative_features_spec": _feature_opt_outs(adset_plan.media_type),
@@ -491,7 +493,7 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
                 raise RuntimeError(f"Meta did not return a creative ID for ad set {index}")
 
             ad = _request("POST", cfg, f"act_{cfg['ad_account_id']}/ads", {
-                "name": f"{adset_plan.name} Ad",
+                "name": ad_name,
                 "adset_id": adset_id,
                 "creative": json.dumps({"creative_id": creative_id}),
                 "status": "PAUSED",
@@ -507,6 +509,8 @@ def create_sales_test_campaign(plan: PreparedCampaign) -> dict[str, Any]:
                 "daily_budget_usd": budget / 100,
                 "media_type": adset_plan.media_type,
                 "origin": adset_plan.origin,
+                "adset_name": adset_name,
+                "ad_name": ad_name,
             })
             requests_log.append({"edge": "adsets/adcreatives/ads", **created[-1], "status": "PAUSED"})
 

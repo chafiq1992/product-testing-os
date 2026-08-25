@@ -387,7 +387,7 @@ def scheduled_start(timezone_name: str, now: datetime | None = None) -> str:
 def _context(
     request_data: dict[str, Any], product: dict[str, Any], landing: dict[str, Any], media_format: str,
 ) -> dict[str, Any]:
-    expected_adsets = 4 if request_data.get("ai_generated_adsets") else 2
+    expected_adsets = 5 if request_data.get("ai_generated_adsets") else 3
     return {
         "shopify_product": product,
         "landing_page": landing,
@@ -410,8 +410,13 @@ def _context(
             "catalog_dynamic_creative_advantage_audience_advantage_placements_meta_creative_enhancements": "forbidden",
             "destination_language": "Arabic",
             "schedule": "23:59 Africa/Casablanca; delivery begins the following day",
-            "uploaded_adset_origins": ["uploaded", "uploaded"],
-            "optional_adset_origins": ["ai_generated", "ai_generated"] if expected_adsets == 4 else [],
+            "uploaded_adset_origins": ["uploaded", "uploaded", "uploaded"],
+            "optional_adset_origins": ["ai_generated", "ai_generated"] if expected_adsets == 5 else [],
+            "reference_naming": {
+                "campaign": "numeric Shopify product ID",
+                "adsets": "adset 01 parent, adset 02 parent, ...",
+                "ads": "creative 01, creative 02, ...",
+            },
         },
     }
 
@@ -487,17 +492,23 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
             analysis_images.extend(_image_asset_data(item) for item in media)
 
         context = _context(request_data, product, landing, media_format)
-        if checkpoint.get("draft"):
+        expected_adsets = 5 if request_data.get("ai_generated_adsets") else 3
+        saved_draft = checkpoint.get("draft")
+        if saved_draft and len(saved_draft.get("adsets") or []) == expected_adsets:
             draft = CampaignDraft.model_validate(checkpoint["draft"])
             strategy_reasoning = [str(item) for item in checkpoint.get("strategy_reasoning") or []]
         else:
             draft, strategy_reasoning = agents.analyze_campaign_with_summary(context, analysis_images)
-            draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
-            checkpoint.update({
-                "draft": draft.model_dump(mode="json"),
-                "strategy_reasoning": strategy_reasoning,
-            })
-            repo.update_job(store, job_id, {"checkpoint": checkpoint})
+        draft = agents.enforce_broad_audience(draft, request_data.get("countries") or ["MA"])
+        draft = agents.enforce_reference_naming(
+            draft,
+            str(product.get("numeric_id") or request_data.get("product_id") or ""),
+        )
+        checkpoint.update({
+            "draft": draft.model_dump(mode="json"),
+            "strategy_reasoning": strategy_reasoning,
+        })
+        repo.update_job(store, job_id, {"checkpoint": checkpoint})
         strategy_summary = "\n\n".join(strategy_reasoning) or (
             f"Selected angles: {', '.join(item.angle for item in draft.adsets)}. "
             f"Testing hypothesis: {draft.testing_hypothesis}"
@@ -583,7 +594,7 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
         )
         blockers = agents.deterministic_blockers(
             draft,
-            expected_adsets=4 if request_data.get("ai_generated_adsets") else 2,
+            expected_adsets=5 if request_data.get("ai_generated_adsets") else 3,
             expected_format=media_format,
             requested_countries=request_data.get("countries") or ["MA"],
             generated_media=generated_media,
@@ -608,7 +619,7 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
         uploaded_urls = [str(item.get("url") or "") for item in media]
         generated_urls = [str(item.get("url") or "") for item in generated_media]
         ai_index = 0
-        for item in draft.adsets:
+        for index, item in enumerate(draft.adsets, start=1):
             if item.origin == "uploaded":
                 ad_media_type = media_format
                 media_urls = uploaded_urls
@@ -618,12 +629,13 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
                 ai_index += 1
             prepared_adsets.append(PreparedAdSet(
                 **item.model_dump(mode="json"),
+                ad_name=f"creative {index:02d}",
                 media_type=ad_media_type,
                 media_urls=media_urls,
             ))
 
         plan = PreparedCampaign(
-            campaign_name=draft.campaign_name,
+            campaign_name=str(product.get("numeric_id") or request_data.get("product_id") or ""),
             product_id=str(product.get("numeric_id") or request_data.get("product_id") or ""),
             product_title=str(product.get("title") or "Product"),
             landing_url=landing_url,

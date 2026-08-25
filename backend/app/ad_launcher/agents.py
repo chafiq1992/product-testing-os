@@ -33,13 +33,13 @@ Hard requirements:
 - Recommend one shared BROAD audience. Country is an operator constraint. This launcher's broad-test standard is ages
   18-65 and all genders; never use interests, behaviours, lookalikes, saved audiences, or custom audiences. Explain who
   is most likely to buy in the rationale without narrowing Meta delivery to that persona.
-- The first two ad sets use the uploaded creative format. They must test meaningfully different message angles while
+- The first three ad sets use the uploaded creative format. They must test meaningfully different message angles while
   holding audience, destination, budget method, placements, and creative asset constant.
-- If exactly four ad sets are requested, ad sets three and four are AI-generated image tests. For each, write an expert
+- If exactly five ad sets are requested, ad sets four and five are AI-generated image tests. For each, write an expert
   image-generation prompt grounded in the real product. Demand photorealistic commercial quality, mobile-first 4:5
   composition, product fidelity, realistic lighting and shadows, strong visual hierarchy, safe margins, no fake people
   or testimonials, no invented product details, no watermark, and no rendered words or prices.
-- If two ad sets are requested, do not output any AI-generated ad set.
+- If three ad sets are requested, do not output any AI-generated ad set.
 - Write conversion-focused Arabic headlines and primary text with a concrete product-led hook, natural Moroccan-market
   phrasing in Modern Standard Arabic, scannable benefits, and a clear shopping CTA. Keep it persuasive and specific
   without hype, and make each uploaded-creative angle meaningfully different.
@@ -142,6 +142,18 @@ def enforce_broad_audience(draft: CampaignDraft, requested_countries: list[str])
     return draft.model_copy(update={"audience": audience})
 
 
+def enforce_reference_naming(draft: CampaignDraft, product_id: str) -> CampaignDraft:
+    """Apply the naming hierarchy copied from the operator's proven Meta campaign."""
+    numeric_id = str(product_id or "").strip().split("/")[-1]
+    if not numeric_id.isdigit():
+        raise ValueError("A numeric Shopify product ID is required for reference campaign naming")
+    adsets = [
+        item.model_copy(update={"name": f"adset {index:02d} parent"})
+        for index, item in enumerate(draft.adsets, start=1)
+    ]
+    return draft.model_copy(update={"campaign_name": numeric_id, "adsets": adsets})
+
+
 def _arabic_ratio(value: str) -> float:
     arabic = len(re.findall(r"[\u0600-\u06ff]", value or ""))
     letters = len(re.findall(r"[A-Za-z\u0600-\u06ff]", value or ""))
@@ -160,9 +172,11 @@ def deterministic_blockers(
     blockers: list[str] = []
     if len(draft.adsets) != expected_adsets:
         blockers.append(f"Expected {expected_adsets} ad sets; the agent returned {len(draft.adsets)}")
-    expected_origins = ["uploaded", "uploaded"] + (["ai_generated", "ai_generated"] if expected_adsets == 4 else [])
+    expected_origins = ["uploaded", "uploaded", "uploaded"] + (
+        ["ai_generated", "ai_generated"] if expected_adsets == 5 else []
+    )
     if [item.origin for item in draft.adsets] != expected_origins:
-        blockers.append("Ad-set origins do not match the two-uploaded plus optional two-AI test structure")
+        blockers.append("Ad-set origins do not match the three-uploaded plus optional two-AI test structure")
     if draft.creative_analysis.detected_format != expected_format:
         blockers.append("The creative format does not match the uploaded media classification")
     if not draft.landing_analysis.destination_is_ready:
@@ -174,8 +188,8 @@ def deterministic_blockers(
     if (draft.audience.age_min, draft.audience.age_max, draft.audience.gender) != (18, 65, "all"):
         blockers.append("The audience must use the launcher's fully broad ages 18-65 and all-genders standard")
     generated_count = len(generated_media) if generated_media is not None else int(generated_media_count or 0)
-    if expected_adsets == 4 and generated_count != 2:
-        blockers.append("Two approved AI-generated images are required for the four-ad-set mode")
+    if expected_adsets == 5 and generated_count != 2:
+        blockers.append("Two approved AI-generated images are required for the five-ad-set mode")
     for index, asset in enumerate(generated_media or [], start=1):
         width = int(asset.get("width") or 0)
         height = int(asset.get("height") or 0)
