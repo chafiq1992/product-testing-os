@@ -6,9 +6,11 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.ad_launcher import agents, meta, repository, service
+from app.ad_launcher import agents, meta, repository, routes, service
 from app.ad_launcher.models import (
     AdSetDraft,
     AudiencePlan,
@@ -135,6 +137,46 @@ def test_media_classification_is_deterministic():
         service.classify_media([{"kind": "image"}, {"kind": "video"}])
     with pytest.raises(ValueError):
         service.classify_media([{"kind": "video"}, {"kind": "video"}])
+
+
+@pytest.mark.parametrize("file_count", [1, 2])
+def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, file_count):
+    captured: dict = {}
+
+    class DormantThread:
+        def __init__(self, **kwargs):
+            captured["thread"] = kwargs
+
+        def start(self):
+            captured["thread_started"] = True
+
+    def fake_create_job(store, job_id, request_data):
+        captured["request"] = request_data
+        return {"status": "queued"}
+
+    monkeypatch.setattr(routes, "_require_admin", lambda request: {"email": "admin@example.com"})
+    monkeypatch.setattr(routes.repo, "save_asset", lambda filename, data, content_type: f"/uploads/{filename}")
+    monkeypatch.setattr(routes.repo, "create_job", fake_create_job)
+    monkeypatch.setattr(routes.threading, "Thread", DormantThread)
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    client = TestClient(app)
+    files = [
+        ("files", (f"creative-{index}.jpg", f"image-{index}".encode(), "image/jpeg"))
+        for index in range(file_count)
+    ]
+
+    response = client.post(
+        "/api/ad-launcher/jobs",
+        data={"store": "irrakids", "product_id": "123456789"},
+        files=files,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "queued"
+    assert len(captured["request"]["media"]) == file_count
+    assert all(item["content_type"] == "image/jpeg" for item in captured["request"]["media"])
 
 
 def test_landing_host_accepts_verified_locale_and_www_subdomains():

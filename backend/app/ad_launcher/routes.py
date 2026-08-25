@@ -94,7 +94,7 @@ async def create_job(
     auto_launch: bool = Form(False),
     confirm_live_launch: bool = Form(False),
     source_job_id: str | None = Form(None),
-    files: list[UploadFile] | None = File(None),
+    files: list[UploadFile] = File(default_factory=list),
 ):
     _require_admin(request)
     numeric_id = str(product_id or "").strip().split("/")[-1]
