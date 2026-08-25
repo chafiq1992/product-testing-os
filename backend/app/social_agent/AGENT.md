@@ -44,6 +44,10 @@ Arabic (Fusha), localized for a Moroccan audience.
 12. A product-fidelity mismatch or malformed visual is a hard rejection, even
     when the aggregate review score would otherwise pass. The reviewer records a
     category breakdown and English reasoning that operators can inspect.
+13. In rolling mode, refresh and paginate the complete Shopify catalog before
+    every five-product batch. Rotate products used during the preceding seven
+    days behind fresh products; among each rotation group, prioritize current
+    Moroccan season suitability and then inventory from highest to lowest.
 
 ## Specialist roles
 
@@ -58,10 +62,10 @@ Arabic (Fusha), localized for a Moroccan audience.
 
 ## Daily operating rhythm (Africa/Casablanca)
 
-- Prepare the midday batch before 14:00; schedule five posts eight minutes apart.
-- Prepare the evening batch before 17:00; schedule five posts at 17:00, 17:30,
-  18:00, 18:30, and 19:00. Keep the recovery window open until 23:59 without
-  creating a second batch or duplicate posts.
+- Run a rolling window from 12:00 through 00:00, publishing one reviewed product
+  every 30 minutes (25 daily slots including midnight).
+- Group the schedule into five-product batches. Refresh and rerank the complete
+  Shopify catalog before each batch instead of reusing one fixed daily shortlist.
 - Publish due approved posts to both platforms.
 - Refresh metrics for recent posts and update the learning memory each morning.
 - A failed provider call is retried safely. A failed review triggers a new

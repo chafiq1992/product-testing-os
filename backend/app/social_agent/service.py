@@ -41,8 +41,13 @@ def _parse_hhmm(value: str, fallback: str) -> dt_time:
 
 
 def _scheduled_utc(config: dict[str, Any], local_day: date, slot: str, position: int) -> datetime:
-    base_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
-    base_time = _parse_hhmm(str(base_value or ""), "14:00" if slot == "midday" else "18:00")
+    if slot == "rolling":
+        base_value = config.get("posting_window_start")
+        fallback = "12:00"
+    else:
+        base_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
+        fallback = "14:00" if slot == "midday" else "17:00"
+    base_time = _parse_hhmm(str(base_value or ""), fallback)
     interval = (
         int(config.get("midday_post_interval_minutes") or 8)
         if slot == "midday" else int(config.get("post_interval_minutes") or 30)
@@ -59,8 +64,56 @@ def _scheduled_utc(config: dict[str, Any], local_day: date, slot: str, position:
     return local_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _rolling_schedule_local(config: dict[str, Any], local_day: date) -> list[datetime]:
+    """Return every publish slot in the configured local rolling window.
+
+    An end time at or before the start is interpreted as the following day, so
+    12:00 -> 00:00 includes the midnight post and yields 25 half-hour slots.
+    """
+    zone = _tz(config)
+    start = datetime.combine(
+        local_day, _parse_hhmm(str(config.get("posting_window_start") or ""), "12:00"), tzinfo=zone,
+    )
+    end = datetime.combine(
+        local_day, _parse_hhmm(str(config.get("posting_window_end") or ""), "00:00"), tzinfo=zone,
+    )
+    if end <= start:
+        end += timedelta(days=1)
+    interval = max(2, min(60, int(config.get("post_interval_minutes") or 30)))
+    slots: list[datetime] = []
+    current = start
+    while current <= end and len(slots) < 100:
+        slots.append(current)
+        current += timedelta(minutes=interval)
+    return slots
+
+
+def _rolling_groups(config: dict[str, Any], local_day: date) -> list[list[datetime]]:
+    size = max(1, min(5, int(config.get("batch_size") or 5)))
+    slots = _rolling_schedule_local(config, local_day)
+    return [slots[index:index + size] for index in range(0, len(slots), size)]
+
+
+def _utc_naive(local_value: datetime) -> datetime:
+    return local_value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _planned_utc(context: dict[str, Any], position: int) -> datetime | None:
+    values = context.get("scheduled_for") or []
+    if position >= len(values):
+        return None
+    try:
+        return datetime.fromisoformat(str(values[position]).replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
 def _batch_key(store: str, local_day: date, slot: str) -> str:
     return f"{repo.canonical_store(store)}:{local_day.isoformat()}:{slot}"
+
+
+def _rolling_batch_key(store: str, local_day: date, batch_index: int) -> str:
+    return f"{repo.canonical_store(store)}:{local_day.isoformat()}:rolling:{batch_index:02d}"
 
 
 def catalog_preview(store: str | None, limit: int = 20) -> dict[str, Any]:
@@ -77,32 +130,33 @@ def catalog_preview(store: str | None, limit: int = 20) -> dict[str, Any]:
     }
 
 
-def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> dict[str, Any]:
-    store_name = repo.canonical_store(store)
-    if slot not in {"midday", "evening"}:
-        raise ValueError("slot must be midday or evening")
-    config = repo.get_config(store_name)
-    local_day = local_day or datetime.now(_tz(config)).date()
-    key = _batch_key(store_name, local_day, slot)
+def _create_scheduled_run(
+    store_name: str, *, key: str, slot: str, local_day: date, scheduled: list[datetime],
+) -> dict[str, Any]:
     existing = repo.get_run_by_key(key)
     if existing:
         return existing
-    preview = catalog_preview(store_name, limit=max(15, int(config.get("batch_size") or 5) * 3))
+    config = repo.get_config(store_name)
+    target = len(scheduled)
+    preview = catalog_preview(
+        store_name,
+        limit=max(15, target * int(config.get("max_review_attempts") or 3)),
+    )
     products = preview.get("products") or []
-    target = int(config.get("batch_size") or 5)
     if len(products) < target:
         raise RuntimeError(f"Only {len(products)} eligible active product(s) meet the inventory and media rules")
-    # Start with unique high-ranked products. Future versions can intentionally
-    # repeat a hero product after performance evidence justifies it.
     selected = products[:target]
     backups = products[target:target * int(config.get("max_review_attempts") or 3)]
     context = {
         "local_date": local_day.isoformat(), "season": preview.get("season"),
         "products": selected, "backup_products": backups,
-        "scheduled_for": [_scheduled_utc(config, local_day, slot, i).isoformat() + "Z" for i in range(target)],
+        "catalog_active_count": int(preview.get("active_count") or 0),
+        "catalog_eligible_count": int(preview.get("eligible_count") or 0),
+        "scheduled_for": [_utc_naive(value).isoformat() + "Z" for value in scheduled],
         "config_snapshot": {
-            key: config.get(key) for key in (
-                "timezone", "midday_time", "evening_time", "evening_end_time",
+            config_key: config.get(config_key) for config_key in (
+                "timezone", "schedule_mode", "posting_window_start", "posting_window_end",
+                "midday_time", "evening_time", "evening_end_time", "batch_size",
                 "midday_post_interval_minutes", "post_interval_minutes",
                 "creative_variants", "minimum_review_score", "quantity_offer_enabled",
                 "max_review_attempts", "approved_quantity_offer_ar", "brand_notes", "hashtags", "live_publish",
@@ -110,6 +164,59 @@ def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> 
         },
     }
     return repo.create_run(store_name, key, slot, target, context)
+
+
+def queue_rolling_batch(store: str | None, local_day: date, batch_index: int) -> dict[str, Any]:
+    store_name = repo.canonical_store(store)
+    config = repo.get_config(store_name)
+    groups = _rolling_groups(config, local_day)
+    if batch_index < 0 or batch_index >= len(groups):
+        raise ValueError("rolling batch index is outside the daily posting window")
+    return _create_scheduled_run(
+        store_name,
+        key=_rolling_batch_key(store_name, local_day, batch_index),
+        slot="rolling",
+        local_day=local_day,
+        scheduled=groups[batch_index],
+    )
+
+
+def _queue_current_rolling_batch(store: str | None, local_day: date | None = None) -> dict[str, Any]:
+    store_name = repo.canonical_store(store)
+    config = repo.get_config(store_name)
+    local_now = datetime.now(_tz(config))
+    local_day = local_day or local_now.date()
+    groups = _rolling_groups(config, local_day)
+    prepare_before = timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
+    interval = timedelta(minutes=int(config.get("post_interval_minutes") or 30))
+    active = [
+        index for index, group in enumerate(groups)
+        if group[0] - prepare_before <= local_now <= group[-1] + interval
+    ]
+    for index in reversed(active):
+        if not repo.get_run_by_key(_rolling_batch_key(store_name, local_day, index)):
+            return queue_rolling_batch(store_name, local_day, index)
+    if active:
+        return queue_rolling_batch(store_name, local_day, active[-1])
+    upcoming = next((index for index, group in enumerate(groups) if group[0] > local_now), len(groups) - 1)
+    return queue_rolling_batch(store_name, local_day, upcoming)
+
+
+def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> dict[str, Any]:
+    store_name = repo.canonical_store(store)
+    if slot not in {"midday", "evening", "rolling"}:
+        raise ValueError("slot must be midday, evening, or rolling")
+    config = repo.get_config(store_name)
+    local_day = local_day or datetime.now(_tz(config)).date()
+    if slot == "rolling":
+        return _queue_current_rolling_batch(store_name, local_day)
+    key = _batch_key(store_name, local_day, slot)
+    target = int(config.get("batch_size") or 5)
+    scheduled = [
+        _scheduled_utc(config, local_day, slot, position).replace(tzinfo=timezone.utc).astimezone(_tz(config))
+        for position in range(target)
+    ]
+    return _create_scheduled_run(store_name, key=key, slot=slot, local_day=local_day, scheduled=scheduled)
 
 
 def _candidate_file_name(post_id: str, candidate: int, mime_type: str) -> str:
@@ -147,7 +254,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         backups = context.get("backup_products") or []
         if 0 <= backup_index < len(backups):
             product = backups[backup_index]
-    scheduled = _scheduled_utc(
+    scheduled = _planned_utc(context, position) or _scheduled_utc(
         config, date.fromisoformat(str(context.get("local_date"))), str(run.get("slot")), position,
     )
     post = (
@@ -193,7 +300,11 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         # fresh independent review. Never repair around a visual-fidelity error.
         if not approved and reviewed:
             repairable = next(
-                (item for item in reviewed if not ((item.get("review") or {}).get("visual_errors") or [])),
+                (
+                    item for item in reviewed
+                    if not ((item.get("review") or {}).get("visual_errors") or [])
+                    and not ((item.get("review") or {}).get("source_product_differences") or [])
+                ),
                 None,
             )
             if repairable:
@@ -341,13 +452,15 @@ def collect_analytics(store: str | None) -> dict[str, Any]:
 
 def dashboard(store: str | None) -> dict[str, Any]:
     config = repo.get_config(store)
-    posts = repo.list_posts(store, limit=80, since=datetime.utcnow() - timedelta(days=45))
+    posts = repo.list_posts(store, limit=500, since=datetime.utcnow() - timedelta(days=45))
     runs = repo.list_runs(store, limit=20)
     published = [post for post in posts if post.get("status") == "published"]
     reached = [post for post in published if int(((post.get("metrics") or {}).get("totals") or {}).get("reach") or 0) > 0]
     best = sorted(reached, key=lambda post: float(((post.get("metrics") or {}).get("totals") or {}).get("engagement_rate") or 0), reverse=True)[:5]
     total_reach = sum(int(((post.get("metrics") or {}).get("totals") or {}).get("reach") or 0) for post in published)
     total_interactions = sum(int(((post.get("metrics") or {}).get("totals") or {}).get("interactions") or 0) for post in published)
+    local_now = datetime.now(_tz(config))
+    rolling_groups = _rolling_groups(config, local_now.date()) if config.get("schedule_mode") == "rolling" else []
     return {
         "config": config,
         "learning": repo.get_learning(store),
@@ -364,6 +477,10 @@ def dashboard(store: str | None) -> dict[str, Any]:
             "endpoint": "/api/social-agent/scheduler/tick",
             "secret_configured": bool(os.getenv("SOCIAL_AGENT_SCHEDULER_SECRET", "")),
             "last_analytics": repo.analytics_marker(store),
+            "mode": config.get("schedule_mode"),
+            "daily_post_count": sum(len(group) for group in rolling_groups),
+            "daily_batch_count": len(rolling_groups),
+            "catalog_refresh": "before_each_batch" if rolling_groups else "before_each_legacy_batch",
         },
     }
 
@@ -378,19 +495,31 @@ def scheduler_tick(store: str | None = None) -> dict[str, Any]:
         if not config.get("enabled"):
             continue
         local_now = datetime.now(_tz(config))
-        for slot, fallback in (("midday", "14:00"), ("evening", "17:00")):
-            slot_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
-            slot_local = datetime.combine(local_now.date(), _parse_hhmm(str(slot_value or ""), fallback), tzinfo=_tz(config))
-            opens = slot_local - timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
-            closes = (
-                datetime.combine(
-                    local_now.date(),
-                    _parse_hhmm(str(config.get("evening_end_time") or ""), "23:59"),
-                    tzinfo=_tz(config),
+        if config.get("schedule_mode") == "rolling":
+            groups = _rolling_groups(config, local_now.date())
+            prepare_before = timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
+            interval = timedelta(minutes=int(config.get("post_interval_minutes") or 30))
+            for batch_index, group in enumerate(groups):
+                if group[0] - prepare_before <= local_now <= group[-1] + interval:
+                    try:
+                        item["queued"].append(queue_rolling_batch(store_name, local_now.date(), batch_index))
+                    except Exception as error:
+                        item.setdefault("errors", []).append({"phase": f"queue_rolling_{batch_index}", **_safe_error(error)})
+        else:
+            for slot, fallback in (("midday", "14:00"), ("evening", "17:00")):
+                slot_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")
+                slot_local = datetime.combine(local_now.date(), _parse_hhmm(str(slot_value or ""), fallback), tzinfo=_tz(config))
+                opens = slot_local - timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
+                closes = (
+                    datetime.combine(
+                        local_now.date(),
+                        _parse_hhmm(str(config.get("evening_end_time") or ""), "23:59"),
+                        tzinfo=_tz(config),
+                    )
+                    if slot == "evening" else slot_local + timedelta(minutes=45)
                 )
-                if slot == "evening" else slot_local + timedelta(minutes=45)
-            )
-            if opens <= local_now <= closes:
+                if not opens <= local_now <= closes:
+                    continue
                 try:
                     item["queued"].append(queue_batch(store_name, slot, local_now.date()))
                 except Exception as error:

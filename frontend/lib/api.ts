@@ -1454,6 +1454,9 @@ export type SocialAgentConfig = {
   enabled: boolean
   live_publish: boolean
   timezone: string
+  schedule_mode: 'rolling'|'legacy'
+  posting_window_start: string
+  posting_window_end: string
   midday_time: string
   evening_time: string
   evening_end_time: string
@@ -1476,7 +1479,7 @@ export type SocialAgentPost = {
   id: string
   run_id: string
   store: string
-  slot: 'midday'|'evening'
+  slot: 'midday'|'evening'|'rolling'
   position: number
   status: string
   scheduled_for: string
@@ -1505,7 +1508,7 @@ export type SocialAgentDashboard = {
     total_interactions: number
     engagement_rate: number
   }
-  scheduler: { endpoint: string, secret_configured: boolean, last_analytics: any }
+  scheduler: { endpoint: string, secret_configured: boolean, last_analytics: any, mode?: string, daily_post_count?: number, daily_batch_count?: number, catalog_refresh?: string }
 }
 
 export async function socialAgentDashboard(store?: string){
@@ -1531,7 +1534,7 @@ export async function saveSocialAgentConfig(store: string, patch: Partial<Social
   return data as { data?: { config: SocialAgentConfig, armed_preview_posts: number }, error?: string }
 }
 
-export async function queueSocialAgentBatch(store: string, slot: 'midday'|'evening', prepareOneNow=true){
+export async function queueSocialAgentBatch(store: string, slot: 'midday'|'evening'|'rolling', prepareOneNow=true){
   const { data } = await axios.post(`${base}/api/social-agent/batches`, { store, slot, prepare_one_now: prepareOneNow }, { headers: { ...systemAdminHeaders() }, timeout: 600000 })
   return data as { data?: any, error?: string }
 }

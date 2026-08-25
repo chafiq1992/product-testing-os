@@ -242,7 +242,15 @@ def rank_products(
             "rotation_score": round(rotation_score * 100, 1),
         }
         ranked.append(item)
-    ranked.sort(key=lambda p: (float((p.get("ranking") or {}).get("score") or 0), int(p.get("inventory") or 0)), reverse=True)
+    # Rotate products already used this week to the back. Within each rotation
+    # bucket, prefer current-season suitability and then inventory from highest
+    # to lowest, using the composite quality score only as a tie-breaker.
+    ranked.sort(key=lambda p: (
+        float((p.get("ranking") or {}).get("rotation_score") or 0),
+        float((p.get("ranking") or {}).get("season_score") or 0),
+        int(p.get("inventory") or 0),
+        float((p.get("ranking") or {}).get("score") or 0),
+    ), reverse=True)
     return ranked
 
 

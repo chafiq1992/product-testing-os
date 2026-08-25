@@ -44,6 +44,19 @@ def test_product_ranking_filters_inactive_and_rotates_recent_products():
     assert all(item["status"] == "ACTIVE" for item in ranked)
 
 
+def test_product_ranking_prioritizes_current_season_then_inventory():
+    products = [
+        _product("winter-high", 1000, title="Winter padded coat"),
+        _product("summer-low", 50, title="Summer cotton set"),
+        _product("summer-high", 200, title="Summer sandal set"),
+    ]
+    products[0]["tags"] = ["winter"]
+
+    ranked = rank_products(products, season="summer", minimum_inventory=1)
+
+    assert [item["id"] for item in ranked] == ["summer-high", "summer-low", "winter-high"]
+
+
 def test_reviewer_blocks_unapproved_quantity_offer_and_missing_link():
     product = {
         "url": "https://shop.example/products/item",
@@ -167,6 +180,59 @@ def test_evening_batch_uses_five_thirty_minute_slots_inside_recovery_window():
 
     assert [value.strftime("%H:%M") for value in local] == ["17:00", "17:30", "18:00", "18:30", "19:00"]
     assert all((later - earlier) == timedelta(minutes=30) for earlier, later in zip(scheduled, scheduled[1:]))
+
+
+def test_rolling_schedule_runs_every_thirty_minutes_from_noon_through_midnight():
+    config = {
+        "timezone": "Africa/Casablanca",
+        "posting_window_start": "12:00",
+        "posting_window_end": "00:00",
+        "post_interval_minutes": 30,
+        "batch_size": 5,
+    }
+
+    slots = service._rolling_schedule_local(config, date(2026, 8, 25))
+    groups = service._rolling_groups(config, date(2026, 8, 25))
+
+    assert len(slots) == 25
+    assert slots[0].strftime("%Y-%m-%d %H:%M") == "2026-08-25 12:00"
+    assert slots[-1].strftime("%Y-%m-%d %H:%M") == "2026-08-26 00:00"
+    assert all((later - earlier) == timedelta(minutes=30) for earlier, later in zip(slots, slots[1:]))
+    assert [len(group) for group in groups] == [5, 5, 5, 5, 5]
+
+
+def test_each_rolling_batch_refreshes_catalog_and_has_unique_schedule(monkeypatch):
+    store = f"rolling_{uuid4().hex[:10]}"
+    repository.save_config(store, {
+        "schedule_mode": "rolling",
+        "posting_window_start": "12:00",
+        "posting_window_end": "00:00",
+        "post_interval_minutes": 30,
+        "batch_size": 5,
+    })
+    calls = []
+
+    def fake_preview(_store, limit=20):
+        calls.append(limit)
+        return {
+            "season": "summer",
+            "products": [_product(f"product-{len(calls)}-{index}", 500 - index) for index in range(20)],
+            "active_count": 569,
+            "eligible_count": 419,
+        }
+
+    monkeypatch.setattr(service, "catalog_preview", fake_preview)
+
+    first = service.queue_rolling_batch(store, date(2026, 8, 25), 0)
+    second = service.queue_rolling_batch(store, date(2026, 8, 25), 1)
+
+    assert len(calls) == 2
+    assert first["batch_key"].endswith(":rolling:00")
+    assert second["batch_key"].endswith(":rolling:01")
+    assert first["context"]["catalog_active_count"] == 569
+    assert first["context"]["catalog_eligible_count"] == 419
+    assert first["context"]["scheduled_for"][-1].endswith("Z")
+    assert first["context"]["scheduled_for"][-1] < second["context"]["scheduled_for"][0]
 
 
 def test_midday_keeps_its_independent_spacing():

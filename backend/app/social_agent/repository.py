@@ -16,6 +16,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
     "live_publish": False,
     "timezone": "Africa/Casablanca",
+    "schedule_mode": "rolling",
+    "posting_window_start": "12:00",
+    "posting_window_end": "00:00",
     "midday_time": "14:00",
     "evening_time": "17:00",
     "evening_end_time": "23:59",
@@ -84,6 +87,7 @@ def save_config(store: str | None, patch: dict[str, Any]) -> dict[str, Any]:
         if key in allowed:
             current[key] = value
     current["batch_size"] = max(1, min(5, int(current.get("batch_size") or 5)))
+    current["schedule_mode"] = "rolling" if str(current.get("schedule_mode") or "rolling") == "rolling" else "legacy"
     current["midday_post_interval_minutes"] = max(
         2, min(60, int(current.get("midday_post_interval_minutes") or 8))
     )
