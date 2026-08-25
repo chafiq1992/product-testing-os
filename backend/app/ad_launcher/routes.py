@@ -124,7 +124,7 @@ async def create_job(
         raise HTTPException(status_code=400, detail="confirm_live_launch=true is required for automatic live scheduling")
     uploads = list(files or [])
     if len(uploads) > 10:
-        raise HTTPException(status_code=400, detail="Upload one image, one video, or 2-10 carousel images")
+        raise HTTPException(status_code=400, detail="Upload no more than 10 creative files")
 
     job_id = str(uuid4())
     base_url = _base_url(request)
@@ -153,7 +153,11 @@ async def create_job(
     actual_creative_type = ""
     if pending:
         try:
-            actual_creative_type = service.classify_media(pending)
+            actual_creative_type = service.classify_media(
+                pending,
+                selected_format=selected_creative_type,
+                uploaded_adsets=adset_count,
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         for index, item in enumerate(pending):
@@ -175,7 +179,11 @@ async def create_job(
             raise HTTPException(status_code=404, detail="Saved source job was not found for this store")
         assets = [dict(item) for item in ((source_job.get("request") or {}).get("media") or [])]
         try:
-            actual_creative_type = service.classify_media(assets)
+            actual_creative_type = service.classify_media(
+                assets,
+                selected_format=selected_creative_type,
+                uploaded_adsets=adset_count,
+            )
             for asset in assets:
                 filename = str(asset.get("filename") or "").replace("\\", "/").split("/")[-1]
                 repo.load_asset(filename)
@@ -185,17 +193,6 @@ async def create_job(
             raise HTTPException(status_code=400, detail=f"Saved creative files are unavailable: {error}") from error
     else:
         raise HTTPException(status_code=400, detail="Upload creative files or choose a saved product card")
-    if selected_creative_type != "auto" and actual_creative_type != selected_creative_type:
-        requirement = {
-            "image": "exactly one image",
-            "carousel": "2-10 images",
-            "video": "exactly one video",
-        }[selected_creative_type]
-        raise HTTPException(
-            status_code=400,
-            detail=f"Selected {selected_creative_type} ad requires {requirement}; uploaded files are {actual_creative_type}",
-        )
-
     campaign_name = repo.reserve_campaign_name(store, normalized_account or None, numeric_id)
 
     request_data = {

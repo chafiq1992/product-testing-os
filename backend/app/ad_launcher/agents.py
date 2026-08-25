@@ -35,7 +35,8 @@ Hard requirements:
   is most likely to buy in the rationale without narrowing Meta delivery to that persona.
 - The operator requests either two or three uploaded-creative ad sets. Produce exactly expected_uploaded_adset_count
   uploaded ad sets first. They must test meaningfully different message angles while holding audience, destination,
-  budget method, placements, and creative asset constant.
+  budget method, and placements constant. In image mode, the application assigns one distinct uploaded image to each
+  uploaded ad set in upload order. In carousel or video mode, the supplied carousel/video is shared across those sets.
 - When two optional AI-generated ad sets are requested, append exactly two AI-generated image tests after every uploaded
   ad set. For each, write an expert
   image-generation prompt grounded in the real product. Demand photorealistic commercial quality, mobile-first 4:5

@@ -232,10 +232,32 @@ def get_product(store: str | None, product_id: str) -> dict[str, Any]:
     return product
 
 
-def classify_media(items: list[dict[str, Any]]) -> str:
+def classify_media(
+    items: list[dict[str, Any]],
+    selected_format: str = "auto",
+    uploaded_adsets: int | None = None,
+) -> str:
     kinds = [str(item.get("kind") or "") for item in items]
     if not kinds:
         raise ValueError("Upload one image, one video, or 2-10 carousel images")
+    selected = str(selected_format or "auto").strip().lower()
+    if selected == "image":
+        expected = int(uploaded_adsets or 1)
+        if all(kind == "image" for kind in kinds) and len(kinds) == expected:
+            return "image"
+        raise ValueError(
+            f"Image ad mode requires exactly {expected} images—one for each uploaded-creative ad set"
+        )
+    if selected == "carousel":
+        if all(kind == "image" for kind in kinds) and 2 <= len(kinds) <= 10:
+            return "carousel"
+        raise ValueError("Carousel ad mode requires 2-10 images")
+    if selected == "video":
+        if kinds == ["video"]:
+            return "video"
+        raise ValueError("Video ad mode requires exactly one video")
+    if selected != "auto":
+        raise ValueError("Creative format must be image, carousel, or video")
     if kinds == ["video"]:
         return "video"
     if all(kind == "image" for kind in kinds):
@@ -244,6 +266,22 @@ def classify_media(items: list[dict[str, Any]]) -> str:
         if 2 <= len(kinds) <= 10:
             return "carousel"
     raise ValueError("Use exactly one video, exactly one image, or 2-10 images for a carousel; mixed media is not supported")
+
+
+def uploaded_media_groups(
+    items: list[dict[str, Any]], media_format: str, uploaded_adsets: int,
+) -> list[list[str]]:
+    """Return the ordered media URLs assigned to each uploaded-creative ad set."""
+    urls = [str(item.get("url") or "").strip() for item in items]
+    if any(not url for url in urls):
+        raise ValueError("Every uploaded creative needs a public media URL")
+    if media_format == "image":
+        if len(urls) != uploaded_adsets:
+            raise ValueError(
+                f"Image ad mode requires exactly {uploaded_adsets} images—one for each uploaded-creative ad set"
+            )
+        return [[url] for url in urls]
+    return [list(urls) for _ in range(uploaded_adsets)]
 
 
 def requested_uploaded_adsets(request_data: dict[str, Any]) -> int:
@@ -406,6 +444,11 @@ def _context(
         "uploaded_creative": {
             "classification": media_format,
             "asset_count": len(request_data.get("media") or []),
+            "assignment": (
+                "one uploaded image per uploaded ad set, in file order"
+                if media_format == "image"
+                else "the supplied carousel or video is shared by every uploaded ad set"
+            ),
             "assets": [
                 {k: item.get(k) for k in ("filename", "content_type", "size", "kind")}
                 for item in request_data.get("media") or []
@@ -455,18 +498,22 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
             ),
         )
         media = request_data.get("media") or []
+        selected_format = str(request_data.get("creative_type") or "auto").lower()
+        uploaded_adset_count = requested_uploaded_adsets(request_data)
+        validated_media_format = classify_media(
+            media,
+            selected_format=selected_format,
+            uploaded_adsets=uploaded_adset_count,
+        )
         if checkpoint.get("product") and checkpoint.get("landing") and checkpoint.get("media_format"):
             product = dict(checkpoint["product"])
             landing = dict(checkpoint["landing"])
             landing_url = str(checkpoint.get("landing_url") or request_data.get("landing_url") or product.get("url") or "")
-            media_format = str(checkpoint["media_format"])
+            media_format = validated_media_format
         else:
             product = get_product(store, str(request_data.get("product_id") or ""))
             landing_url, landing = _landing_evidence(store, product, request_data.get("landing_url"))
-            media_format = classify_media(media)
-            selected_format = str(request_data.get("creative_type") or media_format).lower()
-            if selected_format != media_format:
-                raise ValueError(f"Selected {selected_format} creative does not match uploaded {media_format} media")
+            media_format = validated_media_format
             checkpoint.update({
                 "product": product,
                 "landing": landing,
@@ -638,13 +685,15 @@ def prepare_job(job_id: str, store: str | None, resume: bool = False) -> None:
         )
 
         prepared_adsets: list[PreparedAdSet] = []
-        uploaded_urls = [str(item.get("url") or "") for item in media]
+        uploaded_groups = uploaded_media_groups(media, media_format, uploaded_adset_count)
         generated_urls = [str(item.get("url") or "") for item in generated_media]
+        uploaded_index = 0
         ai_index = 0
         for index, item in enumerate(draft.adsets, start=1):
             if item.origin == "uploaded":
                 ad_media_type = media_format
-                media_urls = uploaded_urls
+                media_urls = uploaded_groups[uploaded_index] if uploaded_index < len(uploaded_groups) else []
+                uploaded_index += 1
             else:
                 ad_media_type = "image"
                 media_urls = [generated_urls[ai_index]] if ai_index < len(generated_urls) else []

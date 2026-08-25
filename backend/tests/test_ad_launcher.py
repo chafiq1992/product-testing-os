@@ -135,14 +135,28 @@ def test_media_classification_is_deterministic():
     assert service.classify_media([{"kind": "image"}]) == "image"
     assert service.classify_media([{"kind": "video"}]) == "video"
     assert service.classify_media([{"kind": "image"}, {"kind": "image"}]) == "carousel"
+    assert service.classify_media(
+        [{"kind": "image"}, {"kind": "image"}, {"kind": "image"}],
+        selected_format="image",
+        uploaded_adsets=3,
+    ) == "image"
+    with pytest.raises(ValueError, match="exactly 3 images"):
+        service.classify_media(
+            [{"kind": "image"}], selected_format="image", uploaded_adsets=3
+        )
     with pytest.raises(ValueError):
         service.classify_media([{"kind": "image"}, {"kind": "video"}])
     with pytest.raises(ValueError):
         service.classify_media([{"kind": "video"}, {"kind": "video"}])
 
 
-@pytest.mark.parametrize("file_count", [1, 2])
-def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, file_count):
+@pytest.mark.parametrize(
+    ("creative_type", "adset_count", "file_count"),
+    [("image", 2, 2), ("image", 3, 3), ("carousel", 3, 2)],
+)
+def test_create_job_accepts_multi_image_ads_and_carousel(
+    monkeypatch, creative_type, adset_count, file_count,
+):
     captured: dict = {}
 
     class DormantThread:
@@ -175,8 +189,8 @@ def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, fil
         data={
             "store": "irrakids",
             "product_id": "123456789",
-            "creative_type": "image" if file_count == 1 else "carousel",
-            "adset_count": "3",
+            "creative_type": creative_type,
+            "adset_count": str(adset_count),
             "daily_budget_per_adset_usd": "9",
         },
         files=files,
@@ -186,11 +200,30 @@ def test_create_job_accepts_single_and_repeated_multipart_files(monkeypatch, fil
     assert response.json()["data"]["status"] == "queued"
     assert len(captured["request"]["media"]) == file_count
     assert all(item["content_type"] == "image/jpeg" for item in captured["request"]["media"])
-    assert captured["request"]["creative_type"] == ("image" if file_count == 1 else "carousel")
-    assert captured["request"]["adset_count"] == 3
+    assert captured["request"]["creative_type"] == creative_type
+    assert captured["request"]["adset_count"] == adset_count
     assert captured["request"]["daily_budget_per_adset_usd"] == 9.0
-    assert captured["request"]["total_daily_budget_usd"] == 27.0
+    assert captured["request"]["total_daily_budget_usd"] == 9.0 * adset_count
     assert captured["request"]["campaign_name"].startswith("123456789")
+
+
+def test_image_media_is_assigned_one_file_per_adset_in_upload_order():
+    media = [
+        {"url": "https://app.example/uploads/first.jpg"},
+        {"url": "https://app.example/uploads/second.jpg"},
+        {"url": "https://app.example/uploads/third.jpg"},
+    ]
+
+    assert service.uploaded_media_groups(media, "image", 3) == [
+        ["https://app.example/uploads/first.jpg"],
+        ["https://app.example/uploads/second.jpg"],
+        ["https://app.example/uploads/third.jpg"],
+    ]
+    assert service.uploaded_media_groups(media[:2], "carousel", 3) == [
+        ["https://app.example/uploads/first.jpg", "https://app.example/uploads/second.jpg"],
+        ["https://app.example/uploads/first.jpg", "https://app.example/uploads/second.jpg"],
+        ["https://app.example/uploads/first.jpg", "https://app.example/uploads/second.jpg"],
+    ]
 
 
 def test_campaign_letters_advance_per_product_and_account():
@@ -236,7 +269,7 @@ def test_create_job_enforces_nine_dollars_and_selected_creative_type(monkeypatch
     assert wrong_budget.status_code == 400
     assert "$9.00" in wrong_budget.json()["detail"]
     assert wrong_format.status_code == 400
-    assert "Selected image ad requires exactly one image" in wrong_format.json()["detail"]
+    assert "Image ad mode requires exactly 3 images" in wrong_format.json()["detail"]
 
 
 def test_landing_host_accepts_verified_locale_and_www_subdomains():

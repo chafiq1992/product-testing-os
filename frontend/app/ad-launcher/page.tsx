@@ -151,11 +151,11 @@ export default function AdLauncherPage(){
     const videos=items.filter((item:any)=>files.length?item.type.startsWith('video/'):item.kind==='video').length
     const saved=!files.length&&savedMedia.length?' · saved creative':''
     if(creativeType==='video'&&videos===1&&items.length===1)return {valid:true,label:`Video ad${saved}`,icon:Film}
-    if(creativeType==='image'&&images===1&&items.length===1)return {valid:true,label:`Image ad${saved}`,icon:ImageIcon}
+    if(creativeType==='image'&&images===adsetCount&&items.length===adsetCount)return {valid:true,label:`${images} image ads · one per ad set${saved}`,icon:ImageIcon}
     if(creativeType==='carousel'&&images===items.length&&images>=2&&images<=10)return {valid:true,label:`Carousel · ${images} cards${saved}`,icon:Layers3}
-    const requirement=creativeType==='carousel'?'Select 2–10 images':creativeType==='video'?'Select exactly one video':'Select exactly one image'
+    const requirement=creativeType==='carousel'?'Select 2–10 images':creativeType==='video'?'Select exactly one video':`Select exactly ${adsetCount} images · one per ad set`
     return {valid:false,label:items.length?`Files do not match ${creativeType} · ${requirement}`:requirement,icon:UploadCloud}
-  },[files,savedMedia,creativeType])
+  },[files,savedMedia,creativeType,adsetCount])
 
   async function analyze(){
     setError('');setJob(null);setJobId('')
@@ -208,7 +208,7 @@ export default function AdLauncherPage(){
     const restoredType=String(request.creative_type||'')
     const restoredMedia=Array.isArray(request.media)?request.media:[]
     const imageCount=restoredMedia.filter((item:any)=>item.kind==='image').length
-    setCreativeType(restoredType==='carousel'||restoredType==='video'?restoredType:(imageCount>1?'carousel':'image'))
+    setCreativeType(restoredType==='image'||restoredType==='carousel'||restoredType==='video'?restoredType:(imageCount>1?'carousel':'image'))
     setAiMode(!!request.ai_generated_adsets);setAutoLaunch(!!request.auto_launch)
     setSavedMedia(restoredMedia);setSourceJobId(card.job_id)
     try{
@@ -276,15 +276,15 @@ export default function AdLauncherPage(){
         </Card>
 
         <Card className="p-6">
-          <div><h3 className="text-xl font-bold text-slate-950">2. Creative input</h3><p className="mt-1 text-sm text-slate-500">Choose the ad format first, then upload files that match it.</p></div>
-          <label className="mt-5 block text-xs font-bold uppercase tracking-wide text-slate-500">Ad creative format<select value={creativeType} onChange={event=>{setCreativeType(event.target.value as 'image'|'carousel'|'video');setFiles([]);setSavedMedia([]);setSourceJobId('')}} disabled={!!jobId} className="mt-2 block w-full rounded-xl border bg-white px-3 py-2.5 text-sm font-normal text-slate-900"><option value="image">One image ad</option><option value="carousel">Carousel · 2–10 images</option><option value="video">One video ad</option></select></label>
+          <div><h3 className="text-xl font-bold text-slate-950">2. Creative input</h3><p className="mt-1 text-sm text-slate-500">Choose the format first. Image mode assigns files to ad sets in the order shown.</p></div>
+          <label className="mt-5 block text-xs font-bold uppercase tracking-wide text-slate-500">Ad creative format<select value={creativeType} onChange={event=>{setCreativeType(event.target.value as 'image'|'carousel'|'video');setFiles([]);setSavedMedia([]);setSourceJobId('')}} disabled={!!jobId} className="mt-2 block w-full rounded-xl border bg-white px-3 py-2.5 text-sm font-normal text-slate-900"><option value="image">Image ads · one image per ad set</option><option value="carousel">Carousel · 2–10 images</option><option value="video">One video ad</option></select></label>
           <label className="mt-5 flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center hover:border-violet-400 hover:bg-violet-50">
             <UploadCloud className="h-8 w-8 text-violet-600"/><span className="mt-3 font-semibold text-slate-800">Choose creative files</span><span className="mt-1 text-xs text-slate-500">JPG, PNG, WebP, MP4, MOV, or WebM</span>
-            <input type="file" multiple={creativeType==='carousel'} accept={creativeType==='video'?'video/mp4,video/quicktime,video/webm':'image/jpeg,image/png,image/webp'} disabled={!!jobId} onChange={event=>{setFiles(Array.from(event.target.files||[]));setSavedMedia([]);setSourceJobId('')}} className="hidden"/>
+            <input type="file" multiple={creativeType!=='video'} accept={creativeType==='video'?'video/mp4,video/quicktime,video/webm':'image/jpeg,image/png,image/webp'} disabled={!!jobId} onChange={event=>{setFiles(Array.from(event.target.files||[]));setSavedMedia([]);setSourceJobId('')}} className="hidden"/>
           </label>
           <div className={`mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm ${media.valid?'bg-emerald-50 text-emerald-700':'bg-slate-100 text-slate-500'}`}><Icon className="h-4 w-4"/>{media.label}</div>
-          {!!files.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{files.map(file=><div key={`${file.name}-${file.size}`} className="flex justify-between rounded-lg border px-3 py-2"><span className="truncate">{file.name}</span><span>{(file.size/1024/1024).toFixed(1)} MB</span></div>)}</div>}
-          {!files.length&&!!savedMedia.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{savedMedia.map((item:any)=><div key={item.filename} className="flex justify-between rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2"><span className="truncate">{item.filename}</span><span>Saved</span></div>)}</div>}
+          {!!files.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{files.map((file,index)=><div key={`${file.name}-${file.size}`} className="flex justify-between gap-3 rounded-lg border px-3 py-2"><span className="truncate">{creativeType==='image'?`Ad set ${String(index+1).padStart(2,'0')} · `:''}{file.name}</span><span>{(file.size/1024/1024).toFixed(1)} MB</span></div>)}</div>}
+          {!files.length&&!!savedMedia.length&&<div className="mt-3 space-y-1 text-xs text-slate-500">{savedMedia.map((item:any,index:number)=><div key={item.filename} className="flex justify-between gap-3 rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2"><span className="truncate">{creativeType==='image'?`Ad set ${String(index+1).padStart(2,'0')} · `:''}{item.filename}</span><span>Saved</span></div>)}</div>}
         </Card>
       </div>
 
