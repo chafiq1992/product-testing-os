@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.social_agent import meta, repository as repo, service, shopify
+from app.social_agent.openai_agents import image_generator_status
 from app.system_health_routes import _get_admin
 
 
@@ -75,16 +76,19 @@ async def get_catalog_preview(request: Request, store: str, limit: int = 20):
 async def get_connection(request: Request, store: str):
     _require_admin(request)
     shopify_status = await run_in_threadpool(shopify.upload_capability, store)
+    generator_status = image_generator_status(repo.get_config(store))
     try:
         meta_status = await run_in_threadpool(meta.connection, store)
         return {"data": {
             **meta_status, "meta_ready": bool(meta_status.get("ready")),
             "shopify": shopify_status,
-            "ready": bool(meta_status.get("ready") and shopify_status.get("ready")),
+            "image_generator": generator_status,
+            "ready": bool(meta_status.get("ready") and shopify_status.get("ready") and generator_status.get("ready")),
         }}
     except Exception as error:
         return {"error": str(error), "data": {
             "ready": False, "meta_ready": False, "shopify": shopify_status,
+            "image_generator": generator_status,
         }}
 
 
@@ -94,6 +98,13 @@ async def put_config(request: Request, body: ConfigBody):
     requested_live = bool(body.patch.get("live_publish"))
     current = repo.get_config(body.store)
     requested_enabled = bool(body.patch.get("enabled", current.get("enabled")))
+    candidate_config = {**current, **(body.patch or {})}
+    generator_status = image_generator_status(candidate_config)
+    if requested_enabled and not generator_status.get("ready"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{generator_status.get('label')} is selected but its API key is not configured",
+        )
     if (requested_enabled or requested_live) and not shopify.upload_capability(body.store).get("ready"):
         raise HTTPException(
             status_code=400,

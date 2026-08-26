@@ -1468,6 +1468,8 @@ export type SocialAgentConfig = {
   minimum_review_score: number
   max_review_attempts: number
   minimum_inventory: number
+  image_provider: 'openai'|'gemini'
+  gemini_image_model: 'gemini-3.1-flash-image'|'gemini-3.1-flash-lite-image'|'gemini-3-pro-image'
   quantity_offer_enabled: boolean
   approved_quantity_offer_ar: string
   brand_notes: string
@@ -1495,6 +1497,7 @@ export type SocialAgentPost = {
 
 export type SocialAgentDashboard = {
   config: SocialAgentConfig
+  image_generator: { provider: 'openai'|'gemini', model: string, label: string, configured: boolean, ready: boolean }
   learning: any
   runs: any[]
   posts: SocialAgentPost[]

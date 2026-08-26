@@ -30,6 +30,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "minimum_review_score": 82,
     "max_review_attempts": 3,
     "minimum_inventory": 1,
+    "image_provider": "openai",
+    "gemini_image_model": "gemini-3.1-flash-image",
     "quantity_offer_enabled": False,
     "approved_quantity_offer_ar": "",
     "brand_notes": "",
@@ -77,6 +79,12 @@ def get_config(store: str | None) -> dict[str, Any]:
         merged.update(stored)
     merged["batch_size"] = max(1, min(5, int(merged.get("batch_size") or 5)))
     merged["creative_variants"] = max(2, min(3, int(merged.get("creative_variants") or 2)))
+    merged["image_provider"] = "gemini" if str(merged.get("image_provider") or "").lower() == "gemini" else "openai"
+    allowed_gemini_models = {
+        "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image",
+    }
+    if str(merged.get("gemini_image_model") or "") not in allowed_gemini_models:
+        merged["gemini_image_model"] = "gemini-3.1-flash-image"
     return merged
 
 
@@ -94,6 +102,12 @@ def save_config(store: str | None, patch: dict[str, Any]) -> dict[str, Any]:
     current["post_interval_minutes"] = max(2, min(60, int(current.get("post_interval_minutes") or 30)))
     current["prepare_minutes_before"] = max(15, min(180, int(current.get("prepare_minutes_before") or 60)))
     current["creative_variants"] = max(2, min(3, int(current.get("creative_variants") or 2)))
+    current["image_provider"] = "gemini" if str(current.get("image_provider") or "").lower() == "gemini" else "openai"
+    allowed_gemini_models = {
+        "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image",
+    }
+    if str(current.get("gemini_image_model") or "") not in allowed_gemini_models:
+        current["gemini_image_model"] = "gemini-3.1-flash-image"
     current["minimum_review_score"] = max(60, min(100, int(current.get("minimum_review_score") or 82)))
     current["max_review_attempts"] = max(1, min(5, int(current.get("max_review_attempts") or 3)))
     current["minimum_inventory"] = max(1, int(current.get("minimum_inventory") or 1))

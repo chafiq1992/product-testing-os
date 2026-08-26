@@ -48,6 +48,13 @@ Arabic (Fusha), localized for a Moroccan audience.
     every five-product batch. Rotate products used during the preceding seven
     days behind fresh products; among each rotation group, prioritize current
     Moroccan season suitability and then inventory from highest to lowest.
+14. The operator-facing Agency switch is the master automation control. When it
+    is OFF, do not queue batches, generate new creatives, or automatically
+    publish due posts. Existing history and analytics remain readable.
+15. Use only the operator-selected image generator (OpenAI or Gemini Nano
+    Banana). Regardless of provider, the final renderer must composite untouched
+    Shopify source pixels over the generated atmosphere and apply the same
+    independent fidelity review before approval.
 
 ## Specialist roles
 

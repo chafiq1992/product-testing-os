@@ -15,6 +15,7 @@ from app.social_agent.openai_agents import (
     create_strategy,
     data_url_bytes,
     generate_candidate,
+    image_generator_status,
     repair_strategy,
     review_candidate,
 )
@@ -22,6 +23,11 @@ from app.social_agent.openai_agents import (
 
 def _safe_error(error: BaseException) -> dict[str, str]:
     return {"type": type(error).__name__, "message": str(error)[:1500]}
+
+
+def _require_agency_enabled(config: dict[str, Any]) -> None:
+    if not config.get("enabled"):
+        raise RuntimeError("The social agency is OFF. Turn it on before generating, queueing, or automatically publishing posts")
 
 
 def _tz(config: dict[str, Any]) -> ZoneInfo:
@@ -158,6 +164,7 @@ def _create_scheduled_run(
                 "timezone", "schedule_mode", "posting_window_start", "posting_window_end",
                 "midday_time", "evening_time", "evening_end_time", "batch_size",
                 "midday_post_interval_minutes", "post_interval_minutes",
+                "image_provider", "gemini_image_model",
                 "creative_variants", "minimum_review_score", "quantity_offer_enabled",
                 "max_review_attempts", "approved_quantity_offer_ar", "brand_notes", "hashtags", "live_publish",
             )
@@ -169,6 +176,7 @@ def _create_scheduled_run(
 def queue_rolling_batch(store: str | None, local_day: date, batch_index: int) -> dict[str, Any]:
     store_name = repo.canonical_store(store)
     config = repo.get_config(store_name)
+    _require_agency_enabled(config)
     groups = _rolling_groups(config, local_day)
     if batch_index < 0 or batch_index >= len(groups):
         raise ValueError("rolling batch index is outside the daily posting window")
@@ -207,6 +215,7 @@ def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> 
     if slot not in {"midday", "evening", "rolling"}:
         raise ValueError("slot must be midday, evening, or rolling")
     config = repo.get_config(store_name)
+    _require_agency_enabled(config)
     local_day = local_day or datetime.now(_tz(config)).date()
     if slot == "rolling":
         return _queue_current_rolling_batch(store_name, local_day)
@@ -230,6 +239,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
     if not run:
         raise RuntimeError("Social batch not found")
     config = repo.get_config(run.get("store"))
+    _require_agency_enabled(config)
     max_attempts = int(config.get("max_review_attempts") or 3)
     existing = repo.list_run_posts(run_id)
     retry_post = next(
@@ -279,7 +289,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         generated: dict[int, str] = {}
         with ThreadPoolExecutor(max_workers=min(3, wanted)) as pool:
             futures = {
-                pool.submit(generate_candidate, product, strategy, directions[index], index + 1): index + 1
+                pool.submit(generate_candidate, product, strategy, directions[index], index + 1, config): index + 1
                 for index in range(wanted)
             }
             for future in as_completed(futures):
@@ -339,6 +349,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                 "candidate": item["candidate"], "selected": int(item["candidate"]) == winner_number,
                 "direction": directions[int(item["candidate"]) - 1], "review": item.get("review"),
                 "copy_repaired": bool(item.get("copy_repaired")), "shopify": uploaded,
+                "image_generator": image_generator_status(config),
             })
         winner_review = dict(approved[0].get("review") or {})
         review_summary = {
@@ -355,6 +366,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
 
 
 def prepare_next(store: str | None = None) -> dict[str, Any] | None:
+    _require_agency_enabled(repo.get_config(store))
     run = repo.claim_next_run(store)
     if not run:
         return None
@@ -412,7 +424,7 @@ def publish_post(post_id: str, *, force: bool = False) -> dict[str, Any]:
 
 def publish_due(store: str | None, limit: int = 3) -> list[dict[str, Any]]:
     config = repo.get_config(store)
-    if not config.get("live_publish"):
+    if not config.get("enabled") or not config.get("live_publish"):
         return []
     results: list[dict[str, Any]] = []
     for post in repo.claim_due_posts(store, datetime.utcnow(), limit=limit):
@@ -463,6 +475,7 @@ def dashboard(store: str | None) -> dict[str, Any]:
     rolling_groups = _rolling_groups(config, local_now.date()) if config.get("schedule_mode") == "rolling" else []
     return {
         "config": config,
+        "image_generator": image_generator_status(config),
         "learning": repo.get_learning(store),
         "runs": runs,
         "posts": posts,

@@ -22,6 +22,41 @@ from app.integrations.openai_client import (
 )
 
 
+SUPPORTED_GEMINI_IMAGE_MODELS = {
+    "gemini-3.1-flash-image": "Nano Banana 2",
+    "gemini-3.1-flash-lite-image": "Nano Banana 2 Lite",
+    "gemini-3-pro-image": "Nano Banana Pro",
+}
+
+
+def _gemini_api_key() -> str:
+    # Prefer the dedicated Gemini secret. Some deployments retain an older
+    # GOOGLE_API_KEY for unrelated APIs that may not have Gemini access.
+    return str(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+
+
+def image_generator_status(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    selected = config or {}
+    provider = "gemini" if str(selected.get("image_provider") or "").lower() == "gemini" else "openai"
+    model = (
+        str(selected.get("gemini_image_model") or "gemini-3.1-flash-image")
+        if provider == "gemini" else DEFAULT_IMAGE_MODEL
+    )
+    if model not in SUPPORTED_GEMINI_IMAGE_MODELS and provider == "gemini":
+        model = "gemini-3.1-flash-image"
+    configured = bool(
+        _gemini_api_key()
+        if provider == "gemini" else os.getenv("OPENAI_API_KEY")
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "label": SUPPORTED_GEMINI_IMAGE_MODELS.get(model, "OpenAI Image"),
+        "configured": configured,
+        "ready": configured,
+    }
+
+
 STRATEGY_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -271,33 +306,51 @@ def _source_preserving_composite(source: bytes, generated_data_url: str, candida
     return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=5), reraise=True)
-def generate_candidate(product: dict[str, Any], strategy: dict[str, Any], direction: str, candidate_number: int) -> str:
-    source_url = str(((product.get("images") or [{}])[0]).get("url") or "")
-    if not source_url:
-        raise RuntimeError("Selected product has no source image")
-    source, mime = _download_source(source_url)
+def _gemini_image_result_to_data_url(response: Any) -> str:
+    parts: list[Any] = list(getattr(response, "parts", None) or [])
+    for candidate in getattr(response, "candidates", None) or []:
+        parts.extend(list(getattr(getattr(candidate, "content", None), "parts", None) or []))
+    for part in parts:
+        inline = getattr(part, "inline_data", None)
+        if not inline:
+            continue
+        raw = getattr(inline, "data", None)
+        if not raw:
+            continue
+        content = bytes(raw) if isinstance(raw, (bytes, bytearray)) else base64.b64decode(raw)
+        mime = str(getattr(inline, "mime_type", None) or "image/png")
+        return f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+    raise RuntimeError("Gemini Nano Banana returned no usable image")
+
+
+def _generate_gemini_backdrop(source: bytes, mime: str, prompt: str, model: str) -> str:
+    api_key = _gemini_api_key()
+    if not api_key:
+        raise RuntimeError("Gemini Nano Banana is selected but GOOGLE_API_KEY or GEMINI_API_KEY is not configured")
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception as error:
+        raise RuntimeError("The google-genai package is required for Gemini Nano Banana") from error
+    client_instance = genai.Client(api_key=api_key)
+    response = client_instance.models.generate_content(
+        model=model if model in SUPPORTED_GEMINI_IMAGE_MODELS else "gemini-3.1-flash-image",
+        contents=[types.Part.from_bytes(data=source, mime_type=mime), prompt],
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(aspect_ratio="4:5"),
+        ),
+    )
+    return _gemini_image_result_to_data_url(response)
+
+
+def _generate_openai_backdrop(source: bytes, mime: str, prompt: str) -> str:
     ext = mimetypes.guess_extension(mime) or ".jpg"
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as handle:
             handle.write(source)
             temp_path = handle.name
-        prompt = (
-            "Create a premium, photorealistic atmospheric backdrop for an organic Instagram and Facebook ecommerce image.\n"
-            f"Creative direction: {direction}\n"
-            f"Product: {product.get('title')}\n"
-            f"Campaign angle: {strategy.get('angle')}\n"
-            f"Candidate: {candidate_number}\n\n"
-            "The source product is immutable evidence, not inspiration. Do not redraw, reshape, squash, stretch, duplicate, "
-            "remove, restyle, recolor, or reinterpret it. Do not change the number of products or garments. Do not invent "
-            "a logo, embroidery, print, seam, fastener, pocket, brim, sleeve, accessory, person, package, or feature. "
-            "For hats, preserve the exact crown and brim geometry. For clothing sets, preserve every supplied piece, garment "
-            "type, color, construction detail, and logo exactly. Build only complementary background, lighting, shadows, and "
-            "non-text decorative overlays around a clear central product area. Do not render words, letters, numbers, badges, "
-            "UI, prices, ratings, watermarks, or CTA. The final renderer will place the original Shopify reference pixels over "
-            "this atmosphere, so keep the composition clean, realistic, and product-first."
-        )
         with open(temp_path, "rb") as image_file:
             result = client.images.edit(
                 model=DEFAULT_IMAGE_MODEL,
@@ -311,13 +364,45 @@ def generate_candidate(product: dict[str, Any], strategy: dict[str, Any], direct
         data_url = _openai_image_result_to_data_url(result)
         if not data_url:
             raise RuntimeError("OpenAI returned no usable image")
-        return _source_preserving_composite(source, data_url, candidate_number)
+        return data_url
     finally:
         if temp_path:
             try:
                 Path(temp_path).unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, max=5), reraise=True)
+def generate_candidate(
+    product: dict[str, Any], strategy: dict[str, Any], direction: str, candidate_number: int,
+    config: dict[str, Any] | None = None,
+) -> str:
+    source_url = str(((product.get("images") or [{}])[0]).get("url") or "")
+    if not source_url:
+        raise RuntimeError("Selected product has no source image")
+    source, mime = _download_source(source_url)
+    prompt = (
+        "Create a premium, photorealistic atmospheric backdrop for an organic Instagram and Facebook ecommerce image.\n"
+        f"Creative direction: {direction}\n"
+        f"Product: {product.get('title')}\n"
+        f"Campaign angle: {strategy.get('angle')}\n"
+        f"Candidate: {candidate_number}\n\n"
+        "The source product is immutable evidence, not inspiration. Do not redraw, reshape, squash, stretch, duplicate, "
+        "remove, restyle, recolor, or reinterpret it. Do not change the number of products or garments. Do not invent "
+        "a logo, embroidery, print, seam, fastener, pocket, brim, sleeve, accessory, person, package, or feature. "
+        "For hats, preserve the exact crown and brim geometry. For clothing sets, preserve every supplied piece, garment "
+        "type, color, construction detail, and logo exactly. Build only complementary background, lighting, shadows, and "
+        "non-text decorative overlays around a clear central product area. Do not render words, letters, numbers, badges, "
+        "UI, prices, ratings, watermarks, or CTA. The final renderer will place the original Shopify reference pixels over "
+        "this atmosphere, so keep the composition clean, realistic, and product-first."
+    )
+    selected = image_generator_status(config)
+    if selected["provider"] == "gemini":
+        data_url = _generate_gemini_backdrop(source, mime, prompt, str(selected["model"]))
+    else:
+        data_url = _generate_openai_backdrop(source, mime, prompt)
+    return _source_preserving_composite(source, data_url, candidate_number)
 
 
 def data_url_bytes(data_url: str) -> tuple[bytes, str]:

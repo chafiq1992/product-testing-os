@@ -204,6 +204,7 @@ def test_rolling_schedule_runs_every_thirty_minutes_from_noon_through_midnight()
 def test_each_rolling_batch_refreshes_catalog_and_has_unique_schedule(monkeypatch):
     store = f"rolling_{uuid4().hex[:10]}"
     repository.save_config(store, {
+        "enabled": True,
         "schedule_mode": "rolling",
         "posting_window_start": "12:00",
         "posting_window_end": "00:00",
@@ -233,6 +234,80 @@ def test_each_rolling_batch_refreshes_catalog_and_has_unique_schedule(monkeypatc
     assert first["context"]["catalog_eligible_count"] == 419
     assert first["context"]["scheduled_for"][-1].endswith("Z")
     assert first["context"]["scheduled_for"][-1] < second["context"]["scheduled_for"][0]
+
+
+def test_agency_off_blocks_new_batches_before_catalog_refresh(monkeypatch):
+    store = f"off_{uuid4().hex[:10]}"
+    repository.save_config(store, {"enabled": False})
+    refreshed = []
+    monkeypatch.setattr(service, "catalog_preview", lambda *_args, **_kwargs: refreshed.append(True))
+
+    with pytest.raises(RuntimeError, match="agency is OFF"):
+        service.queue_rolling_batch(store, date(2026, 8, 25), 0)
+
+    assert refreshed == []
+
+
+def test_agency_off_prevents_automatic_due_publishing(monkeypatch):
+    monkeypatch.setattr(repository, "get_config", lambda _store: {"enabled": False, "live_publish": True})
+    monkeypatch.setattr(
+        repository,
+        "claim_due_posts",
+        lambda *_args, **_kwargs: pytest.fail("disabled agency must not claim due posts"),
+    )
+
+    assert service.publish_due("irrakids") == []
+
+
+def test_generate_candidate_routes_to_selected_nano_banana_model(monkeypatch):
+    calls = {}
+    product = _product("gemini-product", 20)
+    monkeypatch.setattr(openai_agents, "_download_source", lambda _url: (b"source-pixels", "image/jpeg"))
+
+    def fake_gemini(source, mime, prompt, model):
+        calls.update({"source": source, "mime": mime, "prompt": prompt, "model": model})
+        return "data:image/png;base64,AAAA"
+
+    monkeypatch.setattr(openai_agents, "_generate_gemini_backdrop", fake_gemini)
+    monkeypatch.setattr(
+        openai_agents,
+        "_source_preserving_composite",
+        lambda source, generated, candidate: f"composite:{source.decode()}:{candidate}:{generated}",
+    )
+
+    result = openai_agents.generate_candidate(
+        product,
+        {"angle": "Seasonal value"},
+        "Warm Moroccan lifestyle backdrop",
+        2,
+        {"image_provider": "gemini", "gemini_image_model": "gemini-3.1-flash-image"},
+    )
+
+    assert calls["model"] == "gemini-3.1-flash-image"
+    assert calls["source"] == b"source-pixels"
+    assert "immutable evidence" in calls["prompt"]
+    assert result.startswith("composite:source-pixels:2:")
+
+
+def test_nano_banana_status_requires_a_gemini_key(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    missing = openai_agents.image_generator_status({"image_provider": "gemini"})
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
+    ready = openai_agents.image_generator_status({"image_provider": "gemini"})
+
+    assert missing["ready"] is False
+    assert ready["ready"] is True
+    assert ready["model"] == "gemini-3.1-flash-image"
+    assert ready["label"] == "Nano Banana 2"
+
+
+def test_dedicated_gemini_key_takes_priority(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "legacy-google-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "dedicated-gemini-key")
+
+    assert openai_agents._gemini_api_key() == "dedicated-gemini-key"
 
 
 def test_midday_keeps_its_independent_spacing():
