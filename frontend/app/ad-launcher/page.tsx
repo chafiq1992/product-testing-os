@@ -3,7 +3,7 @@
 import {useEffect,useMemo,useState} from 'react'
 import Link from 'next/link'
 import {
-  AlertTriangle,ArrowLeft,CheckCircle2,Clock3,Film,Image as ImageIcon,Layers3,
+  AlertTriangle,ArrowLeft,Check,CheckCircle2,Clock3,Copy,ExternalLink,Film,Image as ImageIcon,Layers3,
   Loader2,LockKeyhole,LogIn,Rocket,ShieldCheck,Sparkles,UploadCloud,WandSparkles,XCircle,
 } from 'lucide-react'
 import ShopifyStoreSelect from '@/components/ShopifyStoreSelect'
@@ -59,6 +59,72 @@ function MediaPreview({url,type,name}:{url:string,type:string,name:string}){
   return <img src={url} alt={name} className="aspect-[4/5] w-full bg-slate-100 object-cover"/>
 }
 
+function metaFormatLabel(mediaType:string){
+  return mediaType==='carousel'?'Carousel':mediaType==='video'?'Single video':'Single image'
+}
+
+function metaCtaLabel(value:string){
+  return String(value||'SHOP_NOW').toLowerCase().split('_').map(part=>part.charAt(0).toUpperCase()+part.slice(1)).join(' ')
+}
+
+function metaUrlParts(baseUrl:string,campaignName:string,index:number,angle:string){
+  const slug=String(angle||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').slice(0,50)
+  const parameters=new URLSearchParams({
+    utm_source:'meta',utm_medium:'paid_social',utm_campaign:campaignName,utm_content:`adset_${index}_${slug}`,
+  })
+  try{
+    const finalUrl=new URL(baseUrl)
+    parameters.forEach((value,key)=>finalUrl.searchParams.set(key,value))
+    return {websiteUrl:baseUrl,urlParameters:parameters.toString(),finalUrl:finalUrl.toString(),displayLink:finalUrl.hostname}
+  }catch{
+    return {websiteUrl:baseUrl,urlParameters:parameters.toString(),finalUrl:baseUrl,displayLink:''}
+  }
+}
+
+function manualAdSheet(plan:any,adset:any,index:number,pageId?:string){
+  const urls=metaUrlParts(String(plan?.landing_url||''),String(plan?.campaign_name||''),index,String(adset?.angle||''))
+  return [
+    `META AD ${String(index).padStart(2,'0')}`,
+    `Campaign name: ${plan?.campaign_name||''}`,
+    `Ad set name: ${adset?.name||`adset ${String(index).padStart(2,'0')} parent`}`,
+    `Ad name: ${adset?.ad_name||`creative ${String(index).padStart(2,'0')}`}`,
+    pageId?`Facebook Page ID: ${pageId}`:'',
+    `Format: ${metaFormatLabel(String(adset?.media_type||''))}`,
+    `Call to action: ${metaCtaLabel(String(adset?.call_to_action||'SHOP_NOW'))}`,
+    '',
+    'PRIMARY TEXT',String(adset?.primary_text_ar||''),
+    '',
+    'HEADLINE',String(adset?.headline_ar||''),
+    '',
+    'DESCRIPTION',String(adset?.description_ar||''),
+    '',
+    'WEBSITE URL',urls.websiteUrl,
+    '',
+    'DISPLAY LINK',urls.displayLink,
+    '',
+    'URL PARAMETERS',urls.urlParameters,
+    '',
+    'FINAL TRACKED URL',urls.finalUrl,
+    '',
+    'CREATIVE URLS',...(Array.isArray(adset?.media_urls)?adset.media_urls:[]),
+  ].filter((line,index,all)=>line!==''||all[index-1]!=='').join('\n').trim()
+}
+
+function MetaCopyField({label,value,multiline=false,dir='auto',copied,onCopy}:{
+  label:string,value:string,multiline?:boolean,dir?:'auto'|'ltr'|'rtl',copied:boolean,onCopy:()=>void
+}){
+  const fieldClass="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-11 text-sm leading-6 text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+  return <label className="block">
+    <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</span>
+    <span className="relative mt-1.5 block">
+      {multiline?<textarea readOnly value={value} dir={dir} rows={label==='Primary text'?5:2} onFocus={event=>event.currentTarget.select()} className={`${fieldClass} resize-y`}/>:<input readOnly value={value} dir={dir} onFocus={event=>event.currentTarget.select()} className={fieldClass}/>}
+      <button type="button" onClick={onCopy} aria-label={`Copy ${label}`} title={`Copy ${label}`} className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-slate-50 text-slate-500 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700">
+        {copied?<Check className="h-4 w-4 text-emerald-600"/>:<Copy className="h-4 w-4"/>}
+      </button>
+    </span>
+  </label>
+}
+
 export default function AdLauncherPage(){
   const [authed,setAuthed]=useState<boolean|null>(null)
   const [store,setStore]=useState('irrakids')
@@ -81,6 +147,7 @@ export default function AdLauncherPage(){
   const [pollNonce,setPollNonce]=useState(0)
   const [busy,setBusy]=useState('')
   const [error,setError]=useState('')
+  const [copiedKey,setCopiedKey]=useState('')
 
   useEffect(()=>{
     try{setStore(localStorage.getItem('ptos_store')||'irrakids')}catch{}
@@ -111,6 +178,21 @@ export default function AdLauncherPage(){
       const result=await getAdLauncherProductCards()
       if(result.data)setProductCards(result.data)
     }catch{}
+  }
+
+  async function copyToClipboard(key:string,value:string){
+    try{
+      if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(value)
+      else{
+        const helper=document.createElement('textarea')
+        helper.value=value;helper.style.position='fixed';helper.style.opacity='0'
+        document.body.appendChild(helper);helper.select();document.execCommand('copy');helper.remove()
+      }
+      setCopiedKey(key)
+      window.setTimeout(()=>setCopiedKey(current=>current===key?'':current),1800)
+    }catch{
+      setError('Copy failed. Select the field text and use Ctrl+C.')
+    }
   }
 
   useEffect(()=>{if(authed)refreshProductCards()},[authed])
@@ -336,7 +418,38 @@ export default function AdLauncherPage(){
           <Card className="p-6"><div className="text-xs font-bold uppercase tracking-wide text-violet-600">Shared manual audience</div><h3 className="mt-2 text-2xl font-bold text-slate-950">{plan.audience?.audience_label}</h3><div className="mt-4 flex flex-wrap gap-2 text-sm">{plan.audience?.country_codes?.map((country:string)=><span key={country} className="rounded-full bg-slate-100 px-3 py-1.5 font-semibold">{country}</span>)}<span className="rounded-full bg-slate-100 px-3 py-1.5">Age {plan.audience?.age_min}–{plan.audience?.age_max}</span><span className="rounded-full bg-slate-100 px-3 py-1.5 capitalize">{plan.audience?.gender}</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">No interests</span></div><p className="mt-4 text-sm leading-6 text-slate-600">{plan.audience?.rationale}</p><div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm"><div><b>Budget:</b> ${plan.total_daily_budget_usd}/day total · ${(plan.total_daily_budget_usd/plan.adsets.length).toFixed(2)} per ad set · ABO</div><div className="mt-1"><b>Start:</b> {new Date(plan.scheduled_start).toLocaleString()}</div><div className="mt-1"><b>Destination:</b> <a href={plan.landing_url} target="_blank" className="text-violet-600 underline">Arabic Shopify page</a></div></div></Card>
         </div>
 
-        <section><div className="mb-3 flex items-end justify-between"><div><h3 className="text-xl font-bold text-slate-950">{review.approved?'Approved':'Generated'} ad-set plan</h3><p className="text-sm text-slate-500">Same audience, destination, placements, and budget method. Message angle and AI creative are the controlled variables.</p></div><span className="text-xs text-slate-400">Copy: {job?.result?.model} ({job?.result?.model_reasoning_effort||'high'}) · Images: {job?.result?.image_model}</span></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{plan.adsets?.map((adset:any,index:number)=><Card key={`${adset.name}-${index}`} className="overflow-hidden">{adset.media_urls?.[0]&&<MediaPreview url={adset.media_urls[0]} type={adset.media_type} name={adset.name}/>}<div className="p-4"><div className="flex items-center justify-between gap-2"><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${adset.origin==='ai_generated'?'bg-violet-50 text-violet-700':'bg-blue-50 text-blue-700'}`}>{adset.origin.replace('_',' ')}</span><span className="text-[10px] uppercase text-slate-400">{adset.media_type}</span></div><div className="mt-3 text-xs font-semibold text-violet-600">{adset.angle}</div><div dir="rtl" lang="ar" className="mt-3 text-right"><h4 className="font-bold leading-6 text-slate-950">{adset.headline_ar}</h4><p className="mt-2 whitespace-pre-line text-sm leading-7 text-slate-700">{adset.primary_text_ar}</p><p className="mt-2 text-xs text-slate-500">{adset.description_ar}</p></div>{adset.image_prompt&&<details className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500"><summary className="cursor-pointer font-semibold text-slate-700">Media-buyer image prompt</summary><p className="mt-2 leading-5">{adset.image_prompt}</p></details>}</div></Card>)}</div></section>
+        <section>
+          <div className="mb-3 flex items-end justify-between"><div><h3 className="text-xl font-bold text-slate-950">{review.approved?'Approved':'Generated'} ad-set plan</h3><p className="text-sm text-slate-500">Same audience, destination, placements, and budget method. Message angle and AI creative are the controlled variables.</p></div><span className="text-xs text-slate-400">Copy: {job?.result?.model} ({job?.result?.model_reasoning_effort||'high'}) · Images: {job?.result?.image_model}</span></div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{plan.adsets?.map((adset:any,index:number)=>{
+            const urls=metaUrlParts(String(plan.landing_url||''),String(plan.campaign_name||''),index+1,String(adset.angle||''))
+            const pageId=String(connection?.page_id||job?.result?.meta?.page_id||'')
+            const copyAll=manualAdSheet(plan,adset,index+1,pageId)
+            const creativeUrls=(Array.isArray(adset.media_urls)?adset.media_urls:[]).join('\n')
+            return <Card key={`${adset.name}-${index}`} className="overflow-hidden">
+              {adset.media_urls?.[0]&&<MediaPreview url={adset.media_urls[0]} type={adset.media_type} name={adset.name}/>}<div className="p-4">
+                <div className="flex items-center justify-between gap-2"><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${adset.origin==='ai_generated'?'bg-violet-50 text-violet-700':'bg-blue-50 text-blue-700'}`}>{adset.origin.replace('_',' ')}</span><span className="text-[10px] uppercase text-slate-400">{adset.media_type}</span></div>
+                <div className="mt-3 text-xs font-semibold text-violet-600">{adset.angle}</div>
+                <div dir="rtl" lang="ar" className="mt-3 text-right"><h4 className="font-bold leading-6 text-slate-950">{adset.headline_ar}</h4><p className="mt-2 whitespace-pre-line text-sm leading-7 text-slate-700">{adset.primary_text_ar}</p><p className="mt-2 text-xs text-slate-500">{adset.description_ar}</p></div>
+                {adset.image_prompt&&<details className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500"><summary className="cursor-pointer font-semibold text-slate-700">Media-buyer image prompt</summary><p className="mt-2 leading-5">{adset.image_prompt}</p></details>}
+                <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50/50 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-bold text-slate-950">Manual Meta ad fields</h4><p className="mt-1 text-[11px] leading-4 text-slate-600">Paste each field into the matching Ads Manager field.</p></div><button type="button" onClick={()=>copyToClipboard(`all-${index}`,copyAll)} className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-violet-700">{copiedKey===`all-${index}`?<Check className="h-3.5 w-3.5"/>:<Copy className="h-3.5 w-3.5"/>}{copiedKey===`all-${index}`?'Copied':'Copy all'}</button></div>
+                  <div className="mt-3 space-y-3">
+                    <MetaCopyField label="Ad set name" value={String(adset.name||`adset ${String(index+1).padStart(2,'0')} parent`)} copied={copiedKey===`adset-${index}`} onCopy={()=>copyToClipboard(`adset-${index}`,String(adset.name||''))}/>
+                    <MetaCopyField label="Ad name" value={String(adset.ad_name||`creative ${String(index+1).padStart(2,'0')}`)} copied={copiedKey===`ad-${index}`} onCopy={()=>copyToClipboard(`ad-${index}`,String(adset.ad_name||''))}/>
+                    <MetaCopyField label="Primary text" value={String(adset.primary_text_ar||'')} multiline dir="rtl" copied={copiedKey===`primary-${index}`} onCopy={()=>copyToClipboard(`primary-${index}`,String(adset.primary_text_ar||''))}/>
+                    <MetaCopyField label="Headline" value={String(adset.headline_ar||'')} dir="rtl" copied={copiedKey===`headline-${index}`} onCopy={()=>copyToClipboard(`headline-${index}`,String(adset.headline_ar||''))}/>
+                    <MetaCopyField label="Description" value={String(adset.description_ar||'')} dir="rtl" copied={copiedKey===`description-${index}`} onCopy={()=>copyToClipboard(`description-${index}`,String(adset.description_ar||''))}/>
+                    <MetaCopyField label="Call to action" value={metaCtaLabel(String(adset.call_to_action||'SHOP_NOW'))} copied={copiedKey===`cta-${index}`} onCopy={()=>copyToClipboard(`cta-${index}`,metaCtaLabel(String(adset.call_to_action||'SHOP_NOW')))}/>
+                    <MetaCopyField label="Website URL" value={urls.websiteUrl} copied={copiedKey===`url-${index}`} onCopy={()=>copyToClipboard(`url-${index}`,urls.websiteUrl)}/>
+                    <MetaCopyField label="URL parameters" value={urls.urlParameters} copied={copiedKey===`params-${index}`} onCopy={()=>copyToClipboard(`params-${index}`,urls.urlParameters)}/>
+                    {creativeUrls&&<MetaCopyField label={adset.media_type==='carousel'?'Creative image URLs':'Creative URL'} value={creativeUrls} multiline dir="ltr" copied={copiedKey===`creative-${index}`} onCopy={()=>copyToClipboard(`creative-${index}`,creativeUrls)}/>}
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 text-[10px] leading-4 text-slate-500"><ExternalLink className="h-3 w-3 shrink-0"/> Final tracked URL: <a href={urls.finalUrl} target="_blank" rel="noreferrer" className="truncate text-violet-700 underline">{urls.finalUrl}</a></div>
+                </div>
+              </div>
+            </Card>
+          })}</div>
+        </section>
       </>}
 
       {job?.status==='launched'&&job.result?.meta&&<Card className="border-emerald-200 bg-emerald-50 p-6"><div className="flex items-start gap-3"><CheckCircle2 className="mt-1 h-7 w-7 text-emerald-600"/><div><h3 className="text-xl font-bold text-emerald-950">Campaign scheduled successfully</h3><p className="mt-1 text-sm text-emerald-800">Campaign {job.result.meta.campaign_id} is active with a future start at {new Date(job.result.meta.scheduled_start).toLocaleString()}.</p><div className="mt-4 flex flex-wrap gap-2">{job.result.meta.adsets?.map((item:any)=><span key={item.adset_id} className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs text-emerald-800">Ad set {item.index} · ${Number(item.daily_budget_usd).toFixed(2)}</span>)}</div></div></div></Card>}
