@@ -314,7 +314,19 @@ async def _subscribe_loop() -> None:
         try:
             pubsub = _redis.pubsub()
             await pubsub.subscribe(_CHAT_CHANNEL)
-            async for msg in pubsub.listen():
+            while _redis is not None:
+                # get_message(timeout=...) returns None when the channel is
+                # merely idle. pubsub.listen() instead blocks on a raw socket
+                # read, which the client's socket_timeout (5s, set above) turns
+                # into "Timeout reading from <host>" on every quiet interval.
+                # The handler below then tears the subscription down and rebuilds
+                # it, so `PUBSUB NUMSUB chat_events_v1` reads 0 most of the time
+                # and anything published during a gap never reaches the other
+                # workers. Verified on the Netcup box: with listen(), NUMSUB was
+                # 0 while a WebSocket was connected.
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg is None:
+                    continue
                 if msg.get("type") != "message":
                     continue
                 try:

@@ -24,4 +24,8 @@ Thumbs.db
 backend/.venv
 venv
 
-
+# Separate Expo app with its own node_modules. Its android/keystore.properties
+# and keystore/ must never leave this machine, and nothing in the server image
+# needs it. .gcloudignore already excluded it from Cloud Build contexts; this
+# keeps it out of the `docker build` context on the Netcup box too.
+mobile-app/

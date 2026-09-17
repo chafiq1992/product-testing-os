@@ -55,6 +55,7 @@ from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
 from app.shopify_store_registry import build_store_registry, store_env_names, store_env_value
+from app.worker_loops import worker_loops_enabled, worker_loops_state
 from app import db
 import re
 import threading
@@ -6761,7 +6762,67 @@ async def api_meta_draft_carousel_campaign(req: MetaDraftCarouselCampaignRequest
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    """Liveness and readiness.
+
+    Always answers 200 — the verdict is in ``status``, so callers that only
+    check the HTTP code keep working. The Compose healthcheck on the Netcup box
+    parses ``status`` instead, because a container that cannot reach its
+    database must never replace a working one during ``up -d --wait``.
+    """
+    checks: dict[str, Any] = {}
+    healthy = True
+
+    # Database. This also catches the silent SQLite fallback in db.py: with
+    # DATABASE_URL unset the app builds an empty schema at import and looks
+    # perfectly fine while holding none of the real data.
+    try:
+        from sqlalchemy import text as _sa_text
+
+        with db.engine.connect() as _conn:
+            _conn.execute(_sa_text("SELECT 1"))
+        dialect = db.engine.dialect.name
+        checks["database"] = {"ok": True, "dialect": dialect}
+        if dialect == "sqlite":
+            checks["database"] = {
+                "ok": False,
+                "dialect": dialect,
+                "error": "DATABASE_URL is unset — running on the ephemeral SQLite fallback",
+            }
+            healthy = False
+    except Exception as e:
+        checks["database"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        healthy = False
+
+    # Redis carries the cross-instance chat bus only, and chat.py degrades to
+    # local-only delivery without it. Reported, never fatal: gating deploys on
+    # it would block a release over a non-essential dependency.
+    try:
+        from app import chat as _chat
+
+        url = _chat._chat_redis_url()
+        if not url:
+            checks["redis"] = {"ok": True, "configured": False, "note": "no broker URL set; chat is local-only"}
+        else:
+            import redis.asyncio as _aioredis
+
+            _probe = _aioredis.from_url(url, socket_connect_timeout=3, socket_timeout=3)
+            try:
+                await _probe.ping()
+                checks["redis"] = {"ok": True, "configured": True, "subscribed": bool(_chat._redis_ready)}
+            finally:
+                await _probe.aclose()
+    except Exception as e:
+        checks["redis"] = {"ok": False, "configured": True, "error": f"{type(e).__name__}: {e}"}
+
+    return {
+        "ok": True,
+        "status": "healthy" if healthy else "degraded",
+        "checks": checks,
+        # Which deployment owns scheduled work. During the Cloud Run -> Netcup
+        # parallel run exactly one deployment may report this enabled.
+        "worker_loops": worker_loops_enabled(),
+        "worker_loops_detail": worker_loops_state(),
+    }
 
 # ---------------- ChatKit (OpenAI-hosted) session endpoint ----------------
 class ChatKitSessionRequest(BaseModel):

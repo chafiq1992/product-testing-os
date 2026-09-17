@@ -1,0 +1,8 @@
+# Shell scripts must keep LF endings. A CR on the shebang line produces
+# "set: pipefail: invalid option name" on the server, which looks like a bash
+# version problem and is not - and MSYS/Git-Bash tools hide CRs from grep, so
+# the file looks clean locally. Check with: file script.sh
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

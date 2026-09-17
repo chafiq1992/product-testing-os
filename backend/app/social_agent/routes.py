@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from app.social_agent import meta, repository as repo, service, shopify
 from app.social_agent.openai_agents import image_generator_status
 from app.system_health_routes import _get_admin
+from app.worker_loops import worker_loops_enabled, worker_loops_state
 
 
 router = APIRouter(prefix="/api/social-agent", tags=["social-agent"])
@@ -180,4 +181,17 @@ async def refresh_analytics(request: Request, body: StoreBody):
 @router.post("/scheduler/tick")
 async def scheduler_tick(request: Request, store: str | None = None):
     _require_scheduler_or_admin(request)
+    # This tick queues, prepares and publishes posts to Meta and Instagram, and
+    # nothing in the path holds a lease or a lock. A second deployment ticking
+    # on the same five-minute schedule publishes everything twice, so it refuses
+    # outright where scheduled work is switched off — including for an admin
+    # calling it by hand. See app/worker_loops.py.
+    if not worker_loops_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Scheduled work is disabled on this deployment "
+                f"({worker_loops_state()}); another deployment owns the social-agent scheduler."
+            ),
+        )
     return {"data": await run_in_threadpool(service.scheduler_tick, store)}

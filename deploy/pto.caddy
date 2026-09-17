@@ -1,0 +1,79 @@
+# product-testing-os.  ->  /opt/edge/sites/pto.caddy
+#
+# DO NOT INSTALL THIS FILE UNTIL DNS FOR pt.chattbase.site POINTS AT THIS BOX.
+#
+# Caddy requests a certificate the instant this config loads, and the HTTP-01
+# challenge can only succeed once the name resolves here. Loading it early fires
+# challenges Caddy cannot answer and burns Let's Encrypt's failed-validation
+# budget for the hostname.
+#
+# Correct order:
+#   1. create  A  pt -> 159.195.204.91  (TTL 60)   [owner does this]
+#   2. dig +short pt.chattbase.site     # must return 159.195.204.91
+#      — and not before: one premature lookup poisons the negative cache for
+#        3601s, upstream, where `resolvectl flush-caches` cannot reach it.
+#   3. copy this file into /opt/edge/sites/ and reload Caddy:
+#        docker compose -f /opt/edge/compose.yaml exec caddy \
+#          caddy reload --config /etc/caddy/Caddyfile
+pt.chattbase.site {
+	encode zstd gzip
+
+	# The wholesale Add Product flow accepts a batch of up to 50 photos, and
+	# the studio/ad-launcher paths accept video. Cloud Run imposed no body
+	# limit of its own, so anything below this is a new restriction.
+	request_body {
+		max_size 128MB
+	}
+
+	# Next.js `output: 'export'` emits content-hashed filenames under
+	# /_next/static/, so a new deploy always changes the URL.
+	@immutable path /_next/static/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# The HTML entrypoints must NOT be cached, or browsers keep loading an old
+	# bundle that references assets a later deploy has already replaced.
+	# `trailingSlash: true` in next.config.js means directory-style URLs.
+	@html {
+		path / /index.html
+		path_regexp ^/[^.]*/?$
+	}
+	header @html Cache-Control "no-cache"
+
+	# /uploads/* is served by a FastAPI route that falls back to the database
+	# copy, not by StaticFiles. Filenames are unique per upload, so they are
+	# safe to cache — but privately: some are customer/product images that
+	# belong to a specific store.
+	@uploads path /uploads/*
+	header @uploads Cache-Control "private, max-age=86400"
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+		-Server
+	}
+
+	# pto-web is the network alias declared in /opt/pto/compose.yaml. Do NOT use
+	# the bare service name: `web` would collide with the delivery app's own
+	# service on this same shared network, and Caddy would route to whichever
+	# answered first.
+	reverse_proxy pto-web:8080 {
+		# Ride out a container restart instead of returning 502.
+		lb_try_duration 20s
+		lb_try_interval 500ms
+
+		transport http {
+			# Cloud Run allowed 900s per request and this app uses it: AI image
+			# generation, campaign analysis and 50-product wholesale batches all
+			# run inside one request. A shorter timeout here would turn a slow
+			# success into a 504. uvicorn runs --timeout-keep-alive 120, so idle
+			# keep-alive sockets are handled well below this.
+			read_timeout 900s
+			write_timeout 900s
+		}
+	}
+
+	# Logs go to Docker, which the daemon rotates at 20 MB x 5.
+	log
+}

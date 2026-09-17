@@ -1,0 +1,174 @@
+# product-testing-os on the Netcup box.  ->  /opt/pto/compose.yaml
+#
+# Two files feed this, and mixing them is the classic footgun:
+#   /opt/pto/.env      -> Compose substitution only (IMAGE_TAG, WORKER_LOOPS, ...)
+#   /opt/pto/app.env   -> the application's runtime environment (chmod 600)
+#
+# Anything set under `environment:` here BEATS app.env. That is load-bearing in
+# two places below (Redis, and the uploads/static paths), because app.env is
+# pulled verbatim from the Cloud Run revision and still carries its values.
+name: pto
+
+x-app: &app
+  image: product-testing-os:${IMAGE_TAG:-latest}
+  env_file: [/opt/pto/app.env]
+  restart: unless-stopped
+  volumes:
+    # A cache, not state. Every upload is also base64-persisted into the
+    # database (main.py:_persist_upload_blob) and /uploads/{name} falls back to
+    # that copy, which is the only reason Cloud Run survives with an ephemeral
+    # directory. Keeping a volume just avoids re-reading them out of Postgres.
+    - pto-uploads:/app/uploads
+  depends_on:
+    redis:
+      condition: service_healthy
+
+# Shared by both app services. Anything that differs between the HTTP tier and
+# the scheduled-work tier is set on the service itself.
+x-app-env: &app-env
+  # -- Redis ----------------------------------------------------------
+  # Set HERE, not in app.env, so Compose wins over the values pulled from the
+  # GCP secrets `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` — those point at
+  # Upstash over the public internet. This app writes no prefixed keys (the
+  # chat bus is the bare channel `chat_events_v1`, Celery uses stock key
+  # names), so it cannot be confined by an ACL on the shared Redis without a
+  # refactor. It gets its own instance, exactly like the WhatsApp app.
+  CELERY_BROKER_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in /opt/pto/.env}@pto-redis:6379/0"
+  CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in /opt/pto/.env}@pto-redis:6379/0"
+
+  # Matches production: the pipeline runs in an in-process thread, not Celery
+  # (main.py:1271). Stated explicitly so the default can never drift.
+  USE_CELERY: "false"
+
+  # -- Paths that were container-internal on Cloud Run ------------------
+  # Both match the image's own defaults; pinned so a change to config.py's
+  # fallbacks cannot silently relocate them out of the volume / off the mount.
+  UPLOADS_DIR: /app/uploads
+  STATIC_DIR: /app/static
+
+services:
+  # -- HTTP + WebSocket tier --------------------------------------------
+  # The only service Caddy talks to. Runs NO scheduled work, ever.
+  web:
+    <<: *app
+    environment:
+      <<: *app-env
+      # Pinned off, independent of .env: this tier is the one that may one day
+      # run multiple uvicorn workers, and every loop in this app is unguarded.
+      WORKER_LOOPS: "0"
+    expose: ["8080"]              # never `ports:` — Docker's iptables bypass ufw
+    healthcheck:
+      # /health answers 200 even when degraded, so the verdict is in the body.
+      # `status` is "healthy" only when the database is reachable AND is not the
+      # silent SQLite fallback — which is exactly the readiness `--wait` needs.
+      test: ["CMD-SHELL", "python -c \"import json,urllib.request,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=8)); sys.exit(0 if d.get('status')=='healthy' else 1)\""]
+      interval: 15s
+      timeout: 12s
+      retries: 5
+      start_period: 60s
+    networks:
+      internal: {}
+      pgnet: {}                   # self-hosted Postgres, reached as
+                                  # `postgres-shared`. Attached ahead of the
+                                  # database cutover so that switching off
+                                  # Supabase is a one-line DATABASE_URL change
+                                  # rather than a container restructure. Unused
+                                  # until DATABASE_URL points at it.
+      edge:
+        aliases: [pto-web]        # how Caddy addresses it; `web` would collide
+                                  # with the delivery app's own `web` service
+    # Replaces up to 8 Cloud Run instances of 512Mi at concurrency 20. The image
+    # carries ffmpeg and Pillow and several endpoints generate images, so the
+    # Cloud Run per-instance limit is the wrong number to copy. Watch
+    # `docker stats` under real load before trimming this.
+    mem_limit: ${WEB_MEM:-2g}
+    cpus: ${WEB_CPUS:-2.0}
+    pids_limit: 512
+
+  # -- Scheduled-work tier ----------------------------------------------
+  # Exactly ONE process, always. Never scale this service: the wholesale batch
+  # recovery loop creates Shopify products and the social-agent tick publishes
+  # to Meta and Instagram, and neither holds a lock. Not on the edge network —
+  # it serves no public traffic during the parallel run.
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      # THE switch. 0 while Cloud Run still owns scheduled work; 1 only after
+      # the Cloud Scheduler job is paused. Gates the wholesale recovery loop at
+      # startup and makes /api/social-agent/scheduler/tick answer 503.
+      WORKER_LOOPS: "${WORKER_LOOPS:-0}"
+    expose: ["8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import json,urllib.request,sys; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=8)); sys.exit(0 if d.get('status')=='healthy' else 1)\""]
+      interval: 15s
+      timeout: 12s
+      retries: 5
+      start_period: 60s
+    networks: [internal, pgnet]   # pgnet: see the note on `web`
+    mem_limit: ${WORKER_MEM:-1536m}
+    cpus: ${WORKER_CPUS:-1.5}
+    pids_limit: 256
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - "${REDIS_PASSWORD:?set REDIS_PASSWORD in /opt/pto/.env}"
+      # Unlike the WhatsApp app's Redis, nothing here is a durable queue. It
+      # carries the cross-instance chat pub/sub bus (chat.py, channel
+      # `chat_events_v1`) and nothing else — Celery is off. Pub/sub messages are
+      # never persisted by Redis in any configuration, so persistence would only
+      # buy disk writes. Both AOF and RDB are therefore off on purpose.
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --maxmemory
+      - 256mb
+      # allkeys-lru is correct *here* precisely because there is no queue to
+      # protect. Revisit this the day USE_CELERY becomes true: Celery task state
+      # carries no TTL and would then be evictable.
+      - --maxmemory-policy
+      - allkeys-lru
+      - --tcp-keepalive
+      - "60"
+      # chat.py subscribers block on pubsub.listen() indefinitely; a server-side
+      # idle timeout would drop them and silently stop cross-worker delivery.
+      - --timeout
+      - "0"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --pass \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD in /opt/pto/.env}"
+    networks:
+      internal:
+        aliases: [pto-redis]
+    # Deliberately NOT on `edge` and NOT on `redisnet`: private to this app.
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+
+networks:
+  internal:                       # a NAME, not Docker's `internal: true` flag.
+                                  # The app must reach Shopify, Meta, OpenAI.
+    enable_ipv6: true             # DATABASE_URL is db.ronmjaiqktkdrjsqzchp
+                                  # .supabase.co, which is AAAA-only. Verified
+                                  # on this box: a user-defined network without
+                                  # this gets "Network is unreachable" while the
+                                  # default bridge works, because the daemon's
+                                  # ipv6:true does not propagate to new networks.
+  edge:
+    name: edge
+    external: true
+  pgnet:                          # shared self-hosted Postgres, addressed as
+    name: pgnet                   # `postgres-shared:5432` (never the bare
+    external: true                # service name, which another app may reuse)
+
+volumes:
+  pto-uploads: {}
