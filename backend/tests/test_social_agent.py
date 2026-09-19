@@ -268,11 +268,11 @@ def test_generate_candidate_routes_to_selected_nano_banana_model(monkeypatch):
         calls.update({"source": source, "mime": mime, "prompt": prompt, "model": model})
         return "data:image/png;base64,AAAA"
 
-    monkeypatch.setattr(openai_agents, "_generate_gemini_backdrop", fake_gemini)
+    monkeypatch.setattr(openai_agents, "_generate_gemini_creative", fake_gemini)
     monkeypatch.setattr(
         openai_agents,
-        "_source_preserving_composite",
-        lambda source, generated, candidate: f"composite:{source.decode()}:{candidate}:{generated}",
+        "_finalize_creative",
+        lambda generated: f"final:{generated}",
     )
 
     result = openai_agents.generate_candidate(
@@ -280,13 +280,13 @@ def test_generate_candidate_routes_to_selected_nano_banana_model(monkeypatch):
         {"angle": "Seasonal value"},
         "Warm Moroccan lifestyle backdrop",
         2,
-        {"image_provider": "gemini", "gemini_image_model": "gemini-3.1-flash-image"},
+        {"image_provider": "gemini", "gemini_image_model": "gemini-3.1-flash-image", "image_text_mode": "none"},
     )
 
     assert calls["model"] == "gemini-3.1-flash-image"
     assert calls["source"] == b"source-pixels"
     assert "immutable evidence" in calls["prompt"]
-    assert result.startswith("composite:source-pixels:2:")
+    assert result.startswith("final:")
 
 
 def test_nano_banana_status_requires_a_gemini_key(monkeypatch):
@@ -358,7 +358,7 @@ def test_reviewer_hard_rejects_product_geometry_or_fidelity_mismatch(monkeypatch
     }
 
     result = openai_agents.review_candidate(
-        product, strategy, "data:image/png;base64,AAAA", {"minimum_review_score": 82}, 1,
+        product, strategy, "data:image/png;base64,AAAA", {"minimum_review_score": 82, "source_image_limit": 3}, 1,
     )
 
     assert result["decision"] == "reject"

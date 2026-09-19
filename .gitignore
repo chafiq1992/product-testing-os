@@ -21,3 +21,14 @@ __pycache__/
 dist
 build
 uploads
+
+# Expo app with its own toolchain. android/keystore.properties and keystore/
+# are release-signing material and must never enter git history.
+mobile-app/
+
+# Local agent worktrees: full copies of this repo.
+.claude/
+
+# Scratch output
+artifacts/
+*.db-journal

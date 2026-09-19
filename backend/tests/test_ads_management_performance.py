@@ -112,6 +112,47 @@ def test_fresh_product_brief_does_not_create_missing_store_placeholders(monkeypa
     assert "999" not in result
 
 
+def test_collection_product_order_sum_scans_orders_once_and_preserves_semantics(monkeypatch):
+    pages = [
+        _FakeShopifyResponse(
+            [
+                {
+                    "id": 1,
+                    "line_items": [
+                        {"product_id": 101},
+                        {"product_id": 101},
+                        {"product_id": 202},
+                        {"product_id": 999},
+                    ],
+                },
+                {"id": 2, "cancelled_at": "2026-07-01", "line_items": [{"product_id": 101}]},
+            ],
+            next_page='<https://shop.example/orders.json?page_info=next>; rel="next"',
+        ),
+        _FakeShopifyResponse([{"id": 3, "line_items": [{"product_id": 202}]}]),
+    ]
+    requested_paths = []
+
+    monkeypatch.setattr(shopify_client, "list_product_ids_in_collection", lambda *_args, **_kwargs: [101, 202])
+    monkeypatch.setattr(shopify_client, "_processed_window_iso", lambda *_args, **_kwargs: ("start", "end"))
+
+    def fake_get(_store, path):
+        requested_paths.append(path)
+        return pages.pop(0)
+
+    monkeypatch.setattr(shopify_client, "_rest_get_store_raw", fake_get)
+
+    count = shopify_client.sum_product_order_counts_for_collection(
+        "55", "2026-07-01", "2026-07-14", store="irrakids", include_closed=True
+    )
+
+    assert count == 3
+    assert len(requested_paths) == 2
+    assert "processed_at_min=start" in requested_paths[0]
+    assert "status=any" in requested_paths[0]
+    assert "page_info=next" in requested_paths[1]
+
+
 def test_meta_collection_tracking_signature_resolves_and_matches_exact_utm():
     ad = {
         "id": "333",

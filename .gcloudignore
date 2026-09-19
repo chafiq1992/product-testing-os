@@ -1,0 +1,25 @@
+.git
+.gitignore
+
+# Not needed for the backend/frontend Docker image — keep it out of the Cloud
+# Build context entirely (it's a separate Expo app, has its own node_modules,
+# and its android/keystore.properties + keystore/ must never leave this machine).
+mobile-app/
+
+frontend/node_modules
+frontend/.next
+frontend/out
+
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+.vscode
+.idea
+Thumbs.db
+.DS_Store
+
+.env
+backend/.venv
+venv
