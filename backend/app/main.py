@@ -101,7 +101,19 @@ except Exception:
     _build_ck_server = None  # type: ignore
     _CHATKIT_ENABLED = False
 
-app = FastAPI(title="Product Testing OS", version="0.1.0")
+# Auth gate first: every API below is operator-only unless auth_gate.py says
+# otherwise. /docs, /redoc and /openapi.json exist only with PTO_API_DOCS=1.
+from app import auth_gate as _auth_gate  # noqa: E402
+_DOCS = _auth_gate.docs_enabled()
+app = FastAPI(
+    title="Product Testing OS",
+    version="0.1.0",
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
+)
+app.add_middleware(_auth_gate.AuthGateMiddleware)
+app.include_router(_auth_gate.router)
 
 # System health metrics middleware — pure-additive, fails closed (never blocks request)
 from app.system_health import HealthMiddleware as _HealthMiddleware  # noqa: E402
@@ -133,7 +145,9 @@ except Exception:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Sessions are cookies now. Credentialed cross-origin reads must stay
+    # impossible, or any site could read the API as a signed-in operator.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -8856,8 +8870,11 @@ except Exception:
     pass
 
 
+_auth_gate.set_vendor_resolver(lambda vid: db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vid)))
+
+
 @app.post("/api/wholesale/login")
-async def api_wholesale_login(req: WholesaleLogin):
+async def api_wholesale_login(req: WholesaleLogin, request: Request, response: Response):
     """Vendor login: validate credentials and return vendor info."""
     try:
         username = (req.username or "").strip().lower()
@@ -8876,6 +8893,11 @@ async def api_wholesale_login(req: WholesaleLogin):
             return {"error": "invalid_credentials"}
 
         safe = {k: v for k, v in vendor.items() if k != "password_hash"}
+        # The vendor API is gated on this cookie (auth_gate.py).
+        _auth_gate.set_session_cookie(
+            response, request, _auth_gate.VENDOR_COOKIE,
+            _auth_gate.issue_vendor_token(vendor_id, stored_hash), _auth_gate.COOKIE_MAX_AGE,
+        )
         return {"data": safe}
     except Exception as e:
         return {"error": str(e)}

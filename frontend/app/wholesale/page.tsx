@@ -943,12 +943,25 @@ export default function WholesalePage() {
   useEffect(() => {
     setLangState(getLang())
     const s = getSession()
-    if (s?.id) setVendor(s)
-    setLoading(false)
+    if (!s?.id) { setLoading(false); return }
+    // The API now requires the session cookie that /api/wholesale/login sets.
+    // A session saved before that change has no cookie: sign in again.
+    fetch(`${API}/api/auth/session`)
+      .then(r => r.json())
+      .then(({ data }) => {
+        const vid = String(s.id || '').toLowerCase()
+        if (data?.operator || String(data?.vendor || '').toLowerCase() === vid) setVendor(s)
+        else clearSession()
+      })
+      .catch(() => setVendor(s))
+      .finally(() => setLoading(false))
   }, [])
 
   function onLogin(v: any) { setSession(v); setVendor(v) }
-  function onLogout() { clearSession(); setVendor(null) }
+  function onLogout() {
+    clearSession(); setVendor(null)
+    fetch(`${API}/api/auth/logout`, { method: 'POST' }).catch(() => {})
+  }
   function onLangChange(next: Lang) {
     setLangState(next)
     setLang(next)
