@@ -83,6 +83,14 @@ def _verify_token(token: str) -> Optional[dict]:
                 return None
         except Exception:
             return None
+        if payload.get("uid"):
+            # Issued to an admin account from the app_users table: honour it
+            # only while that account is active, still an admin, and has not
+            # had its sessions ended (password reset / disable).
+            from app import users
+            live = users.session_valid(payload.get("uid"), payload.get("sv"))
+            if not live or live.get("role") != "admin":
+                return None
         return payload
     except Exception:
         return None

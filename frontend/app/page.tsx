@@ -1,6 +1,6 @@
 "use client"
 import { useEffect, useState } from 'react'
-import { Rocket, Plus, ExternalLink, Share2 } from 'lucide-react'
+import { Rocket, Plus, ExternalLink, Share2, Users } from 'lucide-react'
 import { listFlows, saveDraft, deleteFlow } from '@/lib/api'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -17,6 +17,7 @@ export default function HomePage(){
   const [showNew,setShowNew]=useState(false)
   const [creating,setCreating]=useState(false)
   const [store,setStore]=useState<string>('irrakids')
+  const [isAdmin,setIsAdmin]=useState(false)
   const router = useRouter()
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ''
   function toDisplayUrl(u: string){
@@ -32,6 +33,10 @@ export default function HomePage(){
       return ok? u : `${apiBase}/proxy/image?url=${encodeURIComponent(u)}`
     }catch{ return u }
   }
+  useEffect(()=>{
+    // Admin-only nav entry; the API enforces the role, this only hides the link.
+    fetch(`${apiBase}/api/auth/session`).then(r=>r.json()).then(d=>setIsAdmin(d?.data?.operator?.role==='admin')).catch(()=>{})
+  },[apiBase])
   useEffect(()=>{
     (async()=>{
       try{
@@ -100,6 +105,11 @@ export default function HomePage(){
           <Link href="/system-health" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white">
             System Health
           </Link>
+          {isAdmin && (
+            <Link href="/admin/users" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-950 text-white">
+              <Users className="w-4 h-4"/> Users
+            </Link>
+          )}
           <Link href="/social-agent" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-700 text-white">
             <Share2 className="w-4 h-4"/> Social Agent
           </Link>

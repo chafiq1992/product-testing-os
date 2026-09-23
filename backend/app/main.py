@@ -104,6 +104,7 @@ except Exception:
 # Auth gate first: every API below is operator-only unless auth_gate.py says
 # otherwise. /docs, /redoc and /openapi.json exist only with PTO_API_DOCS=1.
 from app import auth_gate as _auth_gate  # noqa: E402
+from app import users as _users  # noqa: E402,F401  (creates the app_users table at import, like every other model)
 _DOCS = _auth_gate.docs_enabled()
 app = FastAPI(
     title="Product Testing OS",

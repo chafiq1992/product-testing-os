@@ -6,10 +6,13 @@ Shopify stores, Meta ad accounts, profit costs, prompts, campaigns — answered
 anonymously. This gate closes that without inventing a new user system; it only
 enforces the logins the app already has:
 
-* **Operator** — either credential set that already exists in the environment:
+* **Operator** — a per-person account from the ``app_users`` table
+  (users.py, managed at /admin/users), or either credential set that lives in
+  the environment and stays as the bootstrap/break-glass login:
   ``PRODUCT_TESTING_USERNAME``/``PRODUCT_TESTING_PASSWORD`` (the shared login of
   the earlier whole-app gate, commit d12a904) or any ``SYSTEM_ADMIN_USERS``
-  entry. Carried by the HttpOnly ``ptos_auth`` cookie, or by the existing
+  entry. Role ``admin`` = SYSTEM_ADMIN_USERS or a DB admin; everyone else is
+  ``operator``. Carried by the HttpOnly ``ptos_auth`` cookie, or by the existing
   system-admin bearer token (``Authorization``/``X-System-Admin-Token``) that the
   System Health, Social Agent and Ad Launcher pages already send.
 * **Wholesale vendor** — ``/api/wholesale/login`` already verified the vendor
@@ -44,6 +47,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 log = logging.getLogger("app.auth_gate")
 
@@ -211,10 +215,12 @@ def _system_admins() -> list[dict]:
 
 
 def check_operator_credentials(username: str, password: str) -> Optional[dict]:
-    """Validate against every operator credential the environment defines.
+    """Validate against the environment credentials, then the app_users table.
 
-    Returns {"sub", "name", "src", "fp"} on success. `fp` fingerprints the
-    matched credential so changing that password revokes existing cookies.
+    Returns {"sub", "name", "src", "role", ...} on success. Environment matches
+    carry `fp`, a fingerprint of the matched credential, so changing that
+    password revokes existing cookies; DB matches carry `uid` and `sv`
+    (session_version) for the same purpose.
     """
     user = (username or "").strip()
     pw = password or ""
@@ -226,18 +232,36 @@ def check_operator_credentials(username: str, password: str) -> Optional[dict]:
         u_ok = hmac.compare_digest(user.lower().encode(), p_user.lower().encode())
         p_ok = hmac.compare_digest(pw.strip().encode(), p_pw.encode())
         if u_ok and p_ok:
-            return {"sub": p_user, "name": None, "src": "product", "fp": _fingerprint("product", p_user, p_pw)}
+            return {"sub": p_user, "name": None, "src": "product", "role": "operator",
+                    "fp": _fingerprint("product", p_user, p_pw)}
     email = user.lower()
     for admin in _system_admins():
         if admin.get("email") == email and hmac.compare_digest(str(admin.get("password") or "").encode(), pw.encode()):
-            return {"sub": email, "name": admin.get("name"), "src": "sys_admin",
+            return {"sub": email, "name": admin.get("name"), "src": "sys_admin", "role": "admin",
                     "fp": _fingerprint("sys_admin", email, str(admin.get("password") or ""))}
+    from app import users  # local: the model module touches the database at import
+    u = users.authenticate(user, pw)
+    if u:
+        return {"sub": u["username"], "name": u.get("name"), "src": "db", "role": u["role"],
+                "uid": u["id"], "sv": u["sv"]}
     return None
 
 
 def _operator_fingerprint_valid(payload: dict) -> bool:
+    """True if the credential this session was minted from is still current.
+
+    For DB users this also refreshes name/role from the live row, so a
+    demotion takes effect on the next request.
+    """
     src = payload.get("src")
     fp = payload.get("fp")
+    if src == "db":
+        from app import users
+        live = users.session_valid(payload.get("uid"), payload.get("sv"))
+        if not live:
+            return False
+        payload["sub"], payload["name"], payload["role"] = live["username"], live.get("name"), live["role"]
+        return True
     if src == "product":
         p_user, p_pw = _product_credentials()
         return bool(p_user and p_pw) and hmac.compare_digest(str(fp), _fingerprint("product", p_user, p_pw))
@@ -251,15 +275,42 @@ def _operator_fingerprint_valid(payload: dict) -> bool:
 
 def issue_operator_token(match: dict, ttl: int = COOKIE_MAX_AGE) -> str:
     now = int(time.time())
-    return _sign({"k": "op", "sub": match["sub"], "name": match.get("name"), "src": match["src"],
-                  "fp": match["fp"], "iat": now, "exp": now + ttl})
+    claims = {"k": "op", "sub": match["sub"], "name": match.get("name"), "src": match["src"],
+              "iat": now, "exp": now + ttl}
+    if match["src"] == "db":
+        claims.update(uid=match["uid"], sv=match["sv"])
+    else:
+        claims["fp"] = match["fp"]
+    return _sign(claims)
+
+
+def _role_for(payload: dict) -> str:
+    if payload.get("src") == "db":
+        return "admin" if payload.get("role") == "admin" else "operator"
+    return "admin" if payload.get("src") == "sys_admin" else "operator"
 
 
 def verify_operator_token(token: str) -> Optional[dict]:
     payload = _unsign(token)
     if not payload or payload.get("k") != "op" or not _operator_fingerprint_valid(payload):
         return None
+    payload["role"] = _role_for(payload)
     return payload
+
+
+def issue_system_admin_token(match: dict, ttl: int) -> str:
+    """The bearer token System Health / Social Agent / Ad Launcher expect.
+
+    DB admins get one too (with uid/sv, which system_health_routes checks
+    against the live row), so disabling them ends that access as well.
+    """
+    from app.system_health_routes import _issue_token
+    now = int(time.time())
+    claims = {"sub": match["sub"], "name": match.get("name"), "role": "sys_admin",
+              "iat": now, "exp": now + min(ttl, 7 * 24 * 3600)}
+    if match["src"] == "db":
+        claims.update(uid=match["uid"], sv=match["sv"])
+    return _issue_token(claims)
 
 
 def verify_system_admin_bearer(token: str) -> Optional[dict]:
@@ -354,7 +405,8 @@ def resolve_principals(headers: dict[str, str]) -> dict[str, Any]:
         if candidate:
             admin = verify_system_admin_bearer(candidate)
             if admin:
-                out["operator"] = {"sub": admin.get("sub"), "name": admin.get("name"), "src": "sys_admin_bearer"}
+                out["operator"] = {"sub": admin.get("sub"), "name": admin.get("name"), "src": "sys_admin_bearer",
+                                   "role": "admin", "uid": admin.get("uid")}
                 break
     jar = _cookies(headers)
     if not out["operator"] and jar.get(OPERATOR_COOKIE):
@@ -548,21 +600,19 @@ async def login(body: LoginBody, request: Request, response: Response):
     if _throttled(key):
         response.status_code = 429
         return {"error": "too_many_attempts"}
-    match = check_operator_credentials(user, body.password or "")
+    match = await run_in_threadpool(check_operator_credentials, user, body.password or "")
     if not match:
         _record_failure(key)
         response.status_code = 401
         return {"error": "invalid_credentials"}
     ttl = COOKIE_MAX_AGE if body.remember is not False else SHORT_COOKIE_MAX_AGE
     set_session_cookie(response, request, OPERATOR_COOKIE, issue_operator_token(match, ttl), ttl)
-    data: dict[str, Any] = {"operator": {"name": match.get("name") or match["sub"], "sub": match["sub"]}}
-    if match["src"] == "sys_admin":
+    data: dict[str, Any] = {"operator": {"name": match.get("name") or match["sub"], "sub": match["sub"],
+                                         "role": match["role"]}}
+    if match["role"] == "admin":
         # The System Health / Social Agent / Ad Launcher pages keep their own
         # bearer token in localStorage; hand it over so they skip their login.
-        from app.system_health_routes import _issue_token
-        now = int(time.time())
-        data["system_admin_token"] = _issue_token({"sub": match["sub"], "name": match.get("name"),
-                                                   "role": "sys_admin", "iat": now, "exp": now + min(ttl, 7 * 24 * 3600)})
+        data["system_admin_token"] = issue_system_admin_token(match, ttl)
     return {"data": data}
 
 
@@ -579,7 +629,8 @@ async def session(request: Request):
     op, vendor = who["operator"], who["vendor"]
     return {"data": {
         "gate": gate_enabled(),
-        "operator": ({"sub": op.get("sub"), "name": op.get("name") or op.get("sub")} if op else None),
+        "operator": ({"sub": op.get("sub"), "name": op.get("name") or op.get("sub"),
+                      "role": op.get("role") or "operator"} if op else None),
         "vendor": (vendor.get("sub") if vendor else None),
     }}
 
@@ -599,13 +650,143 @@ async def upgrade_session(request: Request, response: Response):
         response.status_code = 401
         return {"error": "unauthorized"}
     email = str(admin.get("sub") or "").lower()
-    entry = next((a for a in _system_admins() if a.get("email") == email), None)
-    if not entry:
-        response.status_code = 401
-        return {"error": "unauthorized"}
-    match = {"sub": email, "name": entry.get("name"), "src": "sys_admin",
-             "fp": _fingerprint("sys_admin", email, str(entry.get("password") or ""))}
+    if admin.get("uid"):
+        # A DB admin's bearer (already checked against the live row).
+        match = {"sub": email, "name": admin.get("name"), "src": "db", "role": "admin",
+                 "uid": admin["uid"], "sv": admin.get("sv")}
+    else:
+        entry = next((a for a in _system_admins() if a.get("email") == email), None)
+        if not entry:
+            response.status_code = 401
+            return {"error": "unauthorized"}
+        match = {"sub": email, "name": entry.get("name"), "src": "sys_admin", "role": "admin",
+                 "fp": _fingerprint("sys_admin", email, str(entry.get("password") or ""))}
     remaining = max(60, int(admin.get("exp") or 0) - int(time.time()))
     ttl = min(COOKIE_MAX_AGE, remaining)
     set_session_cookie(response, request, OPERATOR_COOKIE, issue_operator_token(match, ttl), ttl)
-    return {"data": {"operator": {"sub": email, "name": entry.get("name") or email}}}
+    return {"data": {"operator": {"sub": email, "name": match.get("name") or email, "role": "admin"}}}
+
+
+# ---------------------------------------------------------------------------
+# User administration (admins only)
+# ---------------------------------------------------------------------------
+
+def current_operator(request: Request) -> Optional[dict]:
+    return resolve_principals({k.lower(): v for k, v in request.headers.items()})["operator"]
+
+
+def _require_admin(request: Request, response: Response) -> Optional[dict]:
+    op = current_operator(request)
+    if not op:
+        response.status_code = 401
+        return None
+    if op.get("role") != "admin":
+        response.status_code = 403
+        return None
+    return op
+
+
+def _actor(op: dict) -> str:
+    return str(op.get("sub") or "unknown")
+
+
+def _reserved_usernames() -> set[str]:
+    p_user, _ = _product_credentials()
+    return {a.get("email") for a in _system_admins()} | ({p_user.lower()} if p_user else set())
+
+
+def _user_error(response: Response, e) -> dict:
+    response.status_code = e.status
+    return {"error": e.code, "detail": e.message}
+
+
+def _denied(response: Response) -> dict:
+    return {"error": "forbidden" if response.status_code == 403 else "unauthorized",
+            "detail": "Administrator access is required"}
+
+
+class CreateUserBody(BaseModel):
+    username: str
+    password: str
+    role: str = "operator"
+    name: Optional[str] = None
+
+
+class UpdateUserBody(BaseModel):
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    name: Optional[str] = None
+
+
+class PasswordBody(BaseModel):
+    password: str
+
+
+@router.get("/users")
+async def admin_list_users(request: Request, response: Response):
+    op = _require_admin(request, response)
+    if not op:
+        return _denied(response)
+    from app import users
+    p_user, p_pw = _product_credentials()
+    builtin = [{"username": a.get("email"), "name": a.get("name"), "role": "admin",
+                "source": "SYSTEM_ADMIN_USERS"} for a in _system_admins()]
+    if p_user and p_pw:
+        builtin.append({"username": p_user, "name": "Shared login", "role": "operator", "source": "PRODUCT_TESTING"})
+    return {"data": {"users": await run_in_threadpool(users.list_users), "builtin": builtin,
+                     "me": {"sub": op.get("sub"), "uid": op.get("uid")}}}
+
+
+@router.post("/users")
+async def admin_create_user(body: CreateUserBody, request: Request, response: Response):
+    op = _require_admin(request, response)
+    if not op:
+        return _denied(response)
+    from app import users
+    try:
+        created = await run_in_threadpool(users.create_user, body.username, body.password, body.role,
+                                          body.name, _actor(op), _reserved_usernames())
+    except users.UserError as e:
+        return _user_error(response, e)
+    response.status_code = 201
+    return {"data": created}
+
+
+@router.patch("/users/{user_id}")
+async def admin_update_user(user_id: str, body: UpdateUserBody, request: Request, response: Response):
+    op = _require_admin(request, response)
+    if not op:
+        return _denied(response)
+    from app import users
+    try:
+        return {"data": await run_in_threadpool(
+            lambda: users.update_user(user_id, actor=_actor(op), actor_user_id=op.get("uid"),
+                                      role=body.role, active=body.active, name=body.name))}
+    except users.UserError as e:
+        return _user_error(response, e)
+
+
+@router.post("/users/{user_id}/password")
+async def admin_reset_password(user_id: str, body: PasswordBody, request: Request, response: Response):
+    op = _require_admin(request, response)
+    if not op:
+        return _denied(response)
+    from app import users
+    try:
+        return {"data": await run_in_threadpool(
+            lambda: users.reset_password(user_id, body.password, actor=_actor(op)))}
+    except users.UserError as e:
+        return _user_error(response, e)
+
+
+@router.delete("/users/{user_id}")
+async def admin_delete_user(user_id: str, request: Request, response: Response):
+    op = _require_admin(request, response)
+    if not op:
+        return _denied(response)
+    from app import users
+    try:
+        await run_in_threadpool(lambda: users.delete_user(user_id, actor=_actor(op), actor_user_id=op.get("uid")))
+    except users.UserError as e:
+        return _user_error(response, e)
+    return {"data": {"ok": True}}

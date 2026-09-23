@@ -950,7 +950,7 @@ export default function WholesalePage() {
       .then(r => r.json())
       .then(({ data }) => {
         const vid = String(s.id || '').toLowerCase()
-        if (data?.operator || String(data?.vendor || '').toLowerCase() === vid) setVendor(s)
+        if (data?.gate === false || data?.operator || String(data?.vendor || '').toLowerCase() === vid) setVendor(s)
         else clearSession()
       })
       .catch(() => setVendor(s))
