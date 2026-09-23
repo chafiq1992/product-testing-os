@@ -1,5 +1,6 @@
 import './globals.css'
 import ToasterProvider from '../components/ToasterProvider'
+import AuthGate from '../components/AuthGate'
 export const metadata = { title: 'Product Testing OS', description: 'Generate angles, creatives, landing & ads' }
 export default function RootLayout({children}:{children:React.ReactNode}){
   return (
@@ -10,6 +11,7 @@ export default function RootLayout({children}:{children:React.ReactNode}){
       <body>
         {children}
         <ToasterProvider />
+        <AuthGate />
       </body>
     </html>
   )
