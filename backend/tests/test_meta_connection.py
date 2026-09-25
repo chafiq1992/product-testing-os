@@ -1,4 +1,5 @@
 import time
+import pytest
 
 from app import meta_connection
 from app.integrations import meta_client
@@ -65,3 +66,13 @@ def test_meta_callback_saves_accounts_and_rejects_replay(monkeypatch):
     assert meta_connection.connected_token("irrakids", "999") is None
     assert "access_token" not in meta_connection._public_record("irrakids")
     assert meta_connection.callback(code="code", state=state) == {"error": "state_already_used_or_expired"}
+
+
+def test_connected_store_never_falls_back_to_global_token(monkeypatch):
+    record = {"access_token": "connected-token", "accounts": [{"id": "act_123"}], "expires_at": int(time.time()) - 1}
+    monkeypatch.setattr(meta_connection.db, "get_app_setting", lambda store, key: record)
+    with pytest.raises(ValueError, match="expired"):
+        meta_connection.reporting_token("irrakids", "123")
+    record["expires_at"] = int(time.time()) + 60
+    with pytest.raises(ValueError, match="not connected"):
+        meta_connection.reporting_token("irrakids", "999")

@@ -47,7 +47,7 @@ from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_campaign_summary
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope
-from app.meta_connection import router as _meta_connection_router, connected_token, reporting_token, _return_origin
+from app.meta_connection import router as _meta_connection_router, reporting_token, _return_origin
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
@@ -5733,7 +5733,7 @@ async def api_get_ad_account(store: str | None = None):
         try:
             acct_id = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             if acct_id:
-                with meta_access_token_scope(connected_token(store, acct_id)):
+                with meta_access_token_scope(reporting_token(store, acct_id)):
                     info = get_ad_account_info(acct_id)
                 out = {"id": info.get("id"), "name": info.get("name")}
             else:
@@ -5752,7 +5752,7 @@ async def api_set_ad_account(req: AdAccountSetRequest):
         if not acct_id:
             return {"error": "missing_id"}
         # Verify account and get name
-        with meta_access_token_scope(connected_token(req.store, acct_id)):
+        with meta_access_token_scope(reporting_token(req.store, acct_id)):
             info = get_ad_account_info(acct_id)
         saved = db.set_app_setting(req.store, "meta_ad_account", {"id": info.get("id") or acct_id, "name": info.get("name")})
         return {"data": saved}
@@ -5802,7 +5802,7 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(_run_with_meta_connection, connected_token(req.store), set_campaign_status, campaign_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store), set_campaign_status, campaign_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -5819,7 +5819,7 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
         key = _cache_key("meta_campaign_adsets", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store})
 
         async def _compute():
-            return await run_in_threadpool(_run_with_meta_connection, connected_token(store), list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
+            return await run_in_threadpool(_run_with_meta_connection, reporting_token(store), list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
 
         items = await _cached(key, 30, _compute)
         return {"data": items}
@@ -5871,7 +5871,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
             # 1) List ad sets for campaign and their ads — run in parallel
             async def _fetch_adsets():
                 try:
-                    return await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, connected_token(store or (store_list or [None])[0]), list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
+                    return await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, reporting_token(store or (store_list or [None])[0]), list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
                 except Exception:
                     return []
 
@@ -5912,7 +5912,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                 if not adset_ids:
                     return {}
                 try:
-                    ids = await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, connected_token(store or (store_list or [None])[0]), list_ads_for_adsets, adset_ids), timeout=8)
+                    ids = await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, reporting_token(store or (store_list or [None])[0]), list_ads_for_adsets, adset_ids), timeout=8)
                     return ids or {}
                 except Exception:
                     return {}
@@ -6129,7 +6129,7 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(_run_with_meta_connection, connected_token(req.store), set_adset_status, adset_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store), set_adset_status, adset_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -6144,7 +6144,7 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
 async def api_campaign_performance(campaign_id: str, days: int | None = 6, tz: str | None = None, store: str | None = None):
     try:
         n = int(days or 6)
-        with meta_access_token_scope(connected_token(store)):
+        with meta_access_token_scope(reporting_token(store)):
             items = campaign_daily_insights(campaign_id, n, tz)
         return {"data": {"days": items}}
     except Exception as e:
