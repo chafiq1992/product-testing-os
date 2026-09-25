@@ -41,13 +41,7 @@ jobs:
 
       - name: Verify live health
         run: |
-          python3 - <<'PY'
-          import json
-          import urllib.request
-
-          with urllib.request.urlopen('https://pt.chattbase.site/health', timeout=20) as response:
-              health = json.load(response)
-          assert health.get('status') == 'healthy', health
-          assert health.get('checks', {}).get('database', {}).get('ok') is True, health
-          print('Live app is healthy')
-          PY
+          set -o pipefail
+          ssh -n -o BatchMode=yes deploy@159.195.204.91 \
+            'curl -fsS --max-time 20 https://pt.chattbase.site/health' |
+            python3 -c 'import json,sys; health=json.load(sys.stdin); assert health.get("status") == "healthy", health; assert health.get("checks",{}).get("database",{}).get("ok") is True, health; print("Live app is healthy")'
