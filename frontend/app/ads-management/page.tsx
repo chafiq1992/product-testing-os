@@ -3262,6 +3262,7 @@ export default function AdsManagementPage(){
                 const rkSelf = (c.campaign_id || c.name || '') as any
                 const confSelf = (manualIds as any)[rkSelf]
                 const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id)? confSelf.id : extractNumericId((c.name||'').trim())
+                const ownerProductId = getProductIdForRow(c)
                 const briefSelf = pidSelf? productBriefs[pidSelf] : undefined
                 const img = briefSelf? briefSelf.image : null
                 const invSelf = briefSelf? briefSelf.total_available : null
@@ -3555,7 +3556,18 @@ export default function AdsManagementPage(){
                       })()}
                     </td>
                     <td className="px-1 py-0.5">
-                      <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>
+                      {!isChild && ownerProductId ? (
+                        <select
+                          value={ownerOfRow(c)}
+                          onChange={(event)=> saveProductOwner(ownerProductId, event.target.value)}
+                          className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
+                          aria-label={`Owner for product ${ownerProductId}`}
+                          title="Owner for this product and all its campaigns"
+                        >
+                          <option value="">No owner</option>
+                          {CAMPAIGN_OWNERS.map(owner => <option key={owner} value={owner}>{owner}</option>)}
+                        </select>
+                      ) : <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>}
                     </td>
                     <td className="px-1 py-0.5 text-right">
                       {profitMode ? (

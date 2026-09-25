@@ -28,6 +28,22 @@ def test_connected_meta_token_reaches_parallel_campaign_reads(monkeypatch):
     assert all(token == "connected-token" for _, token in seen)
 
 
+def test_business_accounts_keep_business_label_when_direct_account_is_duplicated(monkeypatch):
+    def fake_edge(path, params=None, *, max_pages=20):
+        return {
+            "me/adaccounts": [{"id": "act_123", "name": "Store ads", "account_status": 1}],
+            "me/businesses": [{"id": "bm_1", "name": "Store Business"}],
+            "bm_1/owned_ad_accounts": [{"id": "123", "name": "Store ads"}],
+            "bm_1/client_ad_accounts": [{"id": "act_456", "name": "Client ads"}],
+        }.get(path, [])
+
+    monkeypatch.setattr(meta_client, "_list_graph_edge_all", fake_edge)
+    rows = meta_client.list_ad_accounts(access_token="connected-token")
+    assert len(rows) == 2
+    assert {row["id"] for row in rows} == {"act_123", "act_456"}
+    assert all(row["business_id"] == "bm_1" and row["business_name"] == "Store Business" for row in rows)
+
+
 def test_meta_callback_saves_accounts_and_rejects_replay(monkeypatch):
     monkeypatch.setenv("OAUTH_STATE_SECRET", "test-secret")
     monkeypatch.setenv("META_APP_ID", "app-id")

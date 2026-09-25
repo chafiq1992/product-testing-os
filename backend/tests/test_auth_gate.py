@@ -1,13 +1,14 @@
 """The auth gate: who may reach which route, and the login/session endpoints."""
 import hashlib
 import json
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from app import auth_gate
+from app import auth_gate, db, operator_users
 from app.system_health_routes import _issue_token
 
 ADMIN_EMAIL = "owner@example.test"
@@ -31,6 +32,7 @@ def client(monkeypatch):
     app = FastAPI()
     app.add_middleware(auth_gate.AuthGateMiddleware)
     app.include_router(auth_gate.router)
+    app.include_router(operator_users.router)
 
     async def ok(request: Request):
         return {"ok": True}
@@ -110,6 +112,47 @@ def test_password_change_revokes_operator_cookie(client, monkeypatch):
     assert client.get("/api/prompts").status_code == 200
     monkeypatch.setenv("PRODUCT_TESTING_PASSWORD", "rotated")
     assert client.get("/api/prompts").status_code == 401
+
+
+def test_admin_can_manage_users_and_reset_revokes_sessions(client):
+    username = f"buyer-{uuid4().hex[:10]}"
+    admin_token = _issue_token({"sub": ADMIN_EMAIL, "role": "sys_admin", "exp": 4102444800})
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    assert client.get("/api/users").status_code == 401
+    client.post("/api/auth/login", json={"username": "team", "password": "team-pass"})
+    assert client.get("/api/users").status_code == 403
+    assert client.post("/api/users", json={"username": "team", "password": "long-password-1"}, headers=admin_headers).status_code == 409
+    assert client.post("/api/users", json={"username": username, "password": "short"}, headers=admin_headers).status_code == 400
+
+    try:
+        created = client.post("/api/users", json={"username": username, "password": "long-password-1"}, headers=admin_headers)
+        assert created.status_code == 201
+        assert created.json()["data"]["username"] == username
+        assert "password_hash" not in created.json()["data"]
+        with db.SessionLocal() as session:
+            stored = session.get(db.OperatorUser, username)
+            assert stored and stored.password_hash.startswith("scrypt$")
+            assert "long-password-1" not in stored.password_hash
+        assert any(user["username"] == username for user in client.get("/api/users", headers=admin_headers).json()["data"])
+
+        client.post("/api/auth/logout")
+        assert client.post("/api/auth/login", json={"username": username, "password": "long-password-1"}).status_code == 200
+        assert client.get("/api/meta/ad_accounts").status_code == 200
+        changed = client.put(f"/api/users/{username}/password", json={"password": "another-long-password"}, headers=admin_headers)
+        assert changed.status_code == 200
+        assert client.get("/api/meta/ad_accounts").status_code == 401
+        assert client.post("/api/auth/login", json={"username": username, "password": "long-password-1"}).status_code == 401
+        assert client.post("/api/auth/login", json={"username": username, "password": "another-long-password"}).status_code == 200
+
+        assert client.delete(f"/api/users/{username}", headers=admin_headers).status_code == 200
+        assert client.get("/api/meta/ad_accounts").status_code == 401
+        assert client.post("/api/auth/login", json={"username": username, "password": "another-long-password"}).status_code == 401
+    finally:
+        with db.SessionLocal() as session:
+            row = session.get(db.OperatorUser, username)
+            if row:
+                session.delete(row)
+                session.commit()
 
 
 def test_forged_cookie_rejected(client, monkeypatch):

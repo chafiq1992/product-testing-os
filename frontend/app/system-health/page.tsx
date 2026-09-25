@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
 import {
   systemHealthLogin,
   systemHealthSnapshot,
@@ -291,6 +292,7 @@ export default function SystemHealthPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Link href="/settings/users" className="text-xs rounded border px-2 py-1 bg-white hover:bg-slate-50 text-slate-800">Manage users</Link>
           {lastFetched && <span className="text-xs text-slate-600">last fetch {new Date(lastFetched).toLocaleTimeString()}</span>}
           <button onClick={() => setPaused((p) => !p)} className="text-xs rounded border px-2 py-1 bg-white hover:bg-slate-50 text-slate-800">{paused ? "Resume" : "Pause"} polling</button>
           <button onClick={fetchAll} className="text-xs rounded border px-2 py-1 bg-white hover:bg-slate-50 text-slate-800">Refresh now</button>

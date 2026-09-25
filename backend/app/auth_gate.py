@@ -233,6 +233,11 @@ def check_operator_credentials(username: str, password: str) -> Optional[dict]:
         if admin.get("email") == email and hmac.compare_digest(str(admin.get("password") or "").encode(), pw.encode()):
             return {"sub": email, "name": admin.get("name"), "src": "sys_admin",
                     "fp": _fingerprint("sys_admin", email, str(admin.get("password") or ""))}
+    from app.operator_users import verify_credentials
+    managed = verify_credentials(user, pw)
+    if managed:
+        username = managed["username"]
+        return {"sub": username, "name": None, "src": "managed", "fp": _fingerprint("managed", username, managed["password_hash"])}
     return None
 
 
@@ -247,6 +252,11 @@ def _operator_fingerprint_valid(payload: dict) -> bool:
         for admin in _system_admins():
             if admin.get("email") == email:
                 return hmac.compare_digest(str(fp), _fingerprint("sys_admin", email, str(admin.get("password") or "")))
+    if src == "managed":
+        from app.operator_users import get_user
+        username = str(payload.get("sub") or "").lower()
+        managed = get_user(username)
+        return bool(managed) and hmac.compare_digest(str(fp), _fingerprint("managed", username, managed["password_hash"]))
     return False
 
 

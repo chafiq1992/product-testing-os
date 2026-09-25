@@ -284,7 +284,11 @@ def list_ad_accounts(access_token: str | None = None) -> list[dict]:
             continue
         for edge in ("owned_ad_accounts", "client_ad_accounts"):
             try:
-                account_rows.extend(_list_graph_edge_all(f"{business_id}/{edge}", account_params))
+                account_rows.extend({
+                    **row,
+                    "business_id": business_id,
+                    "business_name": str((business or {}).get("name") or business_id),
+                } for row in _list_graph_edge_all(f"{business_id}/{edge}", account_params))
             except Exception as exc:
                 errors.append(exc)
 
@@ -302,6 +306,8 @@ def list_ad_accounts(access_token: str | None = None) -> list[dict]:
             "id": raw_id,
             "name": str((row or {}).get("name") or ""),
             "account_status": (row or {}).get("account_status"),
+            "business_id": (row or {}).get("business_id"),
+            "business_name": (row or {}).get("business_name"),
         }
         existing = by_id.get(key)
         if existing is None:
@@ -311,6 +317,9 @@ def list_ad_accounts(access_token: str | None = None) -> list[dict]:
             existing["name"] = shaped["name"]
         if existing.get("account_status") is None and shaped.get("account_status") is not None:
             existing["account_status"] = shaped["account_status"]
+        if not existing.get("business_id") and shaped.get("business_id"):
+            existing["business_id"] = shaped["business_id"]
+            existing["business_name"] = shaped["business_name"]
 
     if not by_id and errors:
         raise errors[0]

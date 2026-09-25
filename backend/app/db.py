@@ -167,6 +167,15 @@ class AppSetting(Base):
 
 Index('ix_app_settings_store_key', AppSetting.store, AppSetting.key)
 
+
+class OperatorUser(Base):
+    __tablename__ = "operator_users"
+
+    username = Column(String(64), primary_key=True)
+    password_hash = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
 # ---------------- Confirmation (order confirmation team) ----------------
 class ConfirmationEvent(Base):
     __tablename__ = "confirmation_events"

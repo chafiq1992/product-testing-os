@@ -85,6 +85,9 @@ export default function HomePage(){
           <Link href="/settings/connections" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border bg-white hover:bg-slate-50">
             Connections
           </Link>
+          <Link href="/settings/users" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border bg-white hover:bg-slate-50">
+            Users
+          </Link>
           <Link href="/theme-editor" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white">
             Theme Editor
           </Link>

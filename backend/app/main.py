@@ -117,6 +117,8 @@ app = FastAPI(
 )
 app.add_middleware(_auth_gate.AuthGateMiddleware)
 app.include_router(_auth_gate.router)
+from app.operator_users import router as _operator_users_router  # noqa: E402
+app.include_router(_operator_users_router)
 
 # System health metrics middleware — pure-additive, fails closed (never blocks request)
 from app.system_health import HealthMiddleware as _HealthMiddleware  # noqa: E402
@@ -5776,11 +5778,11 @@ async def api_list_ad_accounts(store: str | None = None, stores: str | None = No
                 if not account_id or account_id in seen:
                     continue
                 seen.add(account_id)
-                data.append({"id": row.get("id"), "name": row.get("name"), "account_status": row.get("account_status"), "store": label})
+                data.append({"id": row.get("id"), "name": row.get("name"), "account_status": row.get("account_status"), "business_id": row.get("business_id"), "business_name": row.get("business_name"), "store": label})
         from_connection = bool(data)
         if not from_connection:
             items = await run_in_threadpool(list_ad_accounts)
-            data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status"), "store": store} for x in (items or [])]
+            data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status"), "business_id": x.get("business_id"), "business_name": x.get("business_name"), "store": store} for x in (items or [])]
         return {"data": data, "connected": from_connection}
     except Exception as e:
         return {"error": str(e), "data": []}
