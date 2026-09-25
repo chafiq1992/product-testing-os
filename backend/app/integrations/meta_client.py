@@ -1,4 +1,6 @@
 import os, json, time, requests
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
@@ -52,6 +54,20 @@ def _timed_meta_request(method: str, url: str, **kw):
                 pass
 
 ACCESS = os.getenv("META_ACCESS_TOKEN", "")
+_connection_token: ContextVar[str | None] = ContextVar("meta_connection_token", default=None)
+
+
+def _active_token() -> str:
+    return _connection_token.get() or ACCESS
+
+
+@contextmanager
+def meta_access_token_scope(token: str | None):
+    marker = _connection_token.set(token)
+    try:
+        yield
+    finally:
+        _connection_token.reset(marker)
 AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "")  # numeric only, no act_
 PAGE_ID = os.getenv("META_PAGE_ID", "")
 PIXEL_ID = os.getenv("META_PIXEL_ID", "")
@@ -112,7 +128,7 @@ def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeErro
         return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {body_text}")
 
 def _post(path: str, payload: dict, files=None):
-    payload = {**payload, "access_token": ACCESS}
+    payload = {**payload, "access_token": _active_token()}
     url = f"{BASE}/{path}"
     try:
         r = _timed_meta_request("POST", url, data=payload, files=files, timeout=120)
@@ -122,10 +138,10 @@ def _post(path: str, payload: dict, files=None):
         raise _format_meta_error(r, url, "POST") from e
 
 def _get(path: str, params: dict | None = None):
-    params = {**(params or {}), "access_token": ACCESS}
+    params = {**(params or {}), "access_token": _active_token()}
     url = f"{BASE}/{path}"
     try:
-        r = _timed_meta_request("GET", url, params=params, timeout=120)
+        r = _timed_meta_request("GET", url, params=params, timeout=25)
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
@@ -180,14 +196,17 @@ def _today_in_tz(tz_name: str | None):
 
 
 # -------- Ad Account helpers --------
-def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: int = 100) -> list[dict]:
+def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: int = 20) -> list[dict]:
     """Read every page from a Graph API edge without following token-bearing URLs."""
     base_params = dict(params or {})
     rows: list[dict] = []
     after: str | None = None
     seen_cursors: set[str] = set()
+    deadline = time.monotonic() + 45
 
     for _ in range(max(1, int(max_pages or 1))):
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Meta page limit exceeded the time budget for {path}")
         page_params = dict(base_params)
         if after:
             page_params["after"] = after
@@ -213,6 +232,9 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
             break
         seen_cursors.add(next_after)
         after = next_after
+    else:
+        if after:
+            raise RuntimeError(f"Meta page limit exceeded for {path}")
     return rows
 
 
@@ -220,7 +242,7 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
 def get_ad_account_info(ad_account_id: str | None = None) -> dict:
     """Fetch ad account basic info: id and name."""
     acct = str(ad_account_id or AD_ACCOUNT_ID)
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not acct:
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
@@ -229,10 +251,14 @@ def get_ad_account_info(ad_account_id: str | None = None) -> dict:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
-def list_ad_accounts() -> list[dict]:
+def list_ad_accounts(access_token: str | None = None) -> list[dict]:
     """List all ad accounts visible directly or through the token's businesses."""
-    if not ACCESS:
+    if not (access_token or _active_token()):
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
+
+    if access_token:
+        with meta_access_token_scope(access_token):
+            return list_ad_accounts()
 
     account_rows: list[dict] = []
     errors: list[Exception] = []
@@ -297,7 +323,7 @@ def list_ad_accounts() -> list[dict]:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def set_campaign_status(campaign_id: str, status: str) -> dict:
     """Set campaign status to 'ACTIVE' or 'PAUSED'. Returns API response."""
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     status = (status or "").upper()
     if status not in ("ACTIVE", "PAUSED"):
@@ -317,7 +343,7 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
       This avoids flaky behavior of calling "{campaign_id}/insights" with level=adset.
     If "since" and "until" (YYYY-MM-DD) are provided, we use a custom time_range instead of date_preset.
     """
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     # Fetch ad set list and statuses
     status_map: dict[str, str] = {}
@@ -388,7 +414,7 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_ads_for_adsets(adset_ids: list[str]) -> dict[str, list[str]]:
     """Return mapping of adset_id -> list of ad ids under that ad set."""
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     out: dict[str, list[str]] = {}
     for aid in (adset_ids or []):
@@ -496,7 +522,7 @@ def list_ads_with_tracking_for_adsets(
     adset_names: dict[str, str] | None = None,
 ) -> dict[str, list[dict]]:
     """Return ads and their exact configured UTM signatures grouped by ad set."""
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     names = adset_names or {}
     out: dict[str, list[dict]] = {}
@@ -539,7 +565,7 @@ def list_ads_with_tracking_for_adsets(
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def set_adset_status(adset_id: str, status: str) -> dict:
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     status = (status or "").upper()
     if status not in ("ACTIVE", "PAUSED"):
@@ -551,7 +577,7 @@ def set_adset_status(adset_id: str, status: str) -> dict:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def campaign_daily_insights(campaign_id: str, days: int = 6, tz: str | None = None) -> list[dict]:
     """Return daily insights for a campaign over the last N days (inclusive of today) in the provided timezone."""
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     try:
         n = max(1, min(int(days or 6), 30))
@@ -613,7 +639,7 @@ def get_campaign_summary(campaign_id: str, *, since: str, until: str) -> dict:
     Returns:
       { campaign_id, name, status, spend, purchases, cpp, ctr, add_to_cart }
     """
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     cid = str(campaign_id or "").strip()
     if not cid:
@@ -674,7 +700,7 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
       - add_to_cart
       - status (effective)
     """
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not (ad_account_id or AD_ACCOUNT_ID):
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
@@ -713,8 +739,8 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     with ThreadPoolExecutor(max_workers=2) as executor:
         # Both edges are paginated. Reading only their first page silently
         # dropped spend once an account had more than 250 campaign insight rows.
-        insights_future = executor.submit(_list_graph_edge_all, f"act_{acct}/insights", params)
-        campaigns_future = executor.submit(_list_graph_edge_all, f"act_{acct}/campaigns", cparams)
+        insights_future = executor.submit(copy_context().run, _list_graph_edge_all, f"act_{acct}/insights", params)
+        campaigns_future = executor.submit(copy_context().run, _list_graph_edge_all, f"act_{acct}/campaigns", cparams)
         rows = insights_future.result()
         try:
             crows = campaigns_future.result()
@@ -817,7 +843,7 @@ def _upload_image(url: str):
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landing_url: str) -> dict:
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not AD_ACCOUNT_ID:
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
@@ -960,7 +986,7 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def create_draft_image_campaign(ad: dict) -> dict:
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not AD_ACCOUNT_ID:
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
@@ -1078,7 +1104,7 @@ def create_draft_image_campaign(ad: dict) -> dict:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def create_draft_carousel_campaign(ad: dict) -> dict:
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not AD_ACCOUNT_ID:
         raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
@@ -1213,7 +1239,7 @@ def get_campaign_ad_creatives(campaign_id: str) -> list[dict]:
     Returns a list of dicts:
       [{ ad_id, ad_name, headline, primary_text, description, landing_url }]
     """
-    if not ACCESS:
+    if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     cid = str(campaign_id or "").strip()
     if not cid:

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useShopifyStores } from "@/lib/shopifyStores"
+import { systemHealthLogin, systemHealthMe } from "@/lib/api"
 
 function selectedStore() {
   try {
@@ -21,12 +22,16 @@ export default function ShopifyConnectPage() {
   const [connectedShop, setConnectedShop] = useState<string | null>(null)
   const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [authorized, setAuthorized] = useState(false)
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
   const base = useMemo(() => process.env.NEXT_PUBLIC_API_BASE_URL || "", [])
   const { stores, registry, loading: storesLoading, error: storesError } = useShopifyStores(store)
   const selectedConfig = stores.find(item => item.label === store)
 
   useEffect(() => {
     setStore(selectedStore())
+    systemHealthMe().then(result => setAuthorized(!result.error)).catch(() => setAuthorized(false))
   }, [])
 
   useEffect(() => {
@@ -34,9 +39,11 @@ export default function ShopifyConnectPage() {
   }, [store, selectedConfig?.shop])
 
   async function refresh() {
+    if (!authorized) return
     try {
       setStatusError(null)
-      const response = await fetch(`${base}/api/shopify/oauth/status?store=${encodeURIComponent(store)}`, { cache: "no-store" })
+      const token = localStorage.getItem("ptos_system_admin_token") || ""
+      const response = await fetch(`${base}/api/shopify/oauth/status?store=${encodeURIComponent(store)}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" })
       const payload = await response.json()
       if (!response.ok || payload?.error) throw new Error(payload?.error || `Request failed (${response.status})`)
       const data = payload?.data || {}
@@ -54,21 +61,44 @@ export default function ShopifyConnectPage() {
   useEffect(() => {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store])
+  }, [store, authorized])
 
   function changeStore(value: string) {
     setStore(value)
     try { localStorage.setItem("ptos_store", value) } catch {}
   }
 
-  function onConnect() {
+  async function onConnect() {
     const domain = shop.trim().toLowerCase()
     if (!domain) {
       alert("Please enter your shop domain (example: beitii.myshopify.com)")
       return
     }
     try { localStorage.setItem("ptos_store", store) } catch {}
-    window.location.href = `${base}/api/shopify/oauth/start?store=${encodeURIComponent(store)}&shop=${encodeURIComponent(domain)}`
+    try {
+      const token = localStorage.getItem("ptos_system_admin_token") || ""
+      const response = await fetch(`${base}/api/shopify/oauth/start`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ store, shop: domain, return_origin: window.location.origin }),
+      })
+      const payload = await response.json()
+      if (!response.ok || payload.error || !payload.data?.url) throw new Error(payload.error || "Unable to start Shopify connection")
+      window.location.assign(payload.data.url)
+    } catch (err: any) {
+      setStatusError(String(err?.message || err))
+    }
+  }
+
+  async function signIn(event: React.FormEvent) {
+    event.preventDefault()
+    try {
+      const result = await systemHealthLogin({ email, password, remember: true })
+      if (result.error || !result.data?.token) throw new Error(result.error || "Sign in failed")
+      localStorage.setItem("ptos_system_admin_token", result.data.token)
+      setAuthorized(true)
+      setPassword("")
+    } catch (err: any) { setStatusError(String(err?.message || err)) }
   }
 
   const credentialsReady = selectedConfig?.credentials_configured !== false
@@ -84,6 +114,14 @@ export default function ShopifyConnectPage() {
       </header>
 
       <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
+        {!authorized && <form onSubmit={signIn} className="rounded-xl border bg-white p-4 space-y-3">
+          <h2 className="font-semibold">Administrator sign in</h2>
+          <input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="Email" className="w-full rounded-lg border px-3 py-2 text-sm" />
+          <input required type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Password" className="w-full rounded-lg border px-3 py-2 text-sm" />
+          <button className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white">Sign in</button>
+          {statusError && <p role="alert" className="text-sm text-red-700">{statusError}</p>}
+        </form>}
+        {authorized && <>
         <div className="bg-white border rounded-xl p-4">
           <div className="text-sm text-slate-700">
             Stores are loaded at runtime from <code>SHOPIFY_OAUTH_STORES</code>. Each label uses its own Shopify Dev Dashboard app credentials.
@@ -144,6 +182,7 @@ export default function ShopifyConnectPage() {
             </div>
           </div>
         </div>
+        </>}
       </div>
     </div>
   )

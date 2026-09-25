@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from app.integrations.shopify_client import _gql_store
+from app.social_agent.shopify_transport import _gql_store
 from app import db
 
 
@@ -156,11 +156,11 @@ def list_active_products(store: str | None, first: int = 80) -> list[dict[str, A
     longer a total-product cap. A hard page guard prevents a malformed Shopify
     cursor from creating an unbounded loop.
     """
-    page_size = max(10, min(first, 100))
+    page_size = max(1, min(first, 10))
     after: str | None = None
     products: list[dict[str, Any]] = []
     seen_cursors: set[str] = set()
-    for _ in range(100):
+    for _ in range(1000):
         data = _gql_store(store, CATALOG_QUERY, {
             "first": page_size, "after": after, "query": "status:active",
         })

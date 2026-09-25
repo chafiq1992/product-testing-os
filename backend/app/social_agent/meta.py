@@ -1,11 +1,91 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import time
 from typing import Any
 
 from app.integrations.meta_client import _timed_meta_request
+from app.social_agent import repository as repo
+
+_permission_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def publishing_permissions(store: str | None) -> dict[str, Any]:
+    """Read granted scopes; a readable Page is not proof of publishing access."""
+    fingerprint = _credential_fingerprint(store)
+    cached = _permission_cache.get(fingerprint)
+    if cached and time.monotonic() - cached[0] < 60:
+        return cached[1]
+    result: dict[str, Any] = {"verified": False, "missing": {}}
+    try:
+        response = _call("GET", _credentials(store), "me/permissions")
+        if isinstance(response.get("data"), list):
+            granted = {item.get("permission") for item in response["data"] if item.get("status") == "granted"}
+            result = {"verified": True, "missing": {
+                "facebook": [scope for scope in ("pages_manage_posts", "pages_read_engagement") if scope not in granted],
+                "instagram": [scope for scope in ("instagram_basic", "instagram_content_publish") if scope not in granted],
+            }}
+    except Exception:
+        # Some Page tokens cannot enumerate permissions. Preserve 'unknown'.
+        pass
+    if len(_permission_cache) > 100:
+        _permission_cache.clear()
+    _permission_cache[fingerprint] = (time.monotonic(), result)
+    return result
+
+
+def is_permission_error(error: Any) -> bool:
+    message = str(error).lower()
+    return any(value in message for value in ("pages_manage_posts", "pages_read_engagement", "instagram_content_publish",
+        "meta api error 190:", "meta api error 200:", "meta api error 10:", "publishing permission blocked"))
+
+
+def _credential_fingerprint(store: str | None) -> str:
+    try:
+        cfg = _credentials(store)
+        value = cfg["token"] + cfg["page_id"] + cfg.get("instagram_id", "")
+    except RuntimeError:
+        value = "unconfigured"
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def publishing_blocks(store: str | None) -> dict[str, Any]:
+    value = repo.db.get_app_setting(repo.canonical_store(store), "social_agent_publishing_blocks") or {}
+    return value.get("platforms", {}) if value.get("credential_fingerprint") == _credential_fingerprint(store) else {}
+
+
+def record_publishing_error(store: str | None, platform: str, error: Any) -> None:
+    if not is_permission_error(error):
+        return
+    blocks = publishing_blocks(store)
+    if platform in blocks:
+        return
+    blocks[platform] = {"reason": str(error)[:1200], "action": (
+        "Grant pages_manage_posts and pages_read_engagement to this app, ensure the connected account can create Page content, "
+        "and replace the configured Page token. App Review / Advanced Access may be required. Then retry the failed platform."
+        if platform == "facebook" else "Restore the Instagram publishing permission and connected account access, then retry the failed platform.")}
+    repo.db.set_app_setting(repo.canonical_store(store), "social_agent_publishing_blocks",
+        {"credential_fingerprint": _credential_fingerprint(store), "platforms": blocks})
+
+
+def clear_publishing_block(store: str | None, platform: str) -> None:
+    blocks = publishing_blocks(store)
+    if platform in blocks:
+        blocks.pop(platform)
+        repo.db.set_app_setting(repo.canonical_store(store), "social_agent_publishing_blocks",
+            {"credential_fingerprint": _credential_fingerprint(store), "platforms": blocks})
+
+
+def require_publishing_available(store: str | None, platform: str) -> None:
+    block = publishing_blocks(store).get(platform)
+    if block:
+        raise RuntimeError("Publishing permission blocked: " + block["action"])
+    missing = publishing_permissions(store).get("missing", {}).get(platform) or []
+    if missing:
+        raise RuntimeError("Publishing permission blocked: connected Meta token is missing " + ", ".join(missing)
+                           + ". Regenerate the token with these permissions, then retry the failed platform.")
 
 
 def _suffix(store: str | None) -> str:
@@ -101,6 +181,8 @@ def connection(store: str | None) -> dict[str, Any]:
         "instagram": instagram,
         "ready": bool(page.get("id") and cfg.get("instagram_id")),
         "store": cfg.get("store"),
+        "publishing_blocks": publishing_blocks(store),
+        "publishing_permissions": publishing_permissions(store),
     }
 
 

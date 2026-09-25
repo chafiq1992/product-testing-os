@@ -449,7 +449,13 @@ def _gql_store(store: str | None, query: str, variables: dict):
         raise RuntimeError(f"GraphQL userErrors: {ue}")
     return data
 
-def _gql_store_once(store: str | None, query: str, variables: dict, *, timeout: int = 60):
+def _gql_store_once(
+    store: str | None,
+    query: str,
+    variables: dict,
+    *,
+    timeout: int | tuple[float, float] = 60,
+):
     cfg = _get_store_config(store)
     auth = None
     if not cfg["TOKEN"]:
@@ -1856,6 +1862,44 @@ def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max
     return out
 
 
+def get_order_product_ids(order_ids: list[str], *, store: str | None = None) -> dict[str, list[str]]:
+    """Fetch line items only for already-attributed orders, in bounded batches.
+
+    REST includes every line item, including repeated variants of one product.
+    Keep one product ID per order and never turn a failed lookup into zero sales.
+    """
+    from urllib.parse import urlencode
+
+    ids = list(dict.fromkeys(str(oid) for oid in order_ids))
+    if any(not oid.isdigit() for oid in ids):
+        raise ValueError("Invalid Shopify order ID")
+    result: dict[str, list[str]] = {}
+    for offset in range(0, len(ids), 100):
+        batch = ids[offset:offset + 100]
+        params = {"ids": ",".join(batch), "status": "any", "limit": 250, "fields": "id,line_items,cancelled_at"}
+        while True:
+            response = _rest_get_store_raw(store, "/orders.json?" + urlencode(params))
+            data = response.json()
+            for order in data.get("orders") or []:
+                oid = str(order.get("id") or "")
+                if oid not in batch:
+                    continue
+                if not order.get("cancelled_at") and "line_items" not in order:
+                    raise RuntimeError("Shopify order products are unavailable; please retry")
+                result[oid] = [] if order.get("cancelled_at") else sorted({
+                    str(item["product_id"])
+                    for item in order.get("line_items") or []
+                    if item.get("product_id")
+                })
+            page_info = _parse_link_next(response.headers.get("Link"))
+            if not page_info:
+                break
+            params = {"page_info": page_info, "limit": 250}
+        if any(oid not in result for oid in batch):
+            raise RuntimeError("Some Shopify order products are unavailable; please retry")
+    return result
+
+
 def count_orders_total_created(created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count total unique orders within a created_at date range (YYYY-MM-DD).
 
@@ -2188,19 +2232,14 @@ def sum_product_order_counts_for_collection(collection_id: str, processed_min_da
       - Sums across products; an order containing multiple products from the collection will be counted multiple times
       - This matches a "count per product then sum" aggregation.
     """
-    try:
-        product_ids = list_product_ids_in_collection(collection_id, store=store)
-    except Exception:
-        product_ids = []
-    if not product_ids:
-        return 0
-    total = 0
-    for pid in product_ids:
-        try:
-            total += count_orders_by_product_processed(str(pid), processed_min_date, processed_max_date, store=store, include_closed=include_closed)
-        except Exception:
-            continue
-    return total
+    return _sum_product_order_counts_for_collection_scan(
+        collection_id,
+        processed_min_date,
+        processed_max_date,
+        store=store,
+        include_closed=include_closed,
+        date_field="processed",
+    )
 
 
 def sum_product_order_counts_for_collection_created(collection_id: str, created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
@@ -2208,18 +2247,78 @@ def sum_product_order_counts_for_collection_created(collection_id: str, created_
 
     Uses count_orders_by_title for numeric product ids which filters by created_at.
     """
+    return _sum_product_order_counts_for_collection_scan(
+        collection_id,
+        created_min_date,
+        created_max_date,
+        store=store,
+        include_closed=include_closed,
+        date_field="created",
+    )
+
+
+def _sum_product_order_counts_for_collection_scan(
+    collection_id: str,
+    min_date: str,
+    max_date: str,
+    *,
+    store: str | None = None,
+    include_closed: bool = False,
+    date_field: str = "processed",
+) -> int:
+    """Sum per-product order counts with one paginated order scan.
+
+    Each order contributes once for each distinct collection product it contains,
+    preserving the previous result while avoiding one complete Shopify order scan
+    per product in the collection.
+    """
     try:
-        product_ids = list_product_ids_in_collection(collection_id, store=store)
+        product_ids = set(list_product_ids_in_collection(collection_id, store=store))
     except Exception:
-        product_ids = []
+        product_ids = set()
     if not product_ids:
         return 0
+
+    from urllib.parse import urlencode
+
+    start_iso, end_iso = _processed_window_iso(store, min_date, max_date)
+    field = "created_at" if str(date_field or "").lower() == "created" else "processed_at"
+    params = {
+        "status": ("any" if include_closed else "open"),
+        "limit": 250,
+        f"{field}_min": start_iso,
+        f"{field}_max": end_iso,
+        "order": f"{field} asc",
+    }
     total = 0
-    for pid in product_ids:
+    page_info = None
+    while True:
+        query_params = params.copy()
+        if page_info:
+            query_params = {"page_info": page_info, "limit": 250}
+        response = _rest_get_store_raw(store, "/orders.json?" + urlencode(query_params))
         try:
-            total += count_orders_by_title(str(pid), created_min_date, created_max_date, store=store, include_closed=include_closed)
+            data = response.json() if response.content else {}
         except Exception:
-            continue
+            data = {}
+        for order in (data or {}).get("orders") or []:
+            try:
+                if order.get("cancelled_at"):
+                    continue
+                matched_products: set[int] = set()
+                for line_item in order.get("line_items") or []:
+                    try:
+                        product_id = int((line_item or {}).get("product_id") or 0)
+                    except Exception:
+                        continue
+                    if product_id in product_ids:
+                        matched_products.add(product_id)
+                total += len(matched_products)
+            except Exception:
+                continue
+        page_info = _parse_link_next(response.headers.get("Link"))
+        if not page_info:
+            break
     return total
 
 def _product_first_image_url(numeric_product_id: str, *, store: str | None = None) -> str | None:
@@ -3451,7 +3550,9 @@ def _get_products_brief_graphql(numeric_product_ids: list[str], *, store: str | 
     """
     gid_ids = [f"gid://shopify/Product/{pid}" for pid in ids]
     timeout_s = max(3, int(os.getenv("PTOS_PRODUCTS_BRIEF_GRAPHQL_TIMEOUT_S", "24") or "24"))
-    data = _gql_store_once(store, query, {"ids": gid_ids}, timeout=timeout_s)
+    # A dead TCP/TLS connection should fail quickly, while an established
+    # Shopify query keeps the full response window for large product batches.
+    data = _gql_store_once(store, query, {"ids": gid_ids}, timeout=(5, timeout_s))
     out: dict[str, dict] = {}
     for node in ((data or {}).get("nodes") or []):
         if not node:

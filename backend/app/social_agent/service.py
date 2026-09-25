@@ -17,6 +17,7 @@ from app.social_agent.openai_agents import (
     generate_candidate,
     image_generator_status,
     repair_strategy,
+    repair_candidate,
     review_candidate,
 )
 
@@ -100,6 +101,26 @@ def _rolling_groups(config: dict[str, Any], local_day: date) -> list[list[dateti
     return [slots[index:index + size] for index in range(0, len(slots), size)]
 
 
+def _effective_rolling_groups(store: str, config: dict[str, Any], local_day: date) -> list[list[datetime]]:
+    groups = _rolling_groups(config, local_day)
+    started = next((run for run in repo.list_runs(store, limit=100)
+                    if run.get("slot") == "rolling" and (run.get("context") or {}).get("start_now_date") == local_day.isoformat()), None)
+    if not started:
+        return groups
+    try:
+        index = int(started["batch_key"].rsplit(":", 1)[1])
+        context = started["context"]
+        actual = [datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(_tz(config)) for value in context["scheduled_for"]]
+        original = [datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(_tz(config)) for value in context["original_scheduled_for"]]
+        shift = max(timedelta(0), max(actual) - max(original))
+        groups[index] = actual
+        for following in range(index + 1, len(groups)):
+            groups[following] = [value + shift for value in groups[following]]
+    except (KeyError, ValueError, IndexError, TypeError):
+        pass
+    return groups
+
+
 def _utc_naive(local_value: datetime) -> datetime:
     return local_value.astimezone(timezone.utc).replace(tzinfo=None)
 
@@ -177,7 +198,7 @@ def queue_rolling_batch(store: str | None, local_day: date, batch_index: int) ->
     store_name = repo.canonical_store(store)
     config = repo.get_config(store_name)
     _require_agency_enabled(config)
-    groups = _rolling_groups(config, local_day)
+    groups = _effective_rolling_groups(store_name, config, local_day)
     if batch_index < 0 or batch_index >= len(groups):
         raise ValueError("rolling batch index is outside the daily posting window")
     return _create_scheduled_run(
@@ -194,7 +215,7 @@ def _queue_current_rolling_batch(store: str | None, local_day: date | None = Non
     config = repo.get_config(store_name)
     local_now = datetime.now(_tz(config))
     local_day = local_day or local_now.date()
-    groups = _rolling_groups(config, local_day)
+    groups = _effective_rolling_groups(store_name, config, local_day)
     prepare_before = timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
     interval = timedelta(minutes=int(config.get("post_interval_minutes") or 30))
     active = [
@@ -228,18 +249,56 @@ def queue_batch(store: str | None, slot: str, local_day: date | None = None) -> 
     return _create_scheduled_run(store_name, key=key, slot=slot, local_day=local_day, scheduled=scheduled)
 
 
+def start_now(store: str | None) -> dict[str, Any]:
+    """Start today's batch without changing the recurring schedule or master switch."""
+    store_name = repo.canonical_store(store)
+    config = repo.get_config(store_name)
+    _require_agency_enabled(config)
+    local_now = datetime.now(_tz(config))
+    local_day = local_now.date()
+    runs = repo.list_runs(store_name, limit=100)
+    already = next((run for run in runs if (run.get("context") or {}).get("start_now_date") == local_day.isoformat()), None)
+    if already:
+        return {"run": already, "already_started": True, "prepared": None}
+    # Reuse today's unfinished plan, including approved posts awaiting their clock time.
+    pending = []
+    for run in runs:
+        if (run.get("context") or {}).get("local_date") != local_day.isoformat():
+            continue
+        posts = repo.list_run_posts(run["id"])
+        if len(posts) < int(run["target_count"]) or any(
+            post.get("status") not in {"published", "partial"} for post in posts
+        ):
+            pending.append(run)
+    if pending:
+        run = min(pending, key=lambda item: str(((item.get("context") or {}).get("scheduled_for") or [""])[0]))
+    elif config.get("schedule_mode") == "rolling":
+        groups = _rolling_groups(config, local_day)
+        index = max((i for i, group in enumerate(groups) if group[0] <= local_now), default=0)
+        run = queue_rolling_batch(store_name, local_day, index)
+    else:
+        evening = datetime.combine(local_day, _parse_hhmm(str(config.get("evening_time")), "17:00"), tzinfo=_tz(config))
+        run = queue_batch(store_name, "evening" if local_now >= evening else "midday", local_day)
+    interval = int(config.get("midday_post_interval_minutes") or 8) if run["slot"] == "midday" else int(config.get("post_interval_minutes") or 30)
+    run = repo.start_run_now(run["id"], local_day.isoformat(), _utc_naive(local_now), interval)
+    claimed = repo.claim_run(run["id"])
+    prepared = prepare_one(run["id"]) if claimed else None
+    return {"run": repo.get_run(run["id"]), "already_started": False, "prepared": prepared}
+
+
 def _candidate_file_name(post_id: str, candidate: int, mime_type: str) -> str:
     ext = ".png" if "png" in mime_type else ".jpg"
     digest = hashlib.sha1(f"{post_id}:{candidate}".encode("utf-8")).hexdigest()[:10]
     return f"social-{post_id[:8]}-{digest}-v{candidate}{ext}"
 
 
-def prepare_one(run_id: str) -> dict[str, Any]:
+def prepare_one(run_id: str, *, manual_post_id: str | None = None) -> dict[str, Any]:
     run = repo.get_run(run_id)
     if not run:
         raise RuntimeError("Social batch not found")
     config = repo.get_config(run.get("store"))
-    _require_agency_enabled(config)
+    if not manual_post_id:
+        _require_agency_enabled(config)
     max_attempts = int(config.get("max_review_attempts") or 3)
     existing = repo.list_run_posts(run_id)
     retry_post = next(
@@ -250,6 +309,13 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         ),
         None,
     )
+    if manual_post_id:
+        retry_post = next((item for item in existing if item["id"] == manual_post_id), None)
+        if not retry_post:
+            raise RuntimeError("Manual review post not found in this batch")
+        # One explicitly requested replacement, held for human review even if AI approves.
+        max_attempts = int(retry_post.get("attempts") or 0) + 1
+        config = {**config, "creative_variants": 1}
     position = int(retry_post.get("position")) if retry_post else len(existing)
     if position >= int(run.get("target_count") or 0):
         return {"run": repo.refresh_run_progress(run_id), "post": None}
@@ -259,11 +325,10 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         repo.update_run(run_id, status="failed", error={"message": "Batch product plan is incomplete"})
         raise RuntimeError("Batch product plan is incomplete")
     product = products[position]
-    if retry_post and retry_post.get("status") == "rejected":
-        backup_index = (int(retry_post.get("attempts") or 0) - 1) * int(run.get("target_count") or 0) + position
-        backups = context.get("backup_products") or []
-        if 0 <= backup_index < len(backups):
-            product = backups[backup_index]
+    if retry_post:
+        # A reviewer retry fixes the same merchandise; never attach an old review
+        # or successful concept to a silently substituted backup product.
+        product = retry_post.get("product") or product
     scheduled = _planned_utc(context, position) or _scheduled_utc(
         config, date.fromisoformat(str(context.get("local_date"))), str(run.get("slot")), position,
     )
@@ -279,11 +344,27 @@ def prepare_one(run_id: str) -> dict[str, Any]:
         raise RuntimeError("Could not create or recover the social post job")
     attempt_number = int(post.get("attempts") or 0) + 1
     try:
-        learning = repo.get_learning(run.get("store"))
-        strategy = create_strategy(product, config, learning, slot=str(run.get("slot")), position=position)
-        repo.update_post(post["id"], strategy=strategy, attempts=attempt_number)
+        previous_strategy = (retry_post or {}).get("strategy") or {}
+        previous_review = (retry_post or {}).get("review") or {}
+        history = list(previous_review.get("attempt_history") or [])
+        if previous_strategy.get("source_product_id") == product.get("id") and previous_strategy.get("image_copy"):
+            strategy = dict(previous_strategy)
+            if previous_review.get("decision") == "reject":
+                correction = json.dumps({key: previous_review.get(key) for key in (
+                    "source_product_differences", "visual_errors", "image_text_errors", "repair_instruction",
+                )}, ensure_ascii=False)
+                strategy["visual_directions"] = [
+                    str(direction).split("\nPrevious rejection to correct:")[0]
+                    + "\nPrevious rejection to correct: " + correction
+                    for direction in strategy.get("visual_directions") or []
+                ]
+        else:
+            learning = repo.get_learning(run.get("store"))
+            strategy = create_strategy(product, config, learning, slot=str(run.get("slot")), position=position)
+        strategy["source_product_id"] = product.get("id")
+        repo.update_post(post["id"], strategy=strategy, attempts=attempt_number, review=None, assets=[])
         directions = list(strategy.get("visual_directions") or [])
-        wanted = int(config.get("creative_variants") or 2)
+        wanted = int(config.get("creative_variants") or 1)
         while len(directions) < wanted:
             directions.append(f"Alternative premium product-first composition {len(directions) + 1}")
         generated: dict[int, str] = {}
@@ -314,6 +395,7 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                     item for item in reviewed
                     if not ((item.get("review") or {}).get("visual_errors") or [])
                     and not ((item.get("review") or {}).get("source_product_differences") or [])
+                    and not ((item.get("review") or {}).get("image_text_errors") or [])
                 ),
                 None,
             )
@@ -328,12 +410,41 @@ def prepare_one(run_id: str) -> dict[str, Any]:
                 repo.update_post(post["id"], strategy=strategy)
                 reviewed.sort(key=lambda item: int((item.get("review") or {}).get("score") or 0), reverse=True)
                 approved = [item for item in reviewed if (item.get("review") or {}).get("decision") == "approve"]
-        if not approved:
+        history.append({"attempt": attempt_number, "kind": "generation", "candidates": [
+            {"candidate": item["candidate"], **(item.get("review") or {})} for item in reviewed
+        ]})
+        # Spend a remaining attempt correcting the strongest design with BOTH
+        # the original reference and rejected poster, then independently review it.
+        if not approved and reviewed and attempt_number < max_attempts:
+            candidate = reviewed[0]
+            findings = candidate.get("review") or {}
+            if any(findings.get(key) for key in ("source_product_differences", "visual_errors", "image_text_errors")):
+                attempt_number += 1
+                repo.update_post(post["id"], attempts=attempt_number)
+                try:
+                    repaired_image = repair_candidate(product, strategy, candidate["data_url"], findings, config)
+                    repaired_review = review_candidate(product, strategy, repaired_image, config, int(candidate["candidate"]))
+                    history.append({"attempt": attempt_number, "kind": "targeted_image_repair", "model": (config.get("image_repair_model") if config.get("image_provider") == "openai" and config.get("image_repair_model") not in (None, "same") else image_generator_status(config)["model"]), "candidates": [
+                        {"candidate": candidate["candidate"], **repaired_review}
+                    ]})
+                    candidate.update({"data_url": repaired_image, "review": repaired_review, "image_repaired": True})
+                    reviewed.sort(key=lambda item: int((item.get("review") or {}).get("score") or 0), reverse=True)
+                    approved = [item for item in reviewed if (item.get("review") or {}).get("decision") == "approve"]
+                except Exception as repair_error:
+                    history.append({"attempt": attempt_number, "kind": "targeted_image_repair", "error": _safe_error(repair_error)})
+                    # Preserve the original rejection if a paid edit fails.
+        history = history[-max_attempts:]
+        if not approved or manual_post_id:
             strongest_review = dict((reviewed[0].get("review") or {}) if reviewed else {})
-            review_summary = {**strongest_review, "decision": "reject", "selected_candidate": None, "candidates": [
+            review_summary = {**strongest_review, "selected_candidate": None, "attempt_history": history, "candidates": [
                 {"candidate": x["candidate"], **(x.get("review") or {})} for x in reviewed
             ]}
-            post = repo.update_post(post["id"], status="rejected", review=review_summary)
+            # Private drafts are returned only by the authenticated single-post review API.
+            assets = [{"candidate": item["candidate"], "selected": False,
+                       "draft_data_url": item["data_url"], "review": item["review"],
+                       "image_repaired": bool(item.get("image_repaired")),
+                       "image_generator": image_generator_status(config)} for item in reviewed]
+            post = repo.update_post(post["id"], status="needs_review" if manual_post_id else "rejected", review=review_summary, assets=assets)
             return {"run": repo.refresh_run_progress(run_id), "post": post}
         winner_number = int(approved[0]["candidate"])
         assets: list[dict[str, Any]] = []
@@ -348,19 +459,19 @@ def prepare_one(run_id: str) -> dict[str, Any]:
             assets.append({
                 "candidate": item["candidate"], "selected": int(item["candidate"]) == winner_number,
                 "direction": directions[int(item["candidate"]) - 1], "review": item.get("review"),
-                "copy_repaired": bool(item.get("copy_repaired")), "shopify": uploaded,
+                "copy_repaired": bool(item.get("copy_repaired")), "image_repaired": bool(item.get("image_repaired")), "shopify": uploaded,
                 "image_generator": image_generator_status(config),
             })
         winner_review = dict(approved[0].get("review") or {})
         review_summary = {
-            **winner_review, "decision": "approve", "selected_candidate": winner_number,
+            **winner_review, "decision": "approve", "selected_candidate": winner_number, "attempt_history": history,
             "candidates": [{"candidate": x["candidate"], **(x.get("review") or {})} for x in reviewed],
         }
         status = "approved" if config.get("live_publish") else "preview_ready"
         post = repo.update_post(post["id"], status=status, assets=assets, review=review_summary)
         return {"run": repo.refresh_run_progress(run_id), "post": post}
     except Exception as error:
-        post = repo.update_post(post["id"], status="failed", error=_safe_error(error), attempts=attempt_number)
+        post = repo.update_post(post["id"], status="needs_review" if manual_post_id else "failed", error=_safe_error(error), attempts=attempt_number)
         repo.refresh_run_progress(run_id)
         raise
 
@@ -385,40 +496,95 @@ def _caption(post: dict[str, Any]) -> str:
     return caption
 
 
-def publish_post(post_id: str, *, force: bool = False) -> dict[str, Any]:
+def regenerate_for_manual_review(post_id: str) -> dict[str, Any]:
+    post = repo.claim_post_action(post_id, {"rejected", "needs_review", "failed"}, "generating")
+    return prepare_one(post["run_id"], manual_post_id=post_id)
+
+
+def manually_approve_and_publish(post_id: str, candidate: int, expected_updated_at: str, admin: str, note: str = "") -> dict[str, Any]:
+    post = repo.get_post(post_id)
+    asset = next((a for a in (post or {}).get("assets") or [] if a.get("candidate") == candidate), None)
+    if not asset or not (asset.get("draft_data_url") or (asset.get("shopify") or {}).get("url")):
+        raise RuntimeError("This generated draft was not retained. Generate a replacement and review it first.")
+    post = repo.claim_post_action(post_id, {"rejected", "needs_review"}, "manual_approving", expected_updated_at)
+    try:
+        assets = post["assets"]
+        asset = next(a for a in assets if a.get("candidate") == candidate)
+        if not (asset.get("shopify") or {}).get("url"):
+            raw, mime = data_url_bytes(asset["draft_data_url"])
+            asset["shopify"] = shopify.upload_file_bytes(post["store"],
+                filename=_candidate_file_name(post_id, candidate, mime), content=raw, mime_type=mime,
+                alt_text=post.get("strategy", {}).get("alt_text_ar") or post["product"].get("title") or "Product")
+            if not asset["shopify"].get("url"):
+                raise RuntimeError("Shopify did not return a hosted image URL. Retry manual approval after upload is available.")
+        for item in assets:
+            item["selected"] = item["candidate"] == candidate
+        review = dict(post.get("review") or {})
+        review["manual_approval"] = {"by": admin, "at": datetime.utcnow().isoformat()+"Z", "candidate": candidate,
+                                     "note": note[:1000], "ai_decision": (asset.get("review") or {}).get("decision")}
+        # Preserve the original AI decision and findings for the audit trail.
+        repo.update_post(post_id, assets=assets, review=review, status="publishing", error=None)
+    except Exception as error:
+        repo.update_post(post_id, status="needs_review", error=_safe_error(error))
+        raise
+    return publish_post(post_id, force=True, claimed=True, retry_blocked=True)
+
+
+def publish_post(post_id: str, *, force: bool = False, claimed: bool = False, retry_blocked: bool = False) -> dict[str, Any]:
     post = repo.get_post(post_id)
     if not post:
         raise RuntimeError("Social post not found")
     config = repo.get_config(post.get("store"))
     if not config.get("live_publish") and not force:
         raise RuntimeError("Live publishing is disabled for this store")
-    if (post.get("review") or {}).get("decision") != "approve":
+    review = post.get("review") or {}
+    if review.get("decision") != "approve" and not review.get("manual_approval"):
         raise RuntimeError("The reviewer has not approved this post")
     selected = next((asset for asset in post.get("assets") or [] if asset.get("selected")), None)
     image_url = str((((selected or {}).get("shopify") or {}).get("url")) or "")
     if not image_url:
         raise RuntimeError("Approved post has no Shopify-hosted image")
+    if review.get("manual_approval") and review["manual_approval"].get("candidate") != (selected or {}).get("candidate"):
+        raise RuntimeError("The selected image does not match the manual approval")
+    if post.get("status") == "published":
+        return post
+    if not claimed:
+        post = repo.claim_post_action(post_id, {"approved", "preview_ready", "partial", "publish_failed"}, "publishing")
     caption = _caption(post)
     alt_text = str((post.get("strategy") or {}).get("alt_text_ar") or (post.get("product") or {}).get("title") or "Product")
     platforms = dict(post.get("platforms") or {})
     errors: dict[str, str] = {}
     if not (platforms.get("facebook") or {}).get("id"):
         try:
+            if not retry_blocked:
+                meta.require_publishing_available(post.get("store"), "facebook")
             platforms["facebook"] = meta.publish_facebook_image(post.get("store"), image_url=image_url, caption=caption)
+            if not platforms["facebook"].get("id"):
+                raise RuntimeError("Facebook returned no publication ID")
+            meta.clear_publishing_block(post.get("store"), "facebook")
             repo.update_post(post_id, platforms=platforms)
         except Exception as error:
             errors["facebook"] = str(error)[:1200]
+            meta.record_publishing_error(post.get("store"), "facebook", error)
     if not (platforms.get("instagram") or {}).get("id"):
         try:
+            if not retry_blocked:
+                meta.require_publishing_available(post.get("store"), "instagram")
             platforms["instagram"] = meta.publish_instagram_image(post.get("store"), image_url=image_url, caption=caption, alt_text=alt_text)
+            if not platforms["instagram"].get("id"):
+                raise RuntimeError("Instagram returned no publication ID")
+            meta.clear_publishing_block(post.get("store"), "instagram")
             repo.update_post(post_id, platforms=platforms)
         except Exception as error:
             errors["instagram"] = str(error)[:1200]
+            meta.record_publishing_error(post.get("store"), "instagram", error)
     complete = bool((platforms.get("facebook") or {}).get("id") and (platforms.get("instagram") or {}).get("id"))
-    status = "published" if complete else ("partial" if platforms else "publish_failed")
+    status = "published" if complete else ("partial" if any((p or {}).get("id") for p in platforms.values()) else "publish_failed")
+    attempts = int((post.get("error") or {}).get("publish_attempts") or 0) + 1
     return repo.update_post(
         post_id, status=status, platforms=platforms,
-        error=({"platform_errors": errors} if errors else None), attempts=int(post.get("attempts") or 0) + 1,
+        error=({"platform_errors": errors, "publish_attempts": attempts,
+                "auto_retry_paused": all(meta.is_permission_error(value) for value in errors.values())} if errors else None),
     ) or post
 
 
@@ -429,9 +595,10 @@ def publish_due(store: str | None, limit: int = 3) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for post in repo.claim_due_posts(store, datetime.utcnow(), limit=limit):
         try:
-            results.append(publish_post(post["id"]))
+            results.append(publish_post(post["id"], claimed=True))
         except Exception as error:
-            failed = repo.update_post(post["id"], status="publish_failed", error=_safe_error(error), attempts=int(post.get("attempts") or 0) + 1)
+            failed = repo.update_post(post["id"], status="publish_failed", error={**_safe_error(error),
+                "publish_attempts": int((post.get("error") or {}).get("publish_attempts") or 0) + 1})
             if failed:
                 results.append(failed)
     return results
@@ -455,7 +622,7 @@ def collect_analytics(store: str | None) -> dict[str, Any]:
             errors.append({"post_id": str(post.get("id")), "error": str(error)[:500]})
             if post.get("metrics"):
                 measured.append(post)
-    learning = analyze_learning(measured)
+    learning = analyze_learning(measured, config)
     repo.save_learning(store, learning)
     config_tz = _tz(config)
     repo.set_analytics_marker(store, {"local_date": datetime.now(config_tz).date().isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"})
@@ -509,15 +676,16 @@ def scheduler_tick(store: str | None = None) -> dict[str, Any]:
             continue
         local_now = datetime.now(_tz(config))
         if config.get("schedule_mode") == "rolling":
-            groups = _rolling_groups(config, local_now.date())
             prepare_before = timedelta(minutes=int(config.get("prepare_minutes_before") or 60))
             interval = timedelta(minutes=int(config.get("post_interval_minutes") or 30))
-            for batch_index, group in enumerate(groups):
-                if group[0] - prepare_before <= local_now <= group[-1] + interval:
-                    try:
-                        item["queued"].append(queue_rolling_batch(store_name, local_now.date(), batch_index))
-                    except Exception as error:
-                        item.setdefault("errors", []).append({"phase": f"queue_rolling_{batch_index}", **_safe_error(error)})
+            for local_day in (local_now.date() - timedelta(days=1), local_now.date()):
+                groups = _effective_rolling_groups(store_name, config, local_day)
+                for batch_index, group in enumerate(groups):
+                    if group[0] - prepare_before <= local_now <= group[-1] + interval:
+                        try:
+                            item["queued"].append(queue_rolling_batch(store_name, local_day, batch_index))
+                        except Exception as error:
+                            item.setdefault("errors", []).append({"phase": f"queue_rolling_{batch_index}", **_safe_error(error)})
         else:
             for slot, fallback in (("midday", "14:00"), ("evening", "17:00")):
                 slot_value = config.get("midday_time") if slot == "midday" else config.get("evening_time")

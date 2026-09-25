@@ -705,13 +705,15 @@ export async function metaSetAdAccount(payload:{ id:string, store?: string }){
   return data as { data?: { id?: string, name?: string }, error?: string }
 }
 
-export async function metaListAdAccounts(){
-  const {data} = await axios.get(`${base}/api/meta/ad_accounts`)
-  return data as { data: Array<{ id:string, name:string, account_status?: number }>, error?: string }
+export async function metaListAdAccounts(store?: string | string[]){
+  const s = store ?? selectedStore()
+  const query = Array.isArray(s) ? `stores=${encodeURIComponent(s.join(','))}` : s ? `store=${encodeURIComponent(s)}` : ''
+  const {data} = await axios.get(`${base}/api/meta/ad_accounts${query ? `?${query}` : ''}`)
+  return data as { data: Array<{ id:string, name:string, account_status?: number, store?: string }>, connected?: boolean, error?: string }
 }
 
 export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED'){
-  const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status })
+  const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status, store: selectedStore() })
   return data as { data?: any, error?: string }
 }
 
@@ -728,6 +730,7 @@ export type MetaAdsetRow = {
 
 export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string, range?: { start?: string, end?: string }){
   const parts: string[] = []
+  parts.push(`store=${encodeURIComponent(selectedStore() || '')}`)
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
   const qp = parts.length? `?${parts.join('&')}` : ''
@@ -739,12 +742,13 @@ export async function fetchCampaignAdsets(campaign_id: string, datePreset?: stri
 }
 
 export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAUSED'){
-  const {data} = await axios.post(`${base}/api/meta/adsets/${encodeURIComponent(adset_id)}/status`, { status })
+  const {data} = await axios.post(`${base}/api/meta/adsets/${encodeURIComponent(adset_id)}/status`, { status, store: selectedStore() })
   return data as { data?: any, error?: string }
 }
 
 export async function fetchCampaignPerformance(campaign_id: string, days?: number, tz?: string){
   const parts: string[] = []
+  parts.push(`store=${encodeURIComponent(selectedStore() || '')}`)
   if(typeof days==='number') parts.push(`days=${days}`)
   if(tz) parts.push(`tz=${encodeURIComponent(tz)}`)
   const qp = parts.length? `?${parts.join('&')}` : ''
@@ -782,6 +786,24 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
   return __dedupe(`GET ${url}`, async ()=>{
     const {data} = await axios.get(url)
     return data as { data: Record<string, { count:number, orders: AttributedOrder[] }>, error?: string }
+  })
+}
+
+export type CollectionCampaignOrders = {
+  product_ids: string[],
+  products: Record<string, { count: number, orders: AttributedOrder[] }>,
+  campaign_count: number,
+  collection_count: number,
+}
+
+export async function fetchCampaignCollectionOrders(campaignId: string, collectionId: string, range: { start: string, end: string }, store?: string){
+  const params = new URLSearchParams({ collection_id: collectionId, start: range.start, end: range.end })
+  const selected = store ?? selectedStore()
+  if(selected) params.set('store', selected)
+  const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaignId)}/collection/orders?${params}`
+  return __dedupe(`GET ${url}`, async ()=>{
+    const {data} = await axios.get(url)
+    return data as { data: CollectionCampaignOrders, error?: string }
   })
 }
 
@@ -1450,7 +1472,25 @@ export async function systemHealthClearIncidents(){
 }
 
 // -------- Autonomous organic social agent --------
-export type SocialAgentConfig = {
+export type SocialAgentStage = 'analyzer'|'copy'|'image_prompt'|'reviewer'|'learning'
+export type SocialAgentPipelineConfig = {
+  [K in `${SocialAgentStage}_model` | `${SocialAgentStage}_instructions`]: string
+} & { [K in `${SocialAgentStage}_reasoning`]: 'low'|'medium'|'high' }
+  & { [K in `${SocialAgentStage}_max_output_tokens`]: number }
+
+export type SocialAgentConfig = SocialAgentPipelineConfig & {
+  openai_image_model: string
+  image_quality: 'low'|'medium'|'high'
+  image_repair_quality: 'low'|'medium'|'high'
+  image_repair_model: 'same'|'gpt-image-2.5-sunburst'
+  image_size: '1024x1024'|'1024x1280'|'1024x1536'
+  image_instructions: string
+  image_text_mode: 'headline_benefit'|'headline'|'none'
+  image_badge_mode: 'price'|'discount'|'none'
+  image_cta_ar: string
+  source_image_limit: number
+  caption_max_chars: number
+  cost_instructions: string
   enabled: boolean
   live_publish: boolean
   timezone: string
@@ -1493,6 +1533,8 @@ export type SocialAgentPost = {
   platforms: any
   metrics: any
   error?: any
+  updated_at?: string
+  publish_caption?: string
 }
 
 export type SocialAgentDashboard = {
@@ -1555,6 +1597,22 @@ export async function publishDueSocialPosts(store: string){
 export async function publishSocialPost(store: string, postId: string, force=false){
   const { data } = await axios.post(`${base}/api/social-agent/posts/${encodeURIComponent(postId)}/publish`, { store, force, confirm: true }, { headers: { ...systemAdminHeaders() }, timeout: 300000 })
   return data as { data?: SocialAgentPost, error?: string }
+}
+
+export async function getSocialPostReview(store:string, postId:string){
+  const {data}=await axios.get(`${base}/api/social-agent/posts/${encodeURIComponent(postId)}/review`, {params:{store},headers:systemAdminHeaders()})
+  return data as {data?:SocialAgentPost,error?:string}
+}
+
+export async function generateSocialReviewDraft(store:string, postId:string){
+  const {data}=await axios.post(`${base}/api/social-agent/posts/${encodeURIComponent(postId)}/review-draft`, {store}, {headers:systemAdminHeaders(),timeout:600000})
+  return data
+}
+
+export async function approveAndPublishSocialPost(store:string, postId:string, candidate:number, updatedAt:string, note:string){
+  const {data}=await axios.post(`${base}/api/social-agent/posts/${encodeURIComponent(postId)}/approve-publish`,
+    {store,candidate,expected_updated_at:updatedAt,note,confirm:true}, {headers:systemAdminHeaders(),timeout:300000})
+  return data as {data?:SocialAgentPost,error?:string}
 }
 
 export async function refreshSocialAnalytics(store: string){
@@ -1691,3 +1749,8 @@ export async function launchAdLauncherJob(store:string,jobId:string){
   return data as {data?:any,error?:string}
 }
 
+
+export async function startSocialAgentNow(store: string){
+  const { data } = await axios.post(`${base}/api/social-agent/start-now`, { store }, { headers: { ...systemAdminHeaders() }, timeout: 600000 })
+  return data
+}

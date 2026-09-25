@@ -5,7 +5,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from datetime import datetime
@@ -39,12 +39,15 @@ from app.integrations.shopify_client import update_product_title
 from app.integrations.shopify_client import _build_page_body_html
 from app.integrations.shopify_client import count_orders_total_processed, count_orders_total_created
 from app.integrations.shopify_client import list_orders_with_utms_processed, list_orders_with_utms_processed_multi
+from app.integrations.shopify_client import get_order_product_ids
+from app.ads_attribution import collection_order_breakdown
 from app.integrations.shopify_client import list_orders_open_unfulfilled, cycle_tag, set_cod_tag, has_cod_tag
 from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_campaign_summary
-from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope
+from app.meta_connection import router as _meta_connection_router, connected_token, reporting_token, _return_origin
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
@@ -117,10 +120,11 @@ app.include_router(_auth_gate.router)
 
 # System health metrics middleware — pure-additive, fails closed (never blocks request)
 from app.system_health import HealthMiddleware as _HealthMiddleware  # noqa: E402
-from app.system_health_routes import router as _system_health_router  # noqa: E402
+from app.system_health_routes import router as _system_health_router, _get_admin as _get_system_admin  # noqa: E402
 from app import system_health as _sh  # noqa: E402
 app.add_middleware(_HealthMiddleware)
 app.include_router(_system_health_router)
+app.include_router(_meta_connection_router)
 
 # Internal chat / inbox (vendor + agent DMs over WebSocket; no WhatsApp API)
 from app import chat as _chat  # noqa: E402
@@ -142,9 +146,23 @@ try:
 except Exception:
     pass
 
+def _cors_origins() -> list[str]:
+    candidates = [os.getenv("BASE_URL", ""), *(os.getenv("PTO_ALLOWED_ORIGINS", "").split(","))]
+    if not (os.getenv("BASE_URL") or "").strip() or (os.getenv("ENVIRONMENT") or "").lower() in {"development", "dev", "test"}:
+        candidates += ["http://localhost:3000", "http://127.0.0.1:3000"]
+    origins = []
+    for value in candidates:
+        parsed = urlparse(value.strip())
+        if parsed.scheme in {"https", "http"} and parsed.netloc and not parsed.username and not parsed.password:
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin not in origins:
+                origins.append(origin)
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     # Sessions are cookies now. Credentialed cross-origin reads must stay
     # impossible, or any site could read the API as a signed-in operator.
     allow_credentials=False,
@@ -433,35 +451,24 @@ def _verify_shopify_hmac_request(request: Request, client_secret: str) -> bool:
 
 
 def _abs_base_url(request: Request) -> str:
-    """Compute absolute base URL for redirects.
-
-    In production, prefer the current forwarded request host so OAuth callback URLs
-    stay aligned with the live domain the user is actually visiting. Fall back to
-    BASE_URL when the incoming request looks local or incomplete.
-    """
+    """Use the configured public URL for OAuth callbacks and redirects."""
     try:
         configured_base = (BASE_URL or "").strip().rstrip("/")
+        if configured_base:
+            return configured_base
         host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").strip()
         scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").strip()
         req_base = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
         req_base = req_base.rstrip("/")
-        req_host_lc = host.lower()
-        req_is_public = bool(req_base and req_host_lc and "localhost" not in req_host_lc and "127.0.0.1" not in req_host_lc)
-        if req_is_public:
-            return req_base
-        if configured_base:
-            return configured_base
         return req_base
     except Exception:
         return (BASE_URL or "").rstrip("/")
 
 
 def _oauth_state_secret() -> bytes:
-    # Use a stable secret for signing OAuth state tokens.
-    sec = (os.getenv("OAUTH_STATE_SECRET", "") or os.getenv("JWT_SECRET", "") or SHOPIFY_CLIENT_SECRET or "").strip()
+    sec = (os.getenv("OAUTH_STATE_SECRET", "") or "").strip()
     if not sec:
-        # Dev-only fallback; production should set OAUTH_STATE_SECRET or JWT_SECRET
-        sec = "dev-oauth-state-secret"
+        raise ValueError("OAUTH_STATE_SECRET must be configured for Shopify OAuth")
     return sec.encode("utf-8")
 
 
@@ -578,6 +585,8 @@ async def favicon():
 @app.get("/api/shopify/oauth/status")
 async def api_shopify_oauth_status(request: Request, store: str | None = None):
     """Return whether we have a stored OAuth token for this store label."""
+    if not _get_system_admin(request):
+        return {"error": "unauthorized", "data": {"connected": False}}
     try:
         store = _canonical_store_label(store)
         rec = db.get_app_setting(store, "shopify_oauth") or {}
@@ -966,13 +975,17 @@ def _get_shopify_oauth_credentials(store: str) -> tuple[str, str]:
 
 
 @app.get("/api/shopify/oauth/start")
-async def api_shopify_oauth_start(request: Request, store: str, shop: str):
+async def api_shopify_oauth_start(request: Request, store: str, shop: str, redirect: bool = True, return_origin: str | None = None):
     """Redirect to Shopify OAuth install screen for the given shop.
 
     Usage:
       /api/shopify/oauth/start?store=irranova&shop=your-shop.myshopify.com
     """
+    if not _get_system_admin(request):
+        return {"error": "unauthorized"}
     try:
+        if not (os.getenv("CONNECTION_ENCRYPTION_KEY") or "").strip():
+            return {"error": "CONNECTION_ENCRYPTION_KEY is required to encrypt the connection"}
         store_label = (store or "").strip()
         if not store_label:
             return {"error": "missing_store"}
@@ -999,6 +1012,7 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
             "store": store_label,
             "shop": shop,
             "nonce": secrets.token_urlsafe(16),
+            "return_origin": _return_origin(return_origin),
             "iat": int(time.time()),
             "exp": exp,
         })
@@ -1017,9 +1031,20 @@ async def api_shopify_oauth_start(request: Request, store: str, shop: str):
             "state": state,
         }
         url = f"https://{shop}/admin/oauth/authorize?{urlencode(params)}"
-        return RedirectResponse(url=url, status_code=302)
+        return RedirectResponse(url=url, status_code=302) if redirect else {"data": {"url": url}}
     except Exception as e:
         return {"error": str(e)}
+
+
+class ShopifyOAuthStartRequest(BaseModel):
+    store: str
+    shop: str
+    return_origin: Optional[str] = None
+
+
+@app.post("/api/shopify/oauth/start")
+async def api_shopify_oauth_start_post(request: Request, body: ShopifyOAuthStartRequest):
+    return await api_shopify_oauth_start(request, body.store, body.shop, redirect=False, return_origin=body.return_origin)
 
 
 @app.get("/api/shopify/oauth/callback")
@@ -1054,37 +1079,11 @@ async def api_shopify_oauth_callback(request: Request):
             return {"error": "invalid_shop_domain"}
         if not (state and code):
             return {"error": "missing_state_or_code"}
-        # Log if shop doesn't match (Shopify can remap domains), but don't block
-        if st.get("shop") and str(st.get("shop")).strip().lower() != shop:
-            try:
-                logger.warning(f"[shopify] Shop domain changed during OAuth: expected={st.get('shop')} got={shop} store={store_label}")
-            except Exception:
-                pass
+        if str(st.get("shop") or "").strip().lower() != shop:
+            return {"error": "shop_mismatch"}
 
-        # Verify Shopify HMAC (recommended). If this fails in your environment, you can temporarily bypass
-        # it for internal installs by setting SHOPIFY_OAUTH_SKIP_HMAC=1.
-        hmac_ok = _verify_shopify_hmac_request(request, client_secret)
-        if not hmac_ok:
-            skip = (os.getenv("SHOPIFY_OAUTH_SKIP_HMAC", "") or "").strip().lower() in ("1", "true", "yes", "y")
-            if not skip:
-                # Return lightweight debug info (no secrets) to help diagnose env/encoding issues.
-                try:
-                    qp_dbg = dict(request.query_params)
-                    qp_dbg["__raw_query__"] = request.url.query or ""
-                    raw = qp_dbg.get("__raw_query__") or ""
-                    return {
-                        "error": "invalid_hmac",
-                        "shop": qp_dbg.get("shop"),
-                        "keys": sorted([k for k in qp_dbg.keys() if k != "hmac"]),
-                        "raw_len": len(str(raw)),
-                    }
-                except Exception:
-                    return {"error": "invalid_hmac"}
-            # Skip enabled: proceed, but log loudly.
-            try:
-                logger.warning(f"[shopify] HMAC verification skipped for shop={shop} store={store_label}")
-            except Exception:
-                pass
+        if not _verify_shopify_hmac_request(request, client_secret):
+            return {"error": "invalid_hmac"}
 
         # Exchange code for token
         token_url = f"https://{shop}/admin/oauth/access_token"
@@ -1110,7 +1109,8 @@ async def api_shopify_oauth_callback(request: Request):
         db.set_app_setting(store_label, "shopify_oauth", rec)
 
         # Redirect back to frontend connect page if present; otherwise show JSON
-        return RedirectResponse(url=f"/shopify-connect?store={quote(store_label)}&connected=1", status_code=302)
+        frontend_origin = _return_origin(st.get("return_origin"))
+        return RedirectResponse(url=f"{frontend_origin}/shopify-connect?store={quote(store_label)}&connected=1", status_code=302)
     except requests.HTTPError as e:
         try:
             txt = e.response.text if getattr(e, "response", None) is not None else str(e)
@@ -1423,7 +1423,8 @@ async def get_meta_campaigns(date_preset: str | None = None, ad_account: str | N
                 profit_only=bool(profit_only),
             )
 
-        items = await _cached(key, 30, _compute)
+        with meta_access_token_scope(reporting_token(store, acct)):
+            items = await _cached(key, 30, _compute)
         return {"data": items}
     except Exception as e:
         # Unwrap tenacity RetryError to expose the underlying API error message
@@ -2421,7 +2422,8 @@ async def _ads_management_bundle_impl(
         async def _compute_bundle():
             return await _ads_management_bundle_compute(acct, date_preset, start, end, store, profit_only=bool(profit_only))
 
-        result = await _cached(bundle_key, 25, _compute_bundle)
+        with meta_access_token_scope(reporting_token(store, acct)):
+            result = await _cached(bundle_key, 25, _compute_bundle)
         result["ad_account"] = ad_account_info
         return {"data": result}
     except Exception as e:
@@ -2449,10 +2451,8 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store, p
                 )),
                 timeout=55,
             )
-        except asyncio.TimeoutError:
-            return []
-        except Exception:
-            return []
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("Meta campaign request timed out") from exc
 
     async def _fetch_mappings():
         try:
@@ -5733,7 +5733,8 @@ async def api_get_ad_account(store: str | None = None):
         try:
             acct_id = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
             if acct_id:
-                info = get_ad_account_info(acct_id)
+                with meta_access_token_scope(connected_token(store, acct_id)):
+                    info = get_ad_account_info(acct_id)
                 out = {"id": info.get("id"), "name": info.get("name")}
             else:
                 out = {}
@@ -5751,7 +5752,8 @@ async def api_set_ad_account(req: AdAccountSetRequest):
         if not acct_id:
             return {"error": "missing_id"}
         # Verify account and get name
-        info = get_ad_account_info(acct_id)
+        with meta_access_token_scope(connected_token(req.store, acct_id)):
+            info = get_ad_account_info(acct_id)
         saved = db.set_app_setting(req.store, "meta_ad_account", {"id": info.get("id") or acct_id, "name": info.get("name")})
         return {"data": saved}
     except Exception as e:
@@ -5759,18 +5761,39 @@ async def api_set_ad_account(req: AdAccountSetRequest):
 
 
 @app.get("/api/meta/ad_accounts")
-async def api_list_ad_accounts():
+async def api_list_ad_accounts(store: str | None = None, stores: str | None = None):
     try:
-        items = await run_in_threadpool(list_ad_accounts)
-        # light shape
-        data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status")} for x in (items or [])]
-        return {"data": data}
+        labels = [_canonical_store_label(value) for value in (stores.split(",") if stores else [store]) if value]
+        data = []
+        seen = set()
+        for label in labels:
+            connection = db.get_app_setting(label, "meta_oauth")
+            if not isinstance(connection, dict) or not connection.get("access_token"):
+                continue
+            reporting_token(label)
+            for row in connection.get("accounts") or []:
+                account_id = str(row.get("id") or "").removeprefix("act_")
+                if not account_id or account_id in seen:
+                    continue
+                seen.add(account_id)
+                data.append({"id": row.get("id"), "name": row.get("name"), "account_status": row.get("account_status"), "store": label})
+        from_connection = bool(data)
+        if not from_connection:
+            items = await run_in_threadpool(list_ad_accounts)
+            data = [{"id": x.get("id"), "name": x.get("name"), "account_status": x.get("account_status"), "store": store} for x in (items or [])]
+        return {"data": data, "connected": from_connection}
     except Exception as e:
         return {"error": str(e), "data": []}
 
 
 class CampaignStatusUpdateRequest(BaseModel):
     status: str  # ACTIVE | PAUSED
+    store: Optional[str] = None
+
+
+def _run_with_meta_connection(token, operation, *args, **kwargs):
+    with meta_access_token_scope(token):
+        return operation(*args, **kwargs)
 
 
 @app.post("/api/meta/campaigns/{campaign_id}/status")
@@ -5779,7 +5802,7 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(set_campaign_status, campaign_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, connected_token(req.store), set_campaign_status, campaign_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -5791,12 +5814,12 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets")
-async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None):
+async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None, store: str | None = None):
     try:
-        key = _cache_key("meta_campaign_adsets", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None})
+        key = _cache_key("meta_campaign_adsets", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store})
 
         async def _compute():
-            return await run_in_threadpool(list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
+            return await run_in_threadpool(_run_with_meta_connection, connected_token(store), list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
 
         items = await _cached(key, 30, _compute)
         return {"data": items}
@@ -5828,8 +5851,9 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         elif store:
             store_list = [store]
 
-        collection_utm_mode = str(mapping_kind or "").strip().lower() == "collection"
-        key = _cache_key("meta_campaign_adset_orders_v10", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "mapping_kind": "collection" if collection_utm_mode else "product"})
+        # Product and collection campaigns use exactly the same attribution.
+        # Reuse the product cache, not the former strict collection-signature cache.
+        key = _cache_key("meta_campaign_adset_orders_v10", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "mapping_kind": "product"})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -5847,7 +5871,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
             # 1) List ad sets for campaign and their ads — run in parallel
             async def _fetch_adsets():
                 try:
-                    return await asyncio.wait_for(run_in_threadpool(list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
+                    return await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, connected_token(store or (store_list or [None])[0]), list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
                 except Exception:
                     return []
 
@@ -5886,32 +5910,15 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
             # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
             async def _fetch_ads_by_adset():
                 if not adset_ids:
-                    return {}, {}
+                    return {}
                 try:
-                    if collection_utm_mode:
-                        names = {str((a or {}).get("adset_id") or ""): str((a or {}).get("name") or "") for a in (adsets or [])}
-                        tracking = await asyncio.wait_for(
-                            run_in_threadpool(
-                                list_ads_with_tracking_for_adsets,
-                                adset_ids,
-                                campaign_id=str(campaign_id),
-                                adset_names=names,
-                            ),
-                            timeout=18,
-                        )
-                        ids = {
-                            aid: [str((detail or {}).get("ad_id") or "") for detail in details if (detail or {}).get("ad_id")]
-                            for aid, details in (tracking or {}).items()
-                        }
-                        return ids, tracking or {}
-                    ids = await asyncio.wait_for(run_in_threadpool(list_ads_for_adsets, adset_ids), timeout=8)
-                    return ids or {}, {}
+                    ids = await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, connected_token(store or (store_list or [None])[0]), list_ads_for_adsets, adset_ids), timeout=8)
+                    return ids or {}
                 except Exception:
-                    return {}, {}
+                    return {}
 
             ads_task = asyncio.create_task(_fetch_ads_by_adset())
-            orders, ad_data = await asyncio.gather(orders_task, ads_task)
-            ads_by_adset, tracking_by_adset = ad_data
+            orders, ads_by_adset = await asyncio.gather(orders_task, ads_task)
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):
@@ -5985,39 +5992,6 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
 
                     attributed = False
                     adset_ids_set = set(str(x) for x in adset_ids)
-
-                    # Collection campaigns can contain many products, so product-ID
-                    # attribution is intentionally not used. Match the exact UTM
-                    # signature configured on Meta and count the order once only
-                    # when that signature identifies one ad set unambiguously.
-                    if collection_utm_mode:
-                        if o_adset_id_direct and o_adset_id_direct in adset_ids_set:
-                            _add_order(o_adset_id_direct, o, o_ad_id or None)
-                            continue
-                        order_tracking = {
-                            str(key or "").strip().lower(): str(value or "").strip()
-                            for key, value in (utm or {}).items()
-                            if str(key or "").strip() and str(value or "").strip()
-                        }
-                        if o_campaign_id:
-                            order_tracking.setdefault("campaign_id", o_campaign_id)
-                        if o_adset_id_utm:
-                            order_tracking.setdefault("adset_id", o_adset_id_utm)
-                        if o_ad_id:
-                            order_tracking.setdefault("ad_id", o_ad_id)
-                        matched_adsets: set[str] = set()
-                        for candidate_adset, details in (tracking_by_adset or {}).items():
-                            for detail in (details or []):
-                                if meta_tracking_signature_matches(order_tracking, (detail or {}).get("utm") or {}):
-                                    matched_adsets.add(str(candidate_adset))
-                                    break
-                        if len(matched_adsets) == 1:
-                            matched_adset = next(iter(matched_adsets))
-                            _add_order(matched_adset, o, o_ad_id or None)
-                            continue
-                        if o_ad_id and o_ad_id in ad_to_adset:
-                            _add_order(ad_to_adset[o_ad_id], o, o_ad_id)
-                        continue
 
                     # ===== STRATEGY 0: Direct adset_id from URL =====
                     # Meta auto-tagging puts adset_id in utm_medium/utm_term
@@ -6111,8 +6085,42 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         return {"error": str(e), "data": {}}
 
 
+@app.get("/api/meta/campaigns/{campaign_id}/collection/orders")
+async def api_campaign_collection_orders(campaign_id: str, collection_id: str, start: str, end: str, store: str | None = None):
+    """Break down the same UTM orders shown for product campaigns by collection product."""
+    try:
+        if not campaign_id.isdigit() or not collection_id.isdigit():
+            raise ValueError("A numeric campaign ID and collection ID are required")
+        store = _canonical_store_label(store)
+        key = _cache_key("meta_campaign_collection_orders_v1", {
+            "campaign_id": campaign_id, "collection_id": collection_id,
+            "start": start, "end": end, "store": store,
+        })
+
+        async def _compute():
+            product_ids, attribution = await asyncio.gather(
+                run_in_threadpool(list_product_ids_in_collection, collection_id, store=store),
+                api_campaign_adset_orders(campaign_id, start, end, store=store),
+            )
+            if attribution.get("error"):
+                raise RuntimeError(attribution["error"])
+            # Include __campaign__: a valid campaign UTM need not identify an ad set.
+            orders = [order for bucket in attribution.get("data", {}).values() for order in bucket.get("orders", [])]
+            order_ids = list(dict.fromkeys(str(order["order_id"]) for order in orders if order.get("order_id")))
+            order_products = await run_in_threadpool(get_order_product_ids, order_ids, store=store) if product_ids else {}
+            return collection_order_breakdown(product_ids, orders, order_products)
+
+        data = await asyncio.wait_for(_cached(key, 60, _compute), timeout=300)
+        return {"data": data}
+    except asyncio.TimeoutError:
+        return {"error": "collection_utm_orders_timeout", "data": {}}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
+
+
 class AdsetStatusUpdateRequest(BaseModel):
     status: str
+    store: Optional[str] = None
 
 
 @app.post("/api/meta/adsets/{adset_id}/status")
@@ -6121,7 +6129,7 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(set_adset_status, adset_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, connected_token(req.store), set_adset_status, adset_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -6133,10 +6141,11 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/performance")
-async def api_campaign_performance(campaign_id: str, days: int | None = 6, tz: str | None = None):
+async def api_campaign_performance(campaign_id: str, days: int | None = 6, tz: str | None = None, store: str | None = None):
     try:
         n = int(days or 6)
-        items = campaign_daily_insights(campaign_id, n, tz)
+        with meta_access_token_scope(connected_token(store)):
+            items = campaign_daily_insights(campaign_id, n, tz)
         return {"data": {"days": items}}
     except Exception as e:
         return {"error": str(e), "data": {"days": []}}
@@ -6837,6 +6846,83 @@ async def health():
         "worker_loops": worker_loops_enabled(),
         "worker_loops_detail": worker_loops_state(),
     }
+
+# ---------------- Wholesale Customer mobile app: Play Store legal pages ----------------
+_WHOLESALE_CUSTOMER_PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy — Wholesale Customer</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; color: #1F1B17; line-height: 1.6; }
+  h1 { font-size: 28px; margin-bottom: 4px; }
+  h2 { font-size: 19px; margin-top: 36px; }
+  .updated { color: #756A61; font-size: 14px; margin-bottom: 32px; }
+  ul { padding-left: 20px; }
+  a { color: #8E4522; }
+</style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Wholesale Customer mobile app · Last updated 2026-06-26</p>
+
+  <p>Wholesale Customer ("the app") lets a customer browse a wholesale vendor's
+  product catalog and chat directly with that vendor. This page explains what
+  information the app collects and how it's used.</p>
+
+  <h2>Information we collect</h2>
+  <ul>
+    <li><strong>Phone number</strong> — required. Used as your chat identity so a
+      vendor can recognize and message you back. We do not verify it by SMS.</li>
+    <li><strong>Name</strong> — optional, shown to vendors you chat with.</li>
+    <li><strong>Chat messages</strong> — text, photos, and voice messages you send
+      or receive while chatting with a vendor are stored so the conversation
+      history can be displayed to both sides.</li>
+    <li><strong>Vendor selection</strong> — which vendor you're connected to, so the
+      app can show that vendor's catalog.</li>
+  </ul>
+  <p>We do not collect precise location, contacts, or browsing history, and the
+  app does not include any advertising or third-party analytics SDKs.</p>
+
+  <h2>How we use this information</h2>
+  <p>Solely to operate the chat and catalog features described above: connecting
+  you with the vendor you choose, delivering messages between you and that
+  vendor, and showing the vendor's in-stock products.</p>
+
+  <h2>How information is shared</h2>
+  <p>Your name, phone number, and messages are visible to the vendor(s) you
+  choose to chat with. We do not sell your information or share it with other
+  third parties for advertising or marketing purposes.</p>
+
+  <h2>Device permissions</h2>
+  <ul>
+    <li><strong>Photos</strong> — only accessed when you choose to attach a photo
+      to a chat message.</li>
+    <li><strong>Microphone</strong> — only accessed when you choose to record a
+      voice message in chat.</li>
+  </ul>
+
+  <h2>Data retention &amp; deletion</h2>
+  <p>Chat messages and your profile (phone number, name) are retained until you
+  request deletion. To request deletion of your account and associated data,
+  email <a href="mailto:chfiqchoqi@gmail.com">chfiqchoqi@gmail.com</a> from the
+  phone number or account in question.</p>
+
+  <h2>Children's privacy</h2>
+  <p>This app is intended for business-to-business wholesale ordering and is not
+  directed at children under 13.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy or your data can be sent to
+  <a href="mailto:chfiqchoqi@gmail.com">chfiqchoqi@gmail.com</a>.</p>
+</body>
+</html>"""
+
+
+@app.get("/legal/wholesale-customer-app/privacy")
+async def wholesale_customer_app_privacy():
+    return Response(content=_WHOLESALE_CUSTOMER_PRIVACY_HTML, media_type="text/html")
 
 # ---------------- ChatKit (OpenAI-hosted) session endpoint ----------------
 class ChatKitSessionRequest(BaseModel):
@@ -8742,6 +8828,9 @@ class WholesaleVendorCreate(BaseModel):
 
 
 class WholesaleProductCreate(BaseModel):
+    store_type: Optional[str] = None
+    _analysis: dict | None = PrivateAttr(default=None)
+    _strict_processing: bool = PrivateAttr(default=False)
     title: Optional[str] = None
     description: Optional[str] = None
     cog_price: Optional[float] = None
@@ -8904,10 +8993,10 @@ async def api_wholesale_login(req: WholesaleLogin, request: Request, response: R
 
 
 @app.post("/api/wholesale/upload-image")
-async def api_wholesale_upload_image(request: Request, image: UploadFile = File(...)):
+async def api_wholesale_upload_image(request: Request, image: UploadFile = File(...), upload_id: str | None = Form(None)):
     """Upload a product image and return its public URL."""
     try:
-        file_id = str(uuid4())
+        file_id = upload_id if upload_id and re.fullmatch(r"[a-fA-F0-9-]{36}", upload_id) else str(uuid4())
         safe_name = (image.filename or "photo.jpg").replace("/", "_").replace("\\", "_")
         filename = f"wholesale_{file_id}_{safe_name}"
         data = await image.read()
@@ -9181,7 +9270,7 @@ def _wholesale_build_product_organization(
     *,
     store_type: str | None,
 ) -> dict[str, Any]:
-    size_segment = _wholesale_segment_from_sizes(req.size_groups, req.sizes)
+    size_segment = _wholesale_segment_from_sizes(req.size_groups, req.sizes) if store_type == "shoes" else None
     segment = size_segment or _wholesale_normalize_segment(req.segment)
     incoming_tags_all = _wholesale_unique_labels(req.tags or [])
     segment_values = {v.lower() for v in WHOLESALE_SEGMENTS.values()}
@@ -9317,6 +9406,7 @@ def _wholesale_prepare_storefront_images(
     image_url: str | None,
     catalog_image_url: str | None,
     alt_base: str,
+    strict: bool = False,
 ) -> list[tuple[str, bytes]]:
     """Store vendor originals privately and return generated images for product media."""
     from app.integrations.shopify_client import (
@@ -9355,8 +9445,12 @@ def _wholesale_prepare_storefront_images(
                 generated_files.append(decoded)
             else:
                 logging.getLogger("app.wholesale").warning("No generated wholesale image returned for %s", label)
+                if strict:
+                    raise RuntimeError("Product image generation returned no image")
         except Exception as e:
             logging.getLogger("app.wholesale").exception("Failed to generate wholesale image for %s: %r", label, e)
+            if strict:
+                raise
 
     try:
         set_product_wholesale_image_metafields(product_gid, metafields, store=WHOLESALE_STORE)
@@ -9461,6 +9555,8 @@ def _wholesale_finalize_product_background(
     explicit_variants: list[dict] | None = None,
     sale_price: float | None = None,
     compare_at_price: float | None = None,
+    ai_data: dict | None = None,
+    strict: bool = False,
 ) -> None:
     try:
         from app.integrations.shopify_client import (
@@ -9476,10 +9572,11 @@ def _wholesale_finalize_product_background(
         final_title = (title or "").strip() or initial_title
         final_description = (description or "").strip()
 
-        ai_data: dict[str, Any] = {}
-        if image_url:
+        analyzed = ai_data is not None
+        ai_data = ai_data or {}
+        if image_url and not analyzed:
             try:
-                ai_data = gen_product_from_image(image_url) or {}
+                ai_data = gen_product_from_image(image_url, None, store_type) or {}
                 ai_title = str((ai_data or {}).get("title") or "").strip()
                 if ai_title:
                     final_title = ai_title
@@ -9487,7 +9584,8 @@ def _wholesale_finalize_product_background(
                     benefits = (ai_data or {}).get("benefits") or []
                     final_description = ". ".join(str(b).strip() for b in benefits if str(b).strip())
             except Exception:
-                pass
+                if strict:
+                    raise
 
         try:
             prompt = _wholesale_title_description_prompt_for(store_type)
@@ -9512,21 +9610,24 @@ def _wholesale_finalize_product_background(
             generated = gen_title_and_description(payload, angle, prompt_override=prompt, image_urls=([image_url] if image_url else [])) or {}
             gen_title = str((generated or {}).get("title") or "").strip()
             gen_description = str((generated or {}).get("description") or "").strip()
+            if strict and not (gen_title and gen_description):
+                raise RuntimeError("Product copy generation returned incomplete data")
             if gen_title:
                 final_title = gen_title
             if gen_description:
                 final_description = gen_description
         except Exception:
-            pass
+            if strict:
+                raise
 
         try:
             org_req = WholesaleProductCreate(
                 title=final_title,
                 description=final_description,
-                segment=segment,
-                season=season,
-                collection=None,
-                product_type=None,
+                segment=segment or ai_data.get("segment"),
+                season=season or ai_data.get("season"),
+                collection=ai_data.get("collection"),
+                product_type=ai_data.get("product_type"),
                 tags=[str(t) for t in ((ai_data or {}).get("tags") or []) if str(t).strip()],
                 colors=colors,
                 sizes=[str(v.get("size")) for v in (explicit_variants or []) if isinstance(v, dict) and v.get("size")],
@@ -9545,7 +9646,8 @@ def _wholesale_finalize_product_background(
             if organization.get("collection"):
                 _wholesale_attach_product_to_collection(product_gid, organization.get("collection"))
         except Exception:
-            pass
+            if strict:
+                raise
 
         final_desc_html = _wholesale_build_description_html(final_description or None, segment, season)
 
@@ -9553,28 +9655,35 @@ def _wholesale_finalize_product_background(
             try:
                 update_product_title(product_gid, final_title, store=WHOLESALE_STORE)
             except Exception:
-                pass
+                if strict:
+                    raise
 
         if final_desc_html:
             try:
                 update_product_description(product_gid, final_desc_html, store=WHOLESALE_STORE)
             except Exception:
-                pass
+                if strict:
+                    raise
 
         generated_images = _wholesale_prepare_storefront_images(
             product_gid,
             image_url,
             catalog_image_url,
             final_title,
+            strict=strict,
         )
         if generated_images:
             try:
                 alt_texts = [final_title]
                 if len(generated_images) > 1:
                     alt_texts.append(f"{final_title} catalog image")
-                upload_image_attachments_to_product(product_gid, generated_images, alt_texts, store=WHOLESALE_STORE)
+                upload_result = upload_image_attachments_to_product(product_gid, generated_images, alt_texts, store=WHOLESALE_STORE)
+                if strict and len((upload_result or {}).get("cdn_urls") or []) != len(generated_images):
+                    raise RuntimeError("Product images could not be uploaded")
             except Exception as e:
                 logging.getLogger("app.wholesale").exception("Failed to upload generated wholesale images to product %s: %r", product_gid, e)
+                if strict:
+                    raise
 
         if cog_price is not None:
             try:
@@ -9586,9 +9695,11 @@ def _wholesale_finalize_product_background(
                         if inv_id and inv_id != "None":
                             _set_inventory_item_cost(inv_id, cog_price, store=WHOLESALE_STORE)
             except Exception:
-                pass
+                if strict:
+                    raise
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 def _wholesale_configure_product_background(
@@ -9609,6 +9720,8 @@ def _wholesale_configure_product_background(
     size_groups: list[dict] | None = None,
     sale_price: float | None = None,
     compare_at_price: float | None = None,
+    ai_data: dict | None = None,
+    strict: bool = False,
 ) -> None:
     try:
         from app.integrations.shopify_client import (
@@ -9617,7 +9730,7 @@ def _wholesale_configure_product_background(
         )
 
         try:
-            configure_variants_for_product(
+            variant_result = configure_variants_for_product(
                 product_gid,
                 base_price,
                 sizes=None,
@@ -9627,8 +9740,11 @@ def _wholesale_configure_product_background(
                 variants=explicit_variants if explicit_variants else None,
                 store=WHOLESALE_STORE,
             )
+            if strict and (not variant_result or variant_result.get("ok") is False or variant_result.get("errors")):
+                raise RuntimeError("Product variants or inventory could not be configured")
         except Exception:
-            pass
+            if strict:
+                raise
 
         _wholesale_finalize_product_background(
             product_gid,
@@ -9647,14 +9763,21 @@ def _wholesale_configure_product_background(
             explicit_variants,
             sale_price,
             compare_at_price,
+            ai_data,
+            strict,
         )
 
         try:
-            publish_product_all_channels(product_gid, store=WHOLESALE_STORE)
+            from app.wholesale_publication import publish_wholesale_product
+            publish_result = publish_wholesale_product(product_gid, store=WHOLESALE_STORE)
+            if strict and not (publish_result or {}).get("ok"):
+                raise RuntimeError("Product could not be published")
         except Exception:
-            pass
+            if strict:
+                raise
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 def _wholesale_inventory_levels_for_items(inventory_item_ids: list[Any]) -> dict[str, dict[str, Any]]:
@@ -9971,7 +10094,9 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
             return {"error": "vendor_not_found"}
 
         vendor_name = vendor.get("name", vid)
-        store_type = str(vendor.get("store_type") or "general").strip().lower()
+        store_type = str(req.store_type or vendor.get("store_type") or "general").strip().lower()
+        if req.store_type and store_type not in WHOLESALE_STORE_TYPES:
+            return {"error": "invalid_store_type"}
         if store_type not in WHOLESALE_STORE_TYPES:
             store_type = "general"
         title = (req.title or "").strip() or _wholesale_placeholder_title(vendor_name)
@@ -10001,7 +10126,7 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 unit_cog_price = sg.get("cog_price")
                 variant_price = round(unit_sale_price * pcs_per_crate, 2) if pcs_per_crate > 0 else unit_sale_price
                 variant_spec = {
-                    "size": _wholesale_variant_title(fr, to, pcs_per_crate),
+                    "size": (f"{str(sg['label']).strip()}*{pcs_per_crate}pcs" if sg.get("label") else _wholesale_variant_title(fr, to, pcs_per_crate)),
                     "quantity": crate_quantity,
                     "price": variant_price,
                     "sku": str(sg.get("sku") or req.variant_group_id or "").strip(),
@@ -10125,6 +10250,8 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
                 req.size_groups,
                 req.sale_price,
                 req.compare_at_price,
+                ai_data=req._analysis,
+                strict=req._strict_processing,
             )
             if collection_name:
                 background_tasks.add_task(
@@ -11137,6 +11264,35 @@ async def api_marketing_media_buyer(req: MarketingMediaBuyerRequest):
         return {"data": result}
     except Exception as e:
         return {"error": str(e), "data": {}}
+
+
+from app.wholesale_batches import router as wholesale_batches_router, recover_batches
+app.include_router(wholesale_batches_router)
+
+
+@app.on_event("startup")
+async def _start_wholesale_batch_recovery():
+    # recover_batches() claims database leases and creates Shopify products. Two
+    # deployments running it against the same database duplicate those products,
+    # so it starts only where scheduled work is allowed. See app/worker_loops.py.
+    if not worker_loops_enabled():
+        app.state.wholesale_recovery = None
+        logging.getLogger("app.worker_loops").warning(
+            "wholesale batch recovery NOT started: %s", worker_loops_state()
+        )
+        return
+    app.state.wholesale_recovery = asyncio.create_task(recover_batches())
+
+
+@app.on_event("shutdown")
+async def _stop_wholesale_batch_recovery():
+    task = getattr(app.state, "wholesale_recovery", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # Mount static files last so that API routes have precedence.

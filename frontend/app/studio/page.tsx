@@ -13,8 +13,10 @@ import {
 } from 'lucide-react'
 
 import Dropzone from '@/components/Dropzone'
+import StudioTokenGuard from '@/components/StudioTokenGuard'
 import TagsInput from '@/components/TagsInput'
-import { launchTest, getTest, getTestSlim, fetchSavedAudiences, llmGenerateAngles, llmTitleDescription, llmLandingCopy, metaDraftImageCampaign, metaDraftCarouselCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, geminiGenerateAdImages, geminiGenerateVariantSetWithDescriptions, shopifyUploadProductImages, geminiGenerateFeatureBenefitSet, productFromImage, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle, getFlow } from '@/lib/api'
+import { llmGenerateAngles, llmTitleDescription, llmLandingCopy, productFromImage, generateStudioImages, TEXT_MODELS, IMAGE_MODELS } from '@/lib/studio-api'
+import { launchTest, getTest, getTestSlim, fetchSavedAudiences, metaDraftImageCampaign, metaDraftCarouselCampaign, uploadImages, shopifyCreateProductFromTitleDesc, shopifyCreatePageFromCopy, shopifyUploadProductFiles, shopifyUpdateDescription, saveDraft, updateDraft, shopifyUploadProductImages, shopifyConfigureVariants, getGlobalPrompts, setGlobalPrompts, shopifyUpdateTitle, getFlow } from '@/lib/api'
 import { useSearchParams } from 'next/navigation'
 
 // Resolve displayable image URLs: avoid proxy for same-origin and trusted hosts
@@ -34,11 +36,24 @@ function toDisplayUrl(u: string){
   }catch{ return u }
 }
 
+function previewJson(value: any){
+  return JSON.stringify(value, (_key, item) => typeof item === 'string'
+    ? (item.startsWith('data:image/') ? '[attached image]' : item.length > 2000 ? `${item.slice(0, 2000)}…` : item)
+    : item, 2)
+}
+
 function Button({ children, onClick, disabled, variant = 'default', size = 'md' }:{children:React.ReactNode,onClick?:()=>void,disabled?:boolean,variant?:'default'|'outline',size?:'sm'|'md'}){
   const base='rounded-xl font-semibold transition inline-flex items-center justify-center'
   const sz = size==='sm' ? 'text-sm px-3 py-1.5' : 'px-4 py-2'
   const vr = variant==='outline' ? 'border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-60' : 'bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60'
   return <button onClick={onClick} disabled={disabled} className={`${base} ${sz} ${vr}`}>{children}</button>
+}
+function ImageModelSelect({value,onChange,disabled=false}:{value:string,onChange:(value:string)=>void,disabled?:boolean}){
+  return <label className="block text-xs text-slate-600">Image model
+    <select aria-label="Image model" value={value} disabled={disabled} onMouseDown={e=>e.stopPropagation()} onChange={e=>onChange(e.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
+      {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+    </select>
+  </label>
 }
 function Card({ children }:{children:React.ReactNode}){ return <div className="bg-white border rounded-2xl shadow-sm">{children}</div> }
 function CardHeader({ children, className='' }:{children:React.ReactNode,className?:string}){ return <div className={`px-4 pt-4 ${className}`}>{children}</div> }
@@ -97,7 +112,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const storeParam = params.get('store')
   useEffect(()=>{ try{ if(storeParam) localStorage.setItem('ptos_store', storeParam) }catch{} },[storeParam])
 
-  const [flow,setFlow]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(isPromotionMode? defaultPromotionFlow() : defaultFlow())
+  const [flow,setFlowState]=useState<{nodes:FlowNode[],edges:FlowEdge[]}>(isPromotionMode? defaultPromotionFlow() : defaultFlow())
   const [selected,setSelected]=useState<string|null>(null)
   const [zoom,setZoom]=useState(1)
   const [pan,setPan]=useState<{x:number,y:number}>({x:0,y:0})
@@ -106,7 +121,11 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [runLog,setRunLog]=useState<{time:string,level:'info'|'error',msg:string,nodeId?:string}[]>([])
   const canvasRef = useRef<HTMLDivElement|null>(null)
   const flowRef = useRef(flow)
-  useEffect(()=>{ flowRef.current = flow },[flow])
+  function setFlow(update:React.SetStateAction<{nodes:FlowNode[],edges:FlowEdge[]}>){
+    const next = typeof update==='function' ? update(flowRef.current) : update
+    flowRef.current = next
+    setFlowState(next)
+  }
   const productGidRef = useRef<string|null>(null)
   const [productHandle,setProductHandle] = useState<string|undefined>(undefined)
 
@@ -125,6 +144,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
       if(p?.flow && Array.isArray(p.flow.nodes) && Array.isArray(p.flow.edges)){
         try{
           const galleryImages = Array.isArray((p?.ui||{}).gallery_images)? (p.ui as any).gallery_images : undefined
+          idSeq = Math.max(idSeq, ...p.flow.nodes.map((n:any)=> Number(String(n.id).replace(/^n/, '')) + 1).filter(Number.isFinite))
           const nodes = (p.flow.nodes as any[]).map((n:any)=>{
             if(n?.data?.type==='image_gallery' && Array.isArray(galleryImages)){
               const baseRun = n.run || { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
@@ -157,7 +177,11 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
         if(typeof (p.prompts as any).gemini_street_prompt==='string') setGeminiStreetScenePrompt((p.prompts as any).gemini_street_prompt)
       }
       if(p?.settings){
-        if(typeof p.settings.model==='string') setModel(p.settings.model)
+        if(TEXT_MODELS.includes(p.settings.model)) setModel(p.settings.model)
+        if(IMAGE_MODELS.some(m=>m.id===p.settings.image_model)) setImageModel(p.settings.image_model)
+        if(typeof p.settings.target_category==='string') setTargetCategory(p.settings.target_category)
+        if(typeof p.settings.track_quantity==='boolean') setTrackQty(p.settings.track_quantity)
+        if(typeof p.settings.quantity==='number') setQuantity(p.settings.quantity)
         if(typeof p.settings.advantage_plus==='boolean') setAdvantagePlus(p.settings.advantage_plus)
         if(typeof p.settings.adset_budget==='number') setAdsetBudget(p.settings.adset_budget)
         if(Array.isArray(p.settings.countries)) setCountries(p.settings.countries)
@@ -244,12 +268,12 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[isPromotionMode])
 
-  const [audience,setAudience]=useState('Parents of toddlers in Morocco')
+  const [audience,setAudience]=useState('')
   const [targetCategory,setTargetCategory]=useState<string>('unisex')
   const [title,setTitle]=useState('')
   const [price,setPrice]=useState<number|''>('')
-  const [benefits,setBenefits]=useState<string[]>(['Comfy all-day wear'])
-  const [pains,setPains]=useState<string[]>(['Kids scuff shoes'])
+  const [benefits,setBenefits]=useState<string[]>([])
+  const [pains,setPains]=useState<string[]>([])
   const [sizes,setSizes]=useState<string[]>([])
   const [colors,setColors]=useState<string[]>([])
   const [trackQty,setTrackQty]=useState<boolean>(true)
@@ -262,7 +286,12 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
   const [promotionOfferText,setPromotionOfferText]=useState<string>('')
   const [variantDescriptions,setVariantDescriptions]=useState<{name:string, description?:string}[]>([])
   const [adsetBudget,setAdsetBudget]=useState<number|''>(9)
-  const [model,setModel]=useState<string>('gpt-5')
+  const [model,setModel]=useState<string>('gpt-6-astra')
+  const [imageModel,setImageModel]=useState('gpt-image-2.5-flare')
+  const [canvasMode,setCanvasMode]=useState(false)
+  const [analyzing,setAnalyzing]=useState(false)
+  const imageRuns = useRef(new Set<string>())
+  const saveInFlight = useRef(false)
   const [uploadedUrls,setUploadedUrls]=useState<string[]|null>(null)
   const [anglesPrompt,setAnglesPrompt]=useState<string>(
     "You are a marketing products strategist and market expert. Focus on how to sell this product and to whom; pinpoint the ideal audience and deliver exactly two high‑converting angles.\n"
@@ -285,7 +314,7 @@ export function StudioPage({ forcedMode }: { forcedMode?: string }){
     + "- recommendation { best_angle, why, first_test_assets[], next_tests[] }\n\n"
     + "Style & Localization:\n"
     + "- Match language in PRODUCT_INFO (\"ar\" Fus'ha, \"fr\", or \"en\").\n"
-    + "- If region == \"MA\", add Morocco trust signals (Cash on Delivery, fast city delivery, easy returns, WhatsApp support).\n"
+    + "- If region == \"MA\", include only explicitly confirmed store policies.\n"
     + "- Be concrete and benefit-led. Avoid vague hype.\n\n"
     + "CRITICAL: Output must be a single valid json object only (no markdown, no explanations).\n\n"
     + "Variables available: {title}, {audience}, {benefits}, {pain_points}."
@@ -313,18 +342,18 @@ Return exactly this JSON shape:
 }
 
 Strict Section Requirements
-- hero: One big idea + 2 short lines + 1–2 CTAs. Include ONE specific proof point above the fold (e.g., “24–48h city delivery”, “Non‑slip sole tested on tile”). Use the best available image as hero.
+- hero: One big idea + 2 short lines + 1–2 CTAs. Include a proof point only when the product evidence explicitly supports it. Use the best available image as hero.
 - highlights: 4–6 concise, concrete bullets; preempt 2 objections (fit, durability, shipping) in bullets.
 - feature_gallery: 3–10 images mapped from provided image URLs; short captions with specific benefits.
 - quick_specs: materials, sizes, colors, delivery window; write specifics (numbers, materials, windows).
-- trust_badges: COD, 24–48h delivery (city), Easy Returns, WhatsApp Support.
-- reviews: 2–4 short quotes with tangible benefits (“stays on during play”, “warm after 2 hours”).
-- cta_block: benefit‑led headline + action‑oriented button (“Get Yours Today”, “Try Risk‑Free”). Add helper microcopy near CTA (“COD available”, “24–48h city delivery”).
+- trust_badges: only explicitly supplied and confirmed store policies; omit when absent.
+- reviews: include only verbatim supplied real customer reviews; omit the section when absent.
+- cta_block: benefit‑led headline + action‑oriented button (“Get Yours Today”, “Try Risk‑Free”). Add helper microcopy only for confirmed store policies.
 
 Angle & Copy Rules
 - Persona & Pain: Identify top 1–2 buyer personas; hero copy must state their #1 pain and desired outcome.
 - Angle: Choose ONE sharp angle (Safety, Comfort, Speed, Savings) and keep it consistent across sections.
-- Offer Framing: Surface a concrete proof point above the fold.
+- Offer Framing: Surface a concrete proof point above the fold only when supplied evidence supports it.
 - Specificity: Use numbers, materials, sizes, delivery windows, named features. No hype, no emojis, no ALL CAPS.
 - Tone: confident, plain‑spoken, brand‑safe.
 - Language: default English; if {LANGUAGE} provided, write naturally in that language.
@@ -347,11 +376,11 @@ HTML Requirements
 
 CRO Checklist (auto‑fix before output)
 - Hero states primary benefit + differentiator within 2 lines.
-- ≥1 specific proof above the fold.
+- Include specific proof above the fold only when supplied evidence supports it.
 - 4–6 concrete Highlights bullets (objections included).
 - CTA appears in Hero and in CTA Block.
 - Sizes/colors/fit in Quick Specs.
-- Badges present (COD, 24–48h delivery, Easy Returns, WhatsApp Support).
+- Display badges only for explicitly supplied payment, delivery, return, and support policies.
 
 DATA HOOKS (fill from PRODUCT_INFO when available)
 - Materials/Features: {MATERIALS_FEATURES}
@@ -563,7 +592,10 @@ Return ONLY the JSON object described in Output Contract.`)
   function log(level:'info'|'error', msg:string, nodeId?:string){ setRunLog(l=>[...l,{time:now(),level,msg,nodeId}]) }
 
   function updateNodeRun(nodeId:string, patch:Partial<RunState>){
-    setFlow(f=>({...f, nodes: f.nodes.map(n=> n.id===nodeId ? ({...n, run:{...n.run, ...patch}}) : n)}))
+    const next = {...flowRef.current, nodes: flowRef.current.nodes.map(n=> n.id===nodeId ? ({...n, run:{...n.run, ...patch}}) : n)}
+    flowRef.current = next
+    setFlow(next)
+    if(patch.status==='error') log('error', patch.error || 'Step failed', nodeId)
   }
   function finish(nodeId:string, started:number){
     const ms = Math.max(1, Math.round(performance.now()-started))
@@ -626,7 +658,7 @@ Return ONLY the JSON object described in Output Contract.`)
   }
 
   async function angleGenerate(nodeId:string){
-    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n || n.run.status==='running') return
     const prompt = String(n.data?.prompt||titleDescPrompt)
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
@@ -636,7 +668,7 @@ Return ONLY the JSON object described in Output Contract.`)
         urls = res.urls||[]
         setUploadedUrls(urls)
       }
-      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, angle: n.data?.angle, prompt, model, image_urls: (urls||[]).slice(0,1) })
+      const out = await llmTitleDescription({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory }, angle: n.data?.angle, prompt, model, image_urls: (urls?.length ? urls : analysisImageUrl ? [analysisImageUrl] : []).slice(0,1) })
       updateNodeRun(nodeId, { status:'success', output: out })
     }catch(err:any){
       updateNodeRun(nodeId, { status:'error', error:String(err?.message||err) })
@@ -644,46 +676,15 @@ Return ONLY the JSON object described in Output Contract.`)
   }
 
   async function onSaveDraft(){
+    if(saveInFlight.current) return
+    saveInFlight.current = true
     try{
       let urls = uploadedUrls
-      // Ensure Shopify CDN URLs as soon as user uploads files: create product if needed, then upload files to Shopify
       if((files||[]).length>0 && !urls){
-        try{
-          // Keep a product GID reference across actions
-          if(!isPromotionMode && !productGidRef.current){
-            const vTitle = title || 'Product'
-            const vDesc = ''
-            const prod = await shopifyCreateProductFromTitleDesc({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle, sizes, colors, target_category: targetCategory, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) }, angle: undefined, title: vTitle, description: vDesc })
-            productGidRef.current = (prod as any)?.product_gid
-            const handle = (prod as any)?.handle
-            if(handle){ setProductHandle(handle) }
-          }
-          if(!isPromotionMode && productGidRef.current){
-            // Ensure options/variants/inventory reflect current inputs when product is first created during save
-            try{
-              const rep = await shopifyConfigureVariants({
-                product_gid: productGidRef.current,
-                base_price: price===''? undefined : Number(price),
-                sizes,
-                colors,
-                track_quantity: trackQty,
-                quantity: quantity===''? undefined : Number(quantity)
-              })
-              if(rep && Array.isArray((rep as any).skipped)) setShopifyIssues((rep as any).skipped)
-            }catch{}
-            const up = await shopifyUploadProductFiles({ product_gid: productGidRef.current, files, title: title||'Product', description: '' })
-            const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
-            const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
-            urls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
-            setUploadedUrls(urls)
-            if(urls[0]){ setAnalysisImageUrl(urls[0]) }
-          }
-        }catch{
-          // Fallback to local upload if Shopify path fails
-          const res = await uploadImages(files)
-          urls = res.urls||[]
-          setUploadedUrls(urls)
-        }
+        const up = await uploadImages(files)
+        urls = up.urls || []
+        if(!urls.length) throw new Error('Upload returned no images.')
+        setUploadedUrls(urls)
       }
       // Compact flow snapshot to avoid oversized payloads (413)
       const slimNodes = flowRef.current.nodes.map(n=> ({
@@ -692,8 +693,8 @@ Return ONLY the JSON object described in Output Contract.`)
         x: n.x,
         y: n.y,
         data: n.data,
-        // reset run to a lightweight default; outputs can be regenerated
-        run: { status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 }
+        // Preserve completed outputs so drafts can resume without another generation.
+        run: { ...n.run, status:n.run.status==='running'?'idle':n.run.status }
       }))
       const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
       const galNode = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
@@ -724,7 +725,7 @@ Return ONLY the JSON object described in Output Contract.`)
         flow: flowSnap,
         ui: uiSnap,
         prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt, gemini_street_prompt: geminiStreetScenePrompt },
-        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined },
+        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, image_model: imageModel, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, product_gid:productGidRef.current || undefined, product_handle:productHandle, target_category:targetCategory, track_quantity:trackQty, quantity:quantity===''?undefined:Number(quantity) },
         ...(cardImage? { card_image: cardImage } : {})
       }
       let res
@@ -736,10 +737,10 @@ Return ONLY the JSON object described in Output Contract.`)
         const snapshot = { ...(payload.product||{}), uploaded_images: payload.image_urls||[], flow: payload.flow, ui: payload.ui, prompts: payload.prompts, settings: payload.settings }
         sessionStorage.setItem(`flow_cache_${res.id}`, JSON.stringify(snapshot))
       }catch{}
-      // silent save (no alerts)
+      log('info', 'Draft saved.')
     }catch(e:any){
-      // silent failure
-    }
+      log('error', `Draft could not be saved: ${e.message}`)
+    }finally{ saveInFlight.current = false }
   }
 
   // Autosave when changes detected (debounced, silent)
@@ -748,7 +749,7 @@ Return ONLY the JSON object described in Output Contract.`)
     let last: string | null = null
     const tick = async ()=>{
       try{
-        const slimNodes = flowRef.current.nodes.map(n=> ({ id:n.id, type:n.type, x:n.x, y:n.y, data:n.data, run:{ status:'idle', output:null, error:null, startedAt:null, finishedAt:null, ms:0 } }))
+        const slimNodes = flowRef.current.nodes.map(n=> ({ id:n.id, type:n.type, x:n.x, y:n.y, data:n.data, run:{ ...n.run, status:n.run.status==='running'?'idle':n.run.status } }))
         const flowSnap = { nodes: slimNodes, edges: flowRef.current.edges }
         const galNode = flowRef.current.nodes.find(x=> x.data?.type==='image_gallery')
         const galOut:any = (galNode?.run?.output||{})
@@ -777,7 +778,7 @@ Return ONLY the JSON object described in Output Contract.`)
           flow: flowSnap,
           ui: uiSnap,
         prompts: { angles_prompt: anglesPrompt, title_desc_prompt: titleDescPrompt, landing_copy_prompt: landingCopyPrompt, gemini_ad_prompt: geminiAdPrompt, gemini_variant_style_prompt: geminiVariantStylePrompt, gemini_street_prompt: geminiStreetScenePrompt },
-        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, ...(productGidRef.current? { product_gid: productGidRef.current } : {}), ...(productHandle? { product_handle: productHandle } : {}) },
+        settings: { flow_type: (isPromotionMode? 'promotion' : undefined), model, image_model: imageModel, advantage_plus: advantagePlus, adset_budget: adsetBudget===''?undefined:Number(adsetBudget), targeting, countries, saved_audience_id: selectedSavedAudience||undefined, ...(productGidRef.current? { product_gid: productGidRef.current } : {}), ...(productHandle? { product_handle: productHandle } : {}) },
         ...(cardImage? { card_image: cardImage } : {}),
         }
         const snapshot = JSON.stringify(payload)
@@ -794,7 +795,7 @@ Return ONLY the JSON object described in Output Contract.`)
     timer = setTimeout(tick, 800)
     return ()=>{ if(timer) clearTimeout(timer) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[audience, benefits, pains, price, title, sizes, colors, model, advantagePlus, adsetBudget, countries, selectedSavedAudience, pan, zoom, selected, geminiAdPrompt, geminiVariantStylePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt])
+  },[audience, benefits, pains, price, title, sizes, colors, model, imageModel, advantagePlus, adsetBudget, countries, selectedSavedAudience, pan, zoom, selected, geminiAdPrompt, geminiVariantStylePrompt, anglesPrompt, titleDescPrompt, landingCopyPrompt])
 
   // Keep Title & Description node's title in sync with left Title input when empty
   useEffect(()=>{
@@ -814,11 +815,11 @@ Return ONLY the JSON object described in Output Contract.`)
   function angleApprove(nodeId:string){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const out = n.run?.output
-    if(!out?.title){ return }
+    if(!out?.title || n.data?.approved){ return }
     setFlow(f=>{
       const nodes = f.nodes.map(x=> x.id===nodeId? ({...x, data:{...x.data, approved:true}}) : x)
       const base = nodes.find(x=> x.id===nodeId)!
-      const td = makeNode('action', base.x+300, base.y, { label:'Title & Description', type:'title_desc', value:{ title: out.title, description: out.description }, landingPrompt:'Generate a concise landing page section (headline, subheadline, 2-3 bullets) based on the title and description.' })
+      const td = makeNode('action', base.x+300, base.y, { label:'Title & Description', type:'title_desc', value:{ title: out.title, description: out.description }, angle:n.data?.angle, landingPrompt:'Generate a concise landing page section (headline, subheadline, 2-3 bullets) based on the title and description.' })
       const edges = [...f.edges, makeEdge(nodeId, 'out', td.id, 'in')]
       const next = { nodes:[...nodes, td], edges }
       flowRef.current = next
@@ -827,7 +828,8 @@ Return ONLY the JSON object described in Output Contract.`)
   }
 
   async function titleContinue(nodeId:string){
-    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
+    const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n || n.run.status==='running') return
+    if(flowRef.current.nodes.some(x=>x.data?.type==='image_gallery')){ setSelected(flowRef.current.nodes.find(x=>x.data?.type==='image_gallery')!.id); return }
     const v = n.data?.value||{}
     // Fallback to global Title input when node's value is empty; persist into node
     const vTitle: string = (String(v.title||'').trim() || String(title||'').trim() || 'Offer')
@@ -866,6 +868,7 @@ Return ONLY the JSON object described in Output Contract.`)
         const newTitle = String(vTitle||'').trim()
         if(newTitle){ try{ await shopifyUpdateTitle({ product_gid, title: newTitle }) }catch{} }
       }
+      if(!product_gid) throw new Error('Shopify did not return a product ID. Check the store connection and retry.')
       if(productNodeId){ updateNodeRun(productNodeId, { status:'success', output:{ product_gid } }) }
       // Ensure variants/options/pricing/inventory are configured
       try{
@@ -906,7 +909,7 @@ Return ONLY the JSON object described in Output Contract.`)
 
       // After images, add Gemini generation nodes as before (suggester removed)
       try{
-        const sourceUrl = (shopifyCdnUrls||[])[0]
+        const sourceUrl = (shopifyCdnUrls||[])[0] || (uploadedUrls||[])[0] || analysisImageUrl
         if(sourceUrl){
           // Include midpoint size if sizes contain numeric range
           let adPrompt = String(geminiAdPrompt||'Create a high‑quality ad image from this product photo.')
@@ -935,7 +938,7 @@ Return ONLY the JSON object described in Output Contract.`)
                 promptWithCategory += ` If a human model is shown, ensure it matches this category: ${subject}.`
               }
             }catch{}
-            const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Gemini Ad Images', type:'gemini_ad_images', prompt: promptWithCategory, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
+            const gn = makeNode('action', imgNode.x, (imgNode.y+240), { label:'Product photos', type:'gemini_ad_images', prompt: promptWithCategory, source_image_url: sourceUrl, neutral_background: true, use_global_prompt: true })
             const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gn.id, 'in')]
             const next = { nodes:[...f.nodes, gn], edges }
             flowRef.current = next
@@ -962,7 +965,7 @@ Return ONLY the JSON object described in Output Contract.`)
               + `Product type: ${title? String(title) : 'from the source image'}\n`
               + `Model: ${modelSubject}. Only one character in frame.`
             )
-            const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Ad Images — Natural Street Scene', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
+            const gn2 = makeNode('action', (base as any).x, (base as any).y+140, { label:'Lifestyle photos', type:'gemini_ad_images', prompt: promptStreet, source_image_url: sourceUrl, neutral_background: false, use_global_prompt: false })
             const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gn2.id, 'in')]
             const next = { nodes:[...f.nodes, gn2], edges }
             flowRef.current = next
@@ -972,7 +975,7 @@ Return ONLY the JSON object described in Output Contract.`)
           // Add a Feature/Benefit Close-ups node below the Ad Images node
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
-            const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Gemini Feature/Benefit Close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 6 })
+            const fb = makeNode('action', (base as any).x, (base as any).y+140, { label:'Feature close-ups', type:'gemini_feature_benefit_set', source_image_url: sourceUrl, count: 2 })
             const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', fb.id, 'in')]
             const next = { nodes:[...f.nodes, fb], edges }
             flowRef.current = next
@@ -981,7 +984,7 @@ Return ONLY the JSON object described in Output Contract.`)
           // Also add a Variant Set node just below
           setFlow(f=>{
             const base = f.nodes.find(x=>x.id===geminiNodeId!) || { x:(n.x+300), y:(n.y+280) }
-            const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Gemini Variant Set', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5, use_global_style: true })
+            const vs = makeNode('action', (base as any).x, (base as any).y+300, { label:'Variant photos', type:'gemini_variant_set', source_image_url: sourceUrl, style_prompt: String(geminiVariantStylePrompt||''), max_variants: 5, use_global_style: true })
             const edges = [...f.edges, makeEdge(imagesNodeId!, 'out', vs.id, 'in')]
             const next = { nodes:[...f.nodes, vs], edges }
             flowRef.current = next
@@ -996,7 +999,7 @@ Return ONLY the JSON object described in Output Contract.`)
         // Position gallery below the last Gemini node if present, else below images
         const gemNodes = f.nodes.filter(x=> x.data?.type && String(x.data.type).startsWith('gemini_'))
         const base = gemNodes[gemNodes.length-1] || f.nodes.find(x=>x.id===imagesNodeId!) || { x:(n.x+300), y:(n.y+140) }
-        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle: product_handle_local, title: vTitle, description: vDesc, landing_prompt: landingCopyPrompt, selected:{} })
+        const gal = makeNode('action', (base as any).x+300, (base as any).y, { label:'Select Images', type:'image_gallery', product_gid, product_handle: product_handle_local, title: vTitle, description: vDesc, angle:n.data?.angle, landing_prompt: landingCopyPrompt, selected:{} })
         let edges = [...f.edges, makeEdge(imagesNodeId!, 'out', gal.id, 'in')]
         // Connect all existing Gemini nodes to gallery for visual path
         gemNodes.forEach(gn=> { edges = [...edges, makeEdge(gn.id, 'out', gal.id, 'in')] })
@@ -1006,7 +1009,7 @@ Return ONLY the JSON object described in Output Contract.`)
         return next
       })
       // Initialize gallery with any Shopify CDN URLs we already have
-      if(galleryNodeId){ updateNodeRun(galleryNodeId, { status:'idle', output:{ images: shopifyCdnUrls||[] } }) }
+      if(galleryNodeId){ updateNodeRun(galleryNodeId, { status:'idle', output:{ images: shopifyCdnUrls.length ? shopifyCdnUrls : (uploadedUrls?.length ? uploadedUrls : analysisImageUrl ? [analysisImageUrl] : []) } }); setSelected(galleryNodeId) }
 
       updateNodeRun(nodeId, { status:'success', output:{ message: 'Product created. Select images in gallery to generate landing.' } })
     }catch(err:any){
@@ -1038,18 +1041,21 @@ Return ONLY the JSON object described in Output Contract.`)
   async function geminiGenerate(nodeId:string, opts?: { variantOverride?: { name:string, description?:string }[] }){
     const n = flowRef.current.nodes.find(x=>x.id===nodeId); if(!n) return
     const sourceUrl = n.data?.source_image_url
+    if(imageRuns.current.has(nodeId)) return
     if(!sourceUrl){ updateNodeRun(nodeId, { status:'error', error:'Missing source_image_url' }); return }
-    updateNodeRun(nodeId, { status:'running', startedAt: now() })
+    imageRuns.current.add(nodeId)
+    updateNodeRun(nodeId, { status:'running', error:null, startedAt: now() })
+    log('info', `Generating with ${n.data?.image_model || imageModel}`, nodeId)
     try{
       let resp: any = null
       if(n.data?.type==='gemini_variant_set'){
         const stylePrompt = String(n.data?.style_prompt||geminiVariantStylePrompt||'')
-        const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : undefined
+        const maxVariants = typeof n.data?.max_variants==='number'? n.data.max_variants : 6
         let variantsPayload = (variantDescriptions||[]).map(v=> ({ name: v.name, description: v.description }))
         if(opts?.variantOverride && Array.isArray(opts.variantOverride) && opts.variantOverride.length>0){
           variantsPayload = opts.variantOverride.map(v=> ({ name: v.name, description: v.description }))
         }
-        resp = await geminiGenerateVariantSetWithDescriptions({ image_url: sourceUrl, style_prompt: stylePrompt||undefined, max_variants: maxVariants, variant_descriptions: variantsPayload.length? variantsPayload : undefined })
+        resp = await generateStudioImages({ image_url: sourceUrl, model: n.data?.image_model || imageModel, agent_model: model, mode:'variant', prompt:stylePrompt, variants: (variantsPayload.length ? variantsPayload : colors.map(name=>({name,description:`Exact ${name} variant`}))).slice(0,maxVariants || 6), quality:n.data?.image_quality || 'medium' })
         // Immediately upload generated images to Shopify and replace with CDN URLs
         try{
           const items = Array.isArray(resp?.items)? resp.items : []
@@ -1060,10 +1066,11 @@ Return ONLY the JSON object described in Output Contract.`)
         }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
       }else if(n.data?.type==='gemini_feature_benefit_set'){
-        resp = await geminiGenerateFeatureBenefitSet({
+        resp = await generateStudioImages({
+          model: n.data?.image_model || imageModel, agent_model: model, mode:'feature', quality:n.data?.image_quality || 'medium',
           product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: title||undefined, sizes, colors, target_category: targetCategory },
           image_url: sourceUrl,
-          count: typeof n.data?.count==='number'? n.data.count : 6
+          count: typeof n.data?.count==='number'? n.data.count : 2
         })
         try{
           const items = Array.isArray(resp?.items)? resp.items : []
@@ -1089,23 +1096,18 @@ Return ONLY the JSON object described in Output Contract.`)
             adPrompt += ` Ensure the product shown is size ${midStr} (midpoint of provided range).`
           }
         }catch{}
-        const numImages = (typeof n.data?.num_images==='number' && n.data.num_images>0)? n.data.num_images : 4
-        resp = await geminiGenerateAdImages({ image_url: sourceUrl, prompt: adPrompt, num_images: numImages, neutral_background: (n.data?.neutral_background===false? false : true) })
+        const numImages = (typeof n.data?.num_images==='number' && n.data.num_images>0)? n.data.num_images : 1
+        resp = await generateStudioImages({ image_url: sourceUrl, model: n.data?.image_model || imageModel, agent_model: model, mode:'ad', prompt:adPrompt, count:numImages, neutral_background: n.data?.neutral_background!==false, quality:n.data?.image_quality || 'medium' })
         try{
           const images = Array.isArray(resp?.images)? resp.images : []
           const cdn = await toShopifyUrls(images)
           resp = { ...(resp||{}), images: cdn }
         }catch{}
         updateNodeRun(nodeId, { status:'success', output: resp })
-        // Auto-run the Feature/Benefit node if present
-        try{
-          const fbNode = flowRef.current.nodes.find(x=> x.data?.type==='gemini_feature_benefit_set' && x.data?.source_image_url===sourceUrl)
-          if(fbNode && fbNode.run?.status==='idle'){
-            await geminiGenerate(fbNode.id)
-          }
-        }catch{}
       }
-      // After any Gemini generation, append images to the gallery node if present
+      if(resp?.warning) log('error', resp.warning, nodeId)
+      log('info', `Images ready · ${resp?.model} · Run ${resp?._run?.id || ''}`, nodeId)
+      // After image generation, append images to the gallery node if present
       try{
         const snap = flowRef.current
         const gallery = snap.nodes.find(x=> x.data?.type==='image_gallery')
@@ -1125,6 +1127,8 @@ Return ONLY the JSON object described in Output Contract.`)
       try{ await onSaveDraft() }catch{}
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
+    }finally{
+      imageRuns.current.delete(nodeId)
     }
   }
 
@@ -1235,14 +1239,14 @@ Return ONLY the JSON object described in Output Contract.`)
     )
     let newId:string|undefined
     setFlow(f=>{
-      const child = makeNode('action', n.x+300, n.y, { label:'Gemini Offer Image', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 4 })
+      const child = makeNode('action', n.x+300, n.y, { label:'Offer photo', type:'gemini_ad_images', prompt, source_image_url: src, neutral_background: false, use_global_prompt: false, num_images: 1 })
       const edges = [...f.edges, makeEdge(offerNodeId, 'out', child.id, 'in')]
       const next = { nodes:[...f.nodes, child], edges }
       flowRef.current = next
       newId = child.id
       return next
     })
-    if(newId){ await geminiGenerate(newId) }
+    if(newId){ setSelected(newId); log('info', 'Choose the image model, then generate.', newId) }
   }
 
   async function offerGenerateFull(offerNodeId:string){
@@ -1317,7 +1321,7 @@ Return ONLY the JSON object described in Output Contract.`)
       const finalAllImagesForPage: string[] = Array.from(new Set([ ...cdnUrls, ...httpUrls, ...dataUrls ])).slice(0, 10)
       // Generate landing copy with selected images (HTTP/CDN only for reliability)
       const landingPromptFinal = String(n.data?.landing_prompt||landingCopyPrompt)
-      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: undefined, title: vTitle, description: vDesc, model, image_urls: finalHttpImages, prompt: landingPromptFinal, product_handle })
+      const lcRaw = await llmLandingCopy({ product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: vTitle||undefined, sizes, colors, target_category: targetCategory }, angle: n.data?.angle, title: vTitle, description: vDesc, model, image_urls: finalHttpImages, prompt: landingPromptFinal, product_handle })
       // Sanitize landing copy to ensure only provided CDN URLs are referenced
       const sanitizeLandingCopy = (base:any, urls:string[], titleText:string)=>{
         const imgs = (urls||[]).filter(Boolean).slice(0,10)
@@ -1336,12 +1340,11 @@ Return ONLY the JSON object described in Output Contract.`)
         }
       }
       const lc = sanitizeLandingCopy(lcRaw, finalAllImagesForPage, vTitle)
-      // Create landing page and also update product description server-side with full landing body
-      const page = await shopifyCreatePageFromCopy({ title: vTitle, landing_copy: lc, image_urls: [], product_gid })
+      // Keep the generated landing draft reviewable before the explicit Shopify publication action.
       // Append Create Landing and Meta nodes to show path
       let landingNodeId:string|undefined
       setFlow(f=>{
-        const ln = makeNode('action', n.x+300, n.y, { label:'Create Landing', type:'create_landing', prompt: n.data?.landing_prompt||landingCopyPrompt, image_urls: finalAllImagesForPage })
+        const ln = makeNode('action', n.x+300, n.y, { label:'Review landing page', type:'create_landing', product_gid, prompt: n.data?.landing_prompt||landingCopyPrompt, image_urls: finalAllImagesForPage })
         const edges = [...f.edges, makeEdge(nodeId, 'out', ln.id, 'in')]
         const next = { nodes:[...f.nodes, ln], edges }
         flowRef.current = next
@@ -1352,7 +1355,9 @@ Return ONLY the JSON object described in Output Contract.`)
         updateNodeRun(landingNodeId, {
           status:'success',
           output:{
-            url: page.page_url||null,
+            url: null,
+            _run:lcRaw._run,
+            _tokens:lcRaw._tokens,
             prompt: n.data?.landing_prompt||landingCopyPrompt,
             image_urls: finalAllImagesForPage,
             landing_copy: lc,
@@ -1360,17 +1365,30 @@ Return ONLY the JSON object described in Output Contract.`)
             description: vDesc,
           }
         })
-        // Push the created landing into Ads tab and navigate
-        try{
-          const transfer = { landing_url: page.page_url||null, title: vTitle, images: cdnUrls }
-          sessionStorage.setItem('ptos_transfer_landing', JSON.stringify(transfer))
-        }catch{}
-        try{ window.location.href = '/ads' }catch{}
+        setSelected(landingNodeId)
       }
-      updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls, page_url: page.page_url||null } })
+      updateNodeRun(nodeId, { status:'success', output:{ images: allImages, selected: cdnUrls, selected_shopify_urls: cdnUrls } })
+      log('info', 'Landing draft ready. Review it, then publish to Shopify.')
+      await onSaveDraft()
     }catch(e:any){
       updateNodeRun(nodeId, { status:'error', error:String(e?.message||e) })
     }
+  }
+
+  async function publishLanding(nodeId:string){
+    const node = flowRef.current.nodes.find(n=>n.id===nodeId)
+    if(!node || node.run.status==='running' || node.run.output?.url) return
+    const output = node.run.output
+    if(!output?.landing_copy || !node.data?.product_gid){ log('error','Generate a landing draft and create its product first.'); return }
+    updateNodeRun(nodeId,{status:'running',error:null})
+    try{
+      const page = await shopifyCreatePageFromCopy({title:output.title,landing_copy:output.landing_copy,image_urls:output.image_urls || [],product_gid:node.data.product_gid})
+      if(!page.page_url) throw new Error('Shopify did not return a page URL. Check the store connection before retrying.')
+      updateNodeRun(nodeId,{status:'success',output:{...output,url:page.page_url}})
+      sessionStorage.setItem('ptos_transfer_landing',JSON.stringify({landing_url:page.page_url,title:output.title,images:output.image_urls || []}))
+      log('info','Landing published to Shopify. You can continue to ads when ready.')
+      await onSaveDraft()
+    }catch(error:any){ updateNodeRun(nodeId,{status:'error',error:error.message}) }
   }
 
   async function dataUrlToCompressedFile(dataUrl:string, filename:string, maxW:number=1600, maxH:number=1600, maxBytes:number=850*1024): Promise<File>{
@@ -1407,23 +1425,26 @@ Return ONLY the JSON object described in Output Contract.`)
 
   async function simulate(){
     if(running) return
-    setRunLog([])
-    setFlow(f=>({...f, nodes: f.nodes.map(n=> ({...n, run:{status:'idle',output:null,error:null,startedAt:null,finishedAt:null,ms:0}}))}))
+    if(!title.trim() && !benefits.length){ log('error', 'Add a product title or analyze a product image first.'); return }
     setRunning(true)
-    setTestId(undefined)
-    setLatestStatus(null)
-
-    const start = flow.nodes.find(n=>n.type==='trigger')
-    if(!start){ setRunning(false); return }
-    await visit(start.id, { refs:{} })
-    setRunning(false)
-    const snap = flowRef.current
-    // history disabled
+    try{
+      const generator = flowRef.current.nodes.find(n=>n.data?.type===(isPromotionMode ? 'promotion_generate_offers' : 'generate_angles'))
+      if(!generator) throw new Error('No angle step found in this draft.')
+      setSelected(generator.id)
+      updateNodeRun(generator.id, {status:'running', error:null, startedAt:now()})
+      const result = await executeAction(generator, {refs:{}})
+      updateNodeRun(generator.id, {status:'success', output:result, finishedAt:now()})
+      log('info', 'Angles ready. Select an angle, generate its copy, then approve it.', generator.id)
+    }catch(error:any){
+      const generator = flowRef.current.nodes.find(n=>n.data?.type===(isPromotionMode ? 'promotion_generate_offers' : 'generate_angles'))
+      if(generator) updateNodeRun(generator.id, {status:'error',error:error.message})
+      else log('error', error.message)
+    }finally{ setRunning(false) }
   }
 
   async function visit(nodeId:string, bag:any){
     setActiveNodeId(nodeId)
-    const node = flow.nodes.find(n=>n.id===nodeId); if(!node) return
+    const node = flowRef.current.nodes.find(n=>n.id===nodeId); if(!node) return
     const started = performance.now()
     updateNodeRun(nodeId, { status:'running', startedAt: now() })
     try{
@@ -1455,7 +1476,6 @@ Return ONLY the JSON object described in Output Contract.`)
 
   async function executeAction(node:FlowNode, bag:any){
     const type = node.data.type
-    await wait(300+Math.random()*300)
     if(type==='title_desc'){
       // Pass-through Title & Description node so Run doesn't error and inspector shows values
       const v = (node.data?.value||{}) as { title?:string, description?:string }
@@ -1523,7 +1543,7 @@ Return ONLY the JSON object described in Output Contract.`)
         return next
       })
       const instructions = (res as any)?.instructions || (res as any)?.diagnosis?.why_these_angles || 'Follow CRO best practices and ensure clarity, proof, and risk reversal.'
-      return { count: (offers||[]).length, instructions }
+      return { count: (offers||[]).length, instructions, _run:res._run, _tokens:res._tokens }
     }
     if(type==='generate_angles'){
       // Expand variables in angles prompt
@@ -1548,7 +1568,7 @@ Return ONLY the JSON object described in Output Contract.`)
         flowRef.current = next
         return next
       })
-      return { count: (res.angles||[]).length }
+      return { count: (res.angles||[]).length, _run:res._run, _tokens:res._tokens }
     }
     if(type==='angle_variant'){
       // Auto-generate title & description and auto-approve by creating the next node
@@ -1566,7 +1586,7 @@ Return ONLY the JSON object described in Output Contract.`)
         angle: node.data?.angle,
         prompt,
         model,
-        image_urls: (urls||[]).slice(0,1)
+        image_urls: (urls?.length ? urls : analysisImageUrl ? [analysisImageUrl] : []).slice(0,1)
       })
       // Auto-approve and create Title & Description node
       setFlow(f=>{
@@ -1648,31 +1668,32 @@ Return ONLY the JSON object described in Output Contract.`)
       <header className="h-16 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <Rocket className="w-6 h-6 text-blue-600" />
-          <h1 className="font-semibold text-lg">Product Testing OS — Flow Studio</h1>
-          <Badge className="bg-blue-100 text-blue-700">New UI</Badge>
+          <h1 className="font-semibold text-lg">Product Studio</h1>
+          <span className="hidden lg:inline text-sm text-slate-500">From product to ready-to-review creative</span>
         </div>
         <div className="flex items-center gap-2">
           <a href="/" className="text-sm rounded-xl font-semibold inline-flex items-center justify-center px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white">Home</a>
-          <Button variant="outline" size="sm" onClick={simulate} disabled={running}><Play className="w-4 h-4 mr-1"/>Run flow</Button>
+          <Button variant="outline" size="sm" onClick={simulate} disabled={running || imageRuns.current.size>0}><Play className="w-4 h-4 mr-1"/>{running ? 'Generating…' : 'Generate angles'}</Button>
           <Button variant="outline" size="sm" onClick={onSaveDraft}><Save className="w-4 h-4 mr-1"/>Save draft</Button>
-          <Button size="sm" onClick={()=>alert('Published (wire CI/CD)')}><CirclePlay className="w-4 h-4 mr-1"/>Publish</Button>
+
         </div>
       </header>
 
-      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100vh-4rem)]">
-        <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
+      <div className="grid grid-cols-12 gap-4 p-4 lg:h-[calc(100vh-4rem)]">
+        <aside className="col-span-12 lg:col-span-3 space-y-3 min-w-0 overflow-x-hidden overflow-y-auto pb-12">
+          <StudioTokenGuard/>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">LLM model</CardTitle>
+              <CardTitle className="text-base">AI models</CardTitle>
             </CardHeader>
             <CardContent>
               <div>
-                <select value={model} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                  <option value="gpt-4.1">gpt-4.1</option>
-                  <option value="gpt-4a">chatgpt-4a</option>
-                  <option value="gpt-5">gpt-5</option>
+                <label className="text-xs text-slate-500" htmlFor="studio-agent-model">Agent model · all text steps</label>
+                <select id="studio-agent-model" value={model} disabled={running} onChange={e=>setModel(e.target.value)} className="w-full rounded-xl border px-3 py-2 text-sm">
+                  {TEXT_MODELS.map(m=><option key={m} value={m}>{m==='gpt-6-astra' ? 'GPT-6 Astra · Recommended' : m}</option>)}
                 </select>
+                <div className="mt-3"><ImageModelSelect value={imageModel} onChange={setImageModel}/></div>
+                <p className="text-xs text-slate-500 mt-2">Choose a default here. Each image step can use its own model.</p>
               </div>
             </CardContent>
           </Card>
@@ -1680,7 +1701,7 @@ Return ONLY the JSON object described in Output Contract.`)
             <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
                 <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='inputs'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('inputs')}>Inputs</button>
-                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='prompts'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('prompts')}>Prompts</button>
+                <button className={`text-sm px-3 py-1.5 rounded ${activeLeftTab==='prompts'?'bg-blue-600 text-white':'border'}`} onClick={()=>setActiveLeftTab('prompts')}>Agent instructions</button>
               </div>
             </CardHeader>
           </Card>
@@ -1694,7 +1715,7 @@ Return ONLY the JSON object described in Output Contract.`)
               {/* New: analyze image to prefill inputs */}
               <div className="space-y-2">
                 <div className="text-xs text-slate-500 mb-1">Analyze product image to prefill</div>
-                <input className="w-full rounded-xl border px-3 py-2" placeholder="Paste image URL (or upload above)" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
+                <input className="w-full rounded-xl border px-3 py-2" aria-label="Product image URL" placeholder="Paste image URL or upload below" value={analysisImageUrl} onChange={e=> setAnalysisImageUrl(e.target.value)} />
                 {analysisImageUrl && (
                   <div className="w-full bg-slate-50 border rounded-xl overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1715,7 +1736,8 @@ Return ONLY the JSON object described in Output Contract.`)
                 <div className="flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{
                     try{
-                      if(!analysisImageUrl){ alert('Paste an image URL first.'); return }
+                      if(!analysisImageUrl){ log('error','Paste an image URL or upload an image first.'); return }
+                      setAnalyzing(true)
                       const res = await productFromImage({ image_url: analysisImageUrl, model, target_category: targetCategory })
                       if((res as any)?.error){
                         alert('Analyze error: ' + String((res as any).error))
@@ -1732,8 +1754,9 @@ Return ONLY the JSON object described in Output Contract.`)
                       if(!p.title && !p.audience && !Array.isArray(p.benefits) && !Array.isArray(p.pain_points)){
                         alert('Analyze completed but no structured product info was detected.')
                       }
-                    }catch(e:any){ alert('Analyze failed: '+ String(e?.message||e)) }
-                  }}>Analyze</Button>
+                      log('info', `Product analyzed with ${model}. Review the extracted facts.`)
+                    }catch(e:any){ log('error', 'Analyze failed: '+ String(e?.message||e)) }finally{ setAnalyzing(false) }
+                  }} disabled={analyzing}>{analyzing?'Analyzing…':'Analyze'}</Button>
                 </div>
                 {variantDescriptions.length>0 && (
                   <div className="space-y-1">
@@ -1807,58 +1830,9 @@ Return ONLY the JSON object described in Output Contract.`)
                     try{
                       const newFiles = incoming
                       setFiles(newFiles)
-                      // Try to find a created product to attach images to Shopify
-                      const snap = flowRef.current
-                      const productNode = snap.nodes.find(n=> n.data?.type==='create_product')
-                      let productGid = (productNode?.run?.output||{} as any).product_gid
-                      let urls: string[] = []
-                      // If no product exists yet, create a minimal product to host images on Shopify
-                      if(!isPromotionMode && !productGid){
-                        try{
-                          const created = await shopifyCreateProductFromTitleDesc({
-                            product:{ audience, benefits, pain_points: pains, base_price: price===''?undefined:Number(price), title: (title||undefined), sizes, colors, target_category: targetCategory, track_quantity: trackQty, quantity: quantity===''? undefined : Number(quantity) },
-                            angle: undefined,
-                            title: ((title||'').trim()||'Offer'),
-                            description: ''
-                          })
-                          productGid = (created as any)?.product_gid || productGid
-                          try{ const rep = (created as any)?.report; if(rep && Array.isArray(rep.skipped)){ setShopifyIssues(rep.skipped) } }catch{}
-                          try{
-                            // Persist the created product so subsequent steps update instead of creating anew
-                            if(productGid){ productGidRef.current = productGid }
-                            const handle = (created as any)?.handle
-                            if(handle){ setProductHandle(handle) }
-                          }catch{}
-                          // Optionally reflect creation in UI by seeding a create_product node output if the node exists
-                          if(productGid && productNode){
-                            updateNodeRun(productNode.id, { status:'success', output:{ product_gid: productGid } })
-                          }
-                          // Immediately configure variants/options/inventory so product reflects UI inputs
-                          try{
-                            if(productGid){
-                              const rep2 = await shopifyConfigureVariants({
-                                product_gid: productGid,
-                                base_price: price===''? undefined : Number(price),
-                                sizes,
-                                colors,
-                                track_quantity: trackQty,
-                                quantity: quantity===''? undefined : Number(quantity)
-                              })
-                              if(rep2 && Array.isArray((rep2 as any).skipped)) setShopifyIssues((rep2 as any).skipped)
-                            }
-                          }catch{}
-                        }catch{}
-                      }
-                      if(!isPromotionMode && productGid){
-                        const up = await shopifyUploadProductFiles({ product_gid: productGid, files: newFiles, title: title||undefined, description: '' })
-                        const urlsFromResponse = Array.isArray(up?.urls)? up.urls : []
-                        const urlsFromImages = Array.isArray(up?.images)? (up.images.map((it:any)=> it?.src).filter(Boolean)) : []
-                        urls = (urlsFromResponse.length>0? urlsFromResponse : urlsFromImages)
-                      }else{
-                        // Fallback to generic upload when no product exists yet and no title to create product
-                        const up = await uploadImages(newFiles)
-                        urls = Array.isArray(up?.urls)? up.urls : []
-                      }
+                      const up = await uploadImages(newFiles)
+                      const urls: string[] = Array.isArray(up?.urls) ? up.urls : []
+                      if(!urls.length) throw new Error('Upload returned no images. Please try again.')
                       if(urls.length>0){
                         setUploadedUrls(urls)
                         // Prefill/replace Analyze image URL with Shopify/local URL
@@ -1868,10 +1842,9 @@ Return ONLY the JSON object described in Output Contract.`)
                           const gal = (flowRef.current.nodes.find(n=> n.data?.type==='image_gallery'))
                           if(gal){ await appendImagesToGallery(gal.id, urls) }
                         }catch{}
-                        // Best-effort: save draft so Home can show flow card with this image immediately
-                        try{ await onSaveDraft() }catch{}
+                        log('info', 'Image uploaded. Analyze it or enter product facts, then save the draft.')
                       }
-                    }catch(e){ /* silent */ }
+                    }catch(e:any){ log('error', `Image upload failed: ${e.message}`) }
                   })()
                 }} />
               </div>
@@ -1968,7 +1941,7 @@ Return ONLY the JSON object described in Output Contract.`)
                     </div>
                     <div className="max-h-[420px] overflow-auto">
                       {landingPreviewMode==='preview' ? (
-                        <iframe title="landing-preview" srcDoc={landingPreview.html} className="w-full h-[400px] bg-white" />
+                        <iframe title="landing-preview" sandbox="" srcDoc={landingPreview.html} className="w-full h-[400px] bg-white" />
                       ) : (
                         <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto">{landingPreview.html}</pre>
                       )}
@@ -1978,9 +1951,9 @@ Return ONLY the JSON object described in Output Contract.`)
               </div>
               <Separator/>
               <div>
-                <div className="text-xs text-slate-500 mb-1">Gemini ad image prompt</div>
+                <div className="text-xs text-slate-500 mb-1">Product ad image prompt</div>
                 <Textarea rows={3} value={geminiAdPrompt} onChange={e=>setGeminiAdPrompt(e.target.value)} />
-                <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Gemini ad images.</div>
+                <div className="text-[11px] text-slate-500 mt-1">Default prompt used for Product ad images.</div>
                 <div className="mt-1 flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_ad_prompt: geminiAdPrompt }); localStorage.setItem('ptos_prompts_gemini_ad', geminiAdPrompt) }catch{} }}>Make app default</Button>
                 </div>
@@ -1994,9 +1967,9 @@ Return ONLY the JSON object described in Output Contract.`)
                 </div>
               </div>
               <div>
-                <div className="text-xs text-slate-500 mb-1">Gemini variant style prompt</div>
+                <div className="text-xs text-slate-500 mb-1">Product variant style prompt</div>
                 <Textarea rows={2} value={geminiVariantStylePrompt} onChange={e=>setGeminiVariantStylePrompt(e.target.value)} />
-                <div className="text-[11px] text-slate-500 mt-1">Default style used for Gemini variant-set images.</div>
+                <div className="text-[11px] text-slate-500 mt-1">Default style used for Product variant-set images.</div>
                 <div className="mt-1 flex items-center gap-2">
                   <Button size="sm" variant="outline" onClick={async()=>{ try{ await setGlobalPrompts({ gemini_variant_style_prompt: geminiVariantStylePrompt }); localStorage.setItem('ptos_prompts_gemini_variant_style', geminiVariantStylePrompt) }catch{} }}>Make app default</Button>
                 </div>
@@ -2047,15 +2020,15 @@ Return ONLY the JSON object described in Output Contract.`)
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">Flow settings</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-xs text-slate-500">
-              <div>• Run executes: Generate copy → Launch test → Landing → Meta Ads</div>
-              <div>• Status is polled from your backend and updates nodes/log.</div>
+              <div>1. Add product facts → 2. Choose an angle → 3. Review copy → 4. Generate and select images → 5. Review landing</div>
+              <div>Each step waits for your review. Choose the image model before generating.</div>
             </CardContent>
           </Card>
         </aside>
 
-        <section className="col-span-12 md:col-span-6 relative">
+        <section className="col-span-12 lg:col-span-6 relative">
           <div className="flex items-center justify-between px-2 py-1">
-            <div className="text-sm text-slate-500">Flow canvas</div>
+            <div className="text-sm text-slate-500">{canvasMode ? 'Flow canvas' : 'Product workflow'}</div>
             <div className="flex items-center gap-3">
               <div className="text-xs text-slate-500">Zoom</div>
               <input type="range" min={50} max={140} step={10} value={zoom*100} onChange={e=>setZoom(Number(e.target.value)/100)} className="w-40"/>
@@ -2063,6 +2036,30 @@ Return ONLY the JSON object described in Output Contract.`)
           </div>
           <Separator className="mb-2"/>
 
+          <div className="flex gap-2 mb-3">
+            <Button size="sm" variant={canvasMode?'outline':'default'} onClick={()=>setCanvasMode(false)}>Guided steps</Button>
+            <Button size="sm" variant={canvasMode?'default':'outline'} onClick={()=>setCanvasMode(true)}>Flow canvas</Button>
+          </div>
+          {!canvasMode && <div className="space-y-3 overflow-y-auto max-h-[calc(100vh-12rem)] pr-1">
+            <div className="rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">Start with your product facts. Generate angles, choose one, then review each step below.</div>
+            {flow.nodes.filter(n=>n.type!=='trigger').map((n,index)=><article key={n.id} className={`rounded-2xl border bg-white p-4 ${selected===n.id?'ring-2 ring-blue-500':''}`}>
+              <button className="flex w-full items-center gap-3 text-left mb-3" onClick={()=>setSelected(n.id)}>
+                <span className="rounded-full bg-slate-100 h-8 w-8 flex items-center justify-center text-sm">{index+1}</span>
+                <span className="flex-1 font-semibold">{n.data?.label || n.data?.type}</span>
+                <span className={`text-xs rounded px-2 py-1 ${statusColor(n.run.status)}`}>{statusLabel(n.run.status)}</span>
+              </button>
+              <div className="mt-3">{renderNodeBody({...n,data:{...n.data,image_model:n.data?.image_model || imageModel}}, true, [], null, patch=>setFlow(f=>({...f,nodes:f.nodes.map(x=>x.id===n.id?{...x,data:{...x.data,...patch}}:x)})), angleGenerate, angleApprove, titleContinue, geminiGenerate, galleryApprove, ()=>{}, ()=>{}, offerGenerateImage, startPromotionGenerator, offerGenerateFull)}</div>
+              {n.data?.type==='create_landing' && n.run.output?.landing_copy && <div className="mt-3 space-y-2">
+                <h3 className="font-semibold">{n.run.output.landing_copy.headline}</h3><p className="text-sm text-slate-600">{n.run.output.landing_copy.subheadline}</p>
+                {n.run.output.url ? <div className="flex gap-3 text-sm"><a href={n.run.output.url} target="_blank" rel="noreferrer" className="text-blue-700">Open landing page ↗</a><a href="/ads" className="text-blue-700">Continue to ads →</a></div> : <Button size="sm" disabled={n.run.status==='running'} onClick={()=>publishLanding(n.id)}>Publish landing to Shopify</Button>}
+              </div>}
+              {n.run.error && <p role="alert" className="mt-3 text-sm text-red-700 bg-red-50 rounded-lg p-3">{n.run.error}</p>}
+              {n.run.output?._run && <p className="mt-2 text-xs text-slate-500">{n.run.output._run.model} · Run {n.run.output._run.id}</p>}
+              {n.run.output?._tokens && <p className="mt-1 text-xs text-slate-600">Tokens: {n.run.output._tokens.input_tokens.toLocaleString()} input · {n.run.output._tokens.max_output_tokens.toLocaleString()} output cap{n.run.output._tokens.actual?.length ? ` · ${n.run.output._tokens.actual.reduce((sum:number,r:any)=>sum+(r.input_tokens||0)+(r.output_tokens||0),0).toLocaleString()} actual total` : ''}{n.run.output._tokens.image_count ? ' · image rendering additional' : ''}</p>}
+              <button className="mt-2 text-xs text-blue-700" onClick={()=>setSelected(n.id)}>Review details →</button>
+            </article>)}
+          </div>}
+          {canvasMode && (
           <div ref={canvasRef} className="relative h-[calc(100%-3rem)] bg-white rounded-2xl shadow-inner overflow-hidden border" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseDown={onCanvasMouseDown} onContextMenu={(e)=>e.preventDefault()} onWheel={(e)=>{ if(e.ctrlKey){ e.preventDefault() } }}>
             <GridBackdrop/>
             <div className="absolute left-0 top-0 origin-top-left" style={{transform:`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin:'0 0', willChange:'transform'}}>
@@ -2072,7 +2069,7 @@ Return ONLY the JSON object described in Output Contract.`)
               {flow.nodes.map(n=> (
                 <NodeShell
                   key={n.id}
-                  node={n}
+                  node={{...n,data:{...n.data,image_model:n.data?.image_model || imageModel}}}
                   selected={selected===n.id}
                   onMouseDown={onNodeMouseDown}
                   onDelete={(id)=> setFlow(f=>({...f, nodes:f.nodes.filter(x=>x.id!==id), edges:f.edges.filter(e=>e.from!==id && e.to!==id)}))}
@@ -2094,12 +2091,13 @@ Return ONLY the JSON object described in Output Contract.`)
               ))}
             </div>
           </div>
+          )}
         </section>
 
-        <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-24">
+        <aside className="col-span-12 lg:col-span-3 space-y-3 min-w-0 overflow-x-hidden overflow-y-auto pb-12">
           <Card>
             <CardHeader className="pb-2 flex items-center justify-between">
-              <CardTitle className="text-base">Inspector</CardTitle>
+              <CardTitle className="text-base">Step details</CardTitle>
               {selectedNode && (
                 <button className="p-1 rounded hover:bg-slate-50" onClick={()=> setFlow(f=>({...f, nodes:f.nodes.filter(n=>n.id!==selectedNode.id), edges:f.edges.filter(e=>e.from!==selectedNode.id && e.to!==selectedNode.id)})) }>
                   <Trash className="w-4 h-4 text-slate-500"/>
@@ -2107,10 +2105,10 @@ Return ONLY the JSON object described in Output Contract.`)
               )}
             </CardHeader>
             <CardContent>
-              {!selectedNode && <div className="text-sm text-slate-500">Select a node to see details.</div>}
+              {!selectedNode && <div className="text-sm text-slate-500">Select a step to review its output and adjust instructions.</div>}
               {selectedNode && (
                 <InspectorContent
-                  node={selectedNode}
+                  node={{...selectedNode,data:{...selectedNode.data,image_model:selectedNode.data?.image_model || imageModel}}}
                   latestTrace={(latestStatus as any)?.result?.trace||[]}
                   onPreview={(url)=> setPreviewImage(url)}
                   onUpdateNodeData={(id,patch)=> setFlow(f=> ({...f, nodes: f.nodes.map(n=> n.id===id? ({...n, data:{...n.data, ...patch}}) : n)}))}
@@ -2130,10 +2128,15 @@ Return ONLY the JSON object described in Output Contract.`)
                   globalLandingPrompt={landingCopyPrompt}
                 />
               )}
+              {selectedNode?.data?.type==='create_landing' && selectedNode.run.output?.landing_copy && !selectedNode.run.output?.url && <div className="mt-3"><Button size="sm" disabled={selectedNode.run.status==='running'} onClick={()=>publishLanding(selectedNode.id)}>Publish landing to Shopify</Button></div>}
             </CardContent>
           </Card>
 
-          {/* Simplified right sidebar: only Inspector remains */}
+          <Card><CardHeader><CardTitle>Activity</CardTitle></CardHeader><CardContent>
+            <div role="log" aria-live="polite" className="mt-3 space-y-2 max-h-64 overflow-y-auto text-xs">
+              {runLog.length===0 ? <p className="text-slate-500">Step results and errors appear here.</p> : runLog.slice(-30).map((entry,i)=><p key={i} className={entry.level==='error'?'text-red-700':'text-slate-600'}>{new Date(entry.time).toLocaleTimeString()} · {entry.msg}</p>)}
+            </div>
+          </CardContent></Card>
         </aside>
       </div>
 
@@ -2255,10 +2258,11 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
     const title = out?.title
     return (
       <div className="text-xs text-slate-700">
-        {node.data?.label||'Angle'}
+        {node.data?.angle?.name || node.data?.label || 'Angle'}
+        <p className="my-2 text-sm">{node.data?.angle?.promise || node.data?.angle?.big_idea}</p>
         <div className="text-[11px] text-slate-500 truncate">{title? String(title) : 'No title yet'}</div>
         <div className="mt-1 flex items-center gap-1">
-          <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)} disabled={node.run?.status==='running'}>Gen</Button>
+          <Button size="sm" variant="outline" onClick={()=> onAngleGenerate(node.id)} disabled={node.run?.status==='running'}>Generate copy</Button>
           <Button size="sm" variant={node.data?.approved? 'outline':'default'} disabled={!node.run?.output || !!node.data?.approved} onClick={()=> onAngleApprove(node.id)}>
             {node.data?.approved? '✓' : 'Approve'}
           </Button>
@@ -2273,7 +2277,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
         {node.data?.label||'Title & Description'}
         <div className="text-[11px] text-slate-500 truncate">{v?.title? String(v.title) : '-'}</div>
         <div className="mt-1 flex justify-end">
-          <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Continue</Button>
+          <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Create Shopify product & continue</Button>
         </div>
       </div>
     )
@@ -2282,7 +2286,8 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
     const imgs: string[] = Array.isArray(out?.images)? out.images : []
     return (
       <div className="text-xs text-slate-700">
-        {node.data?.label||'Gemini Ad Images'}
+        {node.data?.label||'Product photos'}
+        <ImageModelSelect value={node.data?.image_model || IMAGE_MODELS[0].id} disabled={node.run.status==='running'} onChange={image_model=>onUpdateNode({image_model})}/>
         <div className="text-[11px] text-slate-500">Images: {imgs.length||0}</div>
         <div className="mt-1 flex items-center gap-1">
           <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
@@ -2295,7 +2300,8 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
     const items: any[] = Array.isArray(out?.items)? out.items : []
     return (
       <div className="text-xs text-slate-700">
-        {node.data?.label|| (type==='gemini_variant_set'? 'Gemini Variant Set':'Gemini Feature/Benefit Set')}
+        {node.data?.label|| (type==='gemini_variant_set'? 'Variant photos':'Feature close-ups')}
+        <ImageModelSelect value={node.data?.image_model || IMAGE_MODELS[0].id} disabled={node.run.status==='running'} onChange={image_model=>onUpdateNode({image_model})}/>
         <div className="text-[11px] text-slate-500">Items: {items.length||0}</div>
         <div className="mt-1 flex items-center gap-1">
           <Button size="sm" variant="outline" onClick={()=> onGeminiGenerate(node.id)} disabled={node.run?.status==='running'}>Generate</Button>
@@ -2327,7 +2333,7 @@ function renderNodeBody(node:FlowNode, expanded:boolean, trace:any[], payload:an
         {node.data?.label||'Select Images'}
         <div className="text-[11px] text-slate-500">Images: {imgs.length||0} • Selected: {selCount}</div>
         <div className="mt-1 flex justify-end">
-          <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={selCount===0 || node.run?.status==='running'}>Approve</Button>
+          <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={selCount===0 || node.run?.status==='running'}>Generate landing draft</Button>
         </div>
       </div>
     )
@@ -2618,7 +2624,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
           </div>
         )}
         {!(node.data?.type==='gemini_ad_images' || node.data?.type==='gemini_variant_set' || node.data?.type==='image_gallery' || node.data?.type==='meta_ads_launch' || node.data?.type==='promotion_offer') && (
-          <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.data,null,2)}</pre>
+          <details><summary className="cursor-pointer text-slate-500">Advanced step details</summary><pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{previewJson(node.data)}</pre></details>
         )}
       </div>
 
@@ -2654,7 +2660,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
             <Textarea rows={4} value={String(node.data?.landingPrompt||'')} onChange={e=> onUpdateNodeData(node.id,{ landingPrompt: e.target.value })} />
           </div>
           <div className="flex justify-end">
-            <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Continue</Button>
+            <Button size="sm" onClick={()=> onTitleContinue(node.id)} disabled={node.run?.status==='running'}>Create Shopify product & continue</Button>
           </div>
         </div>
       )}
@@ -2670,7 +2676,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
       {/* Create Landing controls */}
       {node.data?.type==='create_landing' && (
         <div className="space-y-2">
-          <div className="text-[11px] text-slate-500">Landing page created.</div>
+          <div className="text-[11px] text-slate-500">{node.run?.output?.url ? 'Landing page published.' : 'Review your landing draft before publishing.'}</div>
           {(()=>{
             try{
               const url = String((node.run?.output||{} as any)?.url||'')
@@ -2681,18 +2687,18 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                 <div className="space-y-2">
                   {/* Prompt sent to LLM */}
                   {promptText && (
-                    <div className="space-y-1">
-                      <div className="text-[11px] text-slate-500">Prompt sent</div>
+                    <details className="space-y-1">
+                      <summary className="text-[11px] text-slate-500 cursor-pointer">Prompt sent</summary>
                       <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto border rounded-lg max-h-[180px] bg-slate-50">{promptText}</pre>
-                    </div>
+                    </details>
                   )}
 
                   {/* Raw JSON output from LLM */}
                   {lc && (
-                    <div className="space-y-1">
-                      <div className="text-[11px] text-slate-500">Output (JSON)</div>
-                      <pre className="text-[11px] p-3 whitespace-pre overflow-auto border rounded-lg max-h-[220px] bg-slate-50">{JSON.stringify(lc, null, 2)}</pre>
-                    </div>
+                    <details className="space-y-1">
+                      <summary className="text-[11px] text-slate-500 cursor-pointer">Advanced response details</summary>
+                      <pre className="text-[11px] p-3 whitespace-pre overflow-auto border rounded-lg max-h-[220px] bg-slate-50">{previewJson(lc)}</pre>
+                    </details>
                   )}
 
                   <div className="flex items-center gap-2 justify-between">
@@ -2705,7 +2711,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                   {html && (
                     <div className="max-h-[320px] overflow-auto border rounded-lg">
                       {landingInspectorMode==='preview' ? (
-                        <iframe title="landing-inline-preview" srcDoc={html} className="w-full h-[300px] bg-white" />
+                        <iframe title="landing-inline-preview" sandbox="" srcDoc={html} className="w-full h-[300px] bg-white" />
                       ) : (
                         <pre className="text-[11px] p-3 whitespace-pre-wrap overflow-auto">{html}</pre>
                       )}
@@ -2718,7 +2724,12 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         </div>
       )}
 
-      {/* Gemini ad images controls */}
+      {String(node.data?.type).startsWith('gemini_') && <div className="space-y-3 mb-3">
+        <ImageModelSelect value={node.data?.image_model || IMAGE_MODELS[0].id} disabled={node.run.status==='running'} onChange={image_model=>onUpdateNodeData(node.id,{image_model})}/>
+        <label className="block text-xs text-slate-600">Quality<select aria-label="Image quality" className="mt-1 w-full rounded-xl border px-3 py-2" value={node.data?.image_quality || 'medium'} disabled={node.run.status==='running'} onChange={e=>onUpdateNodeData(node.id,{image_quality:e.target.value})}><option value="low">Low · Quick drafts</option><option value="medium">Medium · Balanced</option><option value="high">High · Final creative</option></select></label>
+        {node.data?.type!=='gemini_variant_set' && <label className="block text-xs text-slate-600">Image count<Input aria-label="Image count" type="number" min={1} max={6} disabled={node.run.status==='running'} value={node.data?.type==='gemini_ad_images'?(node.data?.num_images || 1):(node.data?.count || 2)} onChange={e=>onUpdateNodeData(node.id,node.data?.type==='gemini_ad_images'?{num_images:Math.max(1,Math.min(6,Number(e.target.value)||1))}:{count:Math.max(1,Math.min(6,Number(e.target.value)||1))})}/></label>}
+      </div>}
+      {/* Product ad images controls */}
       {node.data?.type==='gemini_ad_images' && (
         <div className="space-y-2">
           <label className="flex items-center gap-2">
@@ -2735,7 +2746,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
         </div>
       )}
 
-      {/* Gemini variant set controls */}
+      {/* Product variant set controls */}
       {node.data?.type==='gemini_variant_set' && (
         <div className="space-y-2">
           <label className="flex items-center gap-2">
@@ -2773,7 +2784,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
                 ))}
               </div>
               <div className="flex items-center gap-2 justify-end mt-2">
-                <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean)}>Approve</Button>
+                <Button size="sm" onClick={()=> onGalleryApprove(node.id)} disabled={!Object.values(node.data?.selected||{}).some(Boolean) || node.run.status==='running'}>Generate landing draft</Button>
               </div>
               <div className="mt-3 space-y-1">
                 <div className="text-[11px] text-slate-500">Landing prompt override</div>
@@ -2785,7 +2796,7 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
               </div>
             </div>
           ) : (
-            <div className="text-slate-500">No images yet. Generate with Gemini or upload to product.</div>
+            <div className="text-slate-500">No images yet. Generate photos or upload product images.</div>
           )}
         </div>
       ) : (
@@ -2817,10 +2828,10 @@ function InspectorContent({ node, latestTrace, onPreview, onUpdateNodeData, onUp
           </div>
         ) : (
           (node.run?.output) ? (
-            <div>
-              <div className="text-slate-500 mb-1">Results</div>
-              <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{JSON.stringify(node.run.output,null,2)}</pre>
-            </div>
+            <details>
+              <summary className="text-slate-500 mb-1 cursor-pointer">Advanced results</summary>
+              <pre className="bg-slate-50 p-2 rounded overflow-x-auto max-h-[200px]">{previewJson(node.run.output)}</pre>
+            </details>
           ) : null
         )
       )}

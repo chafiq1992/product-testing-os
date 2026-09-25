@@ -82,6 +82,7 @@ PUBLIC_PATHS = frozenset({
 #   - Social-agent tick: X-Social-Agent-Key shared secret, or a system admin.
 SELF_VERIFIED_PATHS = frozenset({
     "/api/shopify/oauth/callback",
+    "/api/connections/meta/callback",
     "/api/social-agent/scheduler/tick",
 })
 # The confirmation team has its own agent/admin tokens, checked in every

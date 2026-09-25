@@ -438,9 +438,16 @@ def get_app_setting(store: str | None, key: str) -> Any:
         if not item:
             return None
         try:
-            return json.loads(item.value) if item.value is not None else None
-        except Exception:
+            value = json.loads(item.value) if item.value is not None else None
+        except (ValueError, TypeError):
             return item.value
+        from app.connection_secrets import OAUTH_SETTING_KEYS, open_record, seal_record
+        if key in OAUTH_SETTING_KEYS and isinstance(value, dict) and value.get("access_token"):
+            # Migrate existing cleartext records as soon as they are read.
+            item.value = json.dumps(seal_record(key, value), ensure_ascii=False)
+            item.updated_at = _now()
+            session.commit()
+        return open_record(key, value)
 
 
 def get_app_settings(store: str | None, keys: list[str]) -> Dict[str, Any]:
@@ -454,7 +461,8 @@ def get_app_settings(store: str | None, keys: list[str]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for item in rows:
             try:
-                out[item.key] = json.loads(item.value) if item.value is not None else None
+                from app.connection_secrets import open_record
+                out[item.key] = open_record(item.key, json.loads(item.value) if item.value is not None else None)
             except Exception:
                 out[item.key] = item.value
         return out
@@ -464,7 +472,8 @@ def set_app_setting(store: str | None, key: str, value: Any) -> Any:
     with SessionLocal() as session:
         pk = _mk_setting_pk(store, key)
         item = session.get(AppSetting, pk)
-        payload = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+        from app.connection_secrets import seal_record
+        payload = json.dumps(seal_record(key, value), ensure_ascii=False) if not isinstance(value, str) else value
         if item:
             item.value = payload
             item.updated_at = _now()
@@ -489,7 +498,8 @@ def set_app_settings(store: str | None, values: Dict[str, Any]) -> Dict[str, Any
         existing = {item.pk: item for item in session.query(AppSetting).filter(AppSetting.pk.in_(pks)).all()}
         for key, value in clean.items():
             pk = _mk_setting_pk(store, key)
-            payload = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+            from app.connection_secrets import seal_record
+            payload = json.dumps(seal_record(key, value), ensure_ascii=False) if not isinstance(value, str) else value
             item = existing.get(pk)
             if item:
                 item.value = payload

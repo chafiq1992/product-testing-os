@@ -100,8 +100,15 @@ Shopify OAuth fails on this hostname until its callback URL is registered in all
 four Shopify apps. That is expected — `_abs_base_url` derives the callback from
 the host you are visiting, not from `BASE_URL`.
 
-**Cloud Run is still the live deployment.** This hostname is for validation only
-until cutover.
+## Automatic deployment
+
+Every push to `main` runs `.github/workflows/deploy-main.yml`. The workflow
+ships the exact checked-out commit to `/opt/pto/src`, runs the box's
+`/opt/pto/deploy.sh` with a SHA tag, and checks the public `/health` endpoint.
+It requires repository secrets `NETCUP_DEPLOY_KEY` and `NETCUP_KNOWN_HOSTS`.
+`CONNECTION_ENCRYPTION_KEY` must be set in `/opt/pto/app.env` for encrypted
+Shopify and Meta OAuth tokens. Keep this key stable; changing it makes existing
+connection tokens unreadable until those accounts are reconnected.
 
 ### If the Caddy config ever needs changing
 

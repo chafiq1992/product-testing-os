@@ -49,6 +49,28 @@ variables, for example `META_ACCESS_TOKEN_IRRANOVA`, `META_PAGE_ID_IRRANOVA`,
 and optionally `META_INSTAGRAM_ACCOUNT_ID_IRRANOVA`. Unsuffixed historical Meta
 credentials are reserved for Irrakids and are never inherited by another store.
 
+## Connections settings
+
+Open `/settings/connections` with a System Health administrator account. The
+Shopify button opens the existing per-store OAuth install flow. The Meta button
+starts Facebook Login, requests `ads_read`, `ads_management`, and
+`business_management`, then saves the accessible ad accounts for that store.
+The ads manager uses the connected token for campaign reporting and its account
+picker. Google Ads and TikTok Ads are shown as future integrations.
+
+To enable Meta, configure `META_APP_ID`, `META_APP_SECRET`,
+`OAUTH_STATE_SECRET`, `CONNECTION_ENCRYPTION_KEY`, a persistent `DATABASE_URL`,
+and public HTTPS `BASE_URL`.
+Add `{BASE_URL}/api/connections/meta/callback` to the Meta app's valid OAuth
+redirect URIs. The Meta app needs the appropriate Marketing API access and
+permissions for the accounts you connect. Reconnect before the displayed token
+expiry. OAuth tokens are encrypted in the app settings database; keep the
+encryption key stable and protect database backups. `META_CONNECT_API_VERSION`
+defaults to `v26.0`.
+
+The Shopify connection still uses its existing route at `/shopify-connect` and
+requires per-store Shopify app credentials and its registered callback URI.
+
 ## AI Meta ad launcher
 
 The administrator page at `"/ad-launcher"` creates governed paid creative tests

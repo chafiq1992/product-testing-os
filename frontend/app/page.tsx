@@ -82,8 +82,8 @@ export default function HomePage(){
           <Link href="/ad-launcher" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white">
             AI Ad Launcher
           </Link>
-          <Link href="/shopify-connect" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border bg-white hover:bg-slate-50">
-            Shopify Connect
+          <Link href="/settings/connections" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 border bg-white hover:bg-slate-50">
+            Connections
           </Link>
           <Link href="/theme-editor" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white">
             Theme Editor

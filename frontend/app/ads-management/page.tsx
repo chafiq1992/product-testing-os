@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
+import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
 import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, Truck, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
@@ -303,8 +304,9 @@ export default function AdsManagementPage(){
   const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
   const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [collectionProducts, setCollectionProducts] = useState<Record<string, string[]>>({})
-  const [collectionCounts, setCollectionCounts] = useState<Record<string, Record<string, number>>>({})
+  const [collectionOrders, setCollectionOrders] = useState<Record<string, CollectionCampaignOrders>>({})
+  const [childrenError, setChildrenError] = useState<Record<string, string>>({})
+  const collectionRequestIds = useRef<Record<string, number>>({})
   const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({})
   const [adsetsExpanded, setAdsetsExpanded] = useState<Record<string, boolean>>({})
   const [adsetsLoading, setAdsetsLoading] = useState<Record<string, boolean>>({})
@@ -519,62 +521,24 @@ export default function AdsManagementPage(){
 
   function ownerOfRow(row: MetaCampaignRow): CampaignOwner|''{
     const productId = getProductIdForRow(row)
-    const campaignKey = String((row as any)?.campaign_id || '').trim()
-    const nameKey = String((row as any)?.name || '').trim()
-    return (productId ? ownerOfKey(productOwnerKey(productId)) : '') || ownerOfKey(campaignKey) || ownerOfKey(nameKey)
+    return productId ? ownerOfKey(productOwnerKey(productId)) : ''
   }
 
-  function ownerValueForRows(rows: MetaCampaignRow[], productId?: string): CampaignOwner|'mixed'|''{
-    const productOwner = productId ? ownerOfKey(productOwnerKey(productId)) : ''
-    if(productOwner) return productOwner
-    const owners = Array.from(new Set((rows||[]).map(r => ownerOfRow(r)).filter(Boolean)))
-    if(owners.length === 0) return ''
-    if(owners.length === 1) return owners[0] as CampaignOwner
-    return 'mixed'
-  }
-
-  async function saveCampaignOwner(row: MetaCampaignRow, owner: string){
-    const productId = getProductIdForRow(row)
-    if(productId){
-      await saveOwnerForRows([row], owner, productId)
-      return
-    }
-    const key = String((row as any)?.campaign_id || (row as any)?.name || '').trim()
+  async function saveProductOwner(productId: string, owner: string){
     const nextOwner = normalizeOwner(owner)
-    if(!key) return
+    const productKey = productOwnerKey(productId)
+    if(!productId) return
+    const productStore = normalizeStoreValue(storesForProduct(productId, false)[0]) || store
     setOwnerSaveError('')
-    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), owner: nextOwner } }))
+    const previous = campaignMeta[productKey]?.owner || ''
+    setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: nextOwner } }))
     try{
-      const result = await campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store })
+      const result = await campaignMetaUpsert({ campaign_key: productKey, owner: nextOwner, store: productStore })
       if((result as any)?.error) throw new Error((result as any).error)
     }catch{
-      setOwnerSaveError('The campaign owner could not be saved. Refresh and try again.')
+      setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: previous } }))
+      setOwnerSaveError('The product owner could not be saved. Refresh and try again.')
     }
-  }
-
-  async function saveOwnerForRows(rows: MetaCampaignRow[], owner: string, productId?: string){
-    const nextOwner = normalizeOwner(owner)
-    const resolvedProductId = String(productId || getProductIdForRow((rows || [])[0]) || '').trim()
-    const groupRows = resolvedProductId
-      ? (items || []).filter(row => getProductIdForRow(row) === resolvedProductId)
-      : (rows || [])
-    const keys = Array.from(new Set(groupRows.map(r => String((r as any).campaign_id || (r as any).name || '').trim()).filter(Boolean)))
-    const productKey = resolvedProductId ? productOwnerKey(resolvedProductId) : ''
-    const persistenceKeys = productKey ? [productKey, ...keys] : keys
-    if(keys.length === 0) return
-    setOwnerSaveError('')
-    setCampaignMeta(prev => {
-      const out = { ...prev }
-      for(const key of persistenceKeys){
-        out[key] = { ...(out[key] || {}), owner: nextOwner }
-      }
-      return out
-    })
-    const results = await Promise.allSettled(
-      persistenceKeys.map(key => campaignMetaUpsert({ campaign_key: key, owner: nextOwner, store }))
-    )
-    const failed = results.some(result => result.status === 'rejected' || !!(result.status === 'fulfilled' && (result.value as any)?.error))
-    if(failed) setOwnerSaveError('Some campaign owners could not be saved. Refresh and try again.')
   }
 
   function computeRange(preset: string){
@@ -1181,13 +1145,23 @@ export default function AdsManagementPage(){
       } : null
       const metaParams = metaRangeParams(effPreset)
 
-      // Phase 1: One bundle call per ad account (campaigns come from Meta, not per-store).
-      // Mappings + meta come from first store. This keeps it to N calls (one per ad account).
+      // Route each connected account through its store's Meta token and mapping workspace.
       let allCampaigns: MetaCampaignRow[] = []
+      const bundleErrors: string[] = []
       let shaped: Record<string, CampaignMapping> = {}
       let allMeta: Record<string, any> = {}
       const primaryStore = effStores[0] || 'irrakids'
       const acctList = effAdAccounts.length > 0 ? effAdAccounts : ['']
+      const accountStores: Record<string, string> = {}
+      if(effStores.length > 1){
+        try{
+          const connections = await metaListAdAccounts(effStores)
+          for(const account of connections.data || []){
+            const id = String(account.id || '').replace(/^act_/i, '')
+            if(id && account.store) accountStores[id] = account.store
+          }
+        }catch(error: any){ bundleErrors.push(String(error?.message || error)) }
+      }
 
       // Only send an explicit time range when the preset resolves to one — the backend
       // prefers since/until over date_preset, so sending a fallback range here would
@@ -1196,11 +1170,11 @@ export default function AdsManagementPage(){
         fetchAdsManagementBundle({
           date_preset: metaParams.datePreset,
           ad_account: acct || undefined,
-          store: primaryStore,
+          store: accountStores[String(acct || '').replace(/^act_/i, '')] || primaryStore,
           start: metaParams.range?.start,
           end: metaParams.range?.end,
           profit_only: profitOnly,
-        }).catch(() => null)
+        }).catch(error => ({ error: String(error?.message || error) }))
       )
       const bundleResults = await Promise.allSettled(bundlePromises)
       if(loadToken !== loadSeqToken.current) return
@@ -1208,10 +1182,12 @@ export default function AdsManagementPage(){
       const seenCampaignIds = new Set<string>()
       for(let idx = 0; idx < bundleResults.length; idx++){
         const r = bundleResults[idx]
-        if(r.status !== 'fulfilled' || !r.value) continue
+        if(r.status !== 'fulfilled' || !r.value){ bundleErrors.push(`Could not load ad account ${acctList[idx] || 'default'}`); continue }
+        if((r.value as any)?.error){ bundleErrors.push(`${acctList[idx] || 'default'}: ${(r.value as any).error}`); continue }
         const bundle = (r.value as any)?.data
-        if(!bundle) continue
+        if(!bundle){ bundleErrors.push(`Could not load ad account ${acctList[idx] || 'default'}`); continue }
         const acct = acctList[idx]
+        const accountStore = accountStores[String(acct || '').replace(/^act_/i, '')] || primaryStore
 
         const bundleAdAccount = bundle?.ad_account
         if(bundleAdAccount?.id){
@@ -1223,26 +1199,27 @@ export default function AdsManagementPage(){
           const dedupeKey = `${cid}__${acct}`
           if(!seenCampaignIds.has(dedupeKey)){
             seenCampaignIds.add(dedupeKey)
-            allCampaigns.push({ ...c, _store: primaryStore, _adAccount: acct } as any)
+            allCampaigns.push({ ...c, _store: accountStore, _adAccount: acct } as any)
           }
         }
 
         const bundleMappings = bundle?.mappings || {}
         for(const k of Object.keys(bundleMappings)){
           const v = bundleMappings[k]
-          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id, store: v.store || primaryStore }
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id, store: v.store || accountStore }
         }
         allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
       }
 
-      // If extra stores selected, load their mappings + meta too (fast DB calls)
+      // Load mappings and product owners for every selected store.
       if(effStores.length > 1){
-        const extraMappings = await Promise.allSettled(
-          effStores.slice(1).map(st => campaignMappingsList(st).catch(() => ({})))
+        const extraStoreData = await Promise.allSettled(
+          effStores.slice(1).map(async st => Promise.all([campaignMappingsList(st), campaignMetaList(st)]))
         )
-        for(const r of extraMappings){
+        for(const r of extraStoreData){
           if(r.status !== 'fulfilled') continue
-          const map = ((r.value as any)?.data) || {}
+          const map = ((r.value[0] as any)?.data) || {}
+          allMeta = { ...allMeta, ...((r.value[1] as any)?.data || {}) }
           for(const k of Object.keys(map)){
             const v = map[k]
             if(v && (v.kind==='product' || v.kind==='collection') && v.id && !shaped[k]) shaped[k] = { kind: v.kind, id: v.id, store: v.store }
@@ -1255,8 +1232,10 @@ export default function AdsManagementPage(){
           const res = await fetchMetaCampaigns(metaParams.datePreset, acctList[0]||undefined, metaParams.range, profitOnly)
           if(loadToken !== loadSeqToken.current) return
           if(!(res as any)?.error) allCampaigns = (res as any)?.data || []
-        } catch {}
+          else bundleErrors.push(String((res as any).error))
+        } catch(error: any) { bundleErrors.push(String(error?.message || error)) }
       }
+      if(bundleErrors.length) setError(`Some ads data could not be loaded. ${Array.from(new Set(bundleErrors)).join('; ')}`)
 
       const rankedAllCampaigns = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
       const spendingCampaigns = rankedAllCampaigns.filter(campaignHasSpend)
@@ -1279,8 +1258,8 @@ export default function AdsManagementPage(){
       setManualCounts({})
       setStoreOrdersTotal(null)
       setExpanded({})
-      setCollectionProducts({})
-      setCollectionCounts({})
+      setCollectionOrders({})
+      setChildrenError({})
       setChildrenLoading({})
       setAdsetsExpanded({})
       setAdsetsLoading({})
@@ -1404,28 +1383,25 @@ export default function AdsManagementPage(){
     finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
   }
 
-  async function loadCollectionChildren(rowKey: any, collectionId: string){
-    setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: true }))
+  async function loadCollectionChildren(rowKey: any, collectionId: string, rowStore = store){
+    const key = String(rowKey)
+    const loadToken = loadSeqToken.current
+    const requestId = (collectionRequestIds.current[key] || 0) + 1
+    collectionRequestIds.current[key] = requestId
+    const isCurrent = ()=> loadToken === loadSeqToken.current && collectionRequestIds.current[key] === requestId
+    setChildrenLoading(prev=> ({ ...prev, [key]: true }))
+    setChildrenError(prev=> ({ ...prev, [key]: '' }))
     try{
-      const { data } = await shopifyCollectionProducts({ collection_id: collectionId, store }) as any
-      const ids: string[] = ((data||{}).product_ids)||[]
-      setCollectionProducts(prev=> ({ ...prev, [String(rowKey)]: ids }))
-      const { start, end } = effectiveYmdRange(datePreset)
-      try{
-        const oc = await shopifyOrdersCountByTitle({ names: ids, start, end, include_closed: true, date_field: 'processed' })
-        const map = ((oc as any)?.data)||{}
-        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: map }))
-        // Update collection total to match sum of children
-        const sum = ids.reduce((acc, id)=> acc + (Number(map[id] ?? 0) || 0), 0)
-        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: sum }))
-      }catch{
-        const empty: Record<string, number> = {}
-        for(const id of ids) empty[id] = 0
-        setCollectionCounts(prev=> ({ ...prev, [String(rowKey)]: empty }))
-        setManualCounts(prev=> ({ ...prev, [String(rowKey)]: 0 }))
-      }
+      const result = await fetchCampaignCollectionOrders(key, collectionId, effectiveYmdRange(datePreset), rowStore)
+      if(result.error) throw new Error(result.error)
+      if(!Array.isArray(result.data?.product_ids)) throw new Error('Collection UTM orders are unavailable')
+      if(isCurrent()) setCollectionOrders(prev=> ({ ...prev, [key]: result.data }))
+      // The main Orders column keeps total product sales, as for product campaigns.
+      // Only this drilldown shows campaign-attributed UTM orders.
+    }catch(e:any){
+      if(isCurrent()) setChildrenError(prev=> ({ ...prev, [key]: e?.message || 'Collection UTM orders are unavailable' }))
     }finally{
-      setChildrenLoading(prev=> ({ ...prev, [String(rowKey)]: false }))
+      if(isCurrent()) setChildrenLoading(prev=> ({ ...prev, [key]: false }))
     }
   }
 
@@ -1618,24 +1594,33 @@ export default function AdsManagementPage(){
   useEffect(()=>{
     const loadAccounts = async () => {
       try{
-        const res = await metaListAdAccounts()
+        const res = await metaListAdAccounts(selectedStores)
+        if(res.error) throw new Error(res.error)
         const items = ((res as any)?.data)||[]
-        const extras: Array<{id:string,name:string}> = [
-          { id: '8127151147322914', name: '8127151147322914' },
-          ...selectedAdAccounts.map(id => ({ id, name: id })),
-        ]
+        const connected = res.connected === true
+        const extras: Array<{id:string,name:string}> = connected ? [] : selectedAdAccounts.map(id => ({ id, name: id }))
         const byId: Record<string, {id:string,name:string,account_status?:number}> = {}
         const accountKey = (id: string) => String(id || '').replace(/^act_/i, '')
         for(const a of items){ const key = accountKey(a.id); if(key) byId[key] = a }
         for(const e of extras){ const key = accountKey(e.id); if(key && !byId[key]) byId[key] = e as any }
         setAdAccounts(Object.values(byId))
+        const available = Object.values(byId).map(account => account.id)
+        const accountKeyOf = (id: string) => String(id || '').replace(/^act_/i, '')
+        const validSelected = connected ? selectedAdAccounts.filter(id => available.some(candidate => accountKeyOf(candidate) === accountKeyOf(id))) : selectedAdAccounts
+        const nextSelected = validSelected.length ? validSelected : available
+        if(nextSelected.join(',') !== selectedAdAccounts.join(',')){
+          setSelectedAdAccounts(nextSelected)
+          try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(nextSelected)) }catch{}
+        }
+        return nextSelected
       }catch{ setAdAccounts([]) }
+      return selectedAdAccounts
     }
     ;(async()=>{
-      loadAccounts()
+      const accounts = await loadAccounts()
       if(!initialLoadDone.current){
         initialLoadDone.current = true
-        load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })
+        load(undefined, { stores: selectedStores, adAccounts: accounts })
       }
       // Load saved action tasks
       if(!actionTasksLoaded){
@@ -2264,6 +2249,7 @@ export default function AdsManagementPage(){
           <h1 className="font-semibold text-lg">Ads management</h1>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
+          <Link href={`/settings/connections?store=${encodeURIComponent(store)}`} className="rounded-xl border bg-white px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-50">Connect accounts</Link>
           <MultiCheckDropdown
             label="Stores"
             options={storeOptions}
@@ -2338,8 +2324,8 @@ export default function AdsManagementPage(){
                 setManualCounts({})
                 setStoreOrdersTotal(null)
                 setExpanded({})
-                setCollectionProducts({})
-                setCollectionCounts({})
+                setCollectionOrders({})
+                setChildrenError({})
                 setAdsetsExpanded({})
                 setAdsetsByCampaign({})
                 setAdsetOrdersByCampaign({})
@@ -3045,15 +3031,15 @@ export default function AdsManagementPage(){
                         </td>
                         <td className="px-1 py-0.5">
                           {(()=>{
-                            const owner = ownerValueForRows(d.rows, pid)
+                            const owner = ownerOfKey(productOwnerKey(pid))
                             return (
                               <select
-                                value={owner === 'mixed' ? '' : owner}
-                                onChange={(e)=> saveOwnerForRows(d.rows, e.target.value, pid)}
+                                value={owner}
+                                onChange={(e)=> saveProductOwner(pid, e.target.value)}
                                 className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
-                                title={owner === 'mixed' ? 'Mixed owners' : 'Campaign owner'}
+                                title="Owner for all campaigns in this product"
                               >
-                                <option value="">{owner === 'mixed' ? 'Mixed' : 'No owner'}</option>
+                                <option value="">No owner</option>
                                 {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
                               </select>
                             )
@@ -3328,6 +3314,11 @@ export default function AdsManagementPage(){
                             if(!cid) return
                             const open = !adsetsExpanded[cid]
                             setAdsetsExpanded(prev=> ({ ...prev, [cid]: open }))
+                            const collectionMapping = manualIds[String(rowKey)]
+                            if(collectionMapping?.kind === 'collection'){
+                              setExpanded(prev=> ({ ...prev, [String(rowKey)]: open }))
+                              if(open) void loadCollectionChildren(rowKey, collectionMapping.id, collectionMapping.store || (c as any)._store || store)
+                            }
                             if(open && !adsetsByCampaign[cid] && !adsetsLoading[cid]){
                               setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
                               ;(async()=>{
@@ -3350,9 +3341,9 @@ export default function AdsManagementPage(){
                                 try{
                                   const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
                                   setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
-                                  const rowStore = (c as any)._store || store
+                                  const rowStore = manualIds[String(rowKey)]?.store || (c as any)._store || store
                                   const mappingKind = ((manualIds as any)[String(rowKey)]?.kind) as ('product'|'collection'|undefined)
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, selectedStores.length > 1 ? selectedStores : undefined, mappingKind)
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, mappingKind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mappingKind)
                                   if((ord as any)?.error) throw new Error(String((ord as any).error))
                                   const mapping = ((ord as any)?.data)||{}
                                   setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
@@ -3428,7 +3419,7 @@ export default function AdsManagementPage(){
                           )}
                         </div>
                       )}
-                      <div className="mt-1 flex items-center gap-1">
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
                         {(()=>{
                           const rk = (c.campaign_id || c.name || '') as any
                           const draft = manualDrafts[rk] || manualIds[rk] || { kind:'product', id:'' }
@@ -3472,8 +3463,8 @@ export default function AdsManagementPage(){
                                       const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
                                       const count = Number(((oc as any)?.data||{})?.count ?? 0)
                                       setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
-                                      // Preload children and align total with sum
-                                      await loadCollectionChildren(rk, next.id)
+                                      // Preload campaign-attributed product counts separately from total sales.
+                                      await loadCollectionChildren(rk, next.id, next.store)
                                     }
                                   }catch{
                                     setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
@@ -3488,7 +3479,7 @@ export default function AdsManagementPage(){
                                     setExpanded(prev=> ({ ...prev, [String(rk)]: open }))
                                     if(open){
                                       const collId = String(((manualIds as any)[rk]||{}).id||'')
-                                      if(collId) await loadCollectionChildren(rk, collId)
+                                      if(collId) await loadCollectionChildren(rk, collId, manualIds[String(rk)]?.store || (c as any)._store || store)
                                     }
                                   }}
                                   className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
@@ -3501,8 +3492,9 @@ export default function AdsManagementPage(){
                                     setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
                                     setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
                                   setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
-                                  setCollectionProducts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
-                                  setCollectionCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  collectionRequestIds.current[String(rk)] = (collectionRequestIds.current[String(rk)] || 0) + 1
+                                  setCollectionOrders(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
+                                  setChildrenError(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
                                   }}
                                   className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
                                 >Clear</button>
@@ -3563,14 +3555,7 @@ export default function AdsManagementPage(){
                       })()}
                     </td>
                     <td className="px-1 py-0.5">
-                      <select
-                        value={ownerOfRow(c)}
-                        onChange={(e)=> saveCampaignOwner(c, e.target.value)}
-                        className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
-                      >
-                        <option value="">No owner</option>
-                        {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
-                      </select>
+                      <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>
                     </td>
                     <td className="px-1 py-0.5 text-right">
                       {profitMode ? (
@@ -4010,32 +3995,24 @@ export default function AdsManagementPage(){
                         </tr>
                       )
                     }
-                    // Existing collection expansion block
+                    return null
+                  })()}
+                  {(()=>{
+                    const rk = String(c.campaign_id || c.name || '')
                     const conf2 = (manualIds as any)[rk]
                     if(!(conf2 && conf2.kind==='collection' && expanded[String(rk)])) return null
-                    const ids = collectionProducts[String(rk)]||[]
-                    const counts = collectionCounts[String(rk)]||{}
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
                         <td className="px-1.5 py-0.5 bg-slate-50" colSpan={tableColSpan}>
                           {loadingChildren ? (
-                            <div className="text-xs text-slate-500">Loading products…</div>
-                          ) : (
-                            <div className="text-xs">
-                              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                                {ids.map(pid=> (
-                                  <div key={pid} className="flex items-center justify-between border rounded px-2 py-1 bg-white">
-                                    <span className="font-mono">{pid}</span>
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">{counts[pid] ?? '—'}</span>
-                                  </div>
-                                ))}
-                                {ids.length===0 && (
-                                  <div className="text-slate-500">No products in this collection.</div>
-                                )}
-                              </div>
+                            <div className="text-xs text-slate-500">Loading collection UTM orders…</div>
+                          ) : childrenError[rk] ? (
+                            <div role="alert" className="text-xs text-amber-700 p-2">
+                              Could not load collection UTM orders. {childrenError[rk]}
+                              <button className="ml-2 underline" onClick={()=> void loadCollectionChildren(rk, conf2.id, conf2.store || (c as any)._store || store)}>Retry</button>
                             </div>
-                          )}
+                          ) : collectionOrders[rk] ? <CollectionUtmOrders data={collectionOrders[rk]} /> : null}
                         </td>
                       </tr>
                     )
@@ -4825,6 +4802,52 @@ function TimelineModal({ open, onClose, campaign, meta, loading, onAdd, adding, 
 }
 
 // Performance Modal
+function CollectionUtmOrders({ data }: { data: CollectionCampaignOrders }){
+  return (
+    <section aria-label="Collection campaign UTM orders" className="text-xs p-2 border rounded bg-white">
+      <div className="font-semibold text-slate-700">Collection products · campaign UTM orders</div>
+      <div className="text-slate-500 mt-1 mb-2">
+        {data.campaign_count} campaign UTM orders · {data.collection_count} contain collection products in the selected date range.
+        Each order counts once per product, regardless of quantity.
+      </div>
+      <div className="space-y-1">
+        {data.product_ids.map(pid=>{
+          const product = data.products[pid]
+          return (
+            <details key={pid} className="border rounded bg-slate-50">
+              <summary className="cursor-pointer px-2 py-1.5" aria-label={`Product ${pid}: ${product.count} UTM orders`}>
+                <span className="font-mono ml-1">{pid}</span>
+                <span className="ml-3 inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Orders {product.count}</span>
+              </summary>
+              {product.count === 0 ? <div className="px-3 pb-2 text-slate-500">No orders attributed to this campaign for this product.</div> : (
+                <div className="overflow-x-auto p-2 bg-white">
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="text-slate-500"><tr>
+                      <th className="px-1 py-1">Order</th><th className="px-1 py-1">Processed</th><th className="px-1 py-1">Total</th>
+                      <th className="px-1 py-1">utm_campaign</th><th className="px-1 py-1">utm_content</th><th className="px-1 py-1">utm_source</th>
+                    </tr></thead>
+                    <tbody>{product.orders.map(order=>(
+                      <tr key={String(order.order_id)} className="border-t">
+                        <td className="px-1 py-1">{order.name || order.order_id}</td>
+                        <td className="px-1 py-1">{order.processed_at ? new Date(order.processed_at).toLocaleString() : '—'}</td>
+                        <td className="px-1 py-1">{order.total_price ?? '—'} {order.currency || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_campaign || order.campaign_id || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_content || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_source || ''}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </details>
+          )
+        })}
+        {data.product_ids.length === 0 && <div className="text-slate-500">No products in this collection.</div>}
+      </div>
+    </section>
+  )
+}
+
 function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ open:boolean, onClose:()=>void, loading:boolean, campaign:{id:string,name:string}|null, days:Array<{date:string,spend:number,purchases:number,cpp?:number|null,ctr?:number|null,add_to_cart:number}>, orders:number[] }){
   if(!open) return null
   const labels = (days||[]).map(d=> d.date)

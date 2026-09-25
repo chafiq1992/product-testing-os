@@ -1,0 +1,53 @@
+name: Deploy main to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure deployment SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.NETCUP_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.NETCUP_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_KEY" || { echo 'NETCUP_DEPLOY_KEY secret is missing'; exit 1; }
+          test -n "$KNOWN_HOSTS" || { echo 'NETCUP_KNOWN_HOSTS secret is missing'; exit 1; }
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes deploy@159.195.204.91 true
+
+      - name: Copy the checked out source to the production box
+        run: bash deploy/push-source.sh deploy@159.195.204.91
+
+      - name: Build and release
+        run: ssh -o BatchMode=yes deploy@159.195.204.91 "/opt/pto/deploy.sh sha-${GITHUB_SHA::12}"
+
+      - name: Verify live health
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.request
+
+          with urllib.request.urlopen('https://pt.chattbase.site/health', timeout=20) as response:
+              health = json.load(response)
+          assert health.get('status') == 'healthy', health
+          assert health.get('checks', {}).get('database', {}).get('ok') is True, health
+          print('Live app is healthy')
+          PY

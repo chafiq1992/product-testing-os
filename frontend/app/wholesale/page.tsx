@@ -10,6 +10,7 @@ import {
   CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2, MessageCircle
 } from 'lucide-react'
 import ChatInbox from '../../components/chat/ChatInbox'
+import { BatchImagePicker, BatchProgress, type BatchImage } from './BatchProducts'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
@@ -943,25 +944,12 @@ export default function WholesalePage() {
   useEffect(() => {
     setLangState(getLang())
     const s = getSession()
-    if (!s?.id) { setLoading(false); return }
-    // The API now requires the session cookie that /api/wholesale/login sets.
-    // A session saved before that change has no cookie: sign in again.
-    fetch(`${API}/api/auth/session`)
-      .then(r => r.json())
-      .then(({ data }) => {
-        const vid = String(s.id || '').toLowerCase()
-        if (data?.operator || String(data?.vendor || '').toLowerCase() === vid) setVendor(s)
-        else clearSession()
-      })
-      .catch(() => setVendor(s))
-      .finally(() => setLoading(false))
+    if (s?.id) setVendor(s)
+    setLoading(false)
   }, [])
 
   function onLogin(v: any) { setSession(v); setVendor(v) }
-  function onLogout() {
-    clearSession(); setVendor(null)
-    fetch(`${API}/api/auth/logout`, { method: 'POST' }).catch(() => {})
-  }
+  function onLogout() { clearSession(); setVendor(null) }
   function onLangChange(next: Lang) {
     setLangState(next)
     setLang(next)
@@ -1129,6 +1117,8 @@ function Dashboard({
   useEffect(() => { refreshProducts(); refreshOrders() }, [vendor.id])
   // Reveal the island and reset scroll tracking whenever the tab changes.
   useEffect(() => { setNavHidden(false); lastScrollRef.current = 0; if (mainRef.current) mainRef.current.scrollTop = 0 }, [activeTab])
+  // Include products finished by the background queue when returning to stock.
+  useEffect(() => { if (activeTab === 'inventory') void refreshProducts() }, [activeTab])
   const isArabic = lang === 'ar'
 
   function toggleLang() {
@@ -2050,6 +2040,15 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
 }
 function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => void; copy: AppCopy; lang: Lang }) {
   const [saving, setSaving] = useState(false)
+  const [mode, setMode] = useState<'single' | 'batch'>('single')
+  const isBatch = mode === 'batch'
+  const [batchImages, setBatchImages] = useState<BatchImage[]>([])
+  const [batchRefresh, setBatchRefresh] = useState(0)
+  const [storeType, setStoreType] = useState(vendor.store_type || vendor.storeType || 'shoes')
+  const submissionRef = useRef<{ payload: string; id: string } | null>(null)
+  const submittingRef = useRef(false)
+  const analysisVersion = useRef(0)
+  const uploadVersion = useRef(0)
   const [colorInput, setColorInput] = useState('')
   const [form, setForm] = useState({
     title: '',
@@ -2083,7 +2082,6 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     const cog = toNumber(form.cogPrice)
     return unitSalePrice - cog
   }, [form.cogPrice, unitSalePrice])
-  const storeType = vendor.store_type || vendor.storeType || 'shoes'
   const isShoes = storeType === 'shoes'
   const isClothes = storeType === 'clothes'
   const isElectronics = storeType === 'electronics' || storeType === 'general'
@@ -2094,6 +2092,20 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   const [clothesSizes, setClothesSizes] = useState<Record<string, number | string>>({})
   // Electronics/General simple quantity
   const [simpleQty, setSimpleQty] = useState<number | string>('')
+  const [simplePieces, setSimplePieces] = useState<number | string>('')
+  const [generalSize, setGeneralSize] = useState('One size')
+  const [electronicVersion, setElectronicVersion] = useState('')
+
+  useEffect(() => {
+    analysisVersion.current += 1
+    setAnalyzing(false)
+    setForm(f => ({ ...f, title: '', description: '', segment: '', season: '', collection: '', productType: '', tags: [], colors: [] }))
+    if (!isBatch && imageUrl) void handleAnalyzeImage(imageUrl)
+    // Re-run analysis when the selected category changes, retaining stock and prices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeType, isBatch])
+
+  useEffect(() => () => { analysisVersion.current += 1; uploadVersion.current += 1 }, [])
 
   function addColor() {
     const c = colorInput.trim()
@@ -2134,14 +2146,19 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   async function handleImageCapture(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+    const version = ++uploadVersion.current
+    analysisVersion.current += 1
+    setImageUrl(null)
+    setForm(f => ({ ...f, title: '', description: '', segment: '', season: '', collection: '', productType: '', tags: [], colors: [] }))
     setImageFile(file)
     const reader = new FileReader()
-    reader.onload = (ev) => setImagePreview(ev.target?.result as string)
+    reader.onload = (ev) => { if (version === uploadVersion.current) setImagePreview(ev.target?.result as string) }
     reader.readAsDataURL(file)
     setUploading(true)
     setUploadStatus(copy.uploadingImage)
     try {
       const uploadedUrl = await uploadWholesaleImage(file)
+      if (version !== uploadVersion.current) return
       if (uploadedUrl) {
         setImageUrl(uploadedUrl)
         setUploadStatus(copy.imageUploaded)
@@ -2150,9 +2167,9 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         setUploadStatus(copy.uploadFailed)
       }
     } catch {
-      setUploadStatus(copy.uploadError)
+      if (version === uploadVersion.current) setUploadStatus(copy.uploadError)
     } finally {
-      setUploading(false)
+      if (version === uploadVersion.current) setUploading(false)
     }
   }
 
@@ -2183,9 +2200,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   async function handleAnalyzeImage(sourceUrl?: string) {
     const url = sourceUrl || imageUrl
     if (!url) return
+    const version = ++analysisVersion.current
     setAnalyzing(true)
     try {
       const res = await apiPost('/api/wholesale/analyze-image', { image_url: url, target_category: storeType })
+      if (version !== analysisVersion.current) return
       if (res?.data) {
         const ai = res.data
         const detectedColors = Array.isArray(ai.colors) ? ai.colors.map((c: any) => String(c).trim()).filter(Boolean) : []
@@ -2208,11 +2227,16 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
     } catch {
       // Keep analysis silent for vendors; they should only see normal upload/create feedback.
     } finally {
-      setAnalyzing(false)
+      if (version === analysisVersion.current) setAnalyzing(false)
     }
   }
 
   function removeImage() {
+    uploadVersion.current += 1
+    analysisVersion.current += 1
+    setUploading(false)
+    setAnalyzing(false)
+    setForm(f => ({ ...f, title: '', description: '', segment: '', season: '', collection: '', productType: '', tags: [], colors: [] }))
     setImageFile(null)
     setImagePreview(null)
     setImageUrl(null)
@@ -2230,7 +2254,8 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
   }
 
   async function handleSubmit() {
-    if (!imageUrl) { setSaveMessage({ type: 'error', text: copy.uploadImageRequired }); return }
+    if (submittingRef.current) return
+    if (isBatch ? !batchImages.length || batchImages.some(i => i.status !== 'ready') : !imageUrl) { setSaveMessage({ type: 'error', text: copy.uploadImageRequired }); return }
     if (isShoes) {
       if (form.sizeGroups.length === 0) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
       if (form.sizeGroups.some(group => toNumber(group.salePrice) <= 0)) { setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired }); return }
@@ -2241,11 +2266,17 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       setSaveMessage({ type: 'error', text: copy.unitSalePriceRequired })
       return
     }
+    if (isClothes && !Object.values(clothesSizes).some(qty => toInteger(qty) > 0)) { setSaveMessage({ type: 'error', text: copy.stockVariantRequired }); return }
+    if (isElectronics && toInteger(simpleQty) <= 0) { setSaveMessage({ type: 'error', text: copy.crateQuantityRequired }); return }
+    if (isElectronics && (!Number.isInteger(Number(simpleQty)) || !Number.isInteger(Number(simplePieces)) || Number(simplePieces) <= 0)) { setSaveMessage({ type: 'error', text: copy.piecesPerCrateRequired }); return }
+    if (isElectronics && !(storeType === 'electronics' ? electronicVersion : generalSize).trim()) { setSaveMessage({ type: 'error', text: isArabic ? 'أدخل المقاس أو الإصدار.' : 'Enter a size or version.' }); return }
+    submittingRef.current = true
     setSaving(true)
     setSaveMessage({ type: 'success', text: lang === 'ar' ? 'جاري إنشاء المنتج...' : 'Creating product...' })
     try {
       // Build request body based on store type
       const reqBody: any = {
+        store_type: storeType,
         image_url: imageUrl || undefined,
         catalog_image_url: catalogImageUrl || undefined,
         title: form.title || undefined,
@@ -2283,9 +2314,26 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         }))
       }
       if (isElectronics) {
+        const label = (storeType === 'electronics' ? electronicVersion : generalSize).trim()
         reqBody.size_groups = [{
-          from: 'default', to: 'default', pcs_per_crate: 1, crate_quantity: toInteger(simpleQty), sku: form.sizeGroups[0]?.sku?.trim() || '',
+          from: label, to: label, label, option_name: storeType === 'electronics' ? 'Version' : 'Size', pcs_per_crate: toInteger(simplePieces), crate_quantity: toInteger(simpleQty), sku: form.sizeGroups[0]?.sku?.trim() || '',
         }]
+      }
+      if (isBatch) {
+        const shared = { store_type: storeType, size_groups: reqBody.size_groups, cog_price: reqBody.cog_price, sale_price: reqBody.sale_price, compare_at_price: reqBody.compare_at_price }
+        const payload = { shared, images: batchImages.map(i => ({ image_url: i.url, name: i.file.name })) }
+        const serialized = JSON.stringify(payload)
+        if (submissionRef.current?.payload !== serialized) submissionRef.current = { payload: serialized, id: crypto.randomUUID() }
+        const response = await fetch(`${API}/api/wholesale/vendors/${encodeURIComponent(vendor.id)}/product-batches`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...payload, request_id: submissionRef.current.id }),
+        })
+        const result = await response.json()
+        if (!response.ok || !result?.data?.id) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not queue products')
+        setBatchRefresh(value => value + 1)
+        setBatchImages([])
+        submissionRef.current = null
+        setSaveMessage({ type: 'success', text: isArabic ? 'تمت إضافة المنتجات إلى قائمة الانتظار. يمكنك متابعة التقدم أعلاه.' : 'Products queued. You can follow their progress above or leave this page.' })
+        return
       }
       const res = await apiPost(`/api/wholesale/vendors/${vendor.id}/products`, reqBody)
       if (res?.error) { setSaveMessage({ type: 'error', text: `${copy.errorPrefix}: ${res.error}` }); return }
@@ -2293,7 +2341,7 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
       setTimeout(onDone, 650)
     } catch (e: any) {
       setSaveMessage({ type: 'error', text: `${copy.saveProductError} ${e?.message || e}` })
-    } finally { setSaving(false) }
+    } finally { setSaving(false); submittingRef.current = false }
   }
 
   return (
@@ -2302,8 +2350,30 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900">{copy.addProductTitle}</h2>
       </div>
 
+      <BatchProgress vendorId={vendor.id} refreshKey={batchRefresh} arabic={isArabic} />
+      <section className="space-y-5 rounded-3xl border border-slate-200 bg-white p-5">
+        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1" role="group" aria-label={isArabic ? 'طريقة الإضافة' : 'Add products mode'}>
+          {(['single', 'batch'] as const).map(value => <button key={value} type="button" aria-pressed={mode === value} disabled={saving || uploading || catalogUploading} onClick={() => { setMode(value); setSaveMessage(null) }} className={`flex items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-bold transition ${mode === value ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>
+            {value === 'single' ? <Package size={18} /> : <Layers size={18} />}
+            {value === 'single' ? (isArabic ? 'منتج واحد' : 'Single product') : (isArabic ? 'دفعة منتجات' : 'Batch products')}
+          </button>)}
+        </div>
+        <div>
+          <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">{isArabic ? 'نوع المنتج / المتجر' : 'Product / store type'}</h3>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="group" aria-label={isArabic ? 'نوع المنتج' : 'Product type'}>
+            {[['shoes', '👟', 'Shoes', 'أحذية'], ['clothes', '👕', 'Clothing', 'ملابس'], ['electronics', '📱', 'Electronics', 'إلكترونيات'], ['general', '📦', 'General', 'عام']].map(([value, icon, en, ar]) => <button key={value} type="button" disabled={saving || uploading || catalogUploading} aria-pressed={storeType === value} onClick={() => setStoreType(value)} className={`flex items-center justify-center gap-2 rounded-2xl border px-3 py-3 text-sm font-bold transition ${storeType === value ? 'border-blue-400 bg-blue-50 text-blue-700 ring-1 ring-blue-400' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200'}`}>
+              <span aria-hidden="true" className="text-xl">{icon}</span>{isArabic ? ar : en}
+            </button>)}
+          </div>
+        </div>
+      </section>
+
+      <div className={isBatch ? '' : 'hidden'}>
+        <BatchImagePicker images={batchImages} onChange={setBatchImages} disabled={saving} arabic={isArabic} />
+      </div>
+
       {/* ── CAMERA / IMAGE CAPTURE SECTION ── */}
-      <section className="bg-gradient-to-br from-blue-50 via-indigo-50 to-violet-50 p-5 rounded-3xl border border-blue-200 shadow-sm">
+      {!isBatch && <section className="bg-gradient-to-br from-blue-50 via-indigo-50 to-violet-50 p-5 rounded-3xl border border-blue-200 shadow-sm">
         <h3 className="text-[10px] font-bold uppercase text-blue-600 mb-4 flex items-center gap-2 tracking-widest">
           <Camera size={14} /> {copy.productPhoto}
         </h3>
@@ -2415,16 +2485,17 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
             <span className="text-xs font-bold">{copy.uploadingImage}</span>
           </div>
         )}
-      </section>
+      </section>}
 
 
       {/* Electronics/General: Product Name & Description */}
       {isElectronics && (
         <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
           <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
-            <TagIcon size={14} /> Product Details
+            <TagIcon size={14} /> {isArabic ? 'تفاصيل المنتج' : 'Product Details'}
           </h3>
           <div className="space-y-4">
+            {!isBatch && <>
             <div>
               <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Product Name</label>
               <input type="text" value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/30" placeholder="Enter product name..." />
@@ -2433,24 +2504,35 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
               <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Description / Configuration</label>
               <textarea value={form.description} onChange={e => setForm({...form, description: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium outline-none resize-none h-24 focus:ring-2 focus:ring-blue-500/30" placeholder="Product description, specs, configuration..." />
             </div>
+            </>}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{copy.sku}</label>
                 <input type="text" value={form.sizeGroups[0]?.sku || ''} onChange={e => updateSizeGroup(0, 'sku', e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="SKU-001" />
               </div>
               <div>
-                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">Quantity</label>
+                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1.5">{isArabic ? 'عدد الصناديق' : 'Number of crates'}</label>
                 <input type="number" value={simpleQty} onChange={e => setSimpleQty(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-bold outline-none" placeholder="1" min="1" />
               </div>
+              <label className="text-xs font-bold text-slate-500">{isArabic ? 'عدد القطع في الصندوق' : 'Pieces per crate'}
+                <input aria-label={isArabic ? 'عدد القطع في الصندوق' : 'Pieces per crate'} type="number" min="1" step="1" value={simplePieces} onChange={e => setSimplePieces(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold" placeholder="12" />
+              </label>
+              <label className="text-xs font-bold text-slate-500">{storeType === 'electronics' ? (isArabic ? 'الإصدار' : 'Version') : (isArabic ? 'المقاس' : 'Size')}
+                <input aria-label={storeType === 'electronics' ? 'Version' : 'Size'} value={storeType === 'electronics' ? electronicVersion : generalSize} onChange={e => storeType === 'electronics' ? setElectronicVersion(e.target.value) : setGeneralSize(e.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold" placeholder={storeType === 'electronics' ? '128 GB / Model A' : 'One size'} />
+              </label>
+            </div>
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">
+              <p>{isArabic ? 'ثمن الصندوق' : 'Crate price'}: {formatDh(unitSalePrice * toInteger(simplePieces), locale)}</p>
+              <p className="mt-1 text-xs">{isArabic ? 'إجمالي القطع' : 'Total pieces'}: {toInteger(simplePieces) * toInteger(simpleQty)} · {toInteger(simpleQty)} {copy.cratesLabel}</p>
             </div>
           </div>
         </section>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className={`grid grid-cols-1 gap-6 ${isBatch && !isClothes ? '' : 'lg:grid-cols-2'}`}>
         {/* LEFT COLUMN */}
-        <div className="space-y-6">
-          {(isShoes || isClothes) && (
+        <div className={isBatch && !isClothes ? 'hidden' : 'space-y-6'}>
+          {!isBatch && (isShoes || isClothes) && (
           <section className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
             <h3 className="text-[10px] font-bold uppercase text-slate-400 mb-4 flex items-center gap-2 tracking-widest">
               <TagIcon size={14} /> {copy.colorsTitle}
@@ -2718,11 +2800,11 @@ function AddNewTab({ vendor, onDone, copy, lang }: { vendor: any; onDone: () => 
         )}
         <button
           onClick={handleSubmit}
-          disabled={saving || uploading || catalogUploading}
+          disabled={saving || uploading || catalogUploading || (!isBatch && analyzing) || (isBatch && (!batchImages.length || batchImages.some(i => i.status !== 'ready')))}
           className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-2xl font-bold shadow-xl shadow-blue-200 transition-all active:scale-[0.98] disabled:opacity-60 flex items-center justify-center gap-3 text-base uppercase tracking-wider"
         >
           {saving && <Loader2 className="animate-spin" size={20} />}
-          {saving ? copy.creatingProduct : copy.createProductCta}
+          {saving ? copy.creatingProduct : isBatch ? (isArabic ? `إنشاء ${batchImages.length} منتجات` : `Create ${batchImages.length} products`) : copy.createProductCta}
         </button>
       </div>
     </div>

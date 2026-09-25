@@ -5,12 +5,13 @@ import os
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.social_agent import meta, repository as repo, service, shopify
 from app.social_agent.openai_agents import image_generator_status
+from app.social_agent.settings import validate_pipeline
 from app.system_health_routes import _get_admin
 from app.worker_loops import worker_loops_enabled, worker_loops_state
 
@@ -58,6 +59,52 @@ class PublishBody(BaseModel):
     confirm: bool = False
 
 
+class ManualReviewBody(BaseModel):
+    store: str
+    candidate: int = Field(ge=1, le=3)
+    expected_updated_at: str = Field(min_length=1)
+    confirm: bool = False
+    note: str = Field(default="", max_length=1000)
+
+
+def _store_post(post_id: str, store: str) -> dict[str, Any]:
+    post = repo.get_post(post_id)
+    if not post or repo.canonical_store(post.get("store")) != repo.canonical_store(store):
+        raise HTTPException(status_code=404, detail="Post not found for this store")
+    return post
+
+
+@router.get("/posts/{post_id}/review")
+async def manual_review(request: Request, response: Response, post_id: str, store: str):
+    _require_admin(request)
+    response.headers["Cache-Control"] = "private, no-store"
+    post = _store_post(post_id, store)
+    return {"data": {**post, "publish_caption": service._caption(post)}}
+
+
+@router.post("/posts/{post_id}/review-draft")
+async def manual_review_draft(request: Request, post_id: str, body: StoreBody):
+    _require_admin(request)
+    _store_post(post_id, body.store)
+    try:
+        return {"data": await run_in_threadpool(service.regenerate_for_manual_review, post_id)}
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/posts/{post_id}/approve-publish")
+async def manual_approve_publish(request: Request, post_id: str, body: ManualReviewBody):
+    admin = _require_admin(request)
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="Confirm that you reviewed the image and findings before publishing")
+    _store_post(post_id, body.store)
+    try:
+        return {"data": await run_in_threadpool(service.manually_approve_and_publish, post_id,
+            body.candidate, body.expected_updated_at, str(admin.get("sub") or admin.get("email") or "administrator"), body.note)}
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @router.get("/dashboard")
 async def get_dashboard(request: Request, store: str):
     _require_admin(request)
@@ -100,6 +147,10 @@ async def put_config(request: Request, body: ConfigBody):
     current = repo.get_config(body.store)
     requested_enabled = bool(body.patch.get("enabled", current.get("enabled")))
     candidate_config = {**current, **(body.patch or {})}
+    try:
+        validate_pipeline(candidate_config)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     generator_status = image_generator_status(candidate_config)
     if requested_enabled and not generator_status.get("ready"):
         raise HTTPException(
@@ -137,6 +188,15 @@ async def create_batch(request: Request, body: BatchBody):
         return {"error": str(error)}
 
 
+@router.post("/start-now")
+async def start_now(request: Request, body: StoreBody):
+    _require_admin(request)
+    try:
+        return {"data": await run_in_threadpool(service.start_now, body.store)}
+    except Exception as error:
+        return {"error": str(error)}
+
+
 @router.post("/prepare-next")
 async def prepare_next(request: Request, body: StoreBody):
     _require_admin(request)
@@ -164,7 +224,7 @@ async def publish_one(request: Request, post_id: str, body: PublishBody):
     if not post or repo.canonical_store(post.get("store")) != repo.canonical_store(body.store):
         raise HTTPException(status_code=404, detail="Post not found for this store")
     try:
-        return {"data": await run_in_threadpool(service.publish_post, post_id, force=body.force)}
+        return {"data": await run_in_threadpool(service.publish_post, post_id, force=body.force, retry_blocked=True)}
     except Exception as error:
         return {"error": str(error)}
 
