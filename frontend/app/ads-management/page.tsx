@@ -2,9 +2,11 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
-import { Rocket, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, ShoppingCart, Calculator, Truck, ChevronDown, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap } from 'lucide-react'
+import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
+import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
+import { PLATFORM_META, type PlatformKey } from '@/components/brand/PlatformIcons'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
 type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
@@ -157,12 +159,28 @@ function incompleteTaskCount(meta?: CampaignMetaState): number{
 const SHOPIFY_HYDRATE_BATCH_SIZE = 10
 const SHOPIFY_HYDRATE_CONCURRENCY = 3
 
-function MultiCheckDropdown({ label, options, selected, onChange, className }: {
+// Shared control styles so every button on the page reads as one system.
+const UI = {
+  btn: 'inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50',
+  primary: 'bg-slate-900 text-white shadow-sm hover:bg-slate-800',
+  secondary: 'border border-slate-200 bg-white text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50',
+  accent: 'bg-violet-600 text-white shadow-sm hover:bg-violet-700',
+  danger: 'bg-rose-600 text-white shadow-sm hover:bg-rose-700',
+  icon: 'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-wait disabled:opacity-60',
+  seg: 'inline-flex h-8 items-center gap-0.5 rounded-lg bg-slate-100 p-0.5',
+  segBtn: (on: boolean) => `inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium capitalize transition-all ${on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-500 hover:text-slate-800'}`,
+  field: 'h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-[13px] text-slate-700 shadow-sm outline-none transition-colors hover:border-slate-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniField: 'h-6 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniBtn: 'inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900',
+}
+
+function MultiCheckDropdown({ label, options, selected, onChange, className, icon }: {
   label: string,
   options: Array<{ value: string, label: string }>,
   selected: string[],
   onChange: (next: string[]) => void,
   className?: string,
+  icon?: React.ReactNode,
 }){
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -171,21 +189,26 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
-  const display = selected.length === 0 ? label
-    : selected.length === options.length ? 'All'
+  const display = selected.length === 0 ? 'None'
+    : selected.length === options.length && options.length > 1 ? 'All'
     : selected.map(s => options.find(o => o.value === s)?.label || s).join(', ')
   return (
     <div ref={ref} className={`relative ${className||''}`}>
       <button
         onClick={() => setOpen(!open)}
         type="button"
-        className="rounded-xl border px-2 py-1 text-sm bg-white flex items-center gap-1 min-w-[120px] justify-between"
+        aria-expanded={open}
+        className={`${UI.field} flex min-w-[140px] items-center justify-between gap-2`}
       >
-        <span className="truncate max-w-[200px]">{display}</span>
-        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {icon}
+          <span className="text-slate-400">{label}</span>
+          <span className="max-w-[180px] truncate font-medium text-slate-800">{display}</span>
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
       </button>
       {open && (
-        <div className="absolute top-full left-0 mt-1 bg-white border rounded-xl shadow-lg z-[60] min-w-[180px] py-1">
+        <div className="absolute left-0 top-full z-[60] mt-1.5 min-w-[220px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10">
           {options.map(o => {
             const checked = selected.includes(o.value)
             return (
@@ -195,24 +218,138 @@ function MultiCheckDropdown({ label, options, selected, onChange, className }: {
                   if(checked) onChange(selected.filter(s => s !== o.value))
                   else onChange([...selected, o.value])
                 }}
-                className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer text-sm select-none"
+                className="flex cursor-pointer select-none items-center gap-2.5 px-3 py-1.5 text-[13px] text-slate-700 hover:bg-slate-50"
               >
-                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
-                  {checked && <Check className="w-3 h-3"/>}
+                <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300'}`}>
+                  {checked && <Check className="h-3 w-3"/>}
                 </span>
-                <span>{o.label}</span>
+                <span className="truncate">{o.label}</span>
               </div>
             )
           })}
+          {options.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">Nothing to choose yet</div>}
           {options.length > 1 && (
-            <div className="border-t mt-1 pt-1 px-3 pb-1 flex gap-2">
-              <button type="button" onClick={() => onChange(options.map(o => o.value))} className="text-xs text-blue-600 hover:underline">All</button>
-              <button type="button" onClick={() => onChange([])} className="text-xs text-slate-500 hover:underline">None</button>
+            <div className="mt-1 flex gap-3 border-t border-slate-100 px-3 pb-1 pt-1.5">
+              <button type="button" onClick={() => onChange(options.map(o => o.value))} className="text-xs font-medium text-blue-600 hover:underline">Select all</button>
+              <button type="button" onClick={() => onChange([])} className="text-xs font-medium text-slate-500 hover:underline">Clear</button>
             </div>
           )}
         </div>
       )}
     </div>
+  )
+}
+
+// Product image with a large floating preview on hover, so products can be
+// recognised without opening Shopify.
+function ProductThumb({ src, loading, size = 60, alt = 'Product' }: { src?: string|null, loading?: boolean, size?: number, alt?: string }){
+  const [rect, setRect] = useState<DOMRect|null>(null)
+  useEffect(()=>{
+    if(!rect) return
+    const close = () => setRect(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
+  }, [rect])
+  if(!src){
+    return <span style={{ width: size, height: size }} className={`block shrink-0 rounded-lg border border-slate-200 ${loading ? 'animate-pulse bg-slate-100' : 'bg-slate-50'}`} />
+  }
+  const PREVIEW = 320
+  let preview: { top: number, left: number } | null = null
+  if(rect && typeof window !== 'undefined'){
+    const gap = 14
+    let left = rect.right + gap
+    if(left + PREVIEW > window.innerWidth - 8) left = Math.max(8, rect.left - gap - PREVIEW)
+    const top = Math.min(Math.max(8, rect.top + rect.height / 2 - PREVIEW / 2), window.innerHeight - PREVIEW - 8)
+    preview = { top, left }
+  }
+  return (
+    <>
+      <span
+        style={{ width: size, height: size }}
+        className="group relative block shrink-0 cursor-zoom-in overflow-hidden rounded-lg border border-slate-200 bg-white"
+        onMouseEnter={(e) => setRect(e.currentTarget.getBoundingClientRect())}
+        onMouseLeave={() => setRect(null)}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt={alt} loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110" />
+      </span>
+      {preview && (
+        <span
+          className="pointer-events-none fixed z-[1000] block overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-2xl shadow-slate-900/25"
+          style={{ top: preview.top, left: preview.left, width: PREVIEW, height: PREVIEW }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={src} alt={alt} className="h-full w-full rounded-xl object-contain" />
+        </span>
+      )}
+    </>
+  )
+}
+
+// True-CPP health: thin left accent per row and a soft pill on the value.
+function cppAccent(value: number|null): string{
+  if(value == null) return 'border-l-[3px] border-l-transparent'
+  return value < 2 ? 'border-l-[3px] border-l-emerald-400' : value < 3 ? 'border-l-[3px] border-l-amber-400' : 'border-l-[3px] border-l-rose-400'
+}
+function cppPill(value: number|null): string{
+  const tone = value == null ? 'bg-slate-100 text-slate-600'
+    : value < 2 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/15'
+    : value < 3 ? 'bg-amber-50 text-amber-700 ring-amber-600/15'
+    : 'bg-rose-50 text-rose-700 ring-rose-600/15'
+  return `inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ring-1 ring-inset ${tone}`
+}
+
+function Switch({ on, busy }: { on: boolean, busy?: boolean }){
+  return (
+    <span aria-hidden="true" className={`relative inline-block h-[18px] w-8 rounded-full transition-colors ${on ? 'bg-emerald-500' : 'bg-slate-300'} ${busy ? 'animate-pulse' : ''}`}>
+      <span className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+    </span>
+  )
+}
+
+function KpiTile({ label, value, sub, icon, children, className }: { label: string, value: React.ReactNode, sub?: React.ReactNode, icon?: React.ReactNode, children?: React.ReactNode, className?: string }){
+  return (
+    <div className={`flex min-w-0 flex-col rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-sm ${className||''}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">{label}</span>
+        {icon && <span className="text-slate-300">{icon}</span>}
+      </div>
+      <div className="mt-1 text-[22px] font-semibold leading-tight tracking-tight text-slate-900 tabular-nums">{value}</div>
+      {sub && <div className="mt-0.5 truncate text-[11px] text-slate-500">{sub}</div>}
+      {children && <div className="mt-auto pt-2.5">{children}</div>}
+    </div>
+  )
+}
+
+// Thin stacked bar: segments separated by a 2px surface gap, with a native
+// tooltip per segment and a text legend underneath (identity is never color-only).
+function StackedBar({ segments, height = 8 }: { segments: Array<{ key: string, value: number, color: string, label: string }>, height?: number }){
+  const total = segments.reduce((acc, seg) => acc + Math.max(0, seg.value), 0)
+  if(total <= 0) return <div style={{ height }} className="w-full rounded-full bg-slate-100" />
+  return (
+    <div className="flex w-full gap-[2px]" style={{ height }}>
+      {segments.filter(seg => seg.value > 0).map(seg => (
+        <div
+          key={seg.key}
+          title={seg.label}
+          className="h-full rounded-[3px] transition-opacity hover:opacity-80"
+          style={{ width: `${(seg.value / total) * 100}%`, backgroundColor: seg.color, minWidth: 3 }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function Donut({ value, total, color, size = 44 }: { value: number, total: number, color: string, size?: number }){
+  const r = (size - 6) / 2
+  const c = 2 * Math.PI * r
+  const pct = total > 0 ? Math.max(0, Math.min(1, value / total)) : 0
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90 shrink-0" aria-hidden="true">
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#e2e8f0" strokeWidth={6} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6} strokeLinecap={pct > 0 && pct < 1 ? 'round' : 'butt'} strokeDasharray={`${c * pct} ${c}`} />
+    </svg>
   )
 }
 
@@ -294,6 +431,9 @@ export default function AdsManagementPage(){
     profitOnly: boolean,
     countsById: Record<string, number>,
     reveal?: (countsById: Record<string, number>) => void,
+    allProductIds?: string[],
+    collectionRows?: MetaCampaignRow[],
+    collectionDone?: Set<string>,
   } | null>(null)
   const rowObserverRef = useRef<IntersectionObserver|null>(null)
   const [adAccountName, setAdAccountName] = useState<string>('')
@@ -386,6 +526,12 @@ export default function AdsManagementPage(){
   const [searchFocused, setSearchFocused] = useState<boolean>(false)
   // When a single campaign is picked from suggestions, filter by exact campaign id
   const [searchFocusId, setSearchFocusId] = useState<string>('')
+  // When a product is picked from suggestions, filter (and hydrate) that product only
+  const [searchFocusProductId, setSearchFocusProductId] = useState<string>('')
+  const [searchHighlight, setSearchHighlight] = useState<number>(-1)
+  // While a search focus is active, only these products / campaign keys may load Shopify data
+  const hydrateFocusRef = useRef<{ pids: Set<string>, rowKeys: Set<string> }|null>(null)
+  const [metaConnected, setMetaConnected] = useState<boolean|null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
@@ -393,31 +539,58 @@ export default function AdsManagementPage(){
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
+  // Products with at least one ACTIVE campaign. Status filtering works per product,
+  // so a product with both on and off campaigns counts as active and keeps all its rows.
+  const activeProductIds = useMemo(()=> {
+    const ids = new Set<string>()
+    for(const row of (items || [])){
+      if(!isCampaignActive(row)) continue
+      const pid = getProductIdForRow(row)
+      if(pid) ids.add(pid)
+    }
+    return ids
+  }, [items, manualIds])
+
+  function isRowProductActive(row: MetaCampaignRow): boolean{
+    const pid = getProductIdForRow(row)
+    return pid ? activeProductIds.has(pid) : isCampaignActive(row)
+  }
+
   const visibleItems = useMemo(()=> {
     let base = items || []
     // Search filter first: when focused, the whole page (totals included) scopes
-    // to the matching campaign(s)
+    // to the matching product / campaign(s)
     const focusId = (searchFocusId||'').trim()
+    const focusPid = (searchFocusProductId||'').trim()
     const q = (searchActive||'').trim().toLowerCase()
-    if(focusId) base = base.filter(r => String(r.campaign_id||'') === focusId)
-    else if(q) base = base.filter(r => String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q))
+    if(focusPid) base = base.filter(r => getProductIdForRow(r) === focusPid)
+    else if(focusId) base = base.filter(r => String(r.campaign_id||'') === focusId)
+    else if(q) base = base.filter(r => String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q) || String(getProductIdForRow(r)||'').includes(q))
+    // A picked product/campaign is always shown, whatever the browse filters say
+    if(focusPid || focusId) return base
     if(statusFilter !== 'all'){
-      base = base.filter(r => statusFilter === 'active' ? isCampaignActive(r) : !isCampaignActive(r))
+      base = base.filter(r => statusFilter === 'active' ? isRowProductActive(r) : !isRowProductActive(r))
     }
     if(ownerFilter === 'unassigned') return base.filter(r => !ownerOfRow(r))
     if(ownerFilter) return base.filter(r => ownerOfRow(r) === ownerFilter)
     return base
-  }, [items, campaignMeta, ownerFilter, statusFilter, searchActive, searchFocusId, manualIds])
+  }, [items, campaignMeta, ownerFilter, statusFilter, searchActive, searchFocusId, searchFocusProductId, manualIds, activeProductIds])
 
+  // Counted per product (ungrouped campaigns count on their own), matching the table rows.
   const statusStats = useMemo(()=> {
-    let active = 0
-    let paused = 0
+    const units = new Map<string, boolean>()
+    let activeCampaigns = 0
     for(const row of (items || [])){
-      if(isCampaignActive(row)) active += 1
-      else paused += 1
+      const pid = getProductIdForRow(row)
+      const key = pid ? `p:${pid}` : `c:${campaignMergeKey(row)}`
+      const on = isCampaignActive(row)
+      if(on) activeCampaigns += 1
+      units.set(key, !!units.get(key) || on)
     }
-    return { all: active + paused, active, paused }
-  }, [items])
+    let active = 0
+    units.forEach(on => { if(on) active += 1 })
+    return { all: units.size, active, paused: units.size - active, campaigns: (items || []).length, activeCampaigns }
+  }, [items, manualIds])
 
   // Fallback lookup: product id -> first manual-mapped campaign count (avoids O(n) scan per call)
   const manualCountsByPid = useMemo(()=>{
@@ -994,6 +1167,8 @@ export default function AdsManagementPage(){
       const id = String(raw || '').trim()
       if(!id || !/^\d+$/.test(id) || seen.has(id)) continue
       seen.add(id)
+      // Search focus: never spend requests on products outside the picked one(s)
+      if(hydrateFocusRef.current && !hydrateFocusRef.current.pids.has(id)) continue
       if(hydratedProductIdsRef.current.has(id)) continue
       if(opts?.resetRetries) hydrateRetryPassRef.current.delete(id)
       if(hydratingProductIdsRef.current.has(id)) continue // request already in flight
@@ -1018,7 +1193,9 @@ export default function AdsManagementPage(){
   }
 
   function pumpHydrationWorkers(){
-    while(hydrateWorkersRef.current < SHOPIFY_HYDRATE_CONCURRENCY && hydratePendingRef.current.length > 0){
+    // A searched product gets an extra lane so it never waits behind in-flight table batches
+    const limit = SHOPIFY_HYDRATE_CONCURRENCY + (hydrateFocusRef.current ? 1 : 0)
+    while(hydrateWorkersRef.current < limit && hydratePendingRef.current.length > 0){
       hydrateWorkersRef.current += 1
       hydrationWorker().catch(()=>{}).finally(()=>{
         hydrateWorkersRef.current = Math.max(0, hydrateWorkersRef.current - 1)
@@ -1061,6 +1238,7 @@ export default function AdsManagementPage(){
         const id = hydratePendingRef.current.shift() as string
         hydratePendingSetRef.current.delete(id)
         if(hydratedProductIdsRef.current.has(id) || hydratingProductIdsRef.current.has(id)) continue
+        if(hydrateFocusRef.current && !hydrateFocusRef.current.pids.has(id)){ markProductsHydrating([id], false); continue }
         chunk.push(id)
       }
       if(chunk.length === 0) return
@@ -1126,7 +1304,54 @@ export default function AdsManagementPage(){
     }
   }
 
-  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean, focus?: { query?: string, campaignId?: string } }){
+  // Collection-mapped campaigns load their order counts in a background lane.
+  // Rows outside an active search focus are skipped and picked up once it clears.
+  async function runCollectionLane(context: NonNullable<typeof hydrateContextRef.current>){
+    for(const row of (context.collectionRows || [])){
+      if(context.token !== ordersSeqToken.current) break
+      const rowKey = String(row.campaign_id || row.name || '')
+      if(context.collectionDone?.has(rowKey)) continue
+      const focus = hydrateFocusRef.current
+      if(focus && !focus.rowKeys.has(rowKey)) continue
+      const conf = context.mappings[rowKey]
+      if(!conf || conf.kind !== 'collection' || !conf.id || !/^\d+$/.test(conf.id)) continue
+      context.collectionDone?.add(rowKey)
+      const rowStore = (row as any)._store || context.primaryStore
+      try{
+        const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start: context.start, end: context.end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+        if(context.token !== ordersSeqToken.current) break
+        const count = Number(((oc as any)?.data||{})?.count ?? 0)
+        setManualCounts(prev => ({ ...prev, [rowKey]: count }))
+        if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
+      }catch{
+        setManualCounts(prev => ({ ...prev, [rowKey]: 0 }))
+      }
+    }
+  }
+
+  // Scope Shopify loading to the searched product(s). Pending work for every other
+  // product is dropped; clearing the focus resumes the full table in the background.
+  function setHydrationFocus(focus: { pids: string[], rowKeys: string[] } | null){
+    const context = hydrateContextRef.current
+    if(focus){
+      const pidSet = new Set(focus.pids)
+      hydrateFocusRef.current = { pids: pidSet, rowKeys: new Set(focus.rowKeys) }
+      const dropped = hydratePendingRef.current.filter(id => !pidSet.has(id))
+      hydratePendingRef.current = hydratePendingRef.current.filter(id => pidSet.has(id))
+      for(const id of dropped) hydratePendingSetRef.current.delete(id)
+      if(dropped.length > 0) markProductsHydrating(dropped, false)
+      if(focus.pids.length > 0) enqueueProductHydration(focus.pids, { priority: true, resetRetries: true })
+      if(context && !context.profitOnly) void runCollectionLane(context)
+      return
+    }
+    if(!hydrateFocusRef.current) return
+    hydrateFocusRef.current = null
+    if(!context || context.profitOnly) return
+    enqueueProductHydration([...Object.keys(visibleProductIds || {}), ...(context.allProductIds || [])])
+    void runCollectionLane(context)
+  }
+
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean, focus?: { query?: string, campaignId?: string, productId?: string } }){
     const loadToken = ++loadSeqToken.current
     setLoading(true); setError(undefined)
     try{
@@ -1137,7 +1362,9 @@ export default function AdsManagementPage(){
       // Search focus: when set, only the matching campaign(s) get hydrated so the
       // searched campaign's data loads first instead of waiting behind the full table.
       const focus = opts?.focus
+      let shapedForFocus: Record<string, CampaignMapping> = {}
       const focusMatch = focus ? (c: MetaCampaignRow) => {
+        if(focus.productId) return campaignProductId(c, shapedForFocus) === String(focus.productId)
         if(focus.campaignId) return String(c.campaign_id||'') === String(focus.campaignId)
         const q = String(focus.query||'').trim().toLowerCase()
         if(!q) return true
@@ -1237,9 +1464,14 @@ export default function AdsManagementPage(){
       }
       if(bundleErrors.length) setError(`Some ads data could not be loaded. ${Array.from(new Set(bundleErrors)).join('; ')}`)
 
+      shapedForFocus = shaped
       const rankedAllCampaigns = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
       const spendingCampaigns = rankedAllCampaigns.filter(campaignHasSpend)
       const zeroSpendCampaigns = rankedAllCampaigns.filter(c => !campaignHasSpend(c))
+      // Active campaigns stay visible even before they spend in the selected range,
+      // otherwise a product whose running campaign has no spend yet looks paused
+      // (or vanishes under the "Active" filter).
+      const zeroSpendActiveCampaigns = zeroSpendCampaigns.filter(isCampaignActive)
       const revealZeroSpendCampaigns = (countsById: Record<string, number>) => {
         const rowsToReveal = zeroSpendCampaigns.filter(row => {
           const pid = campaignProductId(row, shaped)
@@ -1248,7 +1480,7 @@ export default function AdsManagementPage(){
         if(rowsToReveal.length > 0) setItems(prev => mergeCampaignRows(prev, rowsToReveal))
       }
 
-      setItems(spendingCampaigns)
+      setItems(mergeCampaignRows(spendingCampaigns, zeroSpendActiveCampaigns))
       setManualIds(shaped)
       setCampaignMeta(allMeta)
 
@@ -1283,6 +1515,12 @@ export default function AdsManagementPage(){
       const hydrateAllCampaigns = focusMatch ? rankedAllCampaigns.filter(focusMatch) : rankedAllCampaigns
       const spendingProductIds = productIdsForCampaigns(hydrateSpendingCampaigns, shaped)
       const allProductIds = productIdsForCampaigns(hydrateAllCampaigns, shaped)
+      if(focusMatch){
+        hydrateFocusRef.current = {
+          pids: new Set(allProductIds),
+          rowKeys: new Set(hydrateAllCampaigns.map(c => String(c.campaign_id || c.name || ''))),
+        }
+      }
       const spendingProductIdSet = new Set(spendingProductIds)
       const idsOrdered = [
         ...spendingProductIds,
@@ -1302,6 +1540,9 @@ export default function AdsManagementPage(){
         profitOnly,
         countsById: {} as Record<string, number>,
         reveal: revealZeroSpendCampaigns,
+        allProductIds: productIdsForCampaigns(rankedAllCampaigns, shaped),
+        collectionRows: rankedAllCampaigns.filter(row => shaped[String(row.campaign_id || row.name || '')]?.kind === 'collection'),
+        collectionDone: new Set<string>(),
       }
       hydrateContextRef.current = hydrationContext
 
@@ -1347,7 +1588,7 @@ export default function AdsManagementPage(){
       }
 
       // UTM warm-up scans the whole order range; skip it for focused all-time searches
-      if(!focusMatch) warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
+      if(!focusMatch && !hydrateFocusRef.current) warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
 
       // Phase 2: Progressive Shopify hydration. Visible/high-spend rows go first.
       // (When focused via search, skip stale visible ids from before the reload.)
@@ -1359,25 +1600,7 @@ export default function AdsManagementPage(){
       enqueueProductHydration(priorityIds)
 
       // Phase 3: Manual mapped collection rows stay in a background lane.
-      ;(async()=>{
-        for(const row of hydrateAllCampaigns){
-          if(ordersToken !== ordersSeqToken.current) break
-          const rowKey = (row.campaign_id || row.name || '') as any
-          const rowStore = (row as any)._store || primaryStore
-          try{
-            const conf = shaped[rowKey]
-            if(!conf || conf.kind !== 'collection') continue
-            if(!conf.id || !/^\d+$/.test(conf.id)) continue
-            const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start, end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
-            if(ordersToken !== ordersSeqToken.current) break
-            const count = Number(((oc as any)?.data||{})?.count ?? 0)
-            setManualCounts(prev => ({ ...prev, [String(rowKey)]: count }))
-            if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
-          }catch{
-            setManualCounts(prev => ({ ...prev, [String(rowKey)]: 0 }))
-          }
-        }
-      })()
+      void runCollectionLane(hydrationContext)
 
     }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
     finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
@@ -1597,6 +1820,7 @@ export default function AdsManagementPage(){
         const res = await metaListAdAccounts(selectedStores)
         if(res.error) throw new Error(res.error)
         const items = ((res as any)?.data)||[]
+        setMetaConnected(items.length > 0)
         const connected = res.connected === true
         const extras: Array<{id:string,name:string}> = connected ? [] : selectedAdAccounts.map(id => ({ id, name: id }))
         const byId: Record<string, {id:string,name:string,account_status?:number}> = {}
@@ -1613,7 +1837,7 @@ export default function AdsManagementPage(){
           try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(nextSelected)) }catch{}
         }
         return nextSelected
-      }catch{ setAdAccounts([]) }
+      }catch{ setAdAccounts([]); setMetaConnected(false) }
       return selectedAdAccounts
     }
     ;(async()=>{
@@ -1908,43 +2132,104 @@ export default function AdsManagementPage(){
     return deduped.slice(0, 12)
   }, [searchQuery, items])
 
+  // Product suggestions: campaigns grouped by the product they sell, matched on
+  // product id or any of its campaign names. Picking one scopes the page to it.
+  const productSearchSuggestions = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q) return []
+    const byPid: Record<string, { pid: string, name: string, spend: number, campaigns: number, active: number, score: number }> = {}
+    for(const c of (items||[])){
+      const pid = getProductIdForRow(c)
+      if(!pid) continue
+      const name = String(c.name||'').toLowerCase()
+      let score = 0
+      if(pid === q) score = 100
+      else if(pid.startsWith(q)) score = 90
+      else if(pid.includes(q)) score = 75
+      else if(name.startsWith(q)) score = 65
+      else if(name.includes(q)) score = 50
+      const entry = byPid[pid] ||= { pid, name: String(c.name||`Product ${pid}`), spend: 0, campaigns: 0, active: 0, score: 0 }
+      entry.campaigns += 1
+      if(isCampaignActive(c)) entry.active += 1
+      const spend = Number(c.spend||0)
+      if(spend > entry.spend){ entry.spend = spend; entry.name = String(c.name||entry.name) }
+      entry.score = Math.max(entry.score, score)
+    }
+    return Object.values(byPid).filter(p => p.score > 0).sort((a,b)=> b.score - a.score || b.spend - a.spend).slice(0, 6)
+  }, [searchQuery, items, manualIds])
+
   // Number of loaded campaigns whose name or id contains the query (for "show all" option)
   const searchMatchCount = useMemo(()=>{
     const q = (searchQuery||'').trim().toLowerCase()
     if(!q) return 0
     let count = 0
     for(const c of (items||[])){
-      if(String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q)) count++
+      if(String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q) || String(getProductIdForRow(c)||'').includes(q)) count++
     }
     return count
-  }, [searchQuery, items])
+  }, [searchQuery, items, manualIds])
+
+  // Flat, keyboard-navigable option list for the suggestions dropdown
+  type SearchOption =
+    | { kind: 'all' }
+    | { kind: 'product', pid: string, name: string, campaigns: number, active: number }
+    | { kind: 'campaign', id: string, name: string, score: number }
+    | { kind: 'alltime' }
+  const searchOptions = useMemo<SearchOption[]>(()=>{
+    if(!(searchQuery||'').trim()) return []
+    const out: SearchOption[] = []
+    if(searchMatchCount > 0) out.push({ kind: 'all' })
+    for(const p of productSearchSuggestions) out.push({ kind: 'product', pid: p.pid, name: p.name, campaigns: p.campaigns, active: p.active })
+    for(const c of searchSuggestions.slice(0, 8)) out.push({ kind: 'campaign', id: c.id, name: c.name, score: c.score })
+    out.push({ kind: 'alltime' })
+    return out
+  }, [searchQuery, searchMatchCount, productSearchSuggestions, searchSuggestions])
+
+  useEffect(()=>{ setSearchHighlight(-1) }, [searchQuery])
+
+  function pickSearchOption(opt: SearchOption){
+    const q = searchQuery.trim()
+    if(opt.kind === 'all') applySearchFocus({ query: q, label: q })
+    else if(opt.kind === 'product') applySearchFocus({ productId: opt.pid, label: opt.pid })
+    else if(opt.kind === 'campaign') applySearchFocus({ campaignId: opt.id || undefined, query: opt.name, label: opt.name })
+    else applySearchFocus({ query: q, label: q, allTime: true })
+  }
 
   // Apply a search selection. Default: INSTANT — filter the already-loaded table
-  // client-side and bump the matching campaigns' products to the front of the
-  // hydration queue. No reload, no range change. `allTime` opts into the heavy
-  // all-time reload (needed to find old campaigns outside the current range).
-  function applySearchFocus(sel: { campaignId?: string, query?: string, label: string, allTime?: boolean }){
+  // client-side and load Shopify data for the matching product(s) ONLY; every other
+  // product's pending work is dropped until the search is cleared. `allTime` opts
+  // into the heavy all-time reload (needed to find old campaigns outside the range).
+  function applySearchFocus(sel: { campaignId?: string, productId?: string, query?: string, label: string, allTime?: boolean }){
+    const productId = String(sel.productId || '').trim()
     setSearchQuery(sel.label)
-    setSearchActive(sel.label.toLowerCase())
-    setSearchFocusId(sel.campaignId || '')
+    setSearchActive(productId ? '' : sel.label.toLowerCase())
+    setSearchFocusId(productId ? '' : (sel.campaignId || ''))
+    setSearchFocusProductId(productId)
     setSearchFocused(false)
+    setSearchHighlight(-1)
     searchRef.current?.blur()
     if(sel.allTime){
       if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
+      // Nothing from the current range should keep loading while the all-time search runs
+      hydrateFocusRef.current = { pids: new Set(), rowKeys: new Set() }
+      hydratePendingRef.current = []
+      hydratePendingSetRef.current = new Set()
       setDatePreset('maximum')
       load('maximum', {
         stores: selectedStores,
         adAccounts: selectedAdAccounts,
-        focus: sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
+        focus: productId ? { productId } : sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
       })
       return
     }
     const q = (sel.query || sel.label || '').trim().toLowerCase()
-    const matched = (items||[]).filter(r => sel.campaignId
-      ? String(r.campaign_id||'') === String(sel.campaignId)
-      : (String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q)))
-    const pids = productIdsForCampaigns(matched, manualIds)
-    if(pids.length > 0) enqueueProductHydration(pids, { priority: true, resetRetries: true })
+    const matched = (items||[]).filter(r => {
+      if(productId) return getProductIdForRow(r) === productId
+      if(sel.campaignId) return String(r.campaign_id||'') === String(sel.campaignId)
+      return String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q) || String(getProductIdForRow(r)||'').includes(q)
+    })
+    const pids = productId ? [productId] : productIdsForCampaigns(matched, manualIds)
+    setHydrationFocus({ pids, rowKeys: matched.map(r => String(r.campaign_id || r.name || '')) })
   }
 
   function clearSearchFocus(){
@@ -1953,23 +2238,29 @@ export default function AdsManagementPage(){
     setSearchQuery('')
     setSearchActive('')
     setSearchFocusId('')
+    setSearchFocusProductId('')
     setSearchFocused(false)
     if(datePreset === 'maximum'){
+      hydrateFocusRef.current = null
       setDatePreset(prev)
       load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+      return
     }
+    setHydrationFocus(null)
   }
 
   const displayRows = useMemo<DisplayRow[]>(()=>{
     const activeFilter = (searchActive||'').trim().toLowerCase()
     const focusId = (searchFocusId||'').trim()
+    const focusPid = (searchFocusProductId||'').trim()
     const rowMatches = (r: MetaCampaignRow) => {
+      if(focusPid) return getProductIdForRow(r) === focusPid
       if(focusId) return String(r.campaign_id||'') === focusId
       const name = String(r.name||'').toLowerCase()
       const id = String(r.campaign_id||'')
-      return name.includes(activeFilter) || id.includes(activeFilter)
+      return name.includes(activeFilter) || id.includes(activeFilter) || String(getProductIdForRow(r)||'').includes(activeFilter)
     }
-    const filtering = !!focusId || !!activeFilter
+    const filtering = !!focusPid || !!focusId || !!activeFilter
     const out: DisplayRow[] = []
     for(const p of sortedParents){
       if(p.kind==='group'){
@@ -1988,7 +2279,7 @@ export default function AdsManagementPage(){
       }
     }
     return out
-  }, [sortedParents, groupExpanded, searchActive, searchFocusId, profitMode])
+  }, [sortedParents, groupExpanded, searchActive, searchFocusId, searchFocusProductId, profitMode, manualIds])
 
   useEffect(()=>{
     if(typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return
@@ -2238,20 +2529,242 @@ export default function AdsManagementPage(){
     })
   }, [profitResults, productBriefs])
 
+  async function analyzeSelectedCampaigns(){
+    const keys = Object.keys(selectedKeys).filter(k => !!selectedKeys[k])
+    if(keys.length === 0) return
+    const controller = new AbortController()
+    multiAnalysisAbortRef.current = controller
+    multiAnalysisCancelledRef.current = false
+    setMultiAnalysisLoading(true)
+    setMultiAnalysisResults({})
+    setMultiAnalysisProgress({ done: 0, total: keys.length })
+    const results: Record<string, CampaignAnalysisResult> = {}
+    for(let i = 0; i < keys.length; i++){
+      if(multiAnalysisCancelledRef.current) break
+      const rk = keys[i]
+      // Find the campaign row
+      const row = (items||[]).find(r => String(r.campaign_id||r.name||'') === rk)
+      if(!row) { setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 })); continue }
+      try{
+        const cid = String(row.campaign_id||'')
+        const rkSelf = (row.campaign_id || row.name || '') as any
+        const confSelf = (manualIds as any)[rkSelf]
+        const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id) ? confSelf.id : extractNumericId((row.name||'').trim())
+        const ct = (row as any)?.created_time
+        let ageDays: number|undefined = undefined
+        if(ct){ const diff = Date.now() - new Date(ct).getTime(); ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24))) }
+        const orders = getOrders(row)
+        const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
+        const res = await campaignAnalyze({
+          campaign_id: cid || undefined,
+          campaign_name: row.name || undefined,
+          product_id: pidSelf || undefined,
+          metrics: {
+            spend: Number(row.spend||0),
+            purchases: Number(row.purchases||0),
+            ctr: row.ctr!=null? row.ctr : undefined,
+            cpp: row.cpp!=null? row.cpp : undefined,
+            add_to_cart: Number((row as any).add_to_cart||0),
+            shopify_orders: orders,
+            true_cpp: trueCppVal,
+            status: (row.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
+          },
+          campaign_age_days: ageDays,
+          campaign_key: cid || rk,
+        }, { signal: controller.signal })
+        if(res?.data){
+          results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
+        }
+      }catch(e:any){
+        if(controller.signal.aborted || multiAnalysisCancelledRef.current) break
+      }
+      setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 }))
+      setMultiAnalysisResults({ ...results })
+    }
+    setMultiAnalysisResults(results)
+    multiAnalysisAbortRef.current = null
+    setMultiAnalysisLoading(false)
+  }
+
+  async function generateActionsFromAnalyses(){
+    setActionTasksLoading(true)
+    try{
+      const analyses = Object.values(multiAnalysisResults)
+      const res = await generateActionTasks({ analyses, store })
+      if(res?.data){
+        setActionTasks(res.data.tasks || [])
+        setActionTasksSummary(res.data.summary || '')
+        setActionTasksOpen(true)
+        // Auto-add tasks to the exact campaign timelines they came from.
+        const tasks = res.data.tasks || []
+        for(const task of tasks){
+          const campaignLabels = (task.campaigns || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+          const campaignKeys = ((task as any).campaign_keys || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+          const lookupLabels = [...campaignKeys, ...campaignLabels]
+          const matchedRows = lookupLabels.map((cn: string) => {
+            const lc = cn.toLowerCase()
+            return (items||[]).find((r: any) => {
+              const name = String(r.name||'')
+              const id = String(r.campaign_id||'')
+              const nameLc = name.toLowerCase()
+              const idLc = id.toLowerCase()
+              return name === cn || id === cn || (!!id && idLc === lc) || (!!name && (nameLc.includes(lc) || lc.includes(nameLc)))
+            })
+          }).filter(Boolean) as MetaCampaignRow[]
+          const uniqueRows = [...new Map(matchedRows.map((r: any) => [String(r.campaign_id || r.name || ''), r])).values()] as MetaCampaignRow[]
+          for(const row of uniqueRows){
+            const campaignKey = String((row as any).campaign_id || (row as any).name || '').trim()
+            if(!campaignKey) continue
+            const refs = [{ id: String((row as any).campaign_id||''), name: String((row as any).name||'') }]
+            try{
+              const taskEntry = JSON.stringify({
+                type: 'task',
+                id: task.id,
+                priority: task.priority,
+                urgency: task.urgency,
+                category: task.category,
+                title: task.title,
+                title_ar: (task as any).title_ar,
+                description: task.description,
+                description_ar: (task as any).description_ar,
+                campaigns: task.campaigns || [],
+                campaign_keys: (task as any).campaign_keys || [],
+                campaign_references: refs,
+                campaign_key: campaignKey,
+                expected_impact: task.expected_impact,
+                expected_impact_ar: (task as any).expected_impact_ar,
+                source_recommendation: (task as any).source_recommendation,
+                done: false,
+              })
+              await campaignTimelineAdd({ campaign_key: campaignKey, text: taskEntry, store })
+            }catch{}
+          }
+        }
+        // Refresh meta to show task badges
+        try{
+          const metaRes = await campaignMetaList(store)
+          applyCampaignMetaSummary((metaRes as any)?.data)
+        }catch{}
+        setMultiAnalysisResults({})
+      }
+    }catch{}
+    finally{ setActionTasksLoading(false) }
+  }
+
+  // Header platform badges: brand color when connected, grey when not.
+  const platformStatus = useMemo(()=>{
+    const selected = new Set(selectedStores.map(normalizeStoreValue))
+    const relevant = configuredShopifyStores.filter(item => selected.has(normalizeStoreValue(item.label)))
+    const connectedStores = relevant.filter(item => item.connected === true).map(item => item.label)
+    const shopifyConnected = connectedStores.length > 0 || Object.keys(productBriefs).length > 0
+    const metaOn = metaConnected === true || items.length > 0
+    const accountCount = adAccounts.length || selectedAdAccounts.length
+    return [
+      { key: 'shopify', connected: shopifyConnected, detail: shopifyConnected ? (connectedStores.join(', ') || 'Connected') : 'No store connected' },
+      { key: 'meta', connected: metaOn, detail: metaOn ? `${accountCount} ad account${accountCount === 1 ? '' : 's'}` : 'Not connected' },
+      { key: 'tiktok', connected: false, detail: 'Not connected' },
+      { key: 'google_ads', connected: false, detail: 'Not connected' },
+    ] as Array<{ key: PlatformKey, connected: boolean, detail: string }>
+  }, [selectedStores, configuredShopifyStores, productBriefs, metaConnected, items, adAccounts, selectedAdAccounts])
+
+  // Analytics bar data — always follows the filtered table.
+  const analytics = useMemo(()=>{
+    const products = parentRows.map(p => {
+      const m = parentMetrics[parentMetricKey(p)] || parentMetric(p)
+      return {
+        key: parentMetricKey(p),
+        label: p.kind === 'group' ? (p.primary.name || `Product ${p.productId}`) : (p.row.name || '—'),
+        spend: Number(m.spend || 0),
+        trueCpp: m.trueCpp,
+        orders: m.orders,
+      }
+    })
+    const spenders = products.filter(p => p.spend > 0).sort((a,b)=> b.spend - a.spend)
+    const spendTotal = spenders.reduce((acc, p)=> acc + p.spend, 0)
+    const top = spenders.slice(0, 5)
+    const otherSpend = spenders.slice(5).reduce((acc, p)=> acc + p.spend, 0)
+    const topShare = spendTotal > 0 ? top.reduce((acc, p)=> acc + p.spend, 0) / spendTotal : 0
+    const bands = { good: 0, ok: 0, high: 0, none: 0 }
+    for(const p of spenders){
+      if(p.trueCpp == null) bands.none += 1
+      else if(p.trueCpp < 2) bands.good += 1
+      else if(p.trueCpp < 3) bands.ok += 1
+      else bands.high += 1
+    }
+    let activeCampaigns = 0
+    for(const row of (visibleItems || [])) if(isCampaignActive(row)) activeCampaigns += 1
+    return { products: products.length, spenders: spenders.length, top, otherSpend, topShare, bands, campaigns: (visibleItems || []).length, activeCampaigns }
+  }, [parentRows, parentMetrics, visibleItems])
+
+  const ownerMaxSpend = Math.max(1, ...CAMPAIGN_OWNERS.map(owner => ownerStats[owner].spend))
+  const searchFocusLabel = searchFocusProductId
+    ? `Product ${searchFocusProductId}`
+    : searchFocusId ? (searchQuery || searchFocusId) : searchActive
+
   const tableColSpan = profitMode ? 10 : 15
 
+  const incompleteActionTasks = actionTasks.filter(t => !t.done).length
+  const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
+
   return (
-    <div className="min-h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
+    <div className="min-h-screen w-full bg-slate-50 text-slate-800 antialiased">
       <InventoryTooltip />
-      <header className="min-h-16 py-2 px-4 md:px-6 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <Rocket className="w-6 h-6 text-blue-600" />
-          <h1 className="font-semibold text-lg">Ads management</h1>
+      <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
+        {/* Brand row */}
+        <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
+          <Link href="/" className="flex shrink-0 items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" aria-label="True Manager home">
+            <TrueManagerLogo className="h-6 w-auto text-slate-900" markClassName="text-blue-600" />
+          </Link>
+          <span className="hidden h-5 w-px bg-slate-200 sm:block" />
+          <div className="hidden items-center gap-1.5 text-sm sm:flex">
+            <Megaphone className="h-4 w-4 text-slate-400" />
+            <span className="font-medium text-slate-700">Ads Manager</span>
+          </div>
+          <div className="flex-1" />
+          <Link
+            href={`/settings/connections?store=${encodeURIComponent(store)}`}
+            className="group hidden items-center gap-1 rounded-full border border-slate-200 bg-white py-1 pl-1 pr-2.5 shadow-sm transition-colors hover:border-slate-300 md:flex"
+            title="Manage connected platforms"
+          >
+            {platformStatus.map(platform => {
+              const { Icon, label } = PLATFORM_META[platform.key]
+              return (
+                <span
+                  key={platform.key}
+                  title={`${label} · ${platform.connected ? 'Connected' : 'Not connected'}${platform.connected ? ` (${platform.detail})` : ''}`}
+                  className={`relative flex h-7 w-7 items-center justify-center rounded-full ${platform.connected ? 'bg-slate-50' : 'bg-slate-50/60'}`}
+                >
+                  <Icon className={`h-4 w-4 ${platform.connected ? '' : 'opacity-60'}`} muted={!platform.connected} />
+                  <span className={`absolute bottom-0.5 right-0.5 h-2 w-2 rounded-full ring-2 ring-white ${platform.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                </span>
+              )
+            })}
+            <span className="ml-1 text-xs font-medium text-slate-500 group-hover:text-slate-800">
+              {platformStatus.filter(p => p.connected).length}/{platformStatus.length} connected
+            </span>
+          </Link>
+          <span className="hidden h-5 w-px bg-slate-200 md:block" />
+          <button
+            onClick={()=> setActionTasksOpen(true)}
+            className={`${UI.btn} ${UI.secondary} relative px-2.5`}
+            title="Action tasks"
+          >
+            <ClipboardList className="h-4 w-4"/>
+            <span className="hidden lg:inline">Tasks</span>
+            {incompleteActionTasks > 0 && (
+              <span className="ml-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">{incompleteActionTasks}</span>
+            )}
+          </button>
+          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading? 'animate-spin' : ''}`}/> <span className="hidden sm:inline">{loading? 'Updating…' : 'Refresh'}</span>
+          </button>
+          <Link href="/" className={`${UI.btn} ${UI.secondary} px-2.5`} title="Home"><Home className="h-4 w-4"/></Link>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Link href={`/settings/connections?store=${encodeURIComponent(store)}`} className="rounded-xl border bg-white px-3 py-1.5 text-sm font-semibold text-blue-700 hover:bg-blue-50">Connect accounts</Link>
+        {/* Controls row */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-2 lg:px-6">
           <MultiCheckDropdown
-            label="Stores"
+            label="Store"
+            icon={<Store className="h-3.5 w-3.5 text-slate-400"/>}
             options={storeOptions}
             selected={selectedStores}
             onChange={(next) => {
@@ -2263,52 +2776,60 @@ export default function AdsManagementPage(){
             }}
           />
           <MultiCheckDropdown
-            label="Ad accounts"
+            label="Accounts"
+            icon={<Layers className="h-3.5 w-3.5 text-slate-400"/>}
             options={adAccounts.map(a => ({ value: a.id, label: a.name || a.id }))}
             selected={selectedAdAccounts}
             onChange={(next) => { setSelectedAdAccounts(next); try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{} }}
-            className="min-w-[180px]"
           />
-          <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1 shadow-sm" aria-label="Filter campaigns by status">
-            <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Status</span>
-            <button
-              onClick={()=> setStatusFilter('all')}
-              aria-pressed={statusFilter === 'all'}
-              className={`px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='all' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-            >All {statusStats.all}</button>
-            <button
-              onClick={()=> setStatusFilter('active')}
-              aria-pressed={statusFilter === 'active'}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='active' ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-700 hover:bg-emerald-50'}`}
-            ><span className={`h-2 w-2 rounded-full ${statusFilter==='active' ? 'bg-white' : 'bg-emerald-500'}`}/>Active {statusStats.active}</button>
-            <button
-              onClick={()=> setStatusFilter('paused')}
-              aria-pressed={statusFilter === 'paused'}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold ${statusFilter==='paused' ? 'bg-slate-700 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-100'}`}
-            ><span className={`h-2 w-2 rounded-full ${statusFilter==='paused' ? 'bg-white' : 'bg-slate-500'}`}/>Paused {statusStats.paused}</button>
+          <div className="relative">
+            <CalendarDays className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"/>
+            <select
+              value={datePreset}
+              onChange={(e)=>{ const v=e.target.value; setDatePreset(v); setDeliveryRateResults({}); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }}
+              className={`${UI.field} appearance-none pl-8 pr-8 font-medium`}
+              aria-label="Date range"
+            >
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="last_3d_incl_today">Last 3 days</option>
+              <option value="last_4d_incl_today">Last 4 days</option>
+              <option value="last_5d_incl_today">Last 5 days</option>
+              <option value="last_6d_incl_today">Last 6 days</option>
+              <option value="last_7d_incl_today">Last 7 days</option>
+              <option value="custom">Custom range…</option>
+              {datePreset==='maximum' && <option value="maximum">All time (search)</option>}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"/>
           </div>
-          <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1 shadow-sm" aria-label="Filter campaigns by owner">
-            <span className="px-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Owner</span>
-            <button
-              onClick={()=> setOwnerFilter('')}
-              aria-pressed={ownerFilter === ''}
-              className={`px-2 py-1 rounded-lg text-xs font-semibold ${ownerFilter==='' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-            >All</button>
+          {datePreset==='custom' && (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={customStart} onChange={(e)=>{ setCustomStart(e.target.value); setDeliveryRateResults({}) }} className={UI.field} aria-label="Start date" />
+              <span className="text-xs text-slate-400">to</span>
+              <input type="date" value={customEnd} onChange={(e)=>{ setCustomEnd(e.target.value); setDeliveryRateResults({}) }} className={UI.field} aria-label="End date" />
+              <button onClick={()=> load('custom', { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`}>Apply</button>
+            </div>
+          )}
+          <span className="mx-0.5 hidden h-5 w-px bg-slate-200 lg:block" />
+          <div className={UI.seg} role="group" aria-label="Filter products by campaign status">
+            <button onClick={()=> setStatusFilter('all')} aria-pressed={statusFilter === 'all'} className={UI.segBtn(statusFilter==='all')}>
+              All <span className="tabular-nums text-slate-400">{statusStats.all}</span>
+            </button>
+            <button onClick={()=> setStatusFilter('active')} aria-pressed={statusFilter === 'active'} className={UI.segBtn(statusFilter==='active')} title="Products with at least one active campaign">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"/>Active <span className="tabular-nums text-slate-400">{statusStats.active}</span>
+            </button>
+            <button onClick={()=> setStatusFilter('paused')} aria-pressed={statusFilter === 'paused'} className={UI.segBtn(statusFilter==='paused')} title="Products whose campaigns are all paused">
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-400"/>Paused <span className="tabular-nums text-slate-400">{statusStats.paused}</span>
+            </button>
+          </div>
+          <div className={UI.seg} role="group" aria-label="Filter products by owner">
+            <button onClick={()=> setOwnerFilter('')} aria-pressed={ownerFilter === ''} className={UI.segBtn(ownerFilter==='')}>Everyone</button>
             {CAMPAIGN_OWNERS.map(owner => (
-              <button
-                key={owner}
-                onClick={()=> setOwnerFilter(owner)}
-                aria-pressed={ownerFilter === owner}
-                className={`px-2 py-1 rounded-lg text-xs font-semibold capitalize ${ownerFilter===owner ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-blue-50'}`}
-              >{owner}</button>
+              <button key={owner} onClick={()=> setOwnerFilter(owner)} aria-pressed={ownerFilter === owner} className={UI.segBtn(ownerFilter===owner)}>{owner}</button>
             ))}
-            <button
-              onClick={()=> setOwnerFilter('unassigned')}
-              aria-pressed={ownerFilter === 'unassigned'}
-              className={`px-2 py-1 rounded-lg text-xs font-semibold ${ownerFilter==='unassigned' ? 'bg-amber-500 text-white' : 'text-amber-700 hover:bg-amber-50'}`}
-            >Unassigned</button>
+            <button onClick={()=> setOwnerFilter('unassigned')} aria-pressed={ownerFilter === 'unassigned'} className={UI.segBtn(ownerFilter==='unassigned')}>Unassigned</button>
           </div>
-          <label className={`inline-flex items-center gap-2 rounded-xl border px-2 py-1 text-sm bg-white ${profitMode ? 'border-emerald-300 text-emerald-700' : 'text-slate-600'}`}>
+          <label className={`inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg border px-2.5 text-[13px] font-medium shadow-sm transition-colors ${profitMode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
             <input
               type="checkbox"
               checked={profitMode}
@@ -2332,113 +2853,34 @@ export default function AdsManagementPage(){
                 if(next) ++ordersSeqToken.current
                 load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts, profit: next })
               }}
-              className="sr-only peer"
+              className="sr-only"
             />
-            <span className={`w-9 h-5 rounded-full transition-colors ${profitMode ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-              <span className={`block w-4 h-4 bg-white rounded-full shadow mt-0.5 transition-transform ${profitMode ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            <span className={`relative h-4 w-7 rounded-full transition-colors ${profitMode ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+              <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${profitMode ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
             </span>
-            <span className="font-semibold">Profit</span>
+            Profit mode
           </label>
           {profitMode && (
-            <div className="flex items-center gap-1 text-xs">
-              <span className="text-slate-500">Service</span>
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+              Service / order
               <input
                 type="number"
                 value={profitServiceCost}
                 min={0}
                 onChange={(e)=> setProfitServiceCost(Number(e.target.value||0))}
-                className="w-20 rounded-lg border px-2 py-1 bg-white text-sm"
+                className={`${UI.field} w-20`}
               />
-            </div>
+              MAD
+            </label>
           )}
-          <div className="flex items-center gap-2">
-            <select value={datePreset} onChange={(e)=>{ const v=e.target.value; setDatePreset(v); setDeliveryRateResults({}); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }} className="rounded-xl border px-2 py-1 text-sm bg-white">
-              <option value="today">Today</option>
-              <option value="yesterday">Yesterday</option>
-              <option value="last_3d_incl_today">Last 3 days (including today)</option>
-              <option value="last_4d_incl_today">Last 4 days (including today)</option>
-              <option value="last_5d_incl_today">Last 5 days (including today)</option>
-              <option value="last_6d_incl_today">Last 6 days (including today)</option>
-              <option value="last_7d_incl_today">Last 7 days (including today)</option>
-              <option value="custom">Custom…</option>
-              {datePreset==='maximum' && <option value="maximum">All time (search)</option>}
-            </select>
-            {datePreset==='custom' && (
-              <div className="flex items-center gap-1 text-sm">
-                <input type="date" value={customStart} onChange={(e)=>{ setCustomStart(e.target.value); setDeliveryRateResults({}) }} className="rounded-xl border px-2 py-1 bg-white" />
-                <span>to</span>
-                <input type="date" value={customEnd} onChange={(e)=>{ setCustomEnd(e.target.value); setDeliveryRateResults({}) }} className="rounded-xl border px-2 py-1 bg-white" />
-                <button onClick={()=> load('custom', { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-2 py-1 bg-slate-200 hover:bg-slate-300">Apply</button>
-              </div>
-            )}
-          </div>
-          {/* ── Analyze Selected button ── */}
+          <div className="flex-1" />
           {(selectedCount > 0 || multiAnalysisLoading) && (
             <button
               disabled={multiAnalysisLoading}
-              onClick={async()=>{
-                const keys = Object.keys(selectedKeys).filter(k => !!selectedKeys[k])
-                if(keys.length === 0) return
-                const controller = new AbortController()
-                multiAnalysisAbortRef.current = controller
-                multiAnalysisCancelledRef.current = false
-                setMultiAnalysisLoading(true)
-                setMultiAnalysisResults({})
-                setMultiAnalysisProgress({ done: 0, total: keys.length })
-                const results: Record<string, CampaignAnalysisResult> = {}
-                for(let i = 0; i < keys.length; i++){
-                  if(multiAnalysisCancelledRef.current) break
-                  const rk = keys[i]
-                  // Find the campaign row
-                  const row = (items||[]).find(r => String(r.campaign_id||r.name||'') === rk)
-                  if(!row) { setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 })); continue }
-                  try{
-                    const cid = String(row.campaign_id||'')
-                    const rkSelf = (row.campaign_id || row.name || '') as any
-                    const confSelf = (manualIds as any)[rkSelf]
-                    const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id) ? confSelf.id : extractNumericId((row.name||'').trim())
-                    const ct = (row as any)?.created_time
-                    let ageDays: number|undefined = undefined
-                    if(ct){ const diff = Date.now() - new Date(ct).getTime(); ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24))) }
-                    const orders = getOrders(row)
-                    const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
-                    const res = await campaignAnalyze({
-                      campaign_id: cid || undefined,
-                      campaign_name: row.name || undefined,
-                      product_id: pidSelf || undefined,
-                      metrics: {
-                        spend: Number(row.spend||0),
-                        purchases: Number(row.purchases||0),
-                        ctr: row.ctr!=null? row.ctr : undefined,
-                        cpp: row.cpp!=null? row.cpp : undefined,
-                        add_to_cart: Number((row as any).add_to_cart||0),
-                        shopify_orders: orders,
-                        true_cpp: trueCppVal,
-                        status: (row.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
-                      },
-                      campaign_age_days: ageDays,
-                      campaign_key: cid || rk,
-                    }, { signal: controller.signal })
-                    if(res?.data){
-                      results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
-                    }
-                  }catch(e:any){
-                    if(controller.signal.aborted || multiAnalysisCancelledRef.current) break
-                  }
-                  setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 }))
-                  setMultiAnalysisResults({ ...results })
-                }
-                setMultiAnalysisResults(results)
-                multiAnalysisAbortRef.current = null
-                setMultiAnalysisLoading(false)
-              }}
-              className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
-                multiAnalysisLoading
-                  ? 'bg-gradient-to-r from-violet-300 to-fuchsia-300 cursor-wait animate-pulse'
-                  : 'bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 shadow-sm hover:shadow-md'
-              }`}
+              onClick={analyzeSelectedCampaigns}
+              className={`${UI.btn} ${UI.accent} ${multiAnalysisLoading ? 'cursor-wait animate-pulse' : ''}`}
             >
-              <Sparkles className="w-4 h-4"/>
+              <Sparkles className="h-4 w-4"/>
               {multiAnalysisLoading
                 ? `Analyzing ${multiAnalysisProgress.done}/${multiAnalysisProgress.total}…`
                 : `Analyze ${selectedCount} selected`
@@ -2452,460 +2894,437 @@ export default function AdsManagementPage(){
                 multiAnalysisAbortRef.current?.abort()
                 setMultiAnalysisLoading(false)
               }}
-              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-sm shadow-sm hover:shadow-md transition-all"
+              className={`${UI.btn} ${UI.secondary} text-rose-600`}
               title="Cancel selected campaign analysis"
             >
-              <X className="w-4 h-4"/>
-              Cancel analysis
+              <X className="h-4 w-4"/>
+              Cancel
             </button>
           )}
-          {/* ── Generate Actions button (after multi-analysis) ── */}
           {Object.keys(multiAnalysisResults).length > 0 && !multiAnalysisLoading && (
             <button
               disabled={actionTasksLoading}
-              onClick={async()=>{
-                setActionTasksLoading(true)
-                try{
-                  const analyses = Object.values(multiAnalysisResults)
-                  const res = await generateActionTasks({ analyses, store })
-                  if(res?.data){
-                    setActionTasks(res.data.tasks || [])
-                    setActionTasksSummary(res.data.summary || '')
-                    setActionTasksOpen(true)
-                    // Auto-add tasks to the exact campaign timelines they came from.
-                    const tasks = res.data.tasks || []
-                    for(const task of tasks){
-                      const campaignLabels = (task.campaigns || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
-                      const campaignKeys = ((task as any).campaign_keys || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
-                      const lookupLabels = [...campaignKeys, ...campaignLabels]
-                      const matchedRows = lookupLabels.map((cn: string) => {
-                        const lc = cn.toLowerCase()
-                        return (items||[]).find((r: any) => {
-                          const name = String(r.name||'')
-                          const id = String(r.campaign_id||'')
-                          const nameLc = name.toLowerCase()
-                          const idLc = id.toLowerCase()
-                          return name === cn || id === cn || (!!id && idLc === lc) || (!!name && (nameLc.includes(lc) || lc.includes(nameLc)))
-                        })
-                      }).filter(Boolean) as MetaCampaignRow[]
-                      const uniqueRows = [...new Map(matchedRows.map((r: any) => [String(r.campaign_id || r.name || ''), r])).values()] as MetaCampaignRow[]
-                      for(const row of uniqueRows){
-                        const campaignKey = String((row as any).campaign_id || (row as any).name || '').trim()
-                        if(!campaignKey) continue
-                        const refs = [{ id: String((row as any).campaign_id||''), name: String((row as any).name||'') }]
-                        try{
-                          const taskEntry = JSON.stringify({
-                            type: 'task',
-                            id: task.id,
-                            priority: task.priority,
-                            urgency: task.urgency,
-                            category: task.category,
-                            title: task.title,
-                            title_ar: (task as any).title_ar,
-                            description: task.description,
-                            description_ar: (task as any).description_ar,
-                            campaigns: task.campaigns || [],
-                            campaign_keys: (task as any).campaign_keys || [],
-                            campaign_references: refs,
-                            campaign_key: campaignKey,
-                            expected_impact: task.expected_impact,
-                            expected_impact_ar: (task as any).expected_impact_ar,
-                            source_recommendation: (task as any).source_recommendation,
-                            done: false,
-                          })
-                          await campaignTimelineAdd({ campaign_key: campaignKey, text: taskEntry, store })
-                        }catch{}
-                      }
-                    }
-                    // Refresh meta to show task badges
-                    try{
-                      const metaRes = await campaignMetaList(store)
-                      applyCampaignMetaSummary((metaRes as any)?.data)
-                    }catch{}
-                    setMultiAnalysisResults({})
-                  }
-                }catch{}
-                finally{ setActionTasksLoading(false) }
-              }}
-              className={`rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 text-white text-sm transition-all ${
-                actionTasksLoading
-                  ? 'bg-gradient-to-r from-amber-300 to-orange-300 cursor-wait animate-pulse'
-                  : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-sm hover:shadow-md'
-              }`}
+              onClick={generateActionsFromAnalyses}
+              className={`${UI.btn} bg-amber-500 text-white shadow-sm hover:bg-amber-600 ${actionTasksLoading ? 'cursor-wait animate-pulse' : ''}`}
             >
-              <Zap className="w-4 h-4"/>
-              {actionTasksLoading ? 'Generating tasks…' : `Generate Actions (${Object.keys(multiAnalysisResults).length})`}
+              <Zap className="h-4 w-4"/>
+              {actionTasksLoading ? 'Generating tasks…' : `Generate actions (${Object.keys(multiAnalysisResults).length})`}
             </button>
           )}
-          {/* ── Tasks icon with badge ── */}
-          {(()=>{
-            const incomplete = actionTasks.filter(t => !t.done).length
-            return (
-              <button
-                onClick={()=> setActionTasksOpen(true)}
-                className="relative rounded-xl inline-flex items-center gap-1 px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm transition-all"
-                title="Action Tasks"
-              >
-                <ClipboardList className="w-4 h-4"/>
-                {incomplete > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[10px] font-bold flex items-center justify-center shadow-sm animate-bounce" style={{animationDuration:'2s'}}>
-                    {incomplete}
-                  </span>
-                )}
-              </button>
-            )
-          })()}
-          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
-            <RefreshCw className={`w-4 h-4 ${loading? 'animate-spin' : ''}`}/> {loading? 'Updating…' : 'Refresh'}
-          </button>
-          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm">Home</Link>
         </div>
       </header>
 
-      <div className="px-1.5 py-0.5">
+      <main className="space-y-4 px-4 py-4 lg:px-6">
         {(error || ownerSaveError) && (
-          <div className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">{error || ownerSaveError}</div>
+          <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">{error || ownerSaveError}</div>
         )}
-        {/* Compact Summary Bar */}
-        <div className="mb-2 rounded-xl bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-500 text-white px-4 py-2">
-          <div className="flex items-center justify-between flex-wrap gap-x-6 gap-y-1">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="opacity-70">{adAccountName || adAccount || '—'}</span>
-              <span className="opacity-50">•</span>
-              <span className="opacity-70">{datePreset==='custom'? `${customStart||'—'}→${customEnd||'—'}` : presetLabel(datePreset)}</span>
-              <span className="opacity-50">•</span>
-              <span className="opacity-70">{selectedStores.join(', ')||'—'}</span>
-              {statusFilter !== 'all' && (
-                <>
-                  <span className="opacity-50">•</span>
-                  <span className="inline-flex items-center gap-1 font-semibold capitalize">
-                    <span className={`h-2 w-2 rounded-full ${statusFilter === 'active' ? 'bg-emerald-300' : 'bg-slate-200'}`}/>
-                    {statusFilter}
-                  </span>
-                </>
-              )}
-              {ownerFilter && (
-                <>
-                  <span className="opacity-50">•</span>
-                  <span className="font-semibold capitalize">{ownerFilter}</span>
-                </>
-              )}
-            </div>
-            <div className="flex items-center gap-3 text-xs flex-wrap justify-end">
-              <div><span className="opacity-70">Spend </span><span className="font-bold text-sm">{fmtCurrency(totalSpend)}</span></div>
-              {profitMode ? (
-                <>
-                  <div><span className="opacity-70">Ads MAD </span><span className="font-bold text-sm">{Math.round(totalSpend*10).toLocaleString()}</span></div>
-                  <div><span className="opacity-70">Service/order </span><span className="font-bold text-sm">{Math.round(Number(profitServiceCost||0)).toLocaleString()} MAD</span></div>
-                </>
-              ) : (
-                <>
-                  <div><span className="opacity-70">Orders </span><span className="font-bold text-sm">{fmtInt(tableOrdersTotal)}</span></div>
-                  <div><span className="opacity-70">Store </span><span className="font-bold text-sm">{storeOrdersTotal!=null? fmtInt(storeOrdersTotal) : '—'}</span></div>
-                  <div><span className="opacity-70">CPP </span><span className="font-bold text-sm">{totalCPP!=null? fmtCurrency(totalCPP) : '—'}</span></div>
-                  <div><span className="opacity-70">Full CPP </span><span className="font-bold text-sm">{storeCPP!=null? fmtCurrency(storeCPP) : '—'}</span></div>
-                </>
-              )}
-              {!profitMode && CAMPAIGN_OWNERS.map(owner => {
-                const s = ownerStats[owner]
-                return (
-                  <button
-                    key={owner}
-                    onClick={()=> setOwnerFilter(ownerFilter===owner ? '' : owner)}
-                    className={`rounded-lg px-2 py-1 text-left ${ownerFilter===owner ? 'bg-white text-blue-700' : 'bg-white/10 hover:bg-white/20 text-white'}`}
-                    title={`Filter ${owner} campaigns`}
-                  >
-                    <span className="font-bold capitalize">{owner}</span>
-                    <span className="ml-1 opacity-80">{fmtInt(s.orders)} orders</span>
-                    <span className="ml-1 opacity-80">{s.trueCpp!=null ? fmtCurrency(s.trueCpp) : '—'} CPP</span>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+
+        {/* Context line */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+          <span className="font-medium text-slate-700">{adAccountName || adAccount || 'No ad account'}</span>
+          <span className="text-slate-300">/</span>
+          <span>{selectedStores.join(', ') || '—'}</span>
+          <span className="text-slate-300">/</span>
+          <span className="capitalize">{rangeLabel}</span>
+          {statusFilter !== 'all' && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{statusFilter} products</span>}
+          {ownerFilter && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{ownerFilter}</span>}
         </div>
+
+        {/* Analytics bar */}
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5" aria-label="Performance summary">
+          <KpiTile
+            label="Ad spend"
+            value={fmtCurrency(totalSpend)}
+            sub={profitMode
+              ? `${Math.round(totalSpend*10).toLocaleString()} MAD · ${Math.round(Number(profitServiceCost||0)).toLocaleString()} MAD service/order`
+              : `${analytics.spenders} spending product${analytics.spenders===1?'':'s'}`}
+          >
+            <StackedBar segments={[
+              ...analytics.top.map(p => ({ key: p.key, value: p.spend, color: '#3b82f6', label: `${p.label}: ${fmtCurrency(p.spend)}` })),
+              { key: 'other', value: analytics.otherSpend, color: '#cbd5e1', label: `Other products: ${fmtCurrency(analytics.otherSpend)}` },
+            ]} />
+            <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-500">
+              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-blue-500"/>Top 5 · {Math.round(analytics.topShare*100)}%</span>
+              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-slate-300"/>Other</span>
+            </div>
+          </KpiTile>
+
+          {!profitMode && (
+            <KpiTile
+              label="Shopify orders"
+              value={fmtInt(tableOrdersTotal)}
+              sub={storeOrdersTotal!=null ? `of ${fmtInt(storeOrdersTotal)} store orders` : 'Store total loading…'}
+            >
+              {(()=>{
+                const share = storeOrdersTotal ? Math.min(1, tableOrdersTotal / Math.max(1, storeOrdersTotal)) : 0
+                return (
+                  <>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100" title={`${Math.round(share*100)}% of store orders come from products in this table`}>
+                      <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${share*100}%` }} />
+                    </div>
+                    <div className="mt-1.5 text-[11px] text-slate-500">{storeOrdersTotal ? `${Math.round(share*100)}% of store orders from ads` : 'Coverage appears when the store total loads'}</div>
+                  </>
+                )
+              })()}
+            </KpiTile>
+          )}
+
+          {!profitMode && (
+            <KpiTile
+              label="True CPP"
+              value={totalCPP!=null ? fmtCurrency(totalCPP) : '—'}
+              sub={`Blended ${storeCPP!=null ? fmtCurrency(storeCPP) : '—'} across all store orders`}
+            >
+              <StackedBar segments={[
+                { key: 'good', value: analytics.bands.good, color: '#10b981', label: `${analytics.bands.good} under $2` },
+                { key: 'ok', value: analytics.bands.ok, color: '#f59e0b', label: `${analytics.bands.ok} between $2 and $3` },
+                { key: 'high', value: analytics.bands.high, color: '#f43f5e', label: `${analytics.bands.high} at $3 or more` },
+                { key: 'none', value: analytics.bands.none, color: '#cbd5e1', label: `${analytics.bands.none} without orders yet` },
+              ]} />
+              <div className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
+                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-emerald-500"/>&lt;$2 · {analytics.bands.good}</span>
+                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-amber-500"/>$2–3 · {analytics.bands.ok}</span>
+                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-rose-500"/>$3+ · {analytics.bands.high}</span>
+              </div>
+            </KpiTile>
+          )}
+
+          <KpiTile label="Campaigns" value={<span>{fmtInt(analytics.activeCampaigns)}<span className="text-base font-medium text-slate-400"> / {fmtInt(analytics.campaigns)} active</span></span>} sub={`${analytics.products} product row${analytics.products===1?'':'s'} in view`}>
+            <div className="flex items-center gap-3">
+              <Donut value={analytics.activeCampaigns} total={analytics.campaigns} color="#10b981" />
+              <div className="space-y-0.5 text-[11px] text-slate-500">
+                <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500"/>{fmtInt(analytics.activeCampaigns)} active</div>
+                <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-slate-300"/>{fmtInt(analytics.campaigns - analytics.activeCampaigns)} paused</div>
+              </div>
+            </div>
+          </KpiTile>
+
+          {!profitMode && (
+            <div className="flex min-w-0 flex-col rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Owners</span>
+                <span className="text-[11px] text-slate-400">spend · orders · tCPP</span>
+              </div>
+              <div className="mt-2 space-y-1.5">
+                {CAMPAIGN_OWNERS.map(owner => {
+                  const st = ownerStats[owner]
+                  const on = ownerFilter === owner
+                  return (
+                    <button
+                      key={owner}
+                      onClick={()=> setOwnerFilter(on ? '' : owner)}
+                      className={`group block w-full rounded-lg px-1.5 py-1 text-left transition-colors ${on ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-slate-50'}`}
+                      title={`Filter ${owner}'s products`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="font-medium capitalize text-slate-700">{owner}</span>
+                        <span className="tabular-nums text-slate-500">{fmtCurrency(st.spend)} · {fmtInt(st.orders)} · <span className="font-medium text-slate-700">{st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'}</span></span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100">
+                        <div className={`h-full rounded-full transition-all duration-500 ${on ? 'bg-blue-600' : 'bg-blue-400 group-hover:bg-blue-500'}`} style={{ width: `${(st.spend / ownerMaxSpend) * 100}%` }} />
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
         {profitMode && (
-          <div className="mb-2 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-bold text-slate-800">Calculated products profit summary</div>
+                <div className="text-sm font-semibold text-slate-900">Calculated products profit summary</div>
                 <div className="text-[11px] text-slate-500">Only products with a completed profit calculation are included.</div>
               </div>
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">
+              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-600/20">
                 {profitSummary.calculatedProducts} calculated
               </span>
             </div>
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-              <div className="rounded-lg bg-indigo-50 px-3 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">Available inventory</div>
-                <div className="mt-0.5 text-lg font-bold text-indigo-800">{fmtInt(profitSummary.availableItems)} items</div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Available inventory</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{fmtInt(profitSummary.availableItems)} items</div>
               </div>
-              <div className="rounded-lg bg-blue-50 px-3 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-500">Total inventory cost value</div>
-                <div className="mt-0.5 text-lg font-bold text-blue-800">{Math.round(profitSummary.inventoryWorth).toLocaleString()} MAD</div>
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Inventory cost value</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{Math.round(profitSummary.inventoryWorth).toLocaleString()} MAD</div>
               </div>
-              <div className={`rounded-lg px-3 py-2 ${profitSummary.totalProfit >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
-                <div className={`text-[10px] font-semibold uppercase tracking-wide ${profitSummary.totalProfit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>Total profit</div>
-                <div className={`mt-0.5 text-lg font-bold ${profitSummary.totalProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{Math.round(profitSummary.totalProfit).toLocaleString()} MAD</div>
+              <div className={`rounded-lg px-3 py-2.5 ${profitSummary.totalProfit >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                <div className={`text-[11px] font-medium uppercase tracking-wider ${profitSummary.totalProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>Total profit</div>
+                <div className={`mt-0.5 text-lg font-semibold ${profitSummary.totalProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{Math.round(profitSummary.totalProfit).toLocaleString()} MAD</div>
               </div>
-              <div className="rounded-lg bg-amber-50 px-3 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">Net inventory money</div>
-                <div className="mt-0.5 text-lg font-bold text-amber-800">{Math.round(profitSummary.netInventoryMoney).toLocaleString()} MAD</div>
-                <div className="text-[10px] text-amber-600">Inventory cost value − total profit</div>
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Net inventory money</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{Math.round(profitSummary.netInventoryMoney).toLocaleString()} MAD</div>
+                <div className="text-[10px] text-slate-500">Inventory cost value − total profit</div>
               </div>
             </div>
-          </div>
+          </section>
         )}
-        {/* Search + Toolbar */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-2">
-          {/* Search Bar */}
-          <div className="relative" style={{minWidth:'320px', maxWidth:'480px'}}>
-            <div className="flex items-center gap-2 bg-white border rounded-xl px-3 py-1.5 shadow-sm focus-within:ring-2 focus-within:ring-blue-400 focus-within:border-blue-400 transition-all">
-              <Search className="w-4 h-4 text-slate-400 flex-shrink-0"/>
+
+        {/* Search + table toolbar */}
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="relative w-full md:max-w-xl">
+            <div className={`flex h-10 items-center gap-2.5 rounded-xl border bg-white px-3.5 shadow-sm transition-all ${searchFocused ? 'border-blue-400 ring-4 ring-blue-500/10' : 'border-slate-200 hover:border-slate-300'}`}>
+              <Search className="h-4 w-4 flex-shrink-0 text-slate-400"/>
               <input
                 ref={searchRef}
                 value={searchQuery}
-                onChange={(e) => { setSearchQuery(e.target.value); if(!e.target.value.trim()){ setSearchActive(''); setSearchFocusId('') } }}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value)
+                  if(!e.target.value.trim() && (searchActive || searchFocusId || searchFocusProductId)) clearSearchFocus()
+                }}
                 onFocus={() => setSearchFocused(true)}
-                onBlur={() => setTimeout(() => setSearchFocused(false), 200)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
                 onKeyDown={(e) => {
+                  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+                    if(searchOptions.length === 0) return
+                    e.preventDefault()
+                    const dir = e.key==='ArrowDown' ? 1 : -1
+                    setSearchHighlight(prev => (prev + dir + searchOptions.length) % searchOptions.length)
+                  }
                   if(e.key==='Enter'){
                     const q = searchQuery.trim()
                     if(!q) return
-                    // Enter = the top dropdown option: show ALL campaigns matching the query
-                    applySearchFocus({ query: q, label: q })
+                    const opt = searchOptions[searchHighlight]
+                    if(opt) pickSearchOption(opt)
+                    // Enter without a highlighted option = every campaign matching the query
+                    else applySearchFocus({ query: q, label: q })
                   }
                   if(e.key==='Escape'){
                     searchRef.current?.blur()
                     clearSearchFocus()
                   }
                 }}
-                placeholder="Search campaigns by name or ID…"
-                className="flex-1 text-sm outline-none bg-transparent text-slate-800 placeholder:text-slate-400"
+                placeholder="Search by product ID, product or campaign name…"
+                className="h-full flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                aria-label="Search products and campaigns"
               />
-              {(searchQuery || searchActive) && (
+              {(searchQuery || searchActive || searchFocusProductId) ? (
                 <button
                   onClick={() => { clearSearchFocus(); searchRef.current?.focus() }}
-                  className="text-slate-400 hover:text-slate-600"
+                  className="rounded-md p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Clear search"
                 >
-                  <X className="w-4 h-4"/>
+                  <X className="h-4 w-4"/>
                 </button>
+              ) : (
+                <kbd className="hidden rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-slate-400 sm:block">Enter ↵</kbd>
               )}
             </div>
-            {/* Suggestions Dropdown */}
-            {searchFocused && searchQuery.trim() && searchSuggestions.length > 0 && (
-              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-72 overflow-y-auto">
-                {/* Top option: focus ALL campaigns matching the query */}
-                {searchMatchCount > 0 && (
-                  <button
-                    className="w-full text-left px-3 py-2 bg-blue-50/60 hover:bg-blue-100 flex items-center gap-2 text-sm border-b border-b-slate-200 transition-colors"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim() })
-                    }}
-                  >
-                    <Search className="w-3.5 h-3.5 text-blue-500 flex-shrink-0"/>
-                    <span className="flex-1 text-blue-700 font-semibold">
-                      Show all {searchMatchCount} campaign{searchMatchCount===1?'':'s'} matching "{searchQuery.trim()}"
-                    </span>
-                    <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-semibold">Enter ↵</span>
-                  </button>
-                )}
-                {searchSuggestions.map(s => {
-                  const q = searchQuery.toLowerCase()
-                  const nameL = s.name.toLowerCase()
-                  const matchIdx = nameL.indexOf(q)
+            {/* Suggestions dropdown */}
+            {searchFocused && searchQuery.trim() && (
+              <div className="absolute left-0 right-0 z-50 mt-1.5 max-h-[420px] overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10">
+                {searchOptions.map((opt, idx) => {
+                  const hl = idx === searchHighlight
+                  const base = `flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${hl ? 'bg-slate-100' : 'hover:bg-slate-50'}`
+                  const pick = (e: React.MouseEvent) => { e.preventDefault(); pickSearchOption(opt) }
+                  const prevKind = idx > 0 ? searchOptions[idx-1].kind : null
+                  const heading = (opt.kind === 'product' && prevKind !== 'product') ? 'Products'
+                    : (opt.kind === 'campaign' && prevKind !== 'campaign') ? 'Campaigns' : null
                   return (
-                    <button
-                      key={s.id}
-                      className="w-full text-left px-3 py-2 hover:bg-blue-50 flex items-center gap-2 text-sm border-b border-b-slate-100 last:border-b-0 transition-colors"
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        // Focus this single campaign only
-                        applySearchFocus({ campaignId: s.id || undefined, query: s.name, label: s.name })
-                      }}
-                    >
-                      <Search className="w-3.5 h-3.5 text-slate-300 flex-shrink-0"/>
-                      <div className="flex-1 min-w-0">
-                        <div className="truncate">
-                          {matchIdx >= 0 ? (
-                            <>
-                              <span className="text-slate-600">{s.name.slice(0, matchIdx)}</span>
-                              <span className="text-blue-600 font-semibold bg-blue-50 rounded px-0.5">{s.name.slice(matchIdx, matchIdx + q.length)}</span>
-                              <span className="text-slate-600">{s.name.slice(matchIdx + q.length)}</span>
-                            </>
+                    <Fragment key={`${opt.kind}-${idx}`}>
+                      {heading && <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{heading}</div>}
+                      {opt.kind === 'all' && (
+                        <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          <Search className="h-4 w-4 flex-shrink-0 text-blue-500"/>
+                          <span className="flex-1 font-medium text-slate-800">Show all {searchMatchCount} campaign{searchMatchCount===1?'':'s'} matching “{searchQuery.trim()}”</span>
+                        </button>
+                      )}
+                      {opt.kind === 'product' && (
+                        <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          {productBriefs[opt.pid]?.image ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={String(productBriefs[opt.pid]?.image)} alt="" className="h-9 w-9 flex-shrink-0 rounded-md border border-slate-200 object-cover" />
                           ) : (
-                            <span className="text-slate-600">{s.name}</span>
+                            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50"><Package className="h-4 w-4 text-slate-400"/></span>
                           )}
-                        </div>
-                        <div className="text-xs text-slate-400 font-mono">ID: {s.id}</div>
-                      </div>
-                      {s.score >= 80 && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-semibold">ID match</span>}
-                    </button>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-slate-800">{opt.name}</span>
+                            <span className="block font-mono text-[11px] text-slate-400">#{opt.pid} · {opt.campaigns} campaign{opt.campaigns===1?'':'s'}</span>
+                          </span>
+                          {opt.active > 0
+                            ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-600/20">{opt.active} active</span>
+                            : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">paused</span>}
+                        </button>
+                      )}
+                      {opt.kind === 'campaign' && (()=>{
+                        const q = searchQuery.trim().toLowerCase()
+                        const matchIdx = opt.name.toLowerCase().indexOf(q)
+                        return (
+                          <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                            <Megaphone className="h-4 w-4 flex-shrink-0 text-slate-300"/>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-slate-700">
+                                {matchIdx >= 0 ? (
+                                  <>
+                                    {opt.name.slice(0, matchIdx)}
+                                    <span className="rounded bg-blue-50 px-0.5 font-semibold text-blue-700">{opt.name.slice(matchIdx, matchIdx + q.length)}</span>
+                                    {opt.name.slice(matchIdx + q.length)}
+                                  </>
+                                ) : opt.name}
+                              </span>
+                              <span className="block font-mono text-[11px] text-slate-400">ID {opt.id}</span>
+                            </span>
+                            {opt.score >= 80 && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">ID match</span>}
+                          </button>
+                        )
+                      })()}
+                      {opt.kind === 'alltime' && (
+                        <button className={`${base} mt-1 border-t border-slate-100`} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          <Clock className="h-4 w-4 flex-shrink-0 text-amber-500"/>
+                          <span className="flex-1 text-slate-600">
+                            {searchOptions.length === 1 && <span className="mr-1 text-slate-400">Nothing loaded matches.</span>}
+                            Search <span className="font-medium text-slate-800">all time</span> for “{searchQuery.trim()}”
+                          </span>
+                          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">slower</span>
+                        </button>
+                      )}
+                    </Fragment>
                   )
                 })}
-                {/* Bottom option: heavy all-time search (finds old campaigns outside the current range) */}
-                <button
-                  className="w-full text-left px-3 py-2 hover:bg-amber-50 flex items-center gap-2 text-sm border-t border-t-slate-200 transition-colors"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim(), allTime: true })
-                  }}
-                >
-                  <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0"/>
-                  <span className="flex-1 text-slate-600">Search <span className="font-semibold">all time</span> for "{searchQuery.trim()}"</span>
-                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-semibold">slower</span>
-                </button>
               </div>
             )}
-            {searchFocused && searchQuery.trim() && searchSuggestions.length === 0 && (
-              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl">
-                <div className="px-4 py-3 text-sm text-slate-400">No loaded campaigns matching "{searchQuery}"</div>
-                <button
-                  className="w-full text-left px-3 py-2 hover:bg-amber-50 flex items-center gap-2 text-sm border-t border-t-slate-200 transition-colors"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    applySearchFocus({ query: searchQuery.trim(), label: searchQuery.trim(), allTime: true })
-                  }}
-                >
-                  <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0"/>
-                  <span className="flex-1 text-slate-600">Search <span className="font-semibold">all time</span> for "{searchQuery.trim()}" (includes old campaigns)</span>
-                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-semibold">slower</span>
-                </button>
-              </div>
-            )}
-            {searchActive && (
-              <div className="mt-1 flex items-center gap-1 text-xs text-blue-600">
-                <span>{searchFocusId ? 'Focused campaign:' : 'Filtered:'}</span>
-                <span className="font-semibold truncate max-w-[200px]">"{searchActive}"</span>
-                <button onClick={clearSearchFocus} className="text-slate-400 hover:text-red-500 ml-1">✕ clear</button>
+            {(searchActive || searchFocusProductId) && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-blue-600/15">
+                  {searchFocusProductId ? <Package className="h-3 w-3"/> : <Search className="h-3 w-3"/>}
+                  <span className="max-w-[260px] truncate">{searchFocusLabel}</span>
+                </span>
+                <span>Only this selection is loading.</span>
+                <button onClick={clearSearchFocus} className="font-medium text-slate-500 hover:text-rose-600">Clear</button>
               </div>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={groupTarget}
-              onChange={(e)=> setGroupTarget(e.target.value)}
-              className="rounded-xl border px-2 py-1 text-sm bg-white min-w-56"
-              title="Choose a product ID group"
-            >
-              <option value="">Add selected campaigns to group…</option>
-              {productIdOptions.map(pid=> (
-                <option key={pid} value={pid}>{pid} ({productIdToCount[pid]||0} campaigns)</option>
-              ))}
-            </select>
-            <button
-              onClick={()=> addSelectedToGroupProduct(groupTarget)}
-              disabled={!groupTarget || selectedCount===0}
-              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm disabled:opacity-60"
-            >Add selected</button>
-            <button
-              onClick={clearSelection}
-              disabled={selectedCount===0}
-              className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-sm disabled:opacity-60"
-            >Clear selection</button>
+            {selectedCount > 0 ? (
+              <>
+                <span className="text-xs font-medium text-slate-600">{selectedCount} selected</span>
+                <select
+                  value={groupTarget}
+                  onChange={(e)=> setGroupTarget(e.target.value)}
+                  className={`${UI.field} min-w-56`}
+                  title="Choose a product ID group"
+                >
+                  <option value="">Add to product group…</option>
+                  {productIdOptions.map(pid=> (
+                    <option key={pid} value={pid}>{pid} ({productIdToCount[pid]||0} campaigns)</option>
+                  ))}
+                </select>
+                <button
+                  onClick={()=> addSelectedToGroupProduct(groupTarget)}
+                  disabled={!groupTarget}
+                  className={`${UI.btn} ${UI.primary}`}
+                >Add to group</button>
+                <button onClick={clearSelection} className={`${UI.btn} ${UI.secondary}`}>Clear selection</button>
+              </>
+            ) : (
+              <span className="text-xs text-slate-400">{analytics.products} row{analytics.products===1?'':'s'} · select campaigns to analyze or group them</span>
+            )}
           </div>
         </div>
-        <div className="overflow-x-auto bg-white border rounded-none">
+        <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white shadow-sm">
           <table className="min-w-full text-xs">
-            <thead className="bg-slate-50/90 backdrop-blur supports-backdrop-blur:bg-slate-50/60 border-b shadow-sm">
-              <tr className="text-left">
-                <th className="px-1 py-0.5 font-semibold w-6"></th>
-                <th className="px-1 py-0.5 font-semibold w-[80px]"></th>
-                <th className="w-[250px] max-w-[250px] px-1 py-0.5 font-semibold">
-                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+            <thead className="border-b border-slate-200 bg-slate-50/80">
+              <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-medium">
+                <th className="px-2 py-2.5 font-semibold w-6"></th>
+                <th className="px-2 py-2.5 font-semibold w-[80px]"></th>
+                <th className="w-[250px] max-w-[250px] px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>Campaign</span>
-                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                   </button>
                 </th>
-                <th className="px-1 py-0.5 font-semibold">
+                <th className="px-2 py-2.5 font-semibold">
                   <span>Status</span>
                 </th>
-                <th className="px-1 py-0.5 font-semibold">
+                <th className="px-2 py-2.5 font-semibold">
                   <span>Owner</span>
                 </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>Spend</span>
-                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                   </button>
                 </th>
                 {!profitMode && (
                   <>
-                    <th className="px-1 py-0.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                         <span>Purch</span>
-                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="px-1 py-0.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                         <span>CPP</span>
-                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="px-1 py-0.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                         <span>CTR</span>
-                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="px-1 py-0.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                         <span>ATC</span>
-                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
                   </>
                 )}
-                <th className="px-1 py-0.5 font-semibold text-emerald-700">
-                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-0.5 hover:text-emerald-800">
+                <th className="px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>{profitMode ? 'Paid' : 'Orders'}</span>
-                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-emerald-400"/>}
+                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                   </button>
                 </th>
-                <th className="px-1 py-0.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-0.5 hover:text-slate-900">
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>{profitMode ? 'Ad CPP' : 'tCPP'}</span>
-                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-400"/>}
+                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                   </button>
                 </th>
                 {profitMode && (
-                  <th className="min-w-[145px] px-1 py-0.5 font-semibold text-right text-indigo-700">Inventory cost value</th>
+                  <th className="min-w-[145px] px-2 py-2.5 font-semibold text-right">Inventory cost value</th>
                 )}
                 {!profitMode && (
                   <>
-                    <th className="px-1 py-0.5 font-semibold text-indigo-700 text-right">
-                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-0.5 hover:text-indigo-800">
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                         <span>Inv</span>
-                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-indigo-400"/>}
+                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
-                      <span className="text-rose-500 ml-0.5">/</span>
-                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-0.5 hover:text-rose-800">
-                        <span className="text-rose-700">0v</span>
-                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-rose-400"/>}
+                      <span className="mx-0.5 text-slate-300">/</span>
+                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>0v</span>
+                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="w-[300px] max-w-[300px] px-1 py-0.5 font-semibold text-violet-700">Life days</th>
+                    <th className="w-[300px] max-w-[300px] px-2 py-2.5 font-semibold">Life days</th>
                   </>
                 )}
-                <th className="px-1 py-0.5 font-semibold text-right w-[70px]"></th>
+                <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">Loading…</td>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400"><RefreshCw className="mx-auto mb-2 h-5 w-5 animate-spin text-slate-300"/>Loading campaigns…</td>
                 </tr>
               )}
               {!loading && items.length===0 && (
                 <tr>
-                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">No active campaigns.</td>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400">No campaigns for this range.</td>
                 </tr>
               )}
               {!loading && items.length>0 && displayRows.length===0 && (
                 <tr>
-                  <td colSpan={tableColSpan} className="px-3 py-6 text-center text-slate-500">No campaigns match this filter.</td>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400">Nothing matches these filters.</td>
                 </tr>
               )}
               {!loading && displayRows.map((d)=>{
@@ -2925,12 +3344,13 @@ export default function AdsManagementPage(){
                   const hydratingBrief = !!hydrating.brief
                   const hydratingOrders = !!hydrating.orders
                   const hasInventoryAlert = zeros != null && Number(zeros) > 0
-                  const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
-                  const colorClass = trueCppVal==null? '' : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
+                  const severityAccent = cppAccent(trueCppVal)
+                  const colorClass = 'hover:bg-slate-50/80'
                   const active = Number((m as any).active||0)
                   const paused = Number((m as any).paused||0)
                   const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
-                  const statusClass = active===0 ? 'bg-slate-700 text-white ring-slate-300' : (paused===0 ? 'bg-emerald-600 text-white ring-emerald-300' : 'bg-amber-500 text-white ring-amber-300')
+                  const statusClass = active===0 ? 'bg-slate-100 text-slate-600 ring-slate-500/15' : (paused===0 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-amber-50 text-amber-700 ring-amber-600/20')
+                  const statusDot = active===0 ? 'bg-slate-400' : (paused===0 ? 'bg-emerald-500' : 'bg-amber-500')
                   const noteVal = groupNotes[pid] || ''
                   const groupSelection = getGroupSelectionState(d.rows)
                   const paidOrders = profitPaidCounts[pid]
@@ -2944,8 +3364,8 @@ export default function AdsManagementPage(){
                   const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventoryProductCost
                   return (
                     <Fragment key={`group-${pid}`}>
-                      <tr ref={registerProductRow(pid)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent}`}>
-                        <td className="px-1.5 py-0.5">
+                      <tr ref={registerProductRow(pid)} className={`border-b border-slate-100 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                        <td className="px-2 py-2">
                           <input
                             type="checkbox"
                             checked={groupSelection.checked}
@@ -2954,24 +3374,23 @@ export default function AdsManagementPage(){
                             aria-label={`Select product group ${pid}`}
                           />
                         </td>
-                        <td className="px-1 py-0.5">
-                          {img ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
-                          ) : (
-                            <span className={`inline-block w-[72px] h-[72px] rounded-lg border ${hydratingBrief ? 'bg-slate-100 animate-pulse' : 'bg-slate-50'}`} />
-                          )}
+                        <td className="px-2 py-2">
+                          <ProductThumb src={img} loading={hydratingBrief} alt={d.primary.name || `Product ${pid}`} />
                         </td>
-                        <td className="w-[250px] max-w-[250px] whitespace-normal px-1 py-0.5 align-top">
+                        <td className="w-[250px] max-w-[250px] whitespace-normal px-2 py-2 align-top">
                           <div className="flex items-start gap-1">
                             {!profitMode && <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
-                              className="shrink-0 px-1 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
-                              title="Show merged campaigns"
-                            >{groupExpanded[pid]? '▾' : '▸'}</button>}
+                              className={`${UI.icon} h-6 w-6`}
+                              title={groupExpanded[pid] ? 'Hide campaigns' : 'Show campaigns'}
+                              aria-expanded={!!groupExpanded[pid]}
+                            ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${groupExpanded[pid] ? 'rotate-90' : ''}`}/></button>}
                             <div className="min-w-0 flex-1">
-                              <span className="break-words text-xs font-medium leading-tight">{d.primary.name || `Product ${pid}`}</span>
-                              <span className="ml-1 inline-flex shrink-0 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] text-indigo-700">{d.rows.length} camps</span>
+                              <span className="break-words text-[13px] font-medium leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
+                              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
+                                <span className="font-mono">#{pid}</span>
+                                <span className="rounded-full bg-slate-100 px-1.5 py-px font-medium text-slate-600">{d.rows.length} campaigns</span>
+                              </span>
                             </div>
                           </div>
                           {profitMode && (
@@ -3023,20 +3442,20 @@ export default function AdsManagementPage(){
                             </div>
                           )}
                         </td>
-                        <td className="px-1 py-0.5">
-                          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ring-2 ring-inset ${statusClass}`}>
-                            <span className="h-2 w-2 rounded-full bg-white"/>
-                            {statusLabel}
+                        <td className="px-2 py-2">
+                          <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${statusClass}`} title={statusLabel}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`}/>
+                            {active===0 ? 'Paused' : paused===0 ? 'Active' : `${active} on · ${paused} off`}
                           </span>
                         </td>
-                        <td className="px-1 py-0.5">
+                        <td className="px-2 py-2">
                           {(()=>{
                             const owner = ownerOfKey(productOwnerKey(pid))
                             return (
                               <select
                                 value={owner}
                                 onChange={(e)=> saveProductOwner(pid, e.target.value)}
-                                className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
+                                className={`${UI.miniField} h-7 capitalize`}
                                 title="Owner for all campaigns in this product"
                               >
                                 <option value="">No owner</option>
@@ -3045,7 +3464,7 @@ export default function AdsManagementPage(){
                             )
                           })()}
                         </td>
-                        <td className="px-1 py-0.5 text-right">
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                           {profitMode ? (
                             <div>
                               <div>${Number(m.spend||0).toFixed(2)}</div>
@@ -3055,34 +3474,34 @@ export default function AdsManagementPage(){
                         </td>
                         {!profitMode && (
                           <>
-                            <td className="px-1 py-0.5 text-right">{Number(m.purchases||0)}</td>
-                            <td className="px-1 py-0.5 text-right">{cpp}</td>
-                            <td className="px-1 py-0.5 text-right">{ctr}</td>
-                            <td className="px-1 py-0.5 text-right">{Number(m.add_to_cart||0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{Number(m.purchases||0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{cpp}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{ctr}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{Number(m.add_to_cart||0)}</td>
                           </>
                         )}
-                        <td className="px-1 py-0.5">
+                        <td className="px-2 py-2">
                           {profitMode ? (
                             paidOrders==null ? (
                               <span className="text-slate-400">—</span>
                             ) : (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrders} paid</span>
+                              <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{paidOrders} paid</span>
                             )
                           ) : orders==null ? (
                             hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                           ) : (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                            <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{orders}</span>
                           )}
                         </td>
-                        <td className="px-1 py-0.5 text-right">
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                           {profitMode ? (
                             profitTrueCpp!=null ? `${Math.round(profitTrueCpp).toLocaleString()} MAD` : '—'
                           ) : (
-                            orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
+                            orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : <span className={cppPill(trueCppVal)}>{trueCpp}</span>
                           )}
                         </td>
                         {profitMode && (
-                          <td className="px-1 py-0.5 text-right">
+                          <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                             {inventoryItems == null ? (
                               hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                             ) : (
@@ -3096,7 +3515,7 @@ export default function AdsManagementPage(){
                         )}
                         {!profitMode && (
                           <>
-                            <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
+                            <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
                               <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                                 onMouseEnter={(e) => {
                                   const rect = e.currentTarget.getBoundingClientRect()
@@ -3106,7 +3525,7 @@ export default function AdsManagementPage(){
                                 onMouseLeave={() => setInvHover(null)}
                               >
                                 {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
-                                  <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                                  <span className="inline-flex items-center rounded px-1 py-px text-[11px] font-semibold tabular-nums bg-slate-100 text-slate-700">{inv}</span>
                                 )}
                                 <span className="text-slate-300">/</span>
                                 {zeros==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
@@ -3114,42 +3533,34 @@ export default function AdsManagementPage(){
                                 )}
                               </div>
                             </td>
-                            <td className="w-[300px] max-w-[300px] px-1.5 py-0.5 align-top">
+                            <td className="w-[300px] max-w-[300px] px-2 py-2 align-top">
                               {renderLifeDays(d.rows)}
                             </td>
                           </>
                         )}
-                        <td className="px-1 py-0.5 text-right">
-                          <div className="flex items-center justify-end gap-1">
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                          <div className="flex items-center justify-end gap-1.5">
                           {profitMode && (
                             <>
                               <button
                                 title="Calculate profit"
                                 disabled={!!profitLoading[pid]}
                                 onClick={()=> calculateGroupProfit(pid, Number(m.spend||0))}
-                                className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                                  profitLoading[pid]
-                                    ? 'bg-emerald-300 animate-pulse cursor-wait'
-                                    : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
-                                }`}
+                                className={`${UI.icon} text-emerald-600 ${profitLoading[pid] ? 'animate-pulse' : ''}`}
                               ><Calculator className="w-3.5 h-3.5"/></button>
                               {profitResult && (
                                 <button
                                   title="Clear profit result"
                                   aria-label="Clear profit result"
                                   onClick={()=> clearProfitResult(pid)}
-                                  className="p-1.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 shadow-sm transition-colors"
+                                  className={`${UI.icon} text-rose-600`}
                                 ><X className="w-3.5 h-3.5"/></button>
                               )}
                               <button
                                 title="Calculate delivery rate"
                                 disabled={!!deliveryRateLoading[pid]}
                                 onClick={()=> calculateDeliveryRate(pid)}
-                                className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                                  deliveryRateLoading[pid]
-                                    ? 'bg-cyan-300 animate-pulse cursor-wait'
-                                    : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 hover:shadow-md'
-                                }`}
+                                className={`${UI.icon} text-cyan-600 ${deliveryRateLoading[pid] ? 'animate-pulse' : ''}`}
                               ><Truck className="w-3.5 h-3.5"/></button>
                             </>
                           )}
@@ -3184,7 +3595,7 @@ export default function AdsManagementPage(){
                                 setPerfLoading(false)
                               }
                             }}
-                            className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
+                            className={`${UI.icon} text-blue-600`}
                           ><BarChart3 className="w-3.5 h-3.5"/></button>}
                           {!profitMode && <button
                             disabled={analysisLoading===pid}
@@ -3238,11 +3649,7 @@ export default function AdsManagementPage(){
                               finally{ setAnalysisLoading(null) }
                             }}
                             title="Analyze"
-                            className={`p-1.5 rounded transition-all ${
-                              analysisLoading===pid
-                                ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
-                                : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
-                            }`}
+                            className={`${UI.icon} text-violet-600 ${analysisLoading===pid ? 'animate-pulse' : ''}`}
                           ><Sparkles className="w-3.5 h-3.5"/></button>}
                           </div>
                         </td>
@@ -3283,31 +3690,22 @@ export default function AdsManagementPage(){
                 const inventoryItemsSelf = inv == null ? null : Math.max(0, Number(inv || 0))
                 const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventoryProductCostSelf
                 const hasInventoryAlert = zeros != null && zeros > 0
-                const severityAccent = trueCppVal==null? 'border-l-2 border-l-transparent' : (trueCppVal < 2 ? 'border-l-4 border-l-emerald-400' : (trueCppVal < 3 ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-rose-400'))
-                const colorClass = trueCppVal==null? (isChild? 'bg-slate-50' : '') : (trueCppVal < 2 ? 'bg-emerald-50' : (trueCppVal < 3 ? 'bg-amber-50' : 'bg-rose-50'))
+                const severityAccent = cppAccent(trueCppVal)
+                const colorClass = isChild ? 'bg-slate-50/60 hover:bg-slate-50' : 'hover:bg-slate-50/80'
                 return (
                   <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
-                  <tr ref={registerProductRow(pidSelf)} className={`border-b last:border-b-0 ${colorClass} ${severityAccent} ${isChild? 'opacity-95' : ''}`}>
-                    <td className="px-1.5 py-0.5">
+                  <tr ref={registerProductRow(pidSelf)} className={`border-b border-slate-100 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                    <td className="px-2 py-2">
                       <input
                         type="checkbox"
                         checked={!!selectedKeys[String(rowKey)]}
                         onChange={(e)=> toggleSelect(String(rowKey), e.target.checked)}
                       />
                     </td>
-                    <td className="px-1.5 py-0.5">
-                      {img ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="product" className="w-[72px] h-[72px] rounded-lg object-cover border shadow-sm" />
-                      ) : (
-                        hasAnyPid && hydratingBrief ? (
-                          <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-100 border animate-pulse" />
-                        ) : (
-                          <span className="inline-block w-[72px] h-[72px] rounded-lg bg-slate-50 border" />
-                        )
-                      )}
+                    <td className="px-2 py-2">
+                      <ProductThumb src={img} loading={hasAnyPid && hydratingBrief} size={isChild ? 44 : 60} alt={c.name || 'Product'} />
                     </td>
-                    <td className="w-[250px] max-w-[250px] whitespace-normal px-1.5 py-0.5 align-top">
+                    <td className="w-[250px] max-w-[250px] whitespace-normal px-2 py-2 align-top">
                       <div className="flex items-start gap-2">
                         {!profitMode && <button
                           onClick={async()=>{
@@ -3354,9 +3752,14 @@ export default function AdsManagementPage(){
                               })()
                             }
                           }}
-                          className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-xs"
-                        >{adsetsExpanded[String(c.campaign_id||'')]? '▾' : '▸'}</button>}
-                        <span className="min-w-0 flex-1 break-words leading-tight">{c.name||'-'}</span>
+                          className={`${UI.icon} h-6 w-6`}
+                          title={adsetsExpanded[String(c.campaign_id||'')] ? 'Hide ad sets' : 'Show ad sets'}
+                          aria-expanded={!!adsetsExpanded[String(c.campaign_id||'')]}
+                        ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${adsetsExpanded[String(c.campaign_id||'')] ? 'rotate-90' : ''}`}/></button>}
+                        <span className="min-w-0 flex-1">
+                          <span className={`block break-words leading-snug ${isChild ? 'text-xs text-slate-600' : 'text-[13px] font-medium text-slate-900'}`}>{c.name||'-'}</span>
+                          {!isChild && pidSelf && <span className="mt-0.5 block font-mono text-[11px] text-slate-400">#{pidSelf}</span>}
+                        </span>
                       </div>
                       {!profitMode && (()=>{
                         const rk = String(rowKey)
@@ -3420,7 +3823,7 @@ export default function AdsManagementPage(){
                           )}
                         </div>
                       )}
-                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
                         {(()=>{
                           const rk = (c.campaign_id || c.name || '') as any
                           const draft = manualDrafts[rk] || manualIds[rk] || { kind:'product', id:'' }
@@ -3429,7 +3832,7 @@ export default function AdsManagementPage(){
                               <select
                                 value={draft.kind}
                                 onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ id:'', kind:'product' }), kind: (e.target.value as any) } }))}
-                                className="border rounded px-1 py-0.5 text-xs bg-white"
+                                className={UI.miniField}
                               >
                                 <option value="product">Product</option>
                                 <option value="collection">Collection</option>
@@ -3438,7 +3841,7 @@ export default function AdsManagementPage(){
                                 value={draft.id||''}
                                 onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ kind: draft.kind }), id: e.target.value.replace(/[^0-9]/g,'') } }))}
                                 placeholder="ID"
-                                className="w-24 border rounded px-2 py-0.5 text-xs bg-white"
+                                className={`${UI.miniField} w-24`}
                               />
                               <button
                                 onClick={async()=>{
@@ -3471,7 +3874,7 @@ export default function AdsManagementPage(){
                                     setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
                                   }
                                 }}
-                                className="px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-xs"
+                                className={UI.miniBtn}
                               >Save</button>
                               {!profitMode && (manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
                                 <button
@@ -3483,7 +3886,7 @@ export default function AdsManagementPage(){
                                       if(collId) await loadCollectionChildren(rk, collId, manualIds[String(rk)]?.store || (c as any)._store || store)
                                     }
                                   }}
-                                  className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-700 text-xs"
+                                  className={`${UI.miniBtn} text-blue-600`}
                                 >{expanded[String(rk)]? 'Hide products' : 'Show products'}</button>
                               )}
                               {(manualIds as any)[rk] && (
@@ -3497,7 +3900,7 @@ export default function AdsManagementPage(){
                                   setCollectionOrders(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
                                   setChildrenError(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
                                   }}
-                                  className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs"
+                                  className={`${UI.miniBtn} text-rose-600`}
                                 >Clear</button>
                               )}
                             </>
@@ -3505,16 +3908,16 @@ export default function AdsManagementPage(){
                         })()}
                       </div>
                     </td>
-                    <td className="px-1.5 py-0.5">
+                    <td className="px-2 py-2">
                       {(()=>{
                         const st = (c.status||'').toUpperCase()
                         const active = st==='ACTIVE'
-                        const color = active? 'bg-emerald-600 text-white ring-emerald-300' : 'bg-slate-700 text-white ring-slate-300'
+                        const color = active? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-slate-100 text-slate-600 ring-slate-500/15'
                         const cid = String(c.campaign_id||'')
                         return (
-                          <div className="flex items-center gap-3">
-                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ring-2 ring-inset ${color}`}>
-                              <span className="h-2 w-2 rounded-full bg-white"/>
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${color}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`}/>
                               {active? 'Active' : 'Paused'}
                             </span>
                             {c.campaign_id && (
@@ -3544,23 +3947,22 @@ export default function AdsManagementPage(){
                                     }catch(e:any){ alert(`Failed to update status: ${e?.message||e}`) }
                                     finally{ setTogglingCampaign(prev=> ({ ...prev, [cid]: false })) }
                                   }}
-                                  className="sr-only peer"
+                                  className="sr-only"
+                                  aria-label={`Turn campaign ${active ? 'off' : 'on'}`}
                                 />
-                                <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-500 transition-colors">
-                                  <div className="w-4 h-4 bg-white rounded-full shadow transform transition-transform translate-x-0 peer-checked:translate-x-5 mt-0.5 ml-0.5" />
-                                </div>
+                                <Switch on={active} busy={!!togglingCampaign[cid]} />
                               </label>
                             )}
                           </div>
                         )
                       })()}
                     </td>
-                    <td className="px-1 py-0.5">
+                    <td className="px-2 py-2">
                       {!isChild && ownerProductId ? (
                         <select
                           value={ownerOfRow(c)}
                           onChange={(event)=> saveProductOwner(ownerProductId, event.target.value)}
-                          className="border rounded px-1 py-0.5 text-xs bg-white capitalize"
+                          className={`${UI.miniField} h-7 capitalize`}
                           aria-label={`Owner for product ${ownerProductId}`}
                           title="Owner for this product and all its campaigns"
                         >
@@ -3569,7 +3971,7 @@ export default function AdsManagementPage(){
                         </select>
                       ) : <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>}
                     </td>
-                    <td className="px-1 py-0.5 text-right">
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                       {profitMode ? (
                         <div>
                           <div>${(c.spend||0).toFixed(2)}</div>
@@ -3579,36 +3981,36 @@ export default function AdsManagementPage(){
                     </td>
                     {!profitMode && (
                       <>
-                        <td className="px-1 py-0.5 text-right">{c.purchases||0}</td>
-                        <td className="px-1 py-0.5 text-right">{cpp}</td>
-                        <td className="px-1 py-0.5 text-right">{ctr}</td>
-                        <td className="px-1 py-0.5 text-right">{c.add_to_cart||0}</td>
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{c.purchases||0}</td>
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{cpp}</td>
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{ctr}</td>
+                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{c.add_to_cart||0}</td>
                       </>
                     )}
-                    <td className="px-1 py-0.5">
+                    <td className="px-2 py-2">
                       {profitMode ? (
                         paidOrdersSelf==null ? (
                           <span className="text-slate-400">—</span>
                         ) : (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{paidOrdersSelf} paid</span>
+                          <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{paidOrdersSelf} paid</span>
                         )
                       ) : orders==null ? (
                         hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                       ) : (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">{orders}</span>
+                        <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{orders}</span>
                       )}
                     </td>
-                    <td className="px-1 py-0.5 text-right">
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                       {profitMode ? (
                         profitTrueCppSelf!=null ? `${Math.round(profitTrueCppSelf).toLocaleString()} MAD` : '—'
                       ) : isChild ? (
                         <span className="text-slate-400">—</span>
                       ) : (
-                        orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : trueCpp
+                        orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : <span className={cppPill(trueCppVal)}>{trueCpp}</span>
                       )}
                     </td>
                     {profitMode && (
-                      <td className="px-1 py-0.5 text-right">
+                      <td className="px-2 py-2 text-right tabular-nums text-slate-700">
                         {inventoryItemsSelf == null ? (
                           hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                         ) : (
@@ -3622,7 +4024,7 @@ export default function AdsManagementPage(){
                     )}
                     {!profitMode && (
                       <>
-                        <td className={`px-1 py-0.5 text-right ${hasInventoryAlert ? 'bg-rose-100 ring-2 ring-inset ring-rose-400' : ''}`}>
+                        <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
                           {hasAnyPid ? (
                             <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                               onMouseEnter={(e) => {
@@ -3637,7 +4039,7 @@ export default function AdsManagementPage(){
                               {inv===null || inv===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                               ) : (
-                                <span className="inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-700">{inv}</span>
+                                <span className="inline-flex items-center rounded px-1 py-px text-[11px] font-semibold tabular-nums bg-slate-100 text-slate-700">{inv}</span>
                               )}
                               <span className="text-slate-300">/</span>
                               {zeros===null || zeros===undefined ? (
@@ -3650,42 +4052,34 @@ export default function AdsManagementPage(){
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="w-[300px] max-w-[300px] px-1.5 py-0.5 align-top">
+                        <td className="w-[300px] max-w-[300px] px-2 py-2 align-top">
                           {renderLifeDays([c])}
                         </td>
                       </>
                     )}
-                    <td className="px-1 py-0.5 text-right">
-                      <div className="flex items-center justify-end gap-1">
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                      <div className="flex items-center justify-end gap-1.5">
                       {profitMode && !isChild && pidSelf && (
                         <>
                           <button
                             title="Calculate profit"
                             disabled={!!profitLoading[pidSelf]}
                             onClick={()=> calculateGroupProfit(pidSelf, Number(c.spend||0))}
-                            className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                              profitLoading[pidSelf]
-                                ? 'bg-emerald-300 animate-pulse cursor-wait'
-                                : 'bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 hover:shadow-md'
-                            }`}
+                            className={`${UI.icon} text-emerald-600 ${profitLoading[pidSelf] ? 'animate-pulse' : ''}`}
                           ><Calculator className="w-3.5 h-3.5"/></button>
                           {profitResultSelf && (
                             <button
                               title="Clear profit result"
                               aria-label="Clear profit result"
                               onClick={()=> clearProfitResult(pidSelf)}
-                              className="p-1.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 shadow-sm transition-colors"
+                              className={`${UI.icon} text-rose-600`}
                             ><X className="w-3.5 h-3.5"/></button>
                           )}
                           <button
                             title="Calculate delivery rate"
                             disabled={!!deliveryRateLoading[pidSelf]}
                             onClick={()=> calculateDeliveryRate(pidSelf)}
-                            className={`p-1.5 rounded text-white shadow-sm transition-all ${
-                              deliveryRateLoading[pidSelf]
-                                ? 'bg-cyan-300 animate-pulse cursor-wait'
-                                : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 hover:shadow-md'
-                            }`}
+                            className={`${UI.icon} text-cyan-600 ${deliveryRateLoading[pidSelf] ? 'animate-pulse' : ''}`}
                           ><Truck className="w-3.5 h-3.5"/></button>
                         </>
                       )}
@@ -3714,7 +4108,7 @@ export default function AdsManagementPage(){
                             setPerfLoading(false)
                           }
                         }}
-                        className="p-1.5 rounded bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white shadow-sm hover:shadow-md transition-all"
+                        className={`${UI.icon} text-blue-600`}
                       ><BarChart3 className="w-3.5 h-3.5"/></button>}
                       {!profitMode && (()=>{
                         const ck = String(c.campaign_id||c.name||'')
@@ -3723,11 +4117,11 @@ export default function AdsManagementPage(){
                           <button
                             title="Timeline"
                             onClick={()=> openCampaignTimeline({ id: String(c.campaign_id||''), name: c.name||'' })}
-                            className="relative p-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-600 hover:text-blue-700 transition-colors"
+                            className={`${UI.icon} text-slate-600`}
                           >
                             <Clock className="w-3.5 h-3.5"/>
                             {incompleteTasks > 0 && (
-                              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white text-[8px] font-bold flex items-center justify-center shadow-sm">
+                              <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold text-white ring-2 ring-white">
                                 {incompleteTasks}
                               </span>
                             )}
@@ -3799,11 +4193,7 @@ export default function AdsManagementPage(){
                           }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
                           finally{ setAnalysisLoading(null) }
                         }}
-                        className={`p-1.5 rounded transition-all ${
-                          analysisLoading===rowKey
-                            ? 'bg-gradient-to-r from-violet-200 to-fuchsia-200 text-violet-500 animate-pulse cursor-wait'
-                            : 'bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white shadow-sm hover:shadow-md'
-                        }`}
+                        className={`${UI.icon} text-violet-600 ${analysisLoading===rowKey ? 'animate-pulse' : ''}`}
                       ><Sparkles className="w-3.5 h-3.5"/></button>}
                       </div>
                     </td>
@@ -3819,7 +4209,7 @@ export default function AdsManagementPage(){
                       const adsets = adsetsByCampaign[cid]||[]
                       return (
                         <tr className="border-b last:border-b-0">
-                          <td className="px-1.5 py-0.5 bg-slate-50" colSpan={colSpan}>
+                          <td className="px-2 py-2 bg-slate-50" colSpan={colSpan}>
                             {loadingAdsets ? (
                               <div className="text-xs text-slate-500">Loading ad sets…</div>
                             ) : (
@@ -3838,7 +4228,7 @@ export default function AdsManagementPage(){
                                   {adsets.map(a=>{
                                     const ast = (a.status||'').toUpperCase()
                                     const aactive = ast==='ACTIVE'
-                                    const acolor = aactive? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                                    const acolor = aactive? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20' : 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-500/15'
                                     const aid = String(a.adset_id||'')
                                     const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
                                     const ordersLoaded = !!ordersInfo
@@ -3905,11 +4295,10 @@ export default function AdsManagementPage(){
                                                     setTogglingAdset(prev=> ({ ...prev, [aid]: false }))
                                                   }
                                                 }}
-                                                className="sr-only peer"
+                                                className="sr-only"
+                                                aria-label={`Turn ad set ${aactive ? 'off' : 'on'}`}
                                               />
-                                              <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-emerald-500 transition-colors">
-                                                <div className="w-4 h-4 bg-white rounded-full shadow transform transition-transform translate-x-0 peer-checked:translate-x-5 mt-0.5 ml-0.5" />
-                                              </div>
+                                              <Switch on={aactive} busy={!!togglingAdset[aid]} />
                                             </label>
                                           )}
                                         </div>
@@ -4016,7 +4405,7 @@ export default function AdsManagementPage(){
                     const loadingChildren = !!childrenLoading[String(rk)]
                     return (
                       <tr className="border-b last:border-b-0">
-                        <td className="px-1.5 py-0.5 bg-slate-50" colSpan={tableColSpan}>
+                        <td className="px-2 py-2 bg-slate-50" colSpan={tableColSpan}>
                           {loadingChildren ? (
                             <div className="text-xs text-slate-500">Loading collection UTM orders…</div>
                           ) : childrenError[rk] ? (
@@ -4035,7 +4424,7 @@ export default function AdsManagementPage(){
             </tbody>
           </table>
         </div>
-      </div>
+      </main>
       <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
       <AnalysisModal
         open={analysisOpen}
