@@ -292,6 +292,11 @@ function cppAccent(value: number|null): string{
   if(value == null) return 'border-l-[3px] border-l-transparent'
   return value < 2 ? 'border-l-[3px] border-l-emerald-400' : value < 3 ? 'border-l-[3px] border-l-amber-400' : 'border-l-[3px] border-l-rose-400'
 }
+// Whole-row tint so good / borderline / bad products read at a glance.
+function cppRowFill(value: number|null, isChild: boolean): string{
+  if(value == null) return isChild ? 'bg-slate-50 hover:bg-slate-100/70' : 'hover:bg-slate-50'
+  return value < 2 ? 'bg-emerald-50 hover:bg-emerald-100/70' : value < 3 ? 'bg-amber-50 hover:bg-amber-100/70' : 'bg-rose-50 hover:bg-rose-100/70'
+}
 function cppPill(value: number|null): string{
   const tone = value == null ? 'bg-slate-100 text-slate-600'
     : value < 2 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/15'
@@ -308,16 +313,19 @@ function Switch({ on, busy }: { on: boolean, busy?: boolean }){
   )
 }
 
-function KpiTile({ label, value, sub, icon, children, className }: { label: string, value: React.ReactNode, sub?: React.ReactNode, icon?: React.ReactNode, children?: React.ReactNode, className?: string }){
+// Compact KPI tile: label, headline value with a short note, and a 6px mini chart.
+function KpiTile({ label, value, sub, hint, children, className }: { label: string, value: React.ReactNode, sub?: React.ReactNode, hint?: React.ReactNode, children?: React.ReactNode, className?: string }){
   return (
-    <div className={`flex min-w-0 flex-col rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-sm ${className||''}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">{label}</span>
-        {icon && <span className="text-slate-300">{icon}</span>}
+    <div className={`flex min-w-[180px] flex-1 flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm ${className||''}`}>
+      <div className="flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+        <span className="truncate">{label}</span>
+        {hint && <span className="truncate normal-case tracking-normal text-slate-400">{hint}</span>}
       </div>
-      <div className="mt-1 text-[22px] font-semibold leading-tight tracking-tight text-slate-900 tabular-nums">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-[11px] text-slate-500">{sub}</div>}
-      {children && <div className="mt-auto pt-2.5">{children}</div>}
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <span className="text-base font-semibold leading-none tracking-tight text-slate-900 tabular-nums">{value}</span>
+        {sub && <span className="truncate text-[11px] leading-none text-slate-500">{sub}</span>}
+      </div>
+      {children}
     </div>
   )
 }
@@ -338,18 +346,6 @@ function StackedBar({ segments, height = 8 }: { segments: Array<{ key: string, v
         />
       ))}
     </div>
-  )
-}
-
-function Donut({ value, total, color, size = 44 }: { value: number, total: number, color: string, size?: number }){
-  const r = (size - 6) / 2
-  const c = 2 * Math.PI * r
-  const pct = total > 0 ? Math.max(0, Math.min(1, value / total)) : 0
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90 shrink-0" aria-hidden="true">
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#e2e8f0" strokeWidth={6} />
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6} strokeLinecap={pct > 0 && pct < 1 ? 'round' : 'butt'} strokeDasharray={`${c * pct} ${c}`} />
-    </svg>
   )
 }
 
@@ -2914,7 +2910,7 @@ export default function AdsManagementPage(){
         </div>
       </header>
 
-      <main className="space-y-4 px-4 py-4 lg:px-6">
+      <main className="space-y-3 px-4 py-3 lg:px-6">
         {(error || ownerSaveError) && (
           <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">{error || ownerSaveError}</div>
         )}
@@ -2930,82 +2926,75 @@ export default function AdsManagementPage(){
           {ownerFilter && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{ownerFilter}</span>}
         </div>
 
-        {/* Analytics bar */}
-        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5" aria-label="Performance summary">
+        {/* Analytics bar — one compact row */}
+        <section className="flex gap-2 overflow-x-auto pb-0.5" aria-label="Performance summary">
           <KpiTile
             label="Ad spend"
             value={fmtCurrency(totalSpend)}
-            sub={profitMode
-              ? `${Math.round(totalSpend*10).toLocaleString()} MAD · ${Math.round(Number(profitServiceCost||0)).toLocaleString()} MAD service/order`
-              : `${analytics.spenders} spending product${analytics.spenders===1?'':'s'}`}
+            sub={profitMode ? `${Math.round(totalSpend*10).toLocaleString()} MAD` : `${analytics.spenders} products`}
+            hint={`Top 5 · ${Math.round(analytics.topShare*100)}%`}
           >
-            <StackedBar segments={[
+            <StackedBar height={6} segments={[
               ...analytics.top.map(p => ({ key: p.key, value: p.spend, color: '#3b82f6', label: `${p.label}: ${fmtCurrency(p.spend)}` })),
               { key: 'other', value: analytics.otherSpend, color: '#cbd5e1', label: `Other products: ${fmtCurrency(analytics.otherSpend)}` },
             ]} />
-            <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-500">
-              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-blue-500"/>Top 5 · {Math.round(analytics.topShare*100)}%</span>
-              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-slate-300"/>Other</span>
-            </div>
           </KpiTile>
 
-          {!profitMode && (
-            <KpiTile
-              label="Shopify orders"
-              value={fmtInt(tableOrdersTotal)}
-              sub={storeOrdersTotal!=null ? `of ${fmtInt(storeOrdersTotal)} store orders` : 'Store total loading…'}
-            >
-              {(()=>{
-                const share = storeOrdersTotal ? Math.min(1, tableOrdersTotal / Math.max(1, storeOrdersTotal)) : 0
-                return (
-                  <>
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100" title={`${Math.round(share*100)}% of store orders come from products in this table`}>
-                      <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${share*100}%` }} />
-                    </div>
-                    <div className="mt-1.5 text-[11px] text-slate-500">{storeOrdersTotal ? `${Math.round(share*100)}% of store orders from ads` : 'Coverage appears when the store total loads'}</div>
-                  </>
-                )
-              })()}
-            </KpiTile>
-          )}
+          {!profitMode && (()=>{
+            const share = storeOrdersTotal ? Math.min(1, tableOrdersTotal / Math.max(1, storeOrdersTotal)) : 0
+            return (
+              <KpiTile
+                label="Shopify orders"
+                value={fmtInt(tableOrdersTotal)}
+                sub={storeOrdersTotal!=null ? `of ${fmtInt(storeOrdersTotal)} store` : 'store total…'}
+                hint={storeOrdersTotal ? `${Math.round(share*100)}% from ads` : undefined}
+              >
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100" title={`${Math.round(share*100)}% of store orders come from products in this table`}>
+                  <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${share*100}%` }} />
+                </div>
+              </KpiTile>
+            )
+          })()}
 
           {!profitMode && (
             <KpiTile
               label="True CPP"
               value={totalCPP!=null ? fmtCurrency(totalCPP) : '—'}
-              sub={`Blended ${storeCPP!=null ? fmtCurrency(storeCPP) : '—'} across all store orders`}
+              sub={`blended ${storeCPP!=null ? fmtCurrency(storeCPP) : '—'}`}
+              hint={<span className="flex items-center gap-1.5 tabular-nums">
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-emerald-500"/>{analytics.bands.good}</span>
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-amber-500"/>{analytics.bands.ok}</span>
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-rose-500"/>{analytics.bands.high}</span>
+              </span>}
             >
-              <StackedBar segments={[
-                { key: 'good', value: analytics.bands.good, color: '#10b981', label: `${analytics.bands.good} under $2` },
-                { key: 'ok', value: analytics.bands.ok, color: '#f59e0b', label: `${analytics.bands.ok} between $2 and $3` },
-                { key: 'high', value: analytics.bands.high, color: '#f43f5e', label: `${analytics.bands.high} at $3 or more` },
-                { key: 'none', value: analytics.bands.none, color: '#cbd5e1', label: `${analytics.bands.none} without orders yet` },
+              <StackedBar height={6} segments={[
+                { key: 'good', value: analytics.bands.good, color: '#10b981', label: `${analytics.bands.good} products under $2` },
+                { key: 'ok', value: analytics.bands.ok, color: '#f59e0b', label: `${analytics.bands.ok} products between $2 and $3` },
+                { key: 'high', value: analytics.bands.high, color: '#f43f5e', label: `${analytics.bands.high} products at $3 or more` },
+                { key: 'none', value: analytics.bands.none, color: '#cbd5e1', label: `${analytics.bands.none} products without orders yet` },
               ]} />
-              <div className="mt-1.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
-                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-emerald-500"/>&lt;$2 · {analytics.bands.good}</span>
-                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-amber-500"/>$2–3 · {analytics.bands.ok}</span>
-                <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-sm bg-rose-500"/>$3+ · {analytics.bands.high}</span>
-              </div>
             </KpiTile>
           )}
 
-          <KpiTile label="Campaigns" value={<span>{fmtInt(analytics.activeCampaigns)}<span className="text-base font-medium text-slate-400"> / {fmtInt(analytics.campaigns)} active</span></span>} sub={`${analytics.products} product row${analytics.products===1?'':'s'} in view`}>
-            <div className="flex items-center gap-3">
-              <Donut value={analytics.activeCampaigns} total={analytics.campaigns} color="#10b981" />
-              <div className="space-y-0.5 text-[11px] text-slate-500">
-                <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500"/>{fmtInt(analytics.activeCampaigns)} active</div>
-                <div className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-slate-300"/>{fmtInt(analytics.campaigns - analytics.activeCampaigns)} paused</div>
-              </div>
-            </div>
+          <KpiTile
+            label="Campaigns"
+            value={<>{fmtInt(analytics.activeCampaigns)}<span className="text-xs font-medium text-slate-400"> / {fmtInt(analytics.campaigns)}</span></>}
+            sub="active"
+            hint={`${analytics.products} rows`}
+          >
+            <StackedBar height={6} segments={[
+              { key: 'active', value: analytics.activeCampaigns, color: '#10b981', label: `${analytics.activeCampaigns} active campaigns` },
+              { key: 'paused', value: analytics.campaigns - analytics.activeCampaigns, color: '#cbd5e1', label: `${analytics.campaigns - analytics.activeCampaigns} paused campaigns` },
+            ]} />
           </KpiTile>
 
           {!profitMode && (
-            <div className="flex min-w-0 flex-col rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Owners</span>
-                <span className="text-[11px] text-slate-400">spend · orders · tCPP</span>
+            <div className="flex min-w-[300px] flex-[1.4] flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm">
+              <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                <span>Owners</span>
+                <span className="normal-case tracking-normal text-slate-400">tCPP · orders</span>
               </div>
-              <div className="mt-2 space-y-1.5">
+              <div className="grid grid-cols-3 gap-2">
                 {CAMPAIGN_OWNERS.map(owner => {
                   const st = ownerStats[owner]
                   const on = ownerFilter === owner
@@ -3013,12 +3002,12 @@ export default function AdsManagementPage(){
                     <button
                       key={owner}
                       onClick={()=> setOwnerFilter(on ? '' : owner)}
-                      className={`group block w-full rounded-lg px-1.5 py-1 text-left transition-colors ${on ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-slate-50'}`}
-                      title={`Filter ${owner}'s products`}
+                      className={`group min-w-0 rounded-md px-1 py-0.5 text-left transition-colors ${on ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-slate-50'}`}
+                      title={`${owner}: ${fmtCurrency(st.spend)} spend · ${fmtInt(st.orders)} orders · ${st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'} tCPP. Click to filter.`}
                     >
-                      <div className="flex items-center justify-between gap-2 text-[11px]">
-                        <span className="font-medium capitalize text-slate-700">{owner}</span>
-                        <span className="tabular-nums text-slate-500">{fmtCurrency(st.spend)} · {fmtInt(st.orders)} · <span className="font-medium text-slate-700">{st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'}</span></span>
+                      <div className="flex items-baseline justify-between gap-1 text-[11px] leading-none">
+                        <span className="truncate font-medium capitalize text-slate-700">{owner}</span>
+                        <span className="tabular-nums text-slate-500"><span className="font-semibold text-slate-800">{st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'}</span> · {fmtInt(st.orders)}</span>
                       </div>
                       <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100">
                         <div className={`h-full rounded-full transition-all duration-500 ${on ? 'bg-blue-600' : 'bg-blue-400 group-hover:bg-blue-500'}`} style={{ width: `${(st.spend / ownerMaxSpend) * 100}%` }} />
@@ -3345,7 +3334,7 @@ export default function AdsManagementPage(){
                   const hydratingOrders = !!hydrating.orders
                   const hasInventoryAlert = zeros != null && Number(zeros) > 0
                   const severityAccent = cppAccent(trueCppVal)
-                  const colorClass = 'hover:bg-slate-50/80'
+                  const colorClass = cppRowFill(trueCppVal, false)
                   const active = Number((m as any).active||0)
                   const paused = Number((m as any).paused||0)
                   const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
@@ -3364,7 +3353,7 @@ export default function AdsManagementPage(){
                   const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventoryProductCost
                   return (
                     <Fragment key={`group-${pid}`}>
-                      <tr ref={registerProductRow(pid)} className={`border-b border-slate-100 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                      <tr ref={registerProductRow(pid)} className={`border-b border-slate-200/70 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
                         <td className="px-2 py-2">
                           <input
                             type="checkbox"
@@ -3691,10 +3680,10 @@ export default function AdsManagementPage(){
                 const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventoryProductCostSelf
                 const hasInventoryAlert = zeros != null && zeros > 0
                 const severityAccent = cppAccent(trueCppVal)
-                const colorClass = isChild ? 'bg-slate-50/60 hover:bg-slate-50' : 'hover:bg-slate-50/80'
+                const colorClass = cppRowFill(trueCppVal, isChild)
                 return (
                   <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
-                  <tr ref={registerProductRow(pidSelf)} className={`border-b border-slate-100 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                  <tr ref={registerProductRow(pidSelf)} className={`border-b border-slate-200/70 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
                     <td className="px-2 py-2">
                       <input
                         type="checkbox"
