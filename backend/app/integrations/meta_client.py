@@ -250,6 +250,19 @@ def get_ad_account_info(ad_account_id: str | None = None) -> dict:
     return {"id": res.get("id"), "name": res.get("name"), "account_status": res.get("account_status")}
 
 
+def get_ad_account_timezone(ad_account_id: str) -> dict:
+    """Return the ad account's reporting timezone (Meta's day boundaries)."""
+    acct = str(ad_account_id or AD_ACCOUNT_ID or "").replace("act_", "")
+    if not acct:
+        raise RuntimeError("Missing ad account id.")
+    res = _get(f"act_{acct}", {"fields": "id,timezone_name,timezone_offset_hours_utc"})
+    return {
+        "id": res.get("id"),
+        "timezone_name": res.get("timezone_name"),
+        "timezone_offset_hours_utc": res.get("timezone_offset_hours_utc"),
+    }
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_ad_accounts(access_token: str | None = None) -> list[dict]:
     """List all ad accounts visible directly or through the token's businesses."""

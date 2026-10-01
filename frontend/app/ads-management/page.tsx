@@ -1,9 +1,10 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
+import axios from 'axios'
 import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
 import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers } from 'lucide-react'
-import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
 import { PLATFORM_META, type PlatformKey } from '@/components/brand/PlatformIcons'
@@ -105,6 +106,40 @@ type CampaignMetaState = CampaignMetaRecord & { product_life_checks?: Record<str
 type LifeCampaignRef = { id: string, name: string, createdTime?: string }
 type LifeDayState = { open: boolean, date: string, campaigns: LifeCampaignRef[] }
 
+// ── Reporting clock ──
+// Everything on this page (Meta ranges, Shopify order windows, "today") follows
+// the Meta ad account's timezone, so spend and orders always cover the same hours.
+const REPORTING_TZ_HEADER = 'X-Reporting-Timezone'
+
+function isValidTimeZone(tz?: string|null): tz is string{
+  if(!tz) return false
+  try{ new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true }catch{ return false }
+}
+
+// Calendar date (YYYY-MM-DD) for `date` as seen in timezone `tz` (browser zone when unset)
+function ymdInTimeZone(date: Date, tz?: string|null): string{
+  if(isValidTimeZone(tz)){
+    try{
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
+      const get = (type: string) => parts.find(part => part.type === type)?.value || ''
+      return `${get('year')}-${get('month')}-${get('day')}`
+    }catch{}
+  }
+  return localDateKey(date)
+}
+
+function shiftYmd(ymd: string, days: number): string{
+  const [y, m, d] = ymd.split('-').map(Number)
+  const date = new Date(Date.UTC(y, (m || 1) - 1, d || 1))
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+function timeZoneClock(tz?: string|null): string{
+  if(!isValidTimeZone(tz)) return ''
+  try{ return new Intl.DateTimeFormat(undefined, { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date()) }catch{ return '' }
+}
+
 function localDateKey(input: Date | string = new Date()): string{
   const date = input instanceof Date ? input : new Date(input)
   if(Number.isNaN(date.getTime())) return ''
@@ -161,17 +196,17 @@ const SHOPIFY_HYDRATE_CONCURRENCY = 3
 
 // Shared control styles so every button on the page reads as one system.
 const UI = {
-  btn: 'inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50',
+  btn: 'inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50',
   primary: 'bg-slate-900 text-white shadow-sm hover:bg-slate-800',
   secondary: 'border border-slate-200 bg-white text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50',
   accent: 'bg-violet-600 text-white shadow-sm hover:bg-violet-700',
   danger: 'bg-rose-600 text-white shadow-sm hover:bg-rose-700',
   icon: 'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-wait disabled:opacity-60',
   seg: 'inline-flex h-8 items-center gap-0.5 rounded-lg bg-slate-100 p-0.5',
-  segBtn: (on: boolean) => `inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium capitalize transition-all ${on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-500 hover:text-slate-800'}`,
-  field: 'h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-[13px] text-slate-700 shadow-sm outline-none transition-colors hover:border-slate-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
-  miniField: 'h-6 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
-  miniBtn: 'inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900',
+  segBtn: (on: boolean) => `inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-semibold capitalize transition-all ${on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-600 hover:text-slate-900'}`,
+  field: 'h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-800 shadow-sm outline-none transition-colors hover:border-slate-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniField: 'h-6 rounded-md border border-slate-200 bg-white px-1.5 text-xs font-medium text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniBtn: 'inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900',
 }
 
 function MultiCheckDropdown({ label, options, selected, onChange, className, icon }: {
@@ -302,7 +337,7 @@ function cppPill(value: number|null): string{
     : value < 2 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/15'
     : value < 3 ? 'bg-amber-50 text-amber-700 ring-amber-600/15'
     : 'bg-rose-50 text-rose-700 ring-rose-600/15'
-  return `inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ring-1 ring-inset ${tone}`
+  return `inline-flex items-center rounded-md px-2 py-0.5 text-[13px] font-bold tabular-nums ring-1 ring-inset ${tone}`
 }
 
 function Switch({ on, busy }: { on: boolean, busy?: boolean }){
@@ -317,13 +352,13 @@ function Switch({ on, busy }: { on: boolean, busy?: boolean }){
 function KpiTile({ label, value, sub, hint, children, className }: { label: string, value: React.ReactNode, sub?: React.ReactNode, hint?: React.ReactNode, children?: React.ReactNode, className?: string }){
   return (
     <div className={`flex min-w-[180px] flex-1 flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm ${className||''}`}>
-      <div className="flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+      <div className="flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
         <span className="truncate">{label}</span>
-        {hint && <span className="truncate normal-case tracking-normal text-slate-400">{hint}</span>}
+        {hint && <span className="truncate normal-case tracking-normal font-medium text-slate-500">{hint}</span>}
       </div>
       <div className="flex min-w-0 items-baseline gap-1.5">
-        <span className="text-base font-semibold leading-none tracking-tight text-slate-900 tabular-nums">{value}</span>
-        {sub && <span className="truncate text-[11px] leading-none text-slate-500">{sub}</span>}
+        <span className="text-xl font-bold leading-none tracking-tight text-slate-900 tabular-nums">{value}</span>
+        {sub && <span className="truncate text-xs font-medium leading-none text-slate-500">{sub}</span>}
       </div>
       {children}
     </div>
@@ -528,6 +563,9 @@ export default function AdsManagementPage(){
   // While a search focus is active, only these products / campaign keys may load Shopify data
   const hydrateFocusRef = useRef<{ pids: Set<string>, rowKeys: Set<string> }|null>(null)
   const [metaConnected, setMetaConnected] = useState<boolean|null>(null)
+  // Meta ad account timezone = the page's single reporting clock (ref so load() sees it immediately)
+  const [reportingTz, setReportingTzState] = useState<string>('')
+  const reportingTzRef = useRef<string>('')
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
@@ -710,49 +748,58 @@ export default function AdsManagementPage(){
     }
   }
 
-  function computeRange(preset: string){
-    const now = new Date()
-    const toYmd = (d: Date)=>{
-      const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0')
-      return `${y}-${m}-${day}`
+  function applyReportingTz(tz?: string|null){
+    const next = isValidTimeZone(tz) ? String(tz) : ''
+    reportingTzRef.current = next
+    setReportingTzState(next)
+    // Every Shopify request from this page uses the same day boundaries as Meta
+    if(next) axios.defaults.headers.common[REPORTING_TZ_HEADER] = next
+    else delete axios.defaults.headers.common[REPORTING_TZ_HEADER]
+  }
+
+  // Resolve the primary ad account's timezone before any range is computed.
+  // Cached per account, so only the very first visit waits for Meta.
+  async function ensureReportingTz(acct: string, storeLabel: string){
+    const id = String(acct || '').replace(/^act_/i, '')
+    const key = `ptos_reporting_tz:${id || `store:${storeLabel}`}`
+    let cached = ''
+    try{ cached = localStorage.getItem(key) || '' }catch{}
+    const fetchTz = async () => {
+      const res = await metaAdAccountTimezone(id || undefined, storeLabel)
+      const tz = res?.data?.timezone_name
+      if(isValidTimeZone(tz)){ try{ localStorage.setItem(key, tz) }catch{} }
+      return isValidTimeZone(tz) ? tz : ''
     }
-    const endDate = new Date(now)
-    const startDate = new Date(now)
+    if(isValidTimeZone(cached)){
+      applyReportingTz(cached)
+      // Refresh quietly for next time (an account's timezone almost never changes)
+      fetchTz().then(tz => { if(tz && tz !== cached && reportingTzRef.current === cached) applyReportingTz(tz) }).catch(()=>{})
+      return
+    }
+    try{
+      const tz = await Promise.race([fetchTz(), new Promise<string>(resolve => setTimeout(()=> resolve(''), 5000))])
+      if(tz) applyReportingTz(tz)
+    }catch{}
+  }
+
+  // Date range in the reporting (Meta ad account) timezone.
+  function computeRange(preset: string){
+    const today = ymdInTimeZone(new Date(), reportingTzRef.current)
+    const back = (days: number) => ({ start: shiftYmd(today, -(days - 1)), end: today })
     switch(preset){
       case 'maximum':
         // All-time search mode: use a wide window for Shopify order counts
-        startDate.setFullYear(startDate.getFullYear()-3)
-        break
-      case 'today':
-        startDate.setHours(0,0,0,0)
-        break
-      case 'yesterday':{
-        const d = new Date(now)
-        d.setDate(d.getDate()-1)
-        d.setHours(0,0,0,0)
-        const e = new Date(d)
-        e.setHours(23,59,59,999)
-        return { start: toYmd(d), end: toYmd(e) }
-      }
-      case 'last_3d_incl_today':
-        startDate.setDate(startDate.getDate()-(3-1))
-        break
-      case 'last_4d_incl_today':
-        startDate.setDate(startDate.getDate()-(4-1))
-        break
-      case 'last_5d_incl_today':
-        startDate.setDate(startDate.getDate()-(5-1))
-        break
-      case 'last_6d_incl_today':
-        startDate.setDate(startDate.getDate()-(6-1))
-        break
+        return { start: shiftYmd(today, -3 * 365), end: today }
+      case 'today': return { start: today, end: today }
+      case 'yesterday': { const y = shiftYmd(today, -1); return { start: y, end: y } }
+      case 'last_3d_incl_today': return back(3)
+      case 'last_4d_incl_today': return back(4)
+      case 'last_5d_incl_today': return back(5)
+      case 'last_6d_incl_today': return back(6)
       case 'last_7d_incl_today':
       default:
-        startDate.setDate(startDate.getDate()-(7-1))
-        break
+        return back(7)
     }
-    startDate.setHours(0,0,0,0)
-    return { start: toYmd(startDate), end: toYmd(endDate) }
   }
 
   function presetLabel(p: string){
@@ -781,9 +828,9 @@ export default function AdsManagementPage(){
       const { start, end } = computeRange(preset)
       return { range: { start, end } }
     }
-    // Simple pass-through for exact-day presets
-    if(preset==='today') return { datePreset: 'today' }
-    if(preset==='yesterday') return { datePreset: 'yesterday' }
+    // Exact days also go as explicit dates from the reporting clock, so Meta and
+    // Shopify can never disagree on which day "today" is around midnight.
+    if(preset==='today' || preset==='yesterday') return { range: computeRange(preset) }
     if(preset==='maximum') return { datePreset: 'maximum' }
     // Fallback to a safe default
     const { start, end } = computeRange('last_7d_incl_today')
@@ -1354,6 +1401,8 @@ export default function AdsManagementPage(){
       const effPreset = preset||datePreset
       const effStores = opts?.stores ?? selectedStores
       const effAdAccounts = opts?.adAccounts ?? selectedAdAccounts
+      await ensureReportingTz(effAdAccounts[0] || '', normalizeStoreValue(effStores[0]) || 'irrakids')
+      if(loadToken !== loadSeqToken.current) return
       const profitOnly = opts?.profit ?? profitMode
       // Search focus: when set, only the matching campaign(s) get hydrated so the
       // searched campaign's data loads first instead of waiting behind the full table.
@@ -1757,8 +1806,8 @@ export default function AdsManagementPage(){
     })
     return (
       <div className="flex items-start gap-2" title={`${totalDays} campaign days`}>
-        <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-700">Day {totalDays}</span>
-        <div className="flex max-w-[270px] flex-wrap gap-0.5 py-1">
+        <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-xs font-bold text-violet-700">Day {totalDays}</span>
+        <div className="flex max-w-[330px] flex-wrap gap-0.5 py-1">
           {points.map(point => {
             const changed = point.actions > 0
             const hasNotes = point.notes > 0
@@ -1768,7 +1817,7 @@ export default function AdsManagementPage(){
                 key={point.day}
                 type="button"
                 onClick={()=> openLifeDay(point.day, campaigns)}
-                className={`relative h-[18px] min-w-[18px] shrink-0 rounded-full px-0.5 text-center text-[8px] font-bold leading-[18px] text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
+                className={`relative h-5 min-w-5 shrink-0 rounded-full px-0.5 text-center text-[10px] font-bold leading-5 text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
                   changed ? 'bg-orange-500' : 'bg-emerald-500'
                 } ${hasNotes ? "ring-2 ring-blue-500 ring-offset-1 after:absolute after:-right-0.5 after:-top-0.5 after:h-1.5 after:w-1.5 after:rounded-full after:bg-blue-600 after:ring-1 after:ring-white after:content-['']" : ''} ${
                   isLatest ? 'scale-110 outline outline-2 outline-violet-600 outline-offset-1' : ''
@@ -1783,6 +1832,8 @@ export default function AdsManagementPage(){
     )
   }
 
+  // The reporting-timezone header belongs to this page only
+  useEffect(()=> () => { delete axios.defaults.headers.common[REPORTING_TZ_HEADER] }, [])
   useEffect(()=>{ // initialize custom range defaults
     const { start, end } = computeRange('last_7d_incl_today')
     setCustomStart(start)
@@ -2703,7 +2754,7 @@ export default function AdsManagementPage(){
   const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 text-slate-800 antialiased">
+    <div className="min-h-screen w-full bg-slate-50 font-[Inter,ui-sans-serif,system-ui,-apple-system,'Segoe_UI',Roboto,sans-serif] text-slate-800 antialiased">
       <InventoryTooltip />
       <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         {/* Brand row */}
@@ -2916,12 +2967,20 @@ export default function AdsManagementPage(){
         )}
 
         {/* Context line */}
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
-          <span className="font-medium text-slate-700">{adAccountName || adAccount || 'No ad account'}</span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium text-slate-600">
+          <span className="font-semibold text-slate-900">{adAccountName || adAccount || 'No ad account'}</span>
           <span className="text-slate-300">/</span>
           <span>{selectedStores.join(', ') || '—'}</span>
           <span className="text-slate-300">/</span>
           <span className="capitalize">{rangeLabel}</span>
+          {reportingTz && (
+            <>
+              <span className="text-slate-300">/</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 ring-1 ring-blue-600/15" title="Dates for Meta spend and Shopify orders both follow the Meta ad account's timezone, so 'today' is the same day everywhere.">
+                <Clock className="h-3 w-3"/>Meta time · {reportingTz.replace(/_/g, ' ')} · {timeZoneClock(reportingTz)}
+              </span>
+            </>
+          )}
           {statusFilter !== 'all' && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{statusFilter} products</span>}
           {ownerFilter && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{ownerFilter}</span>}
         </div>
@@ -2978,7 +3037,7 @@ export default function AdsManagementPage(){
 
           <KpiTile
             label="Campaigns"
-            value={<>{fmtInt(analytics.activeCampaigns)}<span className="text-xs font-medium text-slate-400"> / {fmtInt(analytics.campaigns)}</span></>}
+            value={<>{fmtInt(analytics.activeCampaigns)}<span className="text-sm font-semibold text-slate-400"> / {fmtInt(analytics.campaigns)}</span></>}
             sub="active"
             hint={`${analytics.products} rows`}
           >
@@ -2990,9 +3049,9 @@ export default function AdsManagementPage(){
 
           {!profitMode && (
             <div className="flex min-w-[300px] flex-[1.4] flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm">
-              <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-slate-500">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 <span>Owners</span>
-                <span className="normal-case tracking-normal text-slate-400">tCPP · orders</span>
+                <span className="normal-case tracking-normal font-medium text-slate-500">tCPP · orders</span>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {CAMPAIGN_OWNERS.map(owner => {
@@ -3005,8 +3064,8 @@ export default function AdsManagementPage(){
                       className={`group min-w-0 rounded-md px-1 py-0.5 text-left transition-colors ${on ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-slate-50'}`}
                       title={`${owner}: ${fmtCurrency(st.spend)} spend · ${fmtInt(st.orders)} orders · ${st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'} tCPP. Click to filter.`}
                     >
-                      <div className="flex items-baseline justify-between gap-1 text-[11px] leading-none">
-                        <span className="truncate font-medium capitalize text-slate-700">{owner}</span>
+                      <div className="flex items-baseline justify-between gap-1 text-xs leading-none">
+                        <span className="truncate font-semibold capitalize text-slate-800">{owner}</span>
                         <span className="tabular-nums text-slate-500"><span className="font-semibold text-slate-800">{st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'}</span> · {fmtInt(st.orders)}</span>
                       </div>
                       <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100">
@@ -3215,12 +3274,12 @@ export default function AdsManagementPage(){
           </div>
         </div>
         <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white shadow-sm">
-          <table className="min-w-full text-xs">
+          <table className="min-w-full text-[13px] text-slate-800">
             <thead className="border-b border-slate-200 bg-slate-50/80">
-              <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-medium">
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-600 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-bold">
                 <th className="px-2 py-2.5 font-semibold w-6"></th>
                 <th className="px-2 py-2.5 font-semibold w-[80px]"></th>
-                <th className="w-[250px] max-w-[250px] px-2 py-2.5 font-semibold">
+                <th className="w-[290px] max-w-[290px] px-2 py-2.5 font-semibold">
                   <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>Campaign</span>
                     {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
@@ -3294,7 +3353,7 @@ export default function AdsManagementPage(){
                         {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="w-[300px] max-w-[300px] px-2 py-2.5 font-semibold">Life days</th>
+                    <th className="w-[360px] max-w-[360px] px-2 py-2.5 font-semibold">Life days</th>
                   </>
                 )}
                 <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
@@ -3366,7 +3425,7 @@ export default function AdsManagementPage(){
                         <td className="px-2 py-2">
                           <ProductThumb src={img} loading={hydratingBrief} alt={d.primary.name || `Product ${pid}`} />
                         </td>
-                        <td className="w-[250px] max-w-[250px] whitespace-normal px-2 py-2 align-top">
+                        <td className="w-[290px] max-w-[290px] whitespace-normal px-2 py-2 align-top">
                           <div className="flex items-start gap-1">
                             {!profitMode && <button
                               onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
@@ -3375,10 +3434,10 @@ export default function AdsManagementPage(){
                               aria-expanded={!!groupExpanded[pid]}
                             ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${groupExpanded[pid] ? 'rotate-90' : ''}`}/></button>}
                             <div className="min-w-0 flex-1">
-                              <span className="break-words text-[13px] font-medium leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
-                              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                                <span className="font-mono">#{pid}</span>
-                                <span className="rounded-full bg-slate-100 px-1.5 py-px font-medium text-slate-600">{d.rows.length} campaigns</span>
+                              <span className="break-words text-sm font-semibold leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
+                              <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                                <span>#{pid}</span>
+                                <span className="rounded-full bg-white/80 px-1.5 py-px font-semibold text-slate-700 ring-1 ring-slate-900/10">{d.rows.length} campaigns</span>
                               </span>
                             </div>
                           </div>
@@ -3432,7 +3491,7 @@ export default function AdsManagementPage(){
                           )}
                         </td>
                         <td className="px-2 py-2">
-                          <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${statusClass}`} title={statusLabel}>
+                          <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${statusClass}`} title={statusLabel}>
                             <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`}/>
                             {active===0 ? 'Paused' : paused===0 ? 'Active' : `${active} on · ${paused} off`}
                           </span>
@@ -3453,7 +3512,7 @@ export default function AdsManagementPage(){
                             )
                           })()}
                         </td>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                           {profitMode ? (
                             <div>
                               <div>${Number(m.spend||0).toFixed(2)}</div>
@@ -3463,10 +3522,10 @@ export default function AdsManagementPage(){
                         </td>
                         {!profitMode && (
                           <>
-                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{Number(m.purchases||0)}</td>
-                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{cpp}</td>
-                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{ctr}</td>
-                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{Number(m.add_to_cart||0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{Number(m.purchases||0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{cpp}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{ctr}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{Number(m.add_to_cart||0)}</td>
                           </>
                         )}
                         <td className="px-2 py-2">
@@ -3474,15 +3533,15 @@ export default function AdsManagementPage(){
                             paidOrders==null ? (
                               <span className="text-slate-400">—</span>
                             ) : (
-                              <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{paidOrders} paid</span>
+                              <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{paidOrders} paid</span>
                             )
                           ) : orders==null ? (
                             hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                           ) : (
-                            <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{orders}</span>
+                            <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{orders}</span>
                           )}
                         </td>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                           {profitMode ? (
                             profitTrueCpp!=null ? `${Math.round(profitTrueCpp).toLocaleString()} MAD` : '—'
                           ) : (
@@ -3490,7 +3549,7 @@ export default function AdsManagementPage(){
                           )}
                         </td>
                         {profitMode && (
-                          <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                          <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                             {inventoryItems == null ? (
                               hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                             ) : (
@@ -3514,20 +3573,20 @@ export default function AdsManagementPage(){
                                 onMouseLeave={() => setInvHover(null)}
                               >
                                 {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
-                                  <span className="inline-flex items-center rounded px-1 py-px text-[11px] font-semibold tabular-nums bg-slate-100 text-slate-700">{inv}</span>
+                                  <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
                                 )}
                                 <span className="text-slate-300">/</span>
                                 {zeros==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
-                                  <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
+                                  <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
                                 )}
                               </div>
                             </td>
-                            <td className="w-[300px] max-w-[300px] px-2 py-2 align-top">
+                            <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
                               {renderLifeDays(d.rows)}
                             </td>
                           </>
                         )}
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                           <div className="flex items-center justify-end gap-1.5">
                           {profitMode && (
                             <>
@@ -3564,7 +3623,7 @@ export default function AdsManagementPage(){
                                 setPerfCampaign({ id: pid, name: d.primary.name || `Product ${pid}` })
                                 // Fetch performance for all campaigns in the group and merge by date
                                 const allPerf = await Promise.all(campaignIds.map(cid =>
-                                  fetchCampaignPerformance(cid, 6, browserTz).then(r => (((r as any)?.data||{}).days)||[]).catch(()=> [])
+                                  fetchCampaignPerformance(cid, 6, reportingTzRef.current || browserTz).then(r => (((r as any)?.data||{}).days)||[]).catch(()=> [])
                                 ))
                                 // Merge by date: sum spend, purchases, add_to_cart per date
                                 const dateMap: Record<string, {date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number}> = {}
@@ -3694,7 +3753,7 @@ export default function AdsManagementPage(){
                     <td className="px-2 py-2">
                       <ProductThumb src={img} loading={hasAnyPid && hydratingBrief} size={isChild ? 44 : 60} alt={c.name || 'Product'} />
                     </td>
-                    <td className="w-[250px] max-w-[250px] whitespace-normal px-2 py-2 align-top">
+                    <td className="w-[290px] max-w-[290px] whitespace-normal px-2 py-2 align-top">
                       <div className="flex items-start gap-2">
                         {!profitMode && <button
                           onClick={async()=>{
@@ -3746,8 +3805,8 @@ export default function AdsManagementPage(){
                           aria-expanded={!!adsetsExpanded[String(c.campaign_id||'')]}
                         ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${adsetsExpanded[String(c.campaign_id||'')] ? 'rotate-90' : ''}`}/></button>}
                         <span className="min-w-0 flex-1">
-                          <span className={`block break-words leading-snug ${isChild ? 'text-xs text-slate-600' : 'text-[13px] font-medium text-slate-900'}`}>{c.name||'-'}</span>
-                          {!isChild && pidSelf && <span className="mt-0.5 block font-mono text-[11px] text-slate-400">#{pidSelf}</span>}
+                          <span className={`block break-words leading-snug ${isChild ? 'text-[13px] font-medium text-slate-700' : 'text-sm font-semibold text-slate-900'}`}>{c.name||'-'}</span>
+                          {!isChild && pidSelf && <span className="mt-0.5 block text-xs font-medium text-slate-500">#{pidSelf}</span>}
                         </span>
                       </div>
                       {!profitMode && (()=>{
@@ -3905,7 +3964,7 @@ export default function AdsManagementPage(){
                         const cid = String(c.campaign_id||'')
                         return (
                           <div className="flex items-center gap-2">
-                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${color}`}>
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${color}`}>
                               <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`}/>
                               {active? 'Active' : 'Paused'}
                             </span>
@@ -3960,7 +4019,7 @@ export default function AdsManagementPage(){
                         </select>
                       ) : <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>}
                     </td>
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                       {profitMode ? (
                         <div>
                           <div>${(c.spend||0).toFixed(2)}</div>
@@ -3970,10 +4029,10 @@ export default function AdsManagementPage(){
                     </td>
                     {!profitMode && (
                       <>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{c.purchases||0}</td>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{cpp}</td>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{ctr}</td>
-                        <td className="px-2 py-2 text-right tabular-nums text-slate-700">{c.add_to_cart||0}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{c.purchases||0}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{cpp}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{ctr}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{c.add_to_cart||0}</td>
                       </>
                     )}
                     <td className="px-2 py-2">
@@ -3981,15 +4040,15 @@ export default function AdsManagementPage(){
                         paidOrdersSelf==null ? (
                           <span className="text-slate-400">—</span>
                         ) : (
-                          <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{paidOrdersSelf} paid</span>
+                          <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{paidOrdersSelf} paid</span>
                         )
                       ) : orders==null ? (
                         hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                       ) : (
-                        <span className="inline-flex items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 ring-1 ring-inset ring-emerald-600/15">{orders}</span>
+                        <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{orders}</span>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                       {profitMode ? (
                         profitTrueCppSelf!=null ? `${Math.round(profitTrueCppSelf).toLocaleString()} MAD` : '—'
                       ) : isChild ? (
@@ -3999,7 +4058,7 @@ export default function AdsManagementPage(){
                       )}
                     </td>
                     {profitMode && (
-                      <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                      <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                         {inventoryItemsSelf == null ? (
                           hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
                         ) : (
@@ -4028,25 +4087,25 @@ export default function AdsManagementPage(){
                               {inv===null || inv===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                               ) : (
-                                <span className="inline-flex items-center rounded px-1 py-px text-[11px] font-semibold tabular-nums bg-slate-100 text-slate-700">{inv}</span>
+                                <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
                               )}
                               <span className="text-slate-300">/</span>
                               {zeros===null || zeros===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
                               ) : (
-                                <span className={`inline-flex items-center px-1 py-0 rounded text-[10px] font-semibold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
+                                <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
                               )}
                             </div>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="w-[300px] max-w-[300px] px-2 py-2 align-top">
+                        <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
                           {renderLifeDays([c])}
                         </td>
                       </>
                     )}
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-700">
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                       <div className="flex items-center justify-end gap-1.5">
                       {profitMode && !isChild && pidSelf && (
                         <>
@@ -4082,7 +4141,7 @@ export default function AdsManagementPage(){
                           try{
                             if(!cid) return
                             setPerfCampaign({ id: cid, name: c.name||'' })
-                            const res = await fetchCampaignPerformance(cid, 6, browserTz)
+                            const res = await fetchCampaignPerformance(cid, 6, reportingTzRef.current || browserTz)
                             const days = (((res as any)?.data||{}).days)||[]
                             setPerfMetrics(days)
                             const rk = (c.campaign_id || c.name || '') as any

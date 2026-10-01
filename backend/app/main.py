@@ -9,7 +9,7 @@ from pydantic import BaseModel, PrivateAttr
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
+from app.integrations.shopify_client import ThreadPoolExecutor, reporting_timezone_scope, current_reporting_timezone, normalize_timezone_name
 import json, os
 import base64, hmac, hashlib
 from pathlib import Path
@@ -46,7 +46,7 @@ from app.integrations.meta_client import create_campaign_with_ads
 from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_campaign_summary
-from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope
+from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope, get_ad_account_timezone
 from app.meta_connection import router as _meta_connection_router, reporting_token, _return_origin
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import create_draft_image_campaign
@@ -173,6 +173,16 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+
+@app.middleware("http")
+async def _reporting_timezone_middleware(request, call_next):
+    """Apply the ads manager's reporting timezone (the Meta ad account's) to this request."""
+    tz = normalize_timezone_name(request.headers.get("x-reporting-timezone") or request.query_params.get("reporting_tz"))
+    if not tz:
+        return await call_next(request)
+    with reporting_timezone_scope(tz):
+        return await call_next(request)
+
 # Basic logger for diagnostics (stdout captured by Cloud Run)
 logger = logging.getLogger("app.chatkit")
 if not logger.handlers:
@@ -200,6 +210,10 @@ def _stable_json(obj: object) -> str:
 
 
 def _cache_key(prefix: str, payload: object) -> str:
+    # Results computed on another day boundary must never be shared.
+    tz = current_reporting_timezone()
+    if tz:
+        prefix = f"{prefix}@tz={tz}"
     return f"{prefix}:{_stable_json(payload)}"
 
 
@@ -5760,6 +5774,46 @@ async def api_set_ad_account(req: AdAccountSetRequest):
         return {"data": saved}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/meta/ad_account_timezone")
+async def api_ad_account_timezone(ad_account: str | None = None, store: str | None = None):
+    """Timezone Meta uses for this ad account's days. The ads manager adopts it as its
+    single reporting clock so 'today' means the same hours for Meta and Shopify."""
+    try:
+        acct = _normalize_ad_acct_id(ad_account)
+        if not acct:
+            conf = db.get_app_setting(store, "meta_ad_account")
+            acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
+        if not acct:
+            return {"data": {}}
+        setting_key = f"meta_ad_account_tz:{acct}"
+        try:
+            saved = db.get_app_setting(None, setting_key) or {}
+        except Exception:
+            saved = {}
+        if isinstance(saved, dict) and saved.get("timezone_name") and (time.time() - float(saved.get("ts") or 0)) < 86400:
+            return {"data": {k: saved.get(k) for k in ("id", "timezone_name", "timezone_offset_hours_utc")}}
+
+        def _fetch():
+            with meta_access_token_scope(reporting_token(store, acct)):
+                return get_ad_account_timezone(acct)
+
+        try:
+            info = await asyncio.wait_for(run_in_threadpool(_fetch), timeout=12)
+        except Exception:
+            # Meta unreachable: keep using the last known timezone.
+            if isinstance(saved, dict) and saved.get("timezone_name"):
+                return {"data": {k: saved.get(k) for k in ("id", "timezone_name", "timezone_offset_hours_utc")}}
+            raise
+        if normalize_timezone_name(info.get("timezone_name")):
+            try:
+                db.set_app_setting(None, setting_key, {**info, "ts": time.time()})
+            except Exception:
+                pass
+        return {"data": info}
+    except Exception as e:
+        return {"error": str(e), "data": {}}
 
 
 @app.get("/api/meta/ad_accounts")

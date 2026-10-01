@@ -4,7 +4,9 @@ try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor as _BaseThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,6 +20,44 @@ _PRODUCT_BRIEF_MAX_IDS = int(os.getenv("PTOS_PRODUCTS_BRIEF_MAX_IDS", "250") or 
 _PRODUCT_BRIEF_WORKERS = int(os.getenv("PTOS_PRODUCTS_BRIEF_WORKERS", "8") or "8")
 _UTM_ORDERS_DB_TTL_S = int(os.getenv("PTOS_UTM_ORDERS_DB_TTL_S", "300") or "300")  # 5 minutes
 _perf_log = logging.getLogger("shopify_client.perf")
+
+# -------- reporting timezone --------
+# The ads manager reports on the Meta ad account's day. When a request carries a
+# reporting timezone, every Shopify day window (YYYY-MM-DD -> 00:00..23:59:59)
+# uses it instead of the shop's own timezone, so Meta spend and Shopify orders
+# cover exactly the same hours.
+_REPORTING_TZ: ContextVar[str | None] = ContextVar("shopify_reporting_tz", default=None)
+
+
+def normalize_timezone_name(value: str | None) -> str | None:
+    name = str(value or "").strip()
+    if not name or ZoneInfo is None or len(name) > 64:
+        return None
+    try:
+        ZoneInfo(name)
+    except Exception:
+        return None
+    return name
+
+
+def current_reporting_timezone() -> str | None:
+    return _REPORTING_TZ.get()
+
+
+@contextmanager
+def reporting_timezone_scope(value: str | None):
+    token = _REPORTING_TZ.set(normalize_timezone_name(value))
+    try:
+        yield
+    finally:
+        _REPORTING_TZ.reset(token)
+
+
+class ThreadPoolExecutor(_BaseThreadPoolExecutor):
+    """Executor whose workers inherit the caller's context (reporting timezone, tokens)."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        return super().submit(copy_context().run, fn, *args, **kwargs)
 
 
 def _timed_request(method: str, url: str, **kw):
@@ -553,6 +593,9 @@ def _processed_window_iso(store: str | None, processed_min_date: str, processed_
 
 
 def get_shop_timezone(store: str | None = None) -> str:
+    override = _REPORTING_TZ.get()
+    if override:
+        return override
     try:
         data = _rest_get_store(store, "/shop.json")
         tz = ((data or {}).get("shop") or {}).get("iana_timezone") or ((data or {}).get("shop") or {}).get("timezone")
@@ -1404,7 +1447,9 @@ def _order_row_from_graphql_node(node: dict | None, *, store: str | None = None)
 
 def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, include_closed: bool) -> str:
     closed = "all" if include_closed else "open"
-    return f"shopify_utm_orders_v5:{processed_min_date}:{processed_max_date}:{closed}"
+    tz = _REPORTING_TZ.get()
+    suffix = f":tz={tz}" if tz else ""
+    return f"shopify_utm_orders_v5:{processed_min_date}:{processed_max_date}:{closed}{suffix}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:

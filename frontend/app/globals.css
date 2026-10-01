@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 @tailwind base;@tailwind components;@tailwind utilities;
 :root{--bg:#0b1020;--card:#0f1530;--muted:#93a1b1}
 html,body{height:100%}

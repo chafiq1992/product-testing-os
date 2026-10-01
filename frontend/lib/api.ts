@@ -712,6 +712,15 @@ export async function metaListAdAccounts(store?: string | string[]){
   return data as { data: Array<{ id:string, name:string, account_status?: number, store?: string }>, connected?: boolean, error?: string }
 }
 
+// Timezone Meta uses for an ad account's days (the ads manager's reporting clock)
+export async function metaAdAccountTimezone(adAccount?: string, store?: string){
+  const parts: string[] = []
+  if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
+  if(store) parts.push(`store=${encodeURIComponent(store)}`)
+  const {data} = await axios.get(`${base}/api/meta/ad_account_timezone${parts.length ? `?${parts.join('&')}` : ''}`, { timeout: 15000 })
+  return data as { data?: { id?: string, timezone_name?: string, timezone_offset_hours_utc?: number }, error?: string }
+}
+
 export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED'){
   const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status, store: selectedStore() })
   return data as { data?: any, error?: string }
