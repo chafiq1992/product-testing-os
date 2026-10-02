@@ -18,6 +18,7 @@ def product_category(product):
         if unisex:
             return 'unisex_kids' if kids else 'unisex_adult'
         if re.search(r'\b(girls?|filles?)\b', text): return 'girls'
+        if re.search(r'\b(boys?|garcons?)\b', text): return 'boys'
         if kids: return 'kids'
         if re.search(r'\b(womens?|women|ladies|female|femmes?|femme)\b', text): return 'women'
         if re.search(r'\b(mens?|men|male|hommes?)\b', text): return 'men'

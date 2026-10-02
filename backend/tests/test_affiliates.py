@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import affiliates as a, db
+REAL_DELIVERY_CITIES = a.delivery_cities
 
 
 def test_seller_sessions_work_through_operator_gate_without_staff_access(market, monkeypatch):
@@ -76,12 +77,13 @@ def test_staff_token_passes_gate_and_affiliate_admin_verification(market, monkey
 @pytest.fixture
 def market(monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink):
+    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink, a.OrderReceipt):
         model.__table__.create(engine)
     monkeypatch.setattr(db, 'SessionLocal', sessionmaker(engine, expire_on_commit=False))
     settings = {'affiliate_marketplace_pricing': {'discount_percent': 50, 'rules': [], 'delivery_fees': {'MAD': 0}}}
     monkeypatch.setattr(db, 'get_app_setting', lambda store, key: settings.get(key, {}))
     monkeypatch.setattr(db, 'set_app_setting', lambda store, key, value: settings.update({key: value}))
+    monkeypatch.setattr(a, 'delivery_cities', lambda force=False: [{'id': '1', 'name': 'Casablanca', 'country': 'MA'}, {'id': '2', 'name': 'Rabat', 'country': 'MA'}])
     connections = [{'label': 'alpha', 'shop': 'alpha.myshopify.com', 'connected': True}, {'label': 'beta', 'shop': 'beta.myshopify.com', 'connected': True}]
     monkeypatch.setattr(a, 'build_store_registry', lambda _: connections)
     monkeypatch.setattr(a, '_get_admin', lambda request: {'sub': 'admin@example.com'} if request.headers.get('authorization') == 'Bearer admin' else None)
@@ -410,6 +412,10 @@ def test_collection_pricing_is_scoped_validated_and_cannot_fail_open(market, mon
         if 'collection_id=' in path: raise TimeoutError('Collection could not be read')
         return original_read(store, path)
     monkeypatch.setattr(a, 'read_shopify', unavailable)
+    # Expire the prior verified snapshot. Fresh cache entries can still be shown,
+    # while submission always verifies collection membership against Shopify.
+    connection = a.connected_stores()[0]
+    a.catalog_cache.invalidate(connection, a.pricing_settings())
     listing = client.get('/api/affiliates/products', headers=headers).json()['data']
     assert listing['products'] == [] and listing['warnings']
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code != 200
@@ -433,7 +439,7 @@ def test_marketplace_option_positions_stock_and_safe_description(market):
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order(items=[{'product_id': '10', 'variant_id': '21', 'quantity': 1, 'sale_price': '200'}])).status_code == 409
 
 
-@pytest.mark.parametrize('text, expected', [('Women shoes', 'women'), ('Men', 'men'), ('Filles', 'girls'), ('Garçons', 'kids'), ('Unisex adult', 'unisex_adult'), ('Unisex kids', 'unisex_kids')])
+@pytest.mark.parametrize('text, expected', [('Women shoes', 'women'), ('Men', 'men'), ('Filles', 'girls'), ('Garçons', 'boys'), ('Unisex adult', 'unisex_adult'), ('Unisex kids', 'unisex_kids')])
 def test_product_type_categories(text, expected):
     from app.affiliate_marketplace import product_category
     assert product_category({'product_type': text}) == expected
@@ -538,3 +544,119 @@ def test_failed_collection_validation_preserves_admin_settings(market, monkeypat
         json={'discount_percent': 35, 'rules': [{'store': 'alpha', 'collection_id': '99', 'discount_percent': 25}]})
     assert response.status_code == 502
     assert a.pricing_settings() == initial
+
+
+def test_cached_catalog_avoids_shopify_reads_and_filters_current_vendor_access(market, monkeypatch):
+    client, _, _, product = market
+    sid, headers = account(client)
+    first = client.get('/api/affiliates/products', headers=headers).json()['data']
+    assert len(first['products']) == 1
+    monkeypatch.setattr(a, 'read_shopify', lambda *args: (_ for _ in ()).throw(AssertionError('Cached browse must not call Shopify')))
+    second = client.get('/api/affiliates/products', headers=headers).json()['data']
+    assert second['products'] == first['products'] and not second['warnings']
+    # Shared store snapshots do not grant seller access to private vendors.
+    with db.SessionLocal() as session:
+        row = session.get(a.Seller, sid)
+        row.access = json.dumps({'alpha': ['Private vendor']})
+        session.commit()
+    own = client.get('/api/affiliates/products', headers=headers).json()['data']['products']
+    assert [p['id'] for p in own] == ['11']
+
+
+def test_cold_catalog_returns_one_page_then_schedules_remaining_pages(market, monkeypatch):
+    client, _, _, product = market
+    _, headers = account(client)
+    original = a.read_shopify
+    calls, scheduled = [], []
+    def read(store, path):
+        calls.append(path)
+        if path.startswith('/products.json'):
+            return {'products': [{**product, 'id': i + 1} for i in range(250)]}
+        return original(store, path)
+    monkeypatch.setattr(a, 'read_shopify', read)
+    monkeypatch.setattr(a.catalog_cache, '_schedule', lambda *args: scheduled.append(args))
+    data = client.get('/api/affiliates/products', headers=headers).json()['data']
+    assert len(data['products']) == 250 and data['refreshing'] is True
+    assert len([c for c in calls if c.startswith('/products.json')]) == 1 and len(scheduled) == 1
+
+
+def test_receipt_is_owned_immutable_and_excludes_private_earnings(market):
+    client, _, writes, product = market
+    _, first = account(client)
+    _, second = account(client, username='seller_two')
+    product['images'] = [{'id': 5, 'src': 'https://example.test/shoe.jpg'}]
+    product['variants'][0].update({'title': 'Blue / 40', 'image_id': 5})
+    created = create(client, first)
+    assert writes[0][1]['order']['shipping_address']['phone'] == '+212612345678'
+    assert 'phone' not in writes[0][1]['order']
+    result = client.get('/api/affiliates/order-details', headers=first, params={'order_id': created['id']})
+    receipt = result.json()['data']['receipt']
+    assert receipt['items'][0]['variant'] == 'Blue / 40' and receipt['items'][0]['image'].endswith('shoe.jpg')
+    assert receipt['total'] == 240 and receipt['customer_phone'] == '+212612345678'
+    assert not {'cost', 'profit', 'delivery_fee', 'store', 'vendor'} & receipt.keys()
+    product['title'] = 'Changed title'
+    assert client.get('/api/affiliates/order-details', headers=first, params={'order_id': created['id']}).json()['data']['receipt']['items'][0]['title'] == 'Shoe'
+    assert client.get('/api/affiliates/order-details', headers=second, params={'order_id': created['id']}).status_code == 404
+
+
+def test_explicit_shopify_rejection_surfaces_validation_error_without_retry(market, monkeypatch):
+    import requests
+    client, _, _, _ = market
+    _, headers = account(client)
+    original = a.shopify._rest_post_store
+    def rejected(store, path, payload):
+        if path != '/orders.json': return original(store, path, payload)
+        response = requests.Response()
+        response.status_code = 422
+        response._content = b'{"errors":{"phone":["is invalid"]}}'
+        raise requests.HTTPError(response=response)
+    monkeypatch.setattr(a.shopify, '_rest_post_store', rejected)
+    response = client.post('/api/affiliates/orders', headers=headers, json=new_order())
+    assert response.status_code == 422 and 'phone: is invalid' in response.json()['detail']
+    with db.SessionLocal() as session:
+        assert session.query(a.SellerOrder).one().state == 'rejected'
+    repeated = client.post('/api/affiliates/orders', headers=headers, json=new_order())
+    assert repeated.status_code == 422 and repeated.json()['detail'] == response.json()['detail']
+
+
+def test_unsupported_city_is_rejected_before_any_customer_or_order_write(market):
+    client, _, writes, _ = market
+    _, headers = account(client)
+    response = client.post('/api/affiliates/orders', headers=headers, json=new_order(city='Not served'))
+    assert response.status_code == 422 and not writes
+    with db.SessionLocal() as session:
+        assert session.query(a.Customer).count() == 0
+
+
+def test_delivery_city_bridge_uses_server_credentials_caches_reads_and_verifies_submission(market, monkeypatch):
+    client, _, _, _ = market
+    _, headers = account(client)
+    db.set_app_setting(None, 'affiliate_delivery_connection', {'base_url':'https://delivery.example.test','api_key':'private-qa-key'})
+    calls=[]
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {'data':{'cities':[{'id':'1','name':'Casablanca','country':'MA'},{'id':'2','name':'Paris','country':'FR'}]}}
+    def get(url, **kwargs):
+        calls.append((url,kwargs)); return Response()
+    monkeypatch.setattr(a.requests,'get',get)
+    monkeypatch.setattr(a,'delivery_cities',REAL_DELIVERY_CITIES)
+    first=client.get('/api/affiliates/cities',headers=headers)
+    assert first.json()['data']['cities']==[{'id':'1','name':'Casablanca','country':'MA'}]
+    assert 'private-qa-key' not in first.text
+    assert client.get('/api/affiliates/cities',headers=headers).status_code==200 and len(calls)==1
+    assert calls[0][1]['allow_redirects'] is False
+    create(client,headers)
+    assert len(calls)==2  # Submit forces a fresh city lookup.
+
+
+def test_delivery_city_bridge_rejects_html_or_unconfigured_connection(market, monkeypatch):
+    client, _, _, _=market
+    _,headers=account(client)
+    monkeypatch.setattr(a,'delivery_cities',REAL_DELIVERY_CITIES)
+    assert client.get('/api/affiliates/cities',headers=headers).status_code==503
+    db.set_app_setting(None,'affiliate_delivery_connection',{'base_url':'https://delivery.example.test','api_key':'private-qa-key'})
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): raise ValueError('HTML is not JSON')
+    monkeypatch.setattr(a.requests,'get',lambda *args,**kwargs:Response())
+    assert client.get('/api/affiliates/cities',headers=headers).status_code==502

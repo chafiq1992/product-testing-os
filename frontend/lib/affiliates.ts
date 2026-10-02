@@ -21,7 +21,16 @@ export async function affiliateApi(
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const result = await response.json();
+  let result: any;
+  try {
+    result = JSON.parse(await response.text());
+  } catch {
+    throw new Error(
+      path === "/orders" && method === "POST"
+        ? `The order response could not be confirmed (${response.status}). Check your orders before submitting again; an administrator may need to reconcile it.`
+        : `The server could not complete this request (${response.status}). Please refresh and try again.`,
+    );
+  }
   if (!response.ok || result.error)
     throw new Error(
       typeof result.detail === "string"
@@ -30,6 +39,41 @@ export async function affiliateApi(
     );
   return result.data;
 }
+
+export function productImage(src: string | undefined, width = 400) {
+  if (!src) return undefined;
+  try {
+    const url = new URL(src);
+    if (
+      url.hostname === "cdn.shopify.com" ||
+      url.hostname.endsWith(".shopifycdn.com")
+    )
+      url.searchParams.set("width", String(width));
+    return url.toString();
+  } catch {
+    return src;
+  }
+}
+
+export type RoutingCity = { id: string; name: string; country: string };
+export type Receipt = {
+  name?: string;
+  customer_name: string;
+  customer_phone: string;
+  city: string;
+  address: string;
+  note?: string;
+  currency: string;
+  total: number;
+  items: {
+    title: string;
+    variant: string;
+    image?: string;
+    quantity: number;
+    unit_price: number;
+    total: number;
+  }[];
+};
 
 export function money(value: number | string, currency = "MAD") {
   return new Intl.NumberFormat("en", {

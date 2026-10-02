@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Bookmark, Package, Search, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import AffiliateModal from "@/components/AffiliateModal";
+import { Bookmark, Package, Search } from "lucide-react";
 import {
   AffiliateProduct,
   Variant,
@@ -9,12 +10,14 @@ import {
   field,
   money,
   secondary,
+  productImage,
 } from "@/lib/affiliates";
 
 export const productTypes: Record<string, string> = {
   men: "Men",
   women: "Women",
   kids: "Kids",
+  boys: "Boys",
   girls: "Girls",
   unisex_kids: "Unisex kids",
   unisex_adult: "Unisex adult",
@@ -97,7 +100,7 @@ export default function AffiliateMarketplace({
   const [size, setSize] = useState("");
   const [category, setCategory] = useState("");
   const [marked, setMarked] = useState(false);
-  const [sort, setSort] = useState("newest");
+  const [sort, setSort] = useState(selecting ? "marked_first" : "newest");
   const [opened, setOpened] = useState("");
   const [marking, setMarking] = useState("");
   const [limit, setLimit] = useState(40);
@@ -120,6 +123,8 @@ export default function AffiliateMarketplace({
         p.title.toLowerCase().includes(search.toLowerCase()),
     )
     .sort((a, b) => {
+      if (sort === "marked_first" && !!a.marked !== !!b.marked)
+        return Number(!!b.marked) - Number(!!a.marked);
       if (sort === "quantity")
         return b.inventory_quantity - a.inventory_quantity;
       if (sort === "price_low")
@@ -200,6 +205,7 @@ export default function AffiliateMarketplace({
           onChange={(e) => setSort(e.target.value)}
           className={`${field} px-2`}
         >
+          {selecting && <option value="marked_first">Marked first</option>}
           <option value="newest">New to old</option>
           <option value="quantity">Most stock first</option>
           <option value="price_low">Price: low to high</option>
@@ -244,14 +250,14 @@ export default function AffiliateMarketplace({
                   <button
                     onClick={() => setOpened(key)}
                     aria-label={`View ${product.title}`}
-                    className="flex aspect-square w-full items-center justify-center bg-slate-100"
+                    className="relative flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-100"
                     title={product.title}
                   >
                     {product.image ? (
                       <img
-                        src={product.image}
+                        src={productImage(product.image)}
                         alt={product.title}
-                        className="h-full w-full object-contain"
+                        className="absolute inset-0 h-full w-full max-w-full object-contain"
                         loading="lazy"
                       />
                     ) : (
@@ -386,7 +392,6 @@ function ProductDetails({
   const [variantId, setVariantId] = useState(first?.id || "");
   const [price, setPrice] = useState(first?.price || "");
   const [image, setImage] = useState(first?.image || product.image);
-  const ref = useRef<HTMLDivElement>(null);
   const variant = product.variants.find((v) => v.id === variantId);
   const colors = Array.from(
     new Set(product.variants.map((v) => v.color).filter(Boolean)),
@@ -401,248 +406,188 @@ function ProductDetails({
       setImage(v.image || product.image);
     }
   }
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement;
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    function key(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
-      if (event.key === "Tab") {
-        const items = Array.from(
-          ref.current?.querySelectorAll<HTMLElement>(
-            "button:not(:disabled), input, a[href]",
-          ) || [],
-        );
-        const first = items[0],
-          last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last?.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first?.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", key);
-    return () => {
-      document.body.style.overflow = overflow;
-      document.removeEventListener("keydown", key);
-      previous?.focus();
-    };
-  }, []);
   const choices = product.variants.filter(
     (v) => v.color === variant?.color && v.size === variant?.size,
   );
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 p-0 sm:p-6"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
-    >
-      <div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="product-details-title"
-        className="mx-auto min-h-full max-w-3xl bg-white pb-[calc(1rem+env(safe-area-inset-bottom))] sm:min-h-0 sm:rounded-2xl"
-      >
-        <header className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-2 sm:rounded-t-2xl">
-          <span className="text-sm font-semibold">Product details</span>
-          <button
-            aria-label="Close product details"
-            onClick={close}
-            className="flex h-11 w-11 items-center justify-center rounded-xl hover:bg-slate-50"
-          >
-            <X size={20} />
-          </button>
-        </header>
-        <div className="p-4 sm:p-6">
-          <div className="grid gap-5 sm:grid-cols-2">
-            <div>
-              <div className="flex aspect-square items-center justify-center rounded-xl bg-slate-100">
-                {image ? (
+    <AffiliateModal title="Product details" close={close}>
+      <div className="grid min-w-0 gap-5 sm:grid-cols-2">
+        <div className="min-w-0">
+          <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl bg-slate-100">
+            {image ? (
+              <img
+                src={productImage(image, 800)}
+                alt={product.title}
+                className="absolute inset-0 h-full w-full max-w-full object-contain"
+              />
+            ) : (
+              <Package size={45} className="text-slate-300" />
+            )}
+          </div>
+          {product.images.length > 1 && (
+            <div className="mt-2 flex gap-2 overflow-auto">
+              {product.images.map((src, i) => (
+                <button
+                  key={src}
+                  onClick={() => setImage(src)}
+                  aria-label={`Product image ${i + 1}`}
+                  aria-pressed={image === src}
+                  className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 ${image === src ? "border-emerald-700" : "border-transparent"}`}
+                >
                   <img
-                    src={image}
-                    alt={product.title}
+                    src={productImage(src, 120)}
+                    alt=""
                     className="h-full w-full object-contain"
                   />
-                ) : (
-                  <Package size={45} className="text-slate-300" />
-                )}
-              </div>
-              {product.images.length > 1 && (
-                <div className="mt-2 flex gap-2 overflow-auto">
-                  {product.images.map((src, i) => (
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs text-slate-500">
+            {productTypes[product.category] || "Product"}
+          </p>
+          <h2
+            id="product-details-title"
+            className="mt-1 break-words text-xl font-bold"
+          >
+            {product.title}
+          </h2>
+          <p className="mt-4 text-xs text-slate-500">
+            Recommended selling price
+          </p>
+          <p className="text-2xl font-bold">
+            {money(variant?.price || 0, product.currency)}
+          </p>
+          <p className="mt-1 text-sm text-emerald-800">
+            Your cost {money(variant?.unit_cost || 0, product.currency)} ·{" "}
+            {product.discount_percent}% off
+          </p>
+          {!!colors.length && (
+            <fieldset className="mt-5">
+              <legend className="text-sm font-semibold">
+                Color {variant?.color && `· ${variant.color}`}
+              </legend>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {colors.map((color) => {
+                  const variants = product.variants.filter(
+                    (v) => v.color === color && v.available,
+                  );
+                  return (
                     <button
-                      key={src}
-                      onClick={() => setImage(src)}
-                      aria-label={`Product image ${i + 1}`}
-                      aria-pressed={image === src}
-                      className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 ${image === src ? "border-emerald-700" : "border-transparent"}`}
+                      key={color}
+                      disabled={!variants.length}
+                      onClick={() =>
+                        select(
+                          variants.find((v) => v.size === variant?.size) ||
+                            variants[0],
+                        )
+                      }
+                      aria-label={`Color ${color}`}
+                      aria-pressed={variant?.color === color}
+                      className={`flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg border px-2 text-xs ${variant?.color === color ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:opacity-30 disabled:line-through`}
                     >
-                      <img
-                        src={src}
-                        alt=""
-                        className="h-full w-full object-contain"
-                      />
+                      <ColorDot color={color} available={!!variants.length} />
+                      {color}
                     </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs text-slate-500">
-                {productTypes[product.category] || "Product"}
-              </p>
-              <h2
-                id="product-details-title"
-                className="mt-1 break-words text-xl font-bold"
-              >
-                {product.title}
-              </h2>
-              <p className="mt-4 text-xs text-slate-500">
-                Recommended selling price
-              </p>
-              <p className="text-2xl font-bold">
-                {money(variant?.price || 0, product.currency)}
-              </p>
-              <p className="mt-1 text-sm text-emerald-800">
-                Your cost {money(variant?.unit_cost || 0, product.currency)} ·{" "}
-                {product.discount_percent}% off
-              </p>
-              {!!colors.length && (
-                <fieldset className="mt-5">
-                  <legend className="text-sm font-semibold">
-                    Color {variant?.color && `· ${variant.color}`}
-                  </legend>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {colors.map((color) => {
-                      const variants = product.variants.filter(
-                        (v) => v.color === color && v.available,
-                      );
-                      return (
-                        <button
-                          key={color}
-                          disabled={!variants.length}
-                          onClick={() =>
-                            select(
-                              variants.find((v) => v.size === variant?.size) ||
-                                variants[0],
-                            )
-                          }
-                          aria-label={`Color ${color}`}
-                          aria-pressed={variant?.color === color}
-                          className={`flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg border px-2 text-xs ${variant?.color === color ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:opacity-30 disabled:line-through`}
-                        >
-                          <ColorDot
-                            color={color}
-                            available={!!variants.length}
-                          />
-                          {color}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              )}
-              {!!sizes.length && (
-                <fieldset className="mt-4">
-                  <legend className="text-sm font-semibold">Size</legend>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {sizes.map((size) => {
-                      const candidate = product.variants.find(
-                        (v) =>
-                          v.size === size &&
-                          v.color === variant?.color &&
-                          v.available,
-                      );
-                      return (
-                        <button
-                          key={size}
-                          disabled={!candidate}
-                          aria-label={`Size ${size}`}
-                          aria-pressed={variant?.size === size}
-                          onClick={() => select(candidate)}
-                          className={`min-h-11 min-w-11 rounded-lg border px-3 text-sm ${variant?.size === size ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:text-slate-300 disabled:line-through`}
-                        >
-                          {size}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </fieldset>
-              )}
-              {((!colors.length && !sizes.length) || choices.length > 1) && (
-                <fieldset className="mt-4">
-                  <legend className="text-sm font-semibold">Option</legend>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {(!colors.length && !sizes.length
-                      ? product.variants
-                      : choices
-                    ).map((v) => (
-                      <button
-                        key={v.id}
-                        disabled={!v.available}
-                        aria-pressed={v.id === variantId}
-                        onClick={() => select(v)}
-                        className={`min-h-11 rounded-lg border px-3 text-sm ${v.id === variantId ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:text-slate-300 disabled:line-through`}
-                      >
-                        {v.title}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-              )}
-              <p className="mt-4 text-sm text-slate-500">
-                {variant?.available
-                  ? variant.inventory_quantity === null
-                    ? "In stock"
-                    : `${variant.inventory_quantity} available in this size and color`
-                  : "This option is out of stock"}
-              </p>
-              <label className="mt-4 block text-sm font-medium">
-                Your selling price ({product.currency})
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min={Number(variant?.unit_cost) + 0.01}
-                  value={price}
-                  onChange={(e) => setPrice(e.target.value)}
-                  className={`${field} mt-1`}
-                />
-              </label>
-              <p className="mt-2 text-xs text-slate-500">
-                Margin before delivery:{" "}
-                {money(
-                  Math.max(0, Number(price) - Number(variant?.unit_cost)),
-                  product.currency,
-                )}{" "}
-                per item. Delivery is deducted once per order.
-              </p>
-              <button
-                disabled={
-                  !variant?.available ||
-                  Number(price) <= Number(variant?.unit_cost)
-                }
-                onClick={() => add(variantId, price)}
-                className={`${button} mt-4 w-full`}
-              >
-                Add to order
-              </button>
-            </div>
-          </div>
-          <section className="mt-6 border-t pt-4">
-            <h3 className="font-semibold">About this product</h3>
-            <p className="mt-2 whitespace-pre-line break-words text-sm leading-6 text-slate-600">
-              {product.description || "No description available."}
-            </p>
-          </section>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
+          {!!sizes.length && (
+            <fieldset className="mt-4">
+              <legend className="text-sm font-semibold">Size</legend>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {sizes.map((size) => {
+                  const candidate = product.variants.find(
+                    (v) =>
+                      v.size === size &&
+                      v.color === variant?.color &&
+                      v.available,
+                  );
+                  return (
+                    <button
+                      key={size}
+                      disabled={!candidate}
+                      aria-label={`Size ${size}`}
+                      aria-pressed={variant?.size === size}
+                      onClick={() => select(candidate)}
+                      className={`min-h-11 min-w-11 rounded-lg border px-3 text-sm ${variant?.size === size ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:text-slate-300 disabled:line-through`}
+                    >
+                      {size}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
+          {((!colors.length && !sizes.length) || choices.length > 1) && (
+            <fieldset className="mt-4">
+              <legend className="text-sm font-semibold">Option</legend>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(!colors.length && !sizes.length
+                  ? product.variants
+                  : choices
+                ).map((v) => (
+                  <button
+                    key={v.id}
+                    disabled={!v.available}
+                    aria-pressed={v.id === variantId}
+                    onClick={() => select(v)}
+                    className={`min-h-11 rounded-lg border px-3 text-sm ${v.id === variantId ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:text-slate-300 disabled:line-through`}
+                  >
+                    {v.title}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          )}
+          <p className="mt-4 text-sm text-slate-500">
+            {variant?.available
+              ? variant.inventory_quantity === null
+                ? "In stock"
+                : `${variant.inventory_quantity} available in this size and color`
+              : "This option is out of stock"}
+          </p>
+          <label className="mt-4 block text-sm font-medium">
+            Your selling price ({product.currency})
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min={Number(variant?.unit_cost) + 0.01}
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              className={`${field} mt-1`}
+            />
+          </label>
+          <p className="mt-2 text-xs text-slate-500">
+            Margin before delivery:{" "}
+            {money(
+              Math.max(0, Number(price) - Number(variant?.unit_cost)),
+              product.currency,
+            )}{" "}
+            per item. Delivery is deducted once per order.
+          </p>
+          <button
+            disabled={
+              !variant?.available || Number(price) <= Number(variant?.unit_cost)
+            }
+            onClick={() => add(variantId, price)}
+            className={`${button} mt-4 w-full`}
+          >
+            Add to order
+          </button>
         </div>
       </div>
-    </div>
+      <section className="mt-6 border-t pt-4">
+        <h3 className="font-semibold">About this product</h3>
+        <p className="mt-2 whitespace-pre-line break-words text-sm leading-6 text-slate-600">
+          {product.description || "No description available."}
+        </p>
+      </section>
+    </AffiliateModal>
   );
 }

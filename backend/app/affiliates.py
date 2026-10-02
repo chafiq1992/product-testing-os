@@ -11,6 +11,7 @@ import json
 import logging
 import secrets
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
@@ -29,6 +30,7 @@ from app.integrations import shopify_client as shopify
 from app.shopify_store_registry import build_store_registry
 from app.system_health_routes import _get_admin
 from app.affiliate_marketplace import collection_memberships, discount_for, paginate, present_product, variant_cost
+from app import affiliate_catalog_cache as catalog_cache
 
 router = APIRouter(prefix="/api/affiliates", tags=["affiliates"])
 log = logging.getLogger(__name__)
@@ -130,7 +132,13 @@ class CustomerLink(db.Base):
     shopify_id = Column(String, nullable=False)
 
 
-for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink):
+class OrderReceipt(db.Base):
+    __tablename__ = "affiliate_order_receipts"
+    order_id = Column(String, primary_key=True)
+    data = Column(Text, nullable=False)
+
+
+for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink, OrderReceipt):
     table.__table__.create(db.engine, checkfirst=True)
 
 
@@ -260,45 +268,42 @@ def pricing_memberships(store, settings):
 
 
 def catalog(access=None):
-    products, stores, warnings = [], [], []
+    products, stores, warnings, refreshing = [], [], [], False
     settings = pricing_settings()
-    for connection in connected_stores():
+    connections = [c for c in connected_stores() if access is None or access.get(c['label'])]
+    def load_store(connection):
+        return catalog_cache.load(connection, settings, read_shopify, pricing_memberships)
+    # Store reads are independent; don't make every seller wait for them in series.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {c['label']: pool.submit(load_store, c) for c in connections}
+
+    for connection in connections:
         label = connection["label"]
         allowed = None if access is None else access.get(label, [])
         if allowed == []:
             continue
         try:
-            currency = read_shopify(label, "/shop.json")["shop"]["currency"]
+            snapshot = futures[label].result()
+            currency = snapshot['currency']
             # Monetary accounting is stored in hundredths; avoid silently rounding
             # currencies with different minor-unit rules.
             if currency not in {"MAD", "USD", "EUR", "GBP", "CAD", "AED", "SAR"}:
                 raise ValueError("Unsupported settlement currency")
-            store_products, since = [], 0
-            memberships = pricing_memberships(label, settings)
-            while True:
-                params = {"limit": 250, "since_id": since, "status": "active",
-                          "fields": "id,title,vendor,handle,status,variants,images,options,product_type,tags,created_at,body_html"}
-                page = read_shopify(label, "/products.json?" + urlencode(params)).get("products", [])
-                if not page:
-                    break
-                for product in page:
-                    if allowed is not None and product.get("vendor") not in allowed:
-                        continue
-                    store_products.append(present_product(product, label, currency,
-                        discount_for(product["id"], label, settings, memberships)))
-                next_id = max(int(p["id"]) for p in page)
-                if next_id <= since:
-                    raise ValueError("Invalid catalog pagination")
-                since = next_id
-                if len(page) < 250:
-                    break
+            store_products = []
+            memberships = snapshot['memberships']
+            refreshing = refreshing or snapshot['refreshing']
+            for product in snapshot['products']:
+                if allowed is not None and product.get('vendor') not in allowed:
+                    continue
+                store_products.append(present_product(product, label, currency,
+                    discount_for(product['id'], label, settings, memberships)))
             products.extend(store_products)
             stores.append({"label": label, "shop": connection["shop"], "currency": currency,
                            "vendors": sorted({p["vendor"] for p in store_products})})
         except Exception:
             log.exception("Affiliate catalog unavailable for %s", label)
             warnings.append(f"Could not load {label}; check its connection and product permissions.")
-    return {"products": products, "stores": stores, "warnings": warnings, "pricing": settings}
+    return {"products": products, "stores": stores, "warnings": warnings, "pricing": settings, "refreshing": refreshing}
 
 
 @router.get("/products")
@@ -519,6 +524,54 @@ def customers(seller=Depends(active_seller)):
     return {"data": own}
 
 
+def delivery_cities(force=False):
+    import time
+    config = db.get_app_setting(None, 'affiliate_delivery_connection') or {}
+    if not config.get('base_url') or not config.get('api_key'):
+        raise HTTPException(503, 'Connect the delivery app in Connections to load its active routing cities.')
+    signature = hashlib.sha256((config['base_url'] + config['api_key']).encode()).hexdigest()
+    saved = db.get_app_setting(None, 'affiliate_routing_cities') or {}
+    if not force and saved.get('signature') == signature and time.time() - saved.get('timestamp', 0) < 300:
+        return saved['cities']
+    try:
+        response = requests.get(config['base_url'] + '/api/integrations/affiliate-tracking/cities',
+            headers={'Authorization': 'Bearer ' + config['api_key']}, timeout=10, allow_redirects=False)
+        response.raise_for_status()
+        cities = response.json()['data']['cities']
+        if not isinstance(cities, list): raise ValueError('Invalid city response')
+        result = sorted({str(c['id']): {'id': str(c['id']), 'name': str(c['name']), 'country': 'MA'}
+            for c in cities if c.get('country') == 'MA' and c.get('name')}.values(), key=lambda c: c['name'])
+    except Exception:
+        raise HTTPException(502, 'Active routing cities could not be loaded. Check the delivery connection and update its integration, then try again.')
+    db.set_app_setting(None, 'affiliate_routing_cities', {'signature': signature, 'timestamp': time.time(), 'cities': result})
+    return result
+
+
+@router.get('/cities')
+def seller_cities(seller=Depends(active_seller)):
+    return {'data': {'cities': delivery_cities()}}
+
+
+@router.get('/order-details')
+def order_details(order_id: str, seller=Depends(active_seller)):
+    with db.SessionLocal() as session:
+        row = session.get(SellerOrder, order_id)
+        if not row or row.seller_id != seller['id']:
+            raise HTTPException(404, 'Order not found')
+        stored = session.get(OrderReceipt, order_id)
+        snap = json.loads(row.snapshot)
+        shipping = snap.get('shipping_address') or {}
+        receipt = json.loads(stored.data) if stored else {
+            'customer_name': shipping.get('name', ''), 'customer_phone': shipping.get('phone') or snap.get('phone', ''),
+            'city': shipping.get('city', ''), 'address': shipping.get('address1', ''), 'note': snap.get('note', ''),
+            'currency': row.currency, 'total': float(snap.get('total_price') or 0),
+            'items': [{'title': li.get('title', ''), 'variant': li.get('variant_title', ''), 'quantity': li.get('quantity', 0),
+                'unit_price': float(li.get('price') or 0), 'total': float(li.get('price') or 0) * int(li.get('quantity') or 0)}
+                for li in snap.get('line_items', [])]}
+        receipt['name'] = snap.get('name') or 'Order awaiting confirmation'
+        return {'data': {'order': order_view(row), 'receipt': receipt}}
+
+
 @router.post("/customers")
 def create_customer(body: CustomerInput, seller=Depends(active_seller)):
     return {"data": save_customer(body, seller["id"])}
@@ -532,6 +585,8 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         if prior:
             if prior.fingerprint != fingerprint:
                 raise HTTPException(409, "This submission ID was already used for a different order")
+            if prior.state == "rejected":
+                raise HTTPException(422, json.loads(prior.snapshot).get('submission_error') or "Shopify rejected this order. Correct its details before trying again.")
             if prior.state != "created":
                 raise HTTPException(409, "Order submission needs administrator reconciliation; do not resubmit")
             return {"data": order_view(prior)}
@@ -546,6 +601,11 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
     if currency not in settings["delivery_fees"]:
         raise HTTPException(422, "An administrator must configure a delivery fee for this currency")
     fee = cents(settings["delivery_fees"][currency])
+    cities = delivery_cities(force=True)
+    city = next((c['name'] for c in cities if c['name'].casefold() == body.city.strip().casefold()), None)
+    if not city or body.country != 'MA':
+        raise HTTPException(422, 'Choose a city from the delivery app’s active routing cities.')
+    body.city = city
     memberships = pricing_memberships(body.store, settings)
     approved_costs = {}
     for item in body.items:
@@ -588,6 +648,19 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
                           snapshot=json.dumps({"submission": body.model_dump(mode="json")}))
         session.add(row)
         session.add(OrderTerms(order_id=oid, delivery_fee_cents=fee, customer_id=customer["id"]))
+        receipt_items = []
+        for item in body.items:
+            product = selected[item.product_id]
+            variant = next(v for v in product['variants'] if str(v['id']) == item.variant_id)
+            image = next((im.get('src') for im in product.get('images', []) if im.get('id') == variant.get('image_id')), None)
+            image = image or next((im.get('src') for im in product.get('images', []) if im.get('src')), None)
+            receipt_items.append({'title': product['title'], 'variant': variant.get('title', ''), 'image': image,
+                'quantity': item.quantity, 'unit_price': prices[item.variant_id] / 100,
+                'total': prices[item.variant_id] * item.quantity / 100})
+        session.add(OrderReceipt(order_id=oid, data=json.dumps({
+            'customer_name': customer['customer_name'], 'customer_phone': customer['customer_phone'],
+            'city': body.city, 'address': customer['address'], 'note': body.note, 'currency': currency,
+            'items': receipt_items, 'total': sum(prices[vid] * qty for vid, qty in quantities.items()) / 100})))
         try:
             session.commit()
         except IntegrityError:
@@ -595,11 +668,11 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
             raise HTTPException(409, "Order is already being submitted; refresh orders")
     first, _, last = body.customer_name.strip().partition(" ")
     address = {"first_name": first, "last_name": last, "name": body.customer_name.strip(),
-               "phone": body.customer_phone.strip(), "address1": body.address.strip(), "city": body.city.strip(), "country_code": body.country}
+               "phone": customer['customer_phone'], "address1": body.address.strip(), "city": body.city.strip(), "country_code": 'MA'}
     try:
         snapshot = shopify._rest_post_store(body.store, "/orders.json", {"order": {
             "line_items": [{"variant_id": int(vid), "quantity": qty, "price": str(Decimal(prices[vid]) / 100)} for vid, qty in quantities.items()],
-            "shipping_address": address, "billing_address": address, "phone": body.customer_phone.strip(),
+            "shipping_address": address, "billing_address": address,
             "customer": {"id": int(cid)},
             "tags": f"affiliate,affiliate_seller:{seller['id']},affiliate_request:{body.request_id}",
             "note": body.note, "financial_status": "pending", "inventory_behaviour": "decrement_obeying_policy",
@@ -611,13 +684,36 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
             row.shopify_id, row.snapshot, row.state = str(snapshot["id"]), json.dumps(snapshot), "created"
             row.synced_at = datetime.utcnow()
             session.commit()
-            return {"data": order_view(row)}
-    except Exception:
-        log.exception("Affiliate order %s requires reconciliation", oid)
+            result = order_view(row)
+        try:
+            connection = next(c for c in connected_stores() if c['label'] == body.store)
+            catalog_cache.invalidate(connection, settings)
+        except Exception:
+            log.exception('Affiliate catalog invalidation failed after order creation')
+        return {"data": result}
+    except Exception as exc:
+        response = exc.response if isinstance(exc, requests.HTTPError) else None
+        # Explicit validation/auth rejection confirms no order was created. Other
+        # failures remain uncertain; never automatically repeat a Shopify write.
+        rejected = response is not None and response.status_code in {400, 401, 403, 404, 422}
+        reason = 'Shopify rejected this order. Check customer details, stock and store permissions.'
+        if rejected:
+            try:
+                errors = response.json().get('errors', {})
+                if isinstance(errors, dict):
+                    reason = 'Shopify rejected this order: ' + '; '.join(
+                        f"{field}: {', '.join(str(v) for v in values) if isinstance(values, list) else str(values)}"
+                        for field, values in errors.items())[:500]
+            except Exception: pass
+        log.exception("Affiliate order %s %s", oid, "was rejected" if rejected else "requires reconciliation")
         with db.SessionLocal() as session:
             row = session.get(SellerOrder, oid)
-            row.state = "needs_review"
+            row.state = 'rejected' if rejected else "needs_review"
+            if rejected:
+                snap = json.loads(row.snapshot)
+                row.snapshot = json.dumps({**snap, 'submission_error': reason})
             session.commit()
+        if rejected: raise HTTPException(422, reason)
         raise HTTPException(502, "Shopify submission could not be confirmed. The administrator must reconcile it before another attempt.")
 
 

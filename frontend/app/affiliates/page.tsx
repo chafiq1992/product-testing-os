@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import AffiliateMarketplace from "@/components/AffiliateMarketplace";
+import AffiliateModal from "@/components/AffiliateModal";
+import AffiliateOrderEditor from "@/components/AffiliateOrderEditor";
+import AffiliateOrderDetails from "@/components/AffiliateOrderDetails";
 import AffiliateCustomers from "@/components/AffiliateCustomers";
 import {
   BarChart3,
@@ -27,6 +30,7 @@ import {
   AffiliateProduct,
   CartLine,
   AffiliateCustomer,
+  RoutingCity,
 } from "@/lib/affiliates";
 
 type Tab = "overview" | "products" | "orders" | "payouts";
@@ -62,6 +66,15 @@ export default function AffiliatePage() {
   const [customers, setCustomers] = useState<AffiliateCustomer[]>([]);
   const [customerId, setCustomerId] = useState("");
   const [choosingProducts, setChoosingProducts] = useState(false);
+  const [editingOrder, setEditingOrder] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState("");
+  const [cities, setCities] = useState<RoutingCity[]>([]);
+  const [citiesError, setCitiesError] = useState("");
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
+  const sellerId = useRef("");
+  const productsRunning = useRef(false);
+  const productsUpdatedAt = useRef(0);
   const [showCustomers, setShowCustomers] = useState(false);
   const [pricing, setPricing] = useState<{
     delivery_fees: Record<string, number | string>;
@@ -88,52 +101,112 @@ export default function AffiliatePage() {
     paid: 0,
   };
 
-  const refresh = useCallback(async (withProducts = false) => {
-    if (refreshRunning.current) return;
-    refreshRunning.current = true;
-    setLoading(true);
+  const loadProducts = useCallback(async (force = false) => {
+    if (
+      productsRunning.current ||
+      (!force && Date.now() - productsUpdatedAt.current < 30000)
+    )
+      return;
+    productsRunning.current = true;
+    setCatalogLoading(true);
     try {
-      const current = await affiliateApi("/me");
-      setSeller(current);
-      if (current.status === "approved") {
-        const result = await affiliateApi("/dashboard");
-        setData(result);
-        setCustomers(await affiliateApi("/customers"));
-        if (withProducts) {
-          const catalog = await affiliateApi("/products");
-          setProducts(catalog.products);
-          setCatalogWarnings(catalog.warnings);
-          setPricing(catalog.pricing);
-          setCart((previous) =>
-            previous.map((line) => {
-              const product = catalog.products.find(
-                (p: AffiliateProduct) =>
-                  p.id === line.product.id && p.store === line.product.store,
-              );
-              const variant = product?.variants.find(
-                (v: any) => v.id === line.variant.id,
-              );
-              return product && variant
-                ? { ...line, product, variant }
-                : {
-                    ...line,
-                    variant: {
-                      ...line.variant,
-                      available: false,
-                      inventory_quantity: 0,
-                    },
-                  };
-            }),
-          );
-        }
+      const key = `ptos_marketplace:${sellerId.current}`;
+      if (!productsUpdatedAt.current) {
+        try {
+          const saved = JSON.parse(sessionStorage.getItem(key) || "null");
+          if (saved && Date.now() - saved.timestamp < 900000) {
+            setProducts(saved.data.products);
+            setPricing(saved.data.pricing);
+          }
+        } catch {}
       }
+      const catalog = await affiliateApi("/products");
+      setProducts(catalog.products);
+      setCatalogWarnings(catalog.warnings);
+      setPricing(catalog.pricing);
+      setCatalogRefreshing(!!catalog.refreshing);
+      productsUpdatedAt.current = Date.now();
+      try {
+        sessionStorage.setItem(
+          key,
+          JSON.stringify({ timestamp: Date.now(), data: catalog }),
+        );
+      } catch {}
+      setCart((previous) =>
+        previous.map((line) => {
+          const product = catalog.products.find(
+            (p: AffiliateProduct) =>
+              p.id === line.product.id && p.store === line.product.store,
+          );
+          const variant = product?.variants.find(
+            (v: any) => v.id === line.variant.id,
+          );
+          return product && variant
+            ? { ...line, product, variant }
+            : {
+                ...line,
+                variant: {
+                  ...line.variant,
+                  available: false,
+                  inventory_quantity: 0,
+                },
+              };
+        }),
+      );
     } catch (err: any) {
       setError(err.message);
     } finally {
-      setLoading(false);
-      refreshRunning.current = false;
+      setCatalogLoading(false);
+      productsRunning.current = false;
     }
   }, []);
+
+  const loadCities = useCallback(async () => {
+    setCitiesError("");
+    try {
+      const result = await affiliateApi("/cities");
+      setCities(result.cities);
+      if (!result.cities.length)
+        setCitiesError(
+          "The delivery app has no active routing cities. Ask your administrator to add a route.",
+        );
+    } catch (err: any) {
+      setCitiesError(err.message);
+    }
+  }, []);
+
+  const refresh = useCallback(
+    async (withProducts = false) => {
+      // Catalog requests have their own lifecycle; slow order tracking must not
+      // hold up product browsing or the picker.
+      if (withProducts && sellerId.current) void loadProducts(true);
+      if (refreshRunning.current) return;
+      refreshRunning.current = true;
+      setLoading(true);
+      try {
+        const current = await affiliateApi("/me");
+        sellerId.current = current.id;
+        setSeller(current);
+        if (current.status === "approved") {
+          const tasks = [
+            affiliateApi("/dashboard").then(setData),
+            affiliateApi("/customers").then(setCustomers),
+          ];
+          if (withProducts) tasks.push(loadProducts());
+          const results = await Promise.allSettled(tasks);
+          results.forEach((result) => {
+            if (result.status === "rejected") setError(result.reason.message);
+          });
+        }
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+        refreshRunning.current = false;
+      }
+    },
+    [loadProducts],
+  );
 
   useEffect(() => {
     if (!localStorage.getItem("ptos_affiliate_token")) {
@@ -142,6 +215,7 @@ export default function AffiliatePage() {
     }
     affiliateApi("/me")
       .then((current) => {
+        sellerId.current = current.id;
         setSeller(current);
         if (current.status === "approved") void refresh(true);
       })
@@ -161,8 +235,18 @@ export default function AffiliatePage() {
       seller?.status === "approved" &&
       (tab === "products" || choosingProducts)
     )
-      void refresh(true);
-  }, [tab, choosingProducts, seller?.id, refresh]);
+      void loadProducts();
+  }, [tab, choosingProducts, seller?.id, loadProducts]);
+  useEffect(() => {
+    if (!catalogRefreshing || !seller?.id) return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") void loadProducts(true);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [catalogRefreshing, seller?.id, loadProducts]);
+  useEffect(() => {
+    if (editingOrder && !cities.length) void loadCities();
+  }, [editingOrder, loadCities]);
   const submissionKey = JSON.stringify({
     customer,
     customerId,
@@ -203,7 +287,8 @@ export default function AffiliatePage() {
   function startOrder(saved?: AffiliateCustomer) {
     setTab("orders");
     setShowCustomers(false);
-    setChoosingProducts(!cart.length);
+    setEditingOrder(true);
+    setChoosingProducts(false);
     setNotice("");
     if (saved) {
       setCustomerId(saved.id);
@@ -239,6 +324,7 @@ export default function AffiliatePage() {
           password: credentials.password,
         });
         localStorage.setItem("ptos_affiliate_token", result.token);
+        sellerId.current = result.seller.id;
         setSeller(result.seller);
         if (result.seller.status === "approved") await refresh(true);
       }
@@ -254,6 +340,12 @@ export default function AffiliatePage() {
     try {
       await affiliateApi("/logout", {});
     } catch {}
+    sessionStorage.removeItem(`ptos_marketplace:${sellerId.current}`);
+    sellerId.current = "";
+    productsUpdatedAt.current = 0;
+    setEditingOrder(false);
+    setSelectedOrder("");
+    setCities([]);
     localStorage.removeItem("ptos_affiliate_token");
     setSeller(null);
     setData(empty);
@@ -321,7 +413,8 @@ export default function AffiliatePage() {
         : [...previous, { product, variant, quantity: 1, sale_price: price }];
     });
     setError("");
-    setNotice("Product added. Enter customer details to create the order.");
+    setNotice("");
+    setEditingOrder(true);
     setChoosingProducts(false);
     setShowCustomers(false);
     setCurrency(product.currency);
@@ -349,6 +442,7 @@ export default function AffiliatePage() {
         })),
       });
       setCart([]);
+      setEditingOrder(false);
       setCustomerId("");
       setCustomer({
         customer_name: "",
@@ -601,7 +695,7 @@ export default function AffiliatePage() {
   });
   const maxProfit = Math.max(1, ...trend.map((day) => day.total));
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
+    <main className="min-h-screen min-w-0 max-w-full overflow-x-clip bg-slate-50 text-slate-900">
       <aside className="hidden bg-slate-950 text-white lg:fixed lg:inset-y-0 lg:left-0 lg:block lg:w-64">
         <Link
           href="/affiliates"
@@ -849,7 +943,7 @@ export default function AffiliatePage() {
                   {w}
                 </p>
               ))}
-              {loading && !products.length ? (
+              {catalogLoading && !products.length ? (
                 <p>Loading Marketplace…</p>
               ) : (
                 <AffiliateMarketplace
@@ -890,294 +984,76 @@ export default function AffiliatePage() {
                 />
               ) : (
                 <>
-                  {choosingProducts && (
-                    <section className="mb-6 rounded-2xl border bg-white p-3 sm:p-4">
-                      <div className="mb-3 flex flex-wrap justify-between gap-2">
-                        <h2 className="font-bold">
-                          Choose products for your order
-                        </h2>
-                        <button
-                          onClick={() => setChoosingProducts(false)}
-                          className={secondary}
-                        >
-                          Back to orders
-                        </button>
-                      </div>
-                      <AffiliateMarketplace
-                        products={products}
-                        mark={markProduct}
-                        add={addLine}
-                        selecting
-                      />
-                    </section>
+                  {editingOrder && (
+                    <AffiliateOrderEditor
+                      cart={cart}
+                      setCart={setCart}
+                      customer={customer}
+                      setCustomer={setCustomer}
+                      customerId={customerId}
+                      customers={customers}
+                      clearCustomerId={() => setCustomerId("")}
+                      selectCustomer={(saved) => {
+                        setCustomerId(saved?.id || "");
+                        if (saved)
+                          setCustomer({
+                            customer_name: saved.customer_name,
+                            customer_phone: saved.customer_phone,
+                            address: saved.address,
+                            city: saved.city,
+                            country: "MA",
+                            note: "",
+                          });
+                        else
+                          setCustomer({
+                            customer_name: "",
+                            customer_phone: "",
+                            address: "",
+                            city: "",
+                            country: "MA",
+                            note: "",
+                          });
+                      }}
+                      cities={cities}
+                      citiesError={citiesError}
+                      retryCities={loadCities}
+                      busy={busy}
+                      addProduct={() => setChoosingProducts(true)}
+                      close={() => {
+                        setEditingOrder(false);
+                        setCart([]);
+                      }}
+                      submit={submitOrder}
+                      deliveryFee={deliveryFee}
+                    />
                   )}
-                  {cart.length > 0 && (
-                    <form
-                      onSubmit={submitOrder}
-                      className="mb-7 rounded-2xl border bg-white p-4 sm:p-6"
+                  {choosingProducts && (
+                    <AffiliateModal
+                      title="Choose products"
+                      close={() => setChoosingProducts(false)}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <h2 className="min-w-0 break-words text-lg font-bold">
-                          Create customer order
-                        </h2>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => setCart([])}
-                          aria-label="Clear order"
-                          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl hover:bg-slate-50"
-                        >
-                          <X size={18} />
-                        </button>
-                      </div>
-                      <div className="my-5 space-y-3">
-                        {cart.map((line, i) => (
-                          <div
-                            key={`${line.product.id}:${line.variant.id}`}
-                            className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 p-4"
-                          >
-                            <div className="min-w-0 basis-full sm:min-w-48 sm:flex-1">
-                              <p className="text-sm font-semibold">
-                                {line.product.title}
-                              </p>
-                              <p className="text-xs text-slate-500">
-                                {line.variant.title} · Cost{" "}
-                                {money(
-                                  line.variant.unit_cost || 0,
-                                  line.product.currency,
-                                )}
-                              </p>
-                              <p className="mt-1 text-xs text-slate-500">
-                                Recommended selling price{" "}
-                                {money(
-                                  line.variant.price,
-                                  line.product.currency,
-                                )}
-                              </p>
-                            </div>
-                            <label className="text-xs">
-                              Quantity
-                              <input
-                                disabled={busy}
-                                type="number"
-                                inputMode="numeric"
-                                min="1"
-                                max={Math.min(
-                                  100,
-                                  line.variant.inventory_quantity ?? 100,
-                                )}
-                                required
-                                value={line.quantity}
-                                onChange={(e) =>
-                                  setCart(
-                                    cart.map((l, j) =>
-                                      j === i
-                                        ? {
-                                            ...l,
-                                            quantity: Number(e.target.value),
-                                          }
-                                        : l,
-                                    ),
-                                  )
-                                }
-                                className={`${field} mt-1 max-w-24`}
-                              />
-                            </label>
-                            <label className="text-xs">
-                              Sale price ({line.product.currency})
-                              <input
-                                disabled={busy}
-                                required
-                                type="number"
-                                inputMode="decimal"
-                                step="0.01"
-                                min={Number(line.variant.unit_cost) + 0.01}
-                                value={line.sale_price}
-                                onChange={(e) =>
-                                  setCart(
-                                    cart.map((l, j) =>
-                                      j === i
-                                        ? { ...l, sale_price: e.target.value }
-                                        : l,
-                                    ),
-                                  )
-                                }
-                                className={`${field} mt-1 max-w-32`}
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                setCart(cart.filter((_, j) => j !== i))
-                              }
-                              aria-label={`Remove ${line.product.title}`}
-                              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl hover:bg-slate-200"
-                            >
-                              <X size={17} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      <label className="mb-4 block text-sm font-medium">
-                        Saved customer
-                        <select
-                          aria-label="Use saved customer"
-                          value={customerId}
-                          onChange={(e) => {
-                            const saved = customers.find(
-                              (c) => c.id === e.target.value,
-                            );
-                            if (saved) startOrder(saved);
-                            else setCustomerId("");
-                          }}
-                          className={`${field} mt-1`}
-                        >
-                          <option value="">New customer</option>
-                          {customers.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.customer_name} · {c.customer_phone}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        {(
-                          [
-                            "customer_name",
-                            "customer_phone",
-                            "address",
-                            "city",
-                          ] as const
-                        ).map((key) => (
-                          <label
-                            key={key}
-                            className="text-sm font-medium capitalize"
-                          >
-                            {key.replace("customer_", "").replaceAll("_", " ")}
-                            <input
-                              disabled={busy}
-                              required
-                              type={key === "customer_phone" ? "tel" : "text"}
-                              autoComplete={
-                                {
-                                  customer_name: "name",
-                                  customer_phone: "tel",
-                                  address: "street-address",
-                                  city: "address-level2",
-                                }[key]
-                              }
-                              value={customer[key]}
-                              onChange={(e) => {
-                                setCustomer({
-                                  ...customer,
-                                  [key]: e.target.value,
-                                });
-                                if (key === "customer_phone") setCustomerId("");
-                              }}
-                              className={`${field} mt-1`}
-                            />
-                          </label>
-                        ))}
-                        <label className="text-sm font-medium">
-                          Country code
-                          <input
-                            disabled={busy}
-                            pattern="[A-Z]{2}"
-                            maxLength={2}
-                            autoComplete="country"
-                            required
-                            value={customer.country}
-                            onChange={(e) =>
-                              setCustomer({
-                                ...customer,
-                                country: e.target.value.toUpperCase(),
-                              })
-                            }
-                            className={`${field} mt-1`}
-                          />
-                        </label>
-                        <label className="text-sm font-medium">
-                          Order note
-                          <input
-                            disabled={busy}
-                            value={customer.note}
-                            onChange={(e) =>
-                              setCustomer({ ...customer, note: e.target.value })
-                            }
-                            className={`${field} mt-1`}
-                          />
-                        </label>
-                      </div>
-                      <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
-                        <div>
-                          <p className="font-bold">
-                            Order total{" "}
-                            {money(
-                              cart.reduce(
-                                (sum, l) =>
-                                  sum + Number(l.sale_price) * l.quantity,
-                                0,
-                              ),
-                              cart[0].product.currency,
-                            )}
-                          </p>
-                          <p className="mt-1 text-sm text-slate-500">
-                            Product costs{" "}
-                            {money(
-                              cart.reduce(
-                                (sum, l) =>
-                                  sum +
-                                  Number(l.variant.unit_cost) * l.quantity,
-                                0,
-                              ),
-                              cartCurrency,
-                            )}
-                          </p>
-                          <p className="text-sm text-slate-500">
-                            Delivery deducted{" "}
-                            {Number.isFinite(deliveryFee)
-                              ? money(deliveryFee, cartCurrency)
-                              : "not configured"}
-                          </p>
-                          <p className="mt-1 text-sm text-emerald-700">
-                            Expected profit{" "}
-                            {money(
-                              Math.max(0, grossMargin - (deliveryFee || 0)),
-                              cart[0].product.currency,
-                            )}
-                          </p>
-                          <p className="mt-1 text-xs text-slate-500">
-                            Available for payout after delivery and collection.
-                          </p>
-                          {(!Number.isFinite(deliveryFee) ||
-                            grossMargin <= deliveryFee) && (
-                            <p className="mt-2 text-xs text-amber-800">
-                              {Number.isFinite(deliveryFee)
-                                ? "Increase the selling price or quantity to cover the delivery fee."
-                                : "Ask your administrator to configure this currency’s delivery fee."}
-                            </p>
-                          )}
-                        </div>
-                        <button
-                          disabled={
-                            busy ||
-                            !Number.isFinite(deliveryFee) ||
-                            grossMargin <= deliveryFee ||
-                            cart.some(
-                              (line) =>
-                                !line.variant.available ||
-                                (line.variant.inventory_quantity !== null &&
-                                  line.quantity >
-                                    line.variant.inventory_quantity),
-                            )
+                      {catalogLoading && !products.length ? (
+                        <p>Loading Marketplace…</p>
+                      ) : (
+                        <AffiliateMarketplace
+                          products={
+                            cart.length
+                              ? products.filter(
+                                  (p) => p.store === cart[0].product.store,
+                                )
+                              : products
                           }
-                          className={`${button} w-full sm:w-auto`}
-                        >
-                          {busy ? "Submitting…" : "Submit order"}
-                        </button>
-                      </div>
-                    </form>
+                          mark={markProduct}
+                          add={addLine}
+                          selecting
+                        />
+                      )}
+                      {catalogRefreshing && (
+                        <p className="mt-3 text-xs text-slate-500">
+                          More products are loading in the background…
+                        </p>
+                      )}
+                    </AffiliateModal>
                   )}
                   <div className="mb-5 flex flex-wrap justify-between gap-3">
                     <p className="text-sm text-slate-500">
@@ -1201,14 +1077,17 @@ export default function AffiliatePage() {
                         ))}
                       </select>
                       <button
-                        onClick={() => setChoosingProducts(true)}
+                        onClick={() => {
+                          setEditingOrder(true);
+                          setChoosingProducts(true);
+                        }}
                         className={button}
                       >
                         <Plus size={16} /> Add products
                       </button>
                     </div>
                   </div>
-                  <OrderTable orders={orders} />
+                  <OrderTable orders={orders} open={setSelectedOrder} />
                 </>
               )}
             </>
@@ -1288,6 +1167,12 @@ export default function AffiliatePage() {
           )}
         </div>
       </div>
+      {selectedOrder && (
+        <AffiliateOrderDetails
+          id={selectedOrder}
+          close={() => setSelectedOrder("")}
+        />
+      )}
       <nav
         aria-label="Seller navigation"
         className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white px-2 pt-2 pb-[calc(.5rem+env(safe-area-inset-bottom))] shadow-[0_-4px_20px_rgba(15,23,42,.06)] lg:hidden"
@@ -1333,7 +1218,13 @@ function Empty({ title, text }: { title: string; text: string }) {
     </div>
   );
 }
-function OrderTable({ orders }: { orders: any[] }) {
+function OrderTable({
+  orders,
+  open,
+}: {
+  orders: any[];
+  open: (id: string) => void;
+}) {
   return !orders.length ? (
     <Empty
       title="No orders yet"
@@ -1349,7 +1240,13 @@ function OrderTable({ orders }: { orders: any[] }) {
           >
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div className="min-w-0">
-                <h2 className="break-words font-bold">{o.name}</h2>
+                <button
+                  onClick={() => open(o.id)}
+                  className="min-h-11 break-words text-left font-bold text-emerald-800"
+                  aria-label={`View order ${o.name}`}
+                >
+                  {o.name}
+                </button>
                 <p className="mt-1 break-words text-xs text-slate-500">
                   {new Date(o.created_at).toLocaleDateString()}
                 </p>
@@ -1383,6 +1280,12 @@ function OrderTable({ orders }: { orders: any[] }) {
                 )}
               </div>
             </dl>
+            <button
+              onClick={() => open(o.id)}
+              className={`${secondary} mt-3 w-full`}
+            >
+              View details & receipt
+            </button>
             <p className="mt-4 break-words text-xs text-slate-500">
               {o.status_source === "delivery_app" ? "Delivery app" : "Shopify"}
               {o.tracking_number ? ` · ${o.tracking_number}` : ""}
@@ -1415,7 +1318,13 @@ function OrderTable({ orders }: { orders: any[] }) {
             {orders.map((o) => (
               <tr key={o.id} className="border-b last:border-0">
                 <td className="p-4">
-                  <p className="font-semibold">{o.name}</p>
+                  <button
+                    onClick={() => open(o.id)}
+                    className="min-h-11 font-semibold text-emerald-800"
+                    aria-label={`View order ${o.name}`}
+                  >
+                    {o.name}
+                  </button>
                   <p className="mt-1 text-xs text-slate-500">
                     {new Date(o.created_at).toLocaleDateString()}
                   </p>

@@ -32,7 +32,7 @@ The new tables follow this repository's existing `create(checkfirst=True)`
 pattern. They are additive: `affiliate_sellers`, `affiliate_sessions`,
 `affiliate_orders`, `affiliate_product_costs`, `affiliate_payouts`,
 `affiliate_order_terms`, `affiliate_product_marks`, `affiliate_customers`, and
-`affiliate_customer_shopify_links`. Legacy product-cost records remain for audit;
+`affiliate_customer_shopify_links`, plus `affiliate_order_receipts`. Legacy product-cost records remain for audit;
 new orders use percentage pricing. Use the
 production database connection, not a local SQLite file, in deployed instances.
 
@@ -65,7 +65,7 @@ Currencies are tracked separately and never summed into one balance.
 
 The seller Marketplace hides store and vendor names. Cards show images, original
 recommended prices, discounted costs, color/size swatches and stock. Filters use
-available sizes and Men, Women, Kids, Girls, Unisex kids/adult, or Other. Categories
+available sizes and Men, Women, Kids, Boys, Girls, Unisex kids/adult, or Other. Categories
 come from Shopify product type and tags, with title fallback; unclassified items
 remain under Other. Sorting supports newest, quantity, and price in either
 direction. Different currencies are grouped for price sorting, without conversion.
@@ -74,8 +74,34 @@ and selectable swatches. Zero-stock variants are crossed out and blocked even
 when the store's Shopify policy permits overselling. Untracked stock is shown as
 available without inventing a quantity; submission always rechecks current stock.
 
+Catalog loading runs independently of sales and delivery tracking. Stores load in
+parallel, with the first 250 products returned before background pagination loads
+the remainder. Shared server snapshots refresh after two minutes and can be served
+for up to thirty minutes while refreshing. Every response applies current seller
+vendor permissions and pricing settings. Browsers also retain their seller's
+catalog for fifteen minutes in session storage while fetching an update; logout
+clears it. Shopify image URLs request smaller thumbnails. These caches are only
+for browsing: order submission reads current stock, prices and access again.
+
 Create order is available from Overview and Orders. The Orders header opens the
-seller's customer list and order history. Order entry saves a local customer by
+seller's customer list and order history. The editor begins with Add product,
+which opens a filtered Marketplace with marked products first. Selecting a product
+opens its variant details; Add to order returns to the editor. Additional products
+must belong to the same store, without exposing store names in the picker.
+Selected images, variants, quantities and sale prices appear above customer name,
+phone, city, address and note. Country is fixed to Morocco without a country-code
+control. City selection uses the delivery app's Active routing cities; submission
+checks the current city list before any customer or order write.
+
+The editor shows a customer receipt estimate with a Share receipt button. Saved
+orders open their details and receipt from history. New orders retain immutable
+receipt data, including product images, variant names and the entered customer
+details. Shared receipts contain customer sale prices and totals, excluding
+affiliate costs, delivery deductions and earnings. Sharing uses the phone's native
+share sheet, with clipboard or text download as fallbacks. Older orders derive
+their receipt from the saved Shopify snapshot.
+
+Order entry saves a local customer by
 seller and normalized phone number. Existing customers can be reused. Shopify
 customers carry `affiliate` and `affiliate_seller:<seller UUID>` tags, matching
 the seller tag on orders. Matching existing Shopify customers retain their names,
@@ -97,6 +123,15 @@ The delivery bridge provides a bounded, authenticated POST endpoint:
 plus numeric Shopify order ID, excludes return-only parcels and refuses ambiguous
 matches. It returns delivery state, original French status, tracking number,
 collected COD amount and source update time; it excludes customer details.
+
+Its authenticated GET `/api/integrations/affiliate-tracking/cities` returns only
+approved, active Moroccan cities with an active route through a connected partner
+or the delivery app's own drivers. Provider capability catalogs alone do not
+qualify. The dashboard's server calls this endpoint using its existing delivery
+connection; browsers receive city names and IDs without the integration key.
+City lists are cached for five minutes, with a forced refresh at submission.
+Deploy this endpoint before the new order editor. An unavailable connection or
+an empty active-routing list blocks submission with an actionable error.
 
 The dashboard refreshes every minute while visible. Shopify reads are batched by
 store, delivery reads by 100 orders, with a 30-second read cache. Admin manual
@@ -126,6 +161,12 @@ link the numeric Shopify order ID after checking matching seller and submission
 tags. If Shopify never created it, staff should investigate before accepting a
 new submission; there is no automatic retry of uncertain writes.
 
+An explicit Shopify validation or authorization rejection is recorded as
+`rejected` and returns its validation message. Repeating the same submission ID
+returns that rejection without another Shopify write. Correcting the form creates
+a new submission ID. HTML responses from a proxy are handled without exposing a
+JSON parsing error; the seller is directed to check orders before trying again.
+
 ## Validation
 
 Seller endpoints use their own verified bearer sessions through the application's
@@ -150,6 +191,12 @@ store/vendor/variant isolation, stock, pricing, original costs, duplicate
 submission, reconciliation, refunds, returns, currencies and payout transitions.
 It also checks collection discounts, immutable delivery deductions, marks,
 customer isolation/reuse, customer tagging and failed pricing/customer reads.
+Additional checks cover cached catalog authorization, progressive pagination,
+active routing cities, immutable seller-owned receipts and explicit Shopify
+rejections. Mobile browser QA covers the complete multiple-product order flow,
+draft and saved receipt sharing, nested popup focus and Escape behavior, HTML
+error responses, image bounds and horizontal overflow at 320–430px, plus tablet
+and desktop layouts.
 Delivery tests live in `delvery-app-v3/backend/tests/test_affiliate_tracking.py`.
 The browser QA uses an isolated synthetic database, not production stores.
 
