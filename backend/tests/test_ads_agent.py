@@ -264,3 +264,31 @@ def test_invalid_secret_resource_never_falls_back_to_environment_key(monkeypatch
     with pytest.raises(RuntimeError, match="Invalid"):
         config.get_client()
     config.get_client.cache_clear()
+
+
+def test_customer_profiler_json_instruction_is_in_request_input(monkeypatch):
+    from app import campaign_analyzer
+    sdk = Mock()
+    profile = {"buyer_persona": "A hypothesis based on product data"}
+    sdk.responses.create.return_value = SimpleNamespace(status="completed", output_text=json.dumps(profile))
+    monkeypatch.setattr(campaign_analyzer, "get_client", lambda: sdk)
+    monkeypatch.setattr(campaign_analyzer, "build_report", lambda **kwargs: kwargs)
+    result = campaign_analyzer.analyze_campaign(campaign_metrics={}, ad_creatives=[], product_info={"title": "Children shoes"}, settings=config.AnalyzerSettings())
+    request = sdk.responses.create.call_args.kwargs
+    assert request["text"]["format"]["type"] == "json_object"
+    assert "json" in request["input"].lower()
+    assert "Children shoes" in request["input"]
+    assert request["store"] is False
+    assert result["customer_profile"] == profile
+
+
+def test_customer_profiler_incomplete_response_does_not_request_report(monkeypatch):
+    from app import campaign_analyzer
+    sdk = Mock()
+    sdk.responses.create.return_value = SimpleNamespace(status="incomplete", output_text='{"unfinished":')
+    monkeypatch.setattr(campaign_analyzer, "get_client", lambda: sdk)
+    build = Mock()
+    monkeypatch.setattr(campaign_analyzer, "build_report", build)
+    with pytest.raises(RuntimeError, match="Customer profiler did not complete"):
+        campaign_analyzer.analyze_campaign(campaign_metrics={}, ad_creatives=[], product_info={}, settings=config.AnalyzerSettings())
+    build.assert_not_called()

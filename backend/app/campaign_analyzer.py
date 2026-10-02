@@ -129,7 +129,7 @@ def analyze_campaign(
         profiler_options = {"reasoning": {"effort": settings.reasoning_effort}} if use_model.startswith(("gpt-5", "gpt-6", "o3", "o4")) else {}
         response = get_client().responses.create(
             model=use_model, instructions=CUSTOMER_PROFILER_PROMPT + "\nSeparate evidence from demographic hypotheses. Do not invent buyer facts.",
-            input=product_context, text={"format": {"type": "json_object"}},
+            input="Return the customer profile as a JSON object.\n\n" + product_context, text={"format": {"type": "json_object"}},
             max_output_tokens=settings.max_output_tokens, store=False, **profiler_options,
         )
         if response.status != "completed" or not response.output_text:
