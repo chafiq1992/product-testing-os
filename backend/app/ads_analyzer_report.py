@@ -2,7 +2,29 @@
 import json
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
+from openai import APITimeoutError, APIConnectionError, AuthenticationError, BadRequestError, RateLimitError
 from app.ads_analyzer_settings import AnalyzerSettings, get_client
+
+
+class AnalyzerResponseError(RuntimeError):
+    """Safe application-defined output failure suitable for the report UI."""
+
+
+def analysis_failure_message(error: Exception) -> str:
+    suffix = " No new report was saved."
+    if isinstance(error, AnalyzerResponseError):
+        return str(error) + suffix
+    if isinstance(error, APITimeoutError):
+        return "OpenAI took too long to finish the analysis. Retry, or choose a lower reasoning depth in AI agent settings." + suffix
+    if isinstance(error, AuthenticationError):
+        return "OpenAI rejected the server credential. Refresh the Google Secret Manager key on the server." + suffix
+    if isinstance(error, RateLimitError):
+        return "OpenAI limited this analysis request. Check the project quota and retry later." + suffix
+    if isinstance(error, APIConnectionError):
+        return "The server lost its connection to OpenAI. Retry the analysis." + suffix
+    if isinstance(error, BadRequestError):
+        return "OpenAI rejected the analysis request (400). Check that the selected model supports these analysis settings." + suffix
+    return "Analysis failed. Check Meta, OpenAI and agent settings, then retry." + suffix
 
 
 class Contract(BaseModel):
@@ -139,9 +161,15 @@ def structured_response(contract, *, instructions: str, content: list, model: st
                   max_output_tokens=settings.max_output_tokens, store=False)
     if model.startswith(("gpt-5", "gpt-6", "o3", "o4")):
         kwargs["reasoning"] = {"effort": settings.reasoning_effort}
-    response = get_client().responses.create(**kwargs)
+    # Stream the long report so the HTTP response starts before reasoning ends.
+    # Avoid replaying expensive inference automatically after a timeout.
+    with get_client().with_options(timeout=600, max_retries=0).responses.stream(**kwargs) as stream:
+        try:
+            response = stream.get_final_response()
+        except RuntimeError as error:
+            raise AnalyzerResponseError("Analyzer did not finish its streamed response. Increase the output token limit or retry.") from error
     if response.status != "completed" or not response.output_text:
-        raise RuntimeError("Analyzer did not finish. Increase the output token limit or retry; no partial report was saved.")
+        raise AnalyzerResponseError("Analyzer did not finish. Increase the output token limit or retry; no partial report was saved.")
     return contract.model_validate_json(response.output_text).model_dump()
 
 
@@ -159,7 +187,7 @@ def build_report(*, settings: AnalyzerSettings, campaign_metrics: dict, ad_creat
     stages = [s["stage"] for s in report["funnel_stages"]]
     expected = ["delivery", "hook", "creative", "ad_cta", "landing_page", "offer", "checkout", "fulfillment", "tracking"]
     if stages != expected:
-        raise RuntimeError("Analyzer returned an incomplete funnel. Retry the analysis.")
+        raise AnalyzerResponseError("Analyzer returned an incomplete funnel. Retry the analysis.")
     captured = {e["id"] for e in visual_evidence if e.get("status") == "captured"}
     report["visual_findings"] = [f for f in report["visual_findings"] if f["evidence_id"] in captured]
     # Deterministic safeguards independent of model compliance.

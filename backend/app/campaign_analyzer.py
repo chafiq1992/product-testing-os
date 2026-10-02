@@ -10,7 +10,7 @@ import os
 from tenacity import retry, stop_after_attempt, wait_exponential
 from app.integrations.openai_client import client, DEFAULT_LLM_MODEL
 from app.ads_analyzer_settings import AnalyzerSettings, get_client
-from app.ads_analyzer_report import build_report
+from app.ads_analyzer_report import build_report, AnalyzerResponseError
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def analyze_campaign(
             max_output_tokens=settings.max_output_tokens, store=False, **profiler_options,
         )
         if response.status != "completed" or not response.output_text:
-            raise RuntimeError("Customer profiler did not complete; retry or disable profiling")
+            raise AnalyzerResponseError("Customer profiler did not complete; retry or disable profiling")
         customer_profile = json.loads(response.output_text)
         if not customer_profile:
             customer_profile = {"error": "Could not generate customer profile"}

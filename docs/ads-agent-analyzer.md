@@ -64,6 +64,13 @@ The previous period has equal length and does not overlap. Groups with different
 currencies are rejected. Product-level Shopify orders remain separate from
 Meta-attributed purchases. Client-supplied dashboard metrics are not authoritative.
 
+Long report/reviewer calls use the SDK response stream with a 600-second read
+budget and no automatic inference replay after a timeout. Only a completed,
+validated report is persisted; partial or interrupted streams remain failures.
+High reasoning and the configured output-token limit are preserved. Timeout
+errors now identify OpenAI and suggest retrying or changing reasoning depth.
+See [OpenAI streaming responses](https://developers.openai.com/api/docs/guides/streaming-responses).
+
 The Responses API returns a validated structured report covering delivery,
 hook, creative, ad CTA, landing page, offer, checkout, fulfillment and tracking.
 The report separates observations from hypotheses and proposes controlled tests.

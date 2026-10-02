@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -133,31 +134,35 @@ def base_report():
 
 def test_selected_model_schema_images_and_sample_safeguards(monkeypatch):
     sdk = Mock()
-    sdk.responses.create.return_value = SimpleNamespace(status="completed", output_text=json.dumps(base_report()))
+    sdk.with_options.return_value = sdk
+    sdk.responses.stream.return_value = nullcontext(SimpleNamespace(get_final_response=lambda: SimpleNamespace(status="completed", output_text=json.dumps(base_report()))))
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
-    settings = config.AnalyzerSettings(model="gpt-6-astra", target_cpa=20.0)
+    settings = config.AnalyzerSettings(model="gpt-6-astra", reasoning_effort="high", target_cpa=20.0)
     result = reports.build_report(settings=settings, campaign_metrics={"spend": 100, "purchases": 2, "currency": "USD"}, ad_creatives=[], product_info={}, customer_profile={}, clarity_insights={}, previous_analysis_context=None, visual_evidence=[], image_data_urls=[])
     assert result["overall_verdict"] == "hold" and result["product_signal"] == "inconclusive"
     assert result["confidence_level"] == "low" and not result["visual_findings"]
-    call = sdk.responses.create.call_args.kwargs
-    assert call["model"] == "gpt-6-astra" and call["reasoning"] == {"effort": "medium"}
+    call = sdk.responses.stream.call_args.kwargs
+    assert call["model"] == "gpt-6-astra" and call["reasoning"] == {"effort": "high"}
     assert call["store"] is False and call["text"]["format"]["strict"] is True
     assert call["max_output_tokens"] == 8000
+    sdk.with_options.assert_called_once_with(timeout=600, max_retries=0)
 
 
 def test_independent_reviewer_blocks_unsupported_winner(monkeypatch):
     sdk = Mock()
-    sdk.responses.create.side_effect = [SimpleNamespace(status="completed", output_text=json.dumps(base_report())), SimpleNamespace(status="completed", output_text=json.dumps({"decision_supported": False, "summary": "Attribution is missing", "concerns": ["No confirmed margin"]}))]
+    sdk.with_options.return_value = sdk
+    sdk.responses.stream.side_effect = [nullcontext(SimpleNamespace(get_final_response=lambda value=value: SimpleNamespace(status="completed", output_text=json.dumps(value)))) for value in (base_report(), {"decision_supported": False, "summary": "Attribution is missing", "concerns": ["No confirmed margin"]})]
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
     result = reports.build_report(settings=config.AnalyzerSettings(reviewer_enabled=True, reviewer_model="gpt-6-astra", target_cpa=20.0), campaign_metrics={"spend": 100, "purchases": 20, "currency": "USD"}, ad_creatives=[], product_info={}, customer_profile={}, clarity_insights={}, previous_analysis_context=None, visual_evidence=[], image_data_urls=[])
-    assert sdk.responses.create.call_args.kwargs["model"] == "gpt-6-astra"
+    assert sdk.responses.stream.call_args.kwargs["model"] == "gpt-6-astra"
     assert result["overall_verdict"] == "hold" and result["product_signal"] == "inconclusive"
     assert result["review"]["decision_supported"] is False
 
 
 def test_incomplete_response_never_becomes_a_saved_report(monkeypatch):
     sdk = Mock()
-    sdk.responses.create.return_value = SimpleNamespace(status="incomplete", output_text='{}')
+    sdk.with_options.return_value = sdk
+    sdk.responses.stream.return_value = nullcontext(SimpleNamespace(get_final_response=lambda: SimpleNamespace(status="incomplete", output_text='{}')))
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
     with pytest.raises(RuntimeError, match="did not finish"):
         reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings())
@@ -292,3 +297,33 @@ def test_customer_profiler_incomplete_response_does_not_request_report(monkeypat
     with pytest.raises(RuntimeError, match="Customer profiler did not complete"):
         campaign_analyzer.analyze_campaign(campaign_metrics={}, ad_creatives=[], product_info={}, settings=config.AnalyzerSettings())
     build.assert_not_called()
+
+
+def test_analysis_timeout_is_actionable_and_does_not_expose_provider_secrets():
+    import httpx
+    from openai import APITimeoutError, BadRequestError
+    timeout = APITimeoutError(request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+    message = reports.analysis_failure_message(timeout)
+    assert "took too long" in message and "reasoning depth" in message
+    assert "No new report was saved" in message
+    rejected = BadRequestError("Private sk-secret-value", response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com/v1/responses")), body={})
+    assert "sk-secret-value" not in reports.analysis_failure_message(rejected)
+    assert "400" in reports.analysis_failure_message(rejected)
+
+
+def test_stream_without_completed_event_closes_and_never_returns_partial_report(monkeypatch):
+    from contextlib import contextmanager
+    sdk = Mock()
+    sdk.with_options.return_value = sdk
+    closed = []
+    @contextmanager
+    def interrupted(**kwargs):
+        try:
+            yield SimpleNamespace(get_final_response=Mock(side_effect=RuntimeError("Didn't receive a response.completed event")))
+        finally:
+            closed.append(True)
+    sdk.responses.stream.side_effect = interrupted
+    monkeypatch.setattr(reports, "get_client", lambda: sdk)
+    with pytest.raises(reports.AnalyzerResponseError, match="did not finish"):
+        reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings())
+    assert closed == [True]

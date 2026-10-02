@@ -57,6 +57,7 @@ from app.campaign_analyzer import analyze_campaign as run_campaign_analysis, gen
 from app.ads_analyzer_settings import AnalyzerSettings, get_settings as get_ads_analyzer_settings, save_settings as save_ads_analyzer_settings, model_catalog as ads_analyzer_models
 from app.ads_analyzer_data import analysis_range, preceding_range, fetch_window as fetch_analysis_window
 from app.ads_analyzer_evidence import capture_landing_page
+from app.ads_analyzer_report import analysis_failure_message
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
@@ -2841,7 +2842,7 @@ def _run_analysis_job_impl(job_id: str, req_data: dict):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        _save_analysis_job(job_id, {"status": "error", "store": req_data.get("store"), "error": "Analysis failed. Check Meta, OpenAI and agent settings, then retry. No new report was saved."})
+        _save_analysis_job(job_id, {"status": "error", "store": req_data.get("store"), "error": analysis_failure_message(e)})
 
 
 @app.post("/api/campaign/analyze")
