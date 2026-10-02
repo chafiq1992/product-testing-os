@@ -297,7 +297,7 @@ export default function AffiliatePage() {
         customer_phone: saved.customer_phone,
         address: saved.address,
         city: saved.city,
-        country: saved.country,
+        country: "MA",
         note: "",
       });
     }
