@@ -1,6 +1,10 @@
 "use client";
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import {
+  AffiliateLanguageSwitch,
+  useAffiliateLocale,
+} from "@/lib/affiliate-locale";
 import { X } from "lucide-react";
 let modalCount = 0;
 let originalOverflow = "";
@@ -14,6 +18,7 @@ export default function AffiliateModal({
   close: () => void;
   children: React.ReactNode;
 }) {
+  const { language, dir, t } = useAffiliateLocale();
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(close);
   closeRef.current = close;
@@ -57,7 +62,7 @@ export default function AffiliateModal({
   }, []);
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] overflow-y-auto overflow-x-hidden bg-slate-900/40 sm:p-6"
+      className="fixed inset-0 z-[60] flex items-center justify-center overflow-hidden bg-slate-900/40 p-3 backdrop-blur-[2px] sm:p-6"
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -66,14 +71,19 @@ export default function AffiliateModal({
         ref={ref}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
-        className="mx-auto min-h-full w-full min-w-0 max-w-3xl bg-white pb-[calc(1rem+env(safe-area-inset-bottom))] text-slate-900 sm:min-h-0 sm:rounded-2xl"
+        aria-label={t(title)}
+        dir={dir}
+        lang={language}
+        className="mx-auto max-h-[calc(100dvh-7rem)] w-full min-w-0 max-w-3xl overflow-y-auto overscroll-contain rounded-2xl bg-white pb-[calc(1rem+env(safe-area-inset-bottom))] text-slate-900 shadow-2xl"
         style={{ colorScheme: "light" }}
       >
         <header className="sticky top-0 z-10 flex min-w-0 items-center justify-between gap-2 border-b bg-white px-4 py-2 sm:rounded-t-2xl">
-          <h2 className="min-w-0 break-words font-bold">{title}</h2>
+          <h2 className="min-w-0 break-words font-bold">{t(title)}</h2>
+          <div className="ms-auto">
+            <AffiliateLanguageSwitch />
+          </div>
           <button
-            aria-label={`Close ${title.toLowerCase()}`}
+            aria-label={`${t("Close")} ${t(title)}`}
             onClick={close}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg hover:bg-slate-50"
           >

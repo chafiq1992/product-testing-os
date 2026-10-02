@@ -1,7 +1,11 @@
 "use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import {
+  AffiliateLocaleProvider,
+  AffiliateLanguageSwitch,
+  useAffiliateLocale,
+} from "@/lib/affiliate-locale";
 import AffiliateMarketplace from "@/components/AffiliateMarketplace";
 import AffiliateModal from "@/components/AffiliateModal";
 import AffiliateOrderEditor from "@/components/AffiliateOrderEditor";
@@ -32,7 +36,6 @@ import {
   AffiliateCustomer,
   RoutingCity,
 } from "@/lib/affiliates";
-
 type Tab = "overview" | "products" | "orders" | "payouts";
 const tabs = [
   { id: "overview", label: "Overview", icon: BarChart3 },
@@ -41,8 +44,15 @@ const tabs = [
   { id: "payouts", label: "Payouts", icon: Wallet },
 ] as const;
 const empty = { orders: [], payouts: [], analytics: {}, warnings: [] } as any;
-
 export default function AffiliatePage() {
+  return (
+    <AffiliateLocaleProvider>
+      <AffiliateWorkspace />
+    </AffiliateLocaleProvider>
+  );
+}
+function AffiliateWorkspace() {
+  const { t, language, dir } = useAffiliateLocale();
   const [seller, setSeller] = useState<any>(null);
   const [ready, setReady] = useState(false);
   const [apply, setApply] = useState(false);
@@ -68,6 +78,7 @@ export default function AffiliatePage() {
   const [choosingProducts, setChoosingProducts] = useState(false);
   const [editingOrder, setEditingOrder] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState("");
+  const [createdOrder, setCreatedOrder] = useState("");
   const [cities, setCities] = useState<RoutingCity[]>([]);
   const [citiesError, setCitiesError] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -100,7 +111,6 @@ export default function AffiliatePage() {
     reserved: 0,
     paid: 0,
   };
-
   const loadProducts = useCallback(async (force = false) => {
     if (
       productsRunning.current ||
@@ -160,7 +170,6 @@ export default function AffiliatePage() {
       productsRunning.current = false;
     }
   }, []);
-
   const loadCities = useCallback(async () => {
     setCitiesError("");
     try {
@@ -174,7 +183,6 @@ export default function AffiliatePage() {
       setCitiesError(err.message);
     }
   }, []);
-
   const refresh = useCallback(
     async (withProducts = false) => {
       // Catalog requests have their own lifecycle; slow order tracking must not
@@ -207,7 +215,6 @@ export default function AffiliatePage() {
     },
     [loadProducts],
   );
-
   useEffect(() => {
     if (!localStorage.getItem("ptos_affiliate_token")) {
       setReady(true);
@@ -261,7 +268,6 @@ export default function AffiliatePage() {
   useEffect(() => {
     requestId.current = crypto.randomUUID();
   }, [submissionKey]);
-
   async function markProduct(product: AffiliateProduct) {
     try {
       const result = await affiliateApi(
@@ -305,7 +311,6 @@ export default function AffiliatePage() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [tab]);
-
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -335,7 +340,6 @@ export default function AffiliatePage() {
       setBusy(false);
     }
   }
-
   async function logout() {
     try {
       await affiliateApi("/logout", {});
@@ -345,6 +349,7 @@ export default function AffiliatePage() {
     productsUpdatedAt.current = 0;
     setEditingOrder(false);
     setSelectedOrder("");
+    setCreatedOrder("");
     setCities([]);
     localStorage.removeItem("ptos_affiliate_token");
     setSeller(null);
@@ -369,7 +374,6 @@ export default function AffiliatePage() {
     setError("");
     setNotice("");
   }
-
   function addLine(
     product: AffiliateProduct,
     variantId: string,
@@ -421,7 +425,6 @@ export default function AffiliatePage() {
     setTab("orders");
     window.scrollTo({ top: 0, behavior: "instant" });
   }
-
   async function submitOrder(event: React.FormEvent) {
     event.preventDefault();
     if (!cart.length) return;
@@ -429,7 +432,7 @@ export default function AffiliatePage() {
     setError("");
     setNotice("");
     try {
-      await affiliateApi("/orders", {
+      const created = await affiliateApi("/orders", {
         ...customer,
         customer_id: customerId || undefined,
         store: cart[0].product.store,
@@ -441,6 +444,7 @@ export default function AffiliatePage() {
           sale_price: line.sale_price,
         })),
       });
+      setCreatedOrder(created.id);
       setCart([]);
       setEditingOrder(false);
       setCustomerId("");
@@ -463,7 +467,6 @@ export default function AffiliatePage() {
       setBusy(false);
     }
   }
-
   async function requestPayout(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -480,7 +483,6 @@ export default function AffiliatePage() {
       setBusy(false);
     }
   }
-
   const alerts = (
     <>
       {error && (
@@ -488,7 +490,7 @@ export default function AffiliatePage() {
           role="alert"
           className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
         >
-          {error}
+          {t(String(error))}
         </div>
       )}
       {notice && (
@@ -497,49 +499,59 @@ export default function AffiliatePage() {
           className="mb-5 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"
         >
           <CheckCircle2 size={18} />
-          {notice}
+          {t(String(notice))}
         </div>
       )}
     </>
   );
   if (!ready)
     return (
-      <main className="grid min-h-screen place-items-center bg-slate-50">
+      <main
+        dir={dir}
+        lang={language}
+        className="grid min-h-screen place-items-center bg-slate-50"
+      >
         <Loader2 className="animate-spin text-emerald-700" />
       </main>
     );
   if (!seller)
     return (
-      <main className="min-h-screen bg-slate-50 p-4 text-slate-900 sm:p-6">
+      <main
+        dir={dir}
+        lang={language}
+        className="min-h-screen bg-slate-50 p-4 text-slate-900 sm:p-6"
+      >
         <div className="mx-auto max-w-5xl">
           <header className="mb-6 flex flex-wrap items-center justify-between gap-3 md:mb-12">
             <Link
               href="/"
               className="flex min-h-11 items-center gap-2 font-bold"
             >
-              <Store className="text-emerald-700" /> Seller hub
+              <Store className="text-emerald-700" />
+              {t(" Seller hub")}
             </Link>
             <Link
               href="/wholesale"
               className="flex min-h-11 items-center text-sm text-slate-500"
             >
-              Wholesale dashboard
+              {t("Wholesale dashboard")}
             </Link>
+            <AffiliateLanguageSwitch />
           </header>
           <div className="grid gap-10 md:grid-cols-2">
             <section className="order-2 md:order-1 md:pt-8">
               <p className="text-xs font-bold uppercase tracking-[.2em] text-emerald-700">
-                Your next business starts here
+                {t("Your next business starts here")}
               </p>
               <h1 className="mt-4 text-3xl font-bold leading-tight sm:text-4xl">
-                Find a product.
+                {t("Find a product.")}
                 <br />
-                Make your first sale.
+                {t("Make your first sale.")}
               </h1>
               <p className="mt-5 max-w-md text-slate-600">
-                Discover products in the Marketplace. Set your selling price,
-                submit customer orders, and follow your earnings from delivery
-                to payout.
+                {t(
+                  "Discover products in the Marketplace. Set your selling price, submit customer orders, and follow your earnings from delivery to payout.",
+                )}
               </p>
               <div className="mt-8 space-y-4 text-sm text-slate-600">
                 {[
@@ -549,7 +561,7 @@ export default function AffiliatePage() {
                 ].map((text) => (
                   <p key={text} className="flex gap-3">
                     <CheckCircle2 className="text-emerald-700" size={19} />
-                    {text}
+                    {t(String(text))}
                   </p>
                 ))}
               </div>
@@ -559,12 +571,14 @@ export default function AffiliatePage() {
               className="order-1 rounded-3xl border bg-white p-5 shadow-sm sm:p-7 md:order-2"
             >
               <h2 className="text-xl font-bold">
-                {apply ? "Apply to become a seller" : "Welcome back"}
+                {apply ? t("Apply to become a seller") : t("Welcome back")}
               </h2>
               <p className="mb-6 mt-2 text-sm text-slate-500">
                 {apply
-                  ? "Access is granted after an administrator reviews your application."
-                  : "Sign in to your seller workspace."}
+                  ? t(
+                      "Access is granted after an administrator reviews your application.",
+                    )
+                  : t("Sign in to your seller workspace.")}
               </p>
               {alerts}
               {(apply
@@ -575,7 +589,7 @@ export default function AffiliatePage() {
                   key={key}
                   className="mb-4 block text-sm font-medium capitalize"
                 >
-                  {key}
+                  {t(String(key))}
                   <input
                     required
                     type={
@@ -605,10 +619,10 @@ export default function AffiliatePage() {
               ))}
               <button disabled={busy} className={`${button} mt-2 w-full`}>
                 {busy
-                  ? "Please wait…"
+                  ? t("Please wait…")
                   : apply
-                    ? "Submit application"
-                    : "Sign in"}
+                    ? t("Submit application")
+                    : t("Sign in")}
               </button>
               <button
                 type="button"
@@ -619,8 +633,8 @@ export default function AffiliatePage() {
                 className="mt-5 min-h-11 w-full text-sm font-semibold text-emerald-700"
               >
                 {apply
-                  ? "Already registered? Sign in"
-                  : "New here? Apply to sell"}
+                  ? t("Already registered? Sign in")
+                  : t("New here? Apply to sell")}
               </button>
             </form>
           </div>
@@ -629,17 +643,26 @@ export default function AffiliatePage() {
     );
   if (seller.status !== "approved")
     return (
-      <main className="grid min-h-screen place-items-center bg-slate-50 p-6">
+      <main
+        dir={dir}
+        lang={language}
+        className="grid min-h-screen place-items-center bg-slate-50 p-6 text-slate-900"
+      >
         <section className="max-w-lg rounded-3xl border bg-white p-8 text-center">
+          <div className="mb-4 flex justify-center">
+            <AffiliateLanguageSwitch />
+          </div>
           <Store className="mx-auto mb-5 text-emerald-700" size={36} />
           <h1 className="text-2xl font-bold">
             {seller.status === "pending"
-              ? "Your application is under review"
-              : `Account ${seller.status}`}
+              ? t("Your application is under review")
+              : t(`Account ${t(seller.status)}`)}
           </h1>
           <p className="my-4 text-sm text-slate-600">
-            {seller.name}, an administrator must approve your account and vendor
-            access before you can browse products or submit orders.
+            {seller.name}
+            {t(
+              ", an administrator must approve your account and vendor access before you can browse products or submit orders.",
+            )}
           </p>
           {alerts}
           <div className="flex flex-wrap justify-center gap-3">
@@ -648,16 +671,15 @@ export default function AffiliatePage() {
               onClick={() => refresh(true)}
               className={button}
             >
-              Check status
+              {t("Check status")}
             </button>
             <button onClick={logout} className={secondary}>
-              Sign out
+              {t("Sign out")}
             </button>
           </div>
         </section>
       </main>
     );
-
   const currencies = Array.from(
     new Set([
       "MAD",
@@ -695,8 +717,12 @@ export default function AffiliatePage() {
   });
   const maxProfit = Math.max(1, ...trend.map((day) => day.total));
   return (
-    <main className="min-h-screen min-w-0 max-w-full overflow-x-clip bg-slate-50 text-slate-900">
-      <aside className="hidden bg-slate-950 text-white lg:fixed lg:inset-y-0 lg:left-0 lg:block lg:w-64">
+    <main
+      dir={dir}
+      lang={language}
+      className="min-h-screen min-w-0 max-w-full overflow-x-clip bg-slate-50 text-slate-900"
+    >
+      <aside className="hidden bg-slate-950 text-white lg:fixed lg:inset-y-0 lg:start-0 lg:block lg:w-64">
         <Link
           href="/affiliates"
           className="flex items-center gap-3 px-6 py-7 text-lg font-bold"
@@ -704,11 +730,11 @@ export default function AffiliatePage() {
           <span className="rounded-xl bg-emerald-600 p-2">
             <Store size={22} />
           </span>{" "}
-          Seller hub
+          {t("Seller hub")}
         </Link>
         <div className="px-4 pb-4">
           <p className="mb-5 hidden px-3 text-xs text-slate-400 lg:block">
-            YOUR WORKSPACE
+            {t("YOUR WORKSPACE")}
           </p>
           <nav className="flex gap-2 overflow-auto lg:block lg:space-y-2">
             {tabs.map(({ id, label, icon: Icon }) => (
@@ -722,9 +748,9 @@ export default function AffiliatePage() {
                 className={`flex shrink-0 items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium lg:w-full ${tab === id ? "bg-emerald-600 text-white" : "text-slate-400 hover:bg-slate-900 hover:text-white"}`}
               >
                 <Icon size={19} />
-                {label}
+                {t(String(label))}
                 {id === "orders" && cart.length > 0 && (
-                  <span className="ml-auto rounded bg-white/20 px-1.5">
+                  <span className="ms-auto rounded bg-white/20 px-1.5">
                     {cart.length}
                   </span>
                 )}
@@ -734,58 +760,55 @@ export default function AffiliatePage() {
         </div>
         <div className="hidden lg:absolute lg:bottom-0 lg:block lg:w-full lg:border-t lg:border-slate-800 lg:p-6">
           <p className="font-semibold">{seller.name}</p>
-          <p className="mt-1 text-xs text-slate-400">Approved seller</p>
+          <p className="mt-1 text-xs text-slate-400">{t("Approved seller")}</p>
           <button
             onClick={logout}
             className="mt-4 flex items-center gap-2 text-sm text-slate-400"
           >
-            <LogOut size={16} /> Sign out
+            <LogOut size={16} />
+            {t(" Sign out")}
           </button>
         </div>
       </aside>
-      <div className="lg:ml-64">
-        <header className="flex flex-wrap items-center justify-between gap-3 border-b bg-white px-4 py-4 sm:px-6 md:px-10">
-          <div className="min-w-0">
-            <p className="text-xs text-slate-500">
-              Seller workspace / {tabs.find((t) => t.id === tab)?.label}
-            </p>
-            <h1 className="mt-1 break-words text-xl font-bold sm:text-2xl">
-              {tab === "overview"
-                ? `Welcome, ${seller.name.split(" ")[0]}`
-                : tabs.find((t) => t.id === tab)?.label}
+      <div className="lg:ms-64">
+        <header className="border-b bg-white px-4 py-3 sm:px-6 md:px-10">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <h1 className="min-w-0 truncate text-base font-bold sm:text-xl">
+              {t(`Welcome, ${seller.name.split(" ")[0]}`)}
             </h1>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                disabled={loading}
+                aria-label={t("Refresh")}
+                title={t("Refresh")}
+                onClick={() => {
+                  setError("");
+                  void refresh(
+                    tab === "products" || choosingProducts || cart.length > 0,
+                  );
+                }}
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-50"
+              >
+                <RefreshCw
+                  size={18}
+                  className={loading ? "animate-spin" : ""}
+                />
+              </button>
+              <button
+                onClick={logout}
+                aria-label={t("Sign out")}
+                title={t("Sign out")}
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-50"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
           </div>
-          <div className="flex max-w-full gap-2">
-            <select
-              aria-label="Analytics currency"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-              className="min-h-11 min-w-0 rounded-xl border px-3 text-base md:text-sm"
-            >
-              {currencies.map((c) => (
-                <option key={c}>{c}</option>
-              ))}
-            </select>
-            <button
-              disabled={loading}
-              onClick={() => {
-                setError("");
-                void refresh(
-                  tab === "products" || choosingProducts || cart.length > 0,
-                );
-              }}
-              className={secondary}
-            >
-              <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
-              Refresh
-            </button>
-            <button
-              onClick={logout}
-              className="rounded-xl border p-3 lg:hidden"
-              aria-label="Sign out"
-            >
-              <LogOut size={16} />
-            </button>
+          <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+            <p className="min-w-0 truncate text-xs text-slate-500">
+              {t(tabs.find((item) => item.id === tab)?.label || "Overview")}
+            </p>
+            <AffiliateLanguageSwitch />
           </div>
         </header>
         <div className="mx-auto max-w-7xl px-4 pt-5 pb-[calc(6rem+env(safe-area-inset-bottom))] sm:px-6 lg:pb-10 md:px-10 md:pt-10">
@@ -795,22 +818,38 @@ export default function AffiliatePage() {
               key={warning}
               className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800"
             >
-              {warning}
+              {t(String(warning))}
             </p>
           ))}
+          {currencies.length > 1 && !editingOrder && (
+            <label className="mb-4 flex items-center gap-2 text-sm">
+              {t("Analytics currency")}
+              <select
+                aria-label={t("Analytics currency")}
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="min-h-11 rounded-xl border bg-white px-3"
+              >
+                {currencies.map((c) => (
+                  <option key={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+          )}
           {tab === "overview" && (
             <>
               <section className="mb-6 flex flex-wrap items-center justify-between gap-5 rounded-3xl bg-emerald-900 p-5 text-white sm:p-7">
                 <div>
                   <p className="text-xs uppercase tracking-[.15em] text-emerald-200">
-                    Make your next sale
+                    {t("Make your next sale")}
                   </p>
                   <h2 className="mt-2 text-xl font-semibold">
-                    Your products. Your price. Your progress.
+                    {t("Your products. Your price. Your progress.")}
                   </h2>
                   <p className="mt-2 text-sm text-emerald-100">
-                    Explore the Marketplace and turn a customer conversation
-                    into an order.
+                    {t(
+                      "Explore the Marketplace and turn a customer conversation into an order.",
+                    )}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -819,13 +858,14 @@ export default function AffiliatePage() {
                     className="flex min-h-11 items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white"
                   >
                     <Plus size={18} />
-                    Create order
+                    {t("Create order")}
                   </button>
                   <button
                     onClick={() => setTab("products")}
                     className="flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-emerald-900"
                   >
-                    Explore Marketplace <ArrowUpRight size={18} />
+                    {t("Explore Marketplace ")}
+                    <ArrowUpRight size={18} />
                   </button>
                 </div>
               </section>
@@ -833,48 +873,54 @@ export default function AffiliatePage() {
                 {[
                   {
                     label: "Settled sales",
-                    value: money(status.sales, currency),
+                    value: money(status.sales, currency, language),
                     note: `${status.delivered} delivered orders`,
                   },
                   {
                     label: "Earned profit",
-                    value: money(status.profit, currency),
+                    value: money(status.profit, currency, language),
                     note: "After product cost and delivery; before marketing expenses",
                   },
                   {
                     label: "Available for payout",
-                    value: money(status.available, currency),
-                    note: `${money(status.reserved, currency)} reserved`,
+                    value: money(status.available, currency, language),
+                    note: `${money(status.reserved, currency, language)} reserved`,
                   },
                   {
                     label: "Total orders",
                     value: status.orders,
-                    note: `${money(status.pending_profit, currency)} expected profit`,
+                    note: `${money(status.pending_profit, currency, language)} expected profit`,
                   },
                 ].map((card) => (
                   <section
                     key={card.label}
                     className="min-w-0 rounded-2xl border bg-white p-4 sm:p-5"
                   >
-                    <p className="text-sm text-slate-500">{card.label}</p>
+                    <p className="text-sm text-slate-500">{t(card.label)}</p>
                     <p className="mt-3 break-words text-lg font-bold sm:text-2xl">
                       {card.value}
                     </p>
-                    <p className="mt-2 text-xs text-slate-500">{card.note}</p>
+                    <p className="mt-2 text-xs text-slate-500">
+                      {t(card.note)}
+                    </p>
                   </section>
                 ))}
               </div>
               <div className="mt-6 grid gap-6 xl:grid-cols-3">
                 <section className="rounded-2xl border bg-white p-6 xl:col-span-2">
-                  <h2 className="font-bold">Profit by order date</h2>
+                  <h2 className="font-bold">{t("Profit by order date")}</h2>
                   <p className="mt-1 text-xs text-slate-500">
-                    Delivered and collected orders placed in the last 14 days ·{" "}
+                    {t(
+                      "Delivered and collected orders placed in the last 14 days \u00B7",
+                    )}{" "}
                     {currency}
                   </p>
                   <div
                     className="mt-6 flex h-44 items-end gap-1 sm:gap-2"
                     role="img"
-                    aria-label={`Last 14 days earned profit: ${trend.map((day) => `${day.date}: ${money(day.total, currency)}`).join(", ")}`}
+                    aria-label={t(
+                      `Last 14 days earned profit: ${trend.map((day) => `${day.date}: ${money(day.total, currency)}`).join(", ")}`,
+                    )}
                   >
                     {trend.map((day) => (
                       <div
@@ -897,7 +943,7 @@ export default function AffiliatePage() {
                   </div>
                 </section>
                 <section className="rounded-2xl border bg-white p-6">
-                  <h2 className="font-bold">Order progress</h2>
+                  <h2 className="font-bold">{t("Order progress")}</h2>
                   <div className="mt-5 space-y-4">
                     {[
                       "pending",
@@ -911,7 +957,7 @@ export default function AffiliatePage() {
                     ].map((s) => (
                       <div key={s} className="flex justify-between text-sm">
                         <span className="capitalize text-slate-500">
-                          {s.replaceAll("_", " ")}
+                          {t(s.replaceAll("_", " "))}
                         </span>
                         <span className="font-semibold">
                           {
@@ -927,9 +973,11 @@ export default function AffiliatePage() {
                 </section>
               </div>
               <p className="mt-5 text-xs text-slate-500">
-                Totals cover your full order history in {currency}. Earnings use
-                the product cost saved when the order was submitted. Returned,
-                cancelled, and refunded amounts reduce earnings.
+                {t("Totals cover your full order history in ")}
+                {currency}
+                {t(
+                  ". Earnings use the product cost saved when the order was submitted. Returned, cancelled, and refunded amounts reduce earnings.",
+                )}
               </p>
             </>
           )}
@@ -940,11 +988,11 @@ export default function AffiliatePage() {
                   key={w}
                   className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800"
                 >
-                  {w}
+                  {t(String(w))}
                 </p>
               ))}
               {catalogLoading && !products.length ? (
-                <p>Loading Marketplace…</p>
+                <p>{t("Loading Marketplace\u2026")}</p>
               ) : (
                 <AffiliateMarketplace
                   products={products}
@@ -958,12 +1006,12 @@ export default function AffiliatePage() {
             <>
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-slate-500">
-                  Create an order or reuse a customer from your list.
+                  {t("Create an order or reuse a customer from your list.")}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button onClick={() => startOrder()} className={button}>
                     <Plus size={16} />
-                    Create order
+                    {t("Create order")}
                   </button>
                   <button
                     onClick={() => {
@@ -973,7 +1021,8 @@ export default function AffiliatePage() {
                     aria-pressed={showCustomers}
                     className={secondary}
                   >
-                    Customers ({customers.length})
+                    {t("Customers (")}
+                    {customers.length})
                   </button>
                 </div>
               </div>
@@ -1029,11 +1078,11 @@ export default function AffiliatePage() {
                   )}
                   {choosingProducts && (
                     <AffiliateModal
-                      title="Choose products"
+                      title={t("Choose products")}
                       close={() => setChoosingProducts(false)}
                     >
                       {catalogLoading && !products.length ? (
-                        <p>Loading Marketplace…</p>
+                        <p>{t("Loading Marketplace\u2026")}</p>
                       ) : (
                         <AffiliateMarketplace
                           products={
@@ -1050,44 +1099,52 @@ export default function AffiliatePage() {
                       )}
                       {catalogRefreshing && (
                         <p className="mt-3 text-xs text-slate-500">
-                          More products are loading in the background…
+                          {t(
+                            "More products are loading in the background\u2026",
+                          )}
                         </p>
                       )}
                     </AffiliateModal>
                   )}
-                  <div className="mb-5 flex flex-wrap justify-between gap-3">
-                    <p className="text-sm text-slate-500">
-                      Live statuses refresh every minute while this page is
-                      open.
-                    </p>
-                    <div className="flex w-full flex-wrap gap-3 sm:w-auto">
-                      <select
-                        aria-label="Filter order status"
-                        value={orderStatus}
-                        onChange={(e) => setOrderStatus(e.target.value)}
-                        className={`${field} flex-1 sm:w-auto`}
-                      >
-                        <option value="">All statuses</option>
-                        {Array.from(
-                          new Set(data.orders.map((o: any) => o.status)),
-                        ).map((s) => (
-                          <option key={String(s)} value={String(s)}>
-                            {String(s).replaceAll("_", " ")}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => {
-                          setEditingOrder(true);
-                          setChoosingProducts(true);
-                        }}
-                        className={button}
-                      >
-                        <Plus size={16} /> Add products
-                      </button>
-                    </div>
-                  </div>
-                  <OrderTable orders={orders} open={setSelectedOrder} />
+                  {!editingOrder && (
+                    <>
+                      <div className="mb-5 flex flex-wrap justify-between gap-3">
+                        <p className="text-sm text-slate-500">
+                          {t(
+                            "Live statuses refresh every minute while this page is open.",
+                          )}
+                        </p>
+                        <div className="flex w-full flex-wrap gap-3 sm:w-auto">
+                          <select
+                            aria-label={t("Filter order status")}
+                            value={orderStatus}
+                            onChange={(e) => setOrderStatus(e.target.value)}
+                            className={`${field} flex-1 sm:w-auto`}
+                          >
+                            <option value="">{t("All statuses")}</option>
+                            {Array.from(
+                              new Set(data.orders.map((o: any) => o.status)),
+                            ).map((s) => (
+                              <option key={String(s)} value={String(s)}>
+                                {t(String(s).replaceAll("_", " "))}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => {
+                              setEditingOrder(true);
+                              setChoosingProducts(true);
+                            }}
+                            className={button}
+                          >
+                            <Plus size={16} />
+                            {t(" Add products")}
+                          </button>
+                        </div>
+                      </div>
+                      <OrderTable orders={orders} open={setSelectedOrder} />
+                    </>
+                  )}
                 </>
               )}
             </>
@@ -1104,9 +1161,9 @@ export default function AffiliatePage() {
                     key={String(label)}
                     className="rounded-2xl border bg-white p-5"
                   >
-                    <p className="text-sm text-slate-500">{label}</p>
+                    <p className="text-sm text-slate-500">{t(String(label))}</p>
                     <p className="mt-3 text-2xl font-bold">
-                      {money(Number(amount), currency)}
+                      {money(Number(amount), currency, language)}
                     </p>
                   </section>
                 ))}
@@ -1115,15 +1172,16 @@ export default function AffiliatePage() {
                 onSubmit={requestPayout}
                 className="mb-6 rounded-2xl border bg-white p-4 sm:p-6"
               >
-                <h2 className="font-bold">Request a payout</h2>
+                <h2 className="font-bold">{t("Request a payout")}</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Available earnings come from delivered, collected orders.
-                  Approval reserves the amount; paid payouts include an
-                  administrator's transfer reference.
+                  {t(
+                    "Available earnings come from delivered, collected orders. Approval reserves the amount; paid payouts include an administrator's transfer reference.",
+                  )}
                 </p>
                 <div className="mt-5 grid items-end gap-4 md:grid-cols-[1fr_2fr_auto]">
                   <label className="text-sm">
-                    Amount ({currency})
+                    {t("Amount (")}
+                    {currency})
                     <input
                       required
                       type="number"
@@ -1139,7 +1197,7 @@ export default function AffiliatePage() {
                     />
                   </label>
                   <label className="text-sm">
-                    Bank account / payout details
+                    {t("Bank account / payout details")}
                     <input
                       required
                       minLength={5}
@@ -1154,7 +1212,7 @@ export default function AffiliatePage() {
                     disabled={busy || status.available <= 0}
                     className={button}
                   >
-                    Request payout
+                    {t("Request payout")}
                   </button>
                 </div>
               </form>
@@ -1167,6 +1225,13 @@ export default function AffiliatePage() {
           )}
         </div>
       </div>
+      {createdOrder && (
+        <AffiliateOrderDetails
+          id={createdOrder}
+          celebrate
+          close={() => setCreatedOrder("")}
+        />
+      )}
       {selectedOrder && (
         <AffiliateOrderDetails
           id={selectedOrder}
@@ -1174,13 +1239,13 @@ export default function AffiliatePage() {
         />
       )}
       <nav
-        aria-label="Seller navigation"
+        aria-label={t("Seller navigation")}
         className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white px-2 pt-2 pb-[calc(.5rem+env(safe-area-inset-bottom))] shadow-[0_-4px_20px_rgba(15,23,42,.06)] lg:hidden"
       >
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            aria-label={label}
+            aria-label={t(label)}
             aria-current={tab === id ? "page" : undefined}
             onClick={() => {
               setTab(id);
@@ -1190,14 +1255,14 @@ export default function AffiliatePage() {
           >
             <Icon size={21} />
             {id === "products"
-              ? "Marketplace"
+              ? t("Marketplace")
               : id === "orders"
-                ? "Orders"
-                : label}
+                ? t("Orders")
+                : t(label)}
             {id === "orders" && cart.length > 0 && (
               <span
-                className="absolute right-2 top-0 rounded-full bg-emerald-700 px-1.5 text-[10px] text-white"
-                aria-label={`${cart.length} products in order`}
+                className="absolute end-2 top-0 rounded-full bg-emerald-700 px-1.5 text-[10px] text-white"
+                aria-label={t(`${cart.length} products in order`)}
               >
                 {cart.length}
               </span>
@@ -1208,13 +1273,15 @@ export default function AffiliatePage() {
     </main>
   );
 }
-
 function Empty({ title, text }: { title: string; text: string }) {
+  const { t, language } = useAffiliateLocale();
   return (
     <div className="rounded-2xl border border-dashed bg-white p-6 text-center sm:p-12">
       <Package className="mx-auto mb-4 text-slate-300" size={34} />
-      <h2 className="font-semibold">{title}</h2>
-      <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">{text}</p>
+      <h2 className="font-semibold">{t(String(title))}</h2>
+      <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
+        {t(String(text))}
+      </p>
     </div>
   );
 }
@@ -1225,14 +1292,17 @@ function OrderTable({
   orders: any[];
   open: (id: string) => void;
 }) {
+  const { t, language } = useAffiliateLocale();
   return !orders.length ? (
     <Empty
-      title="No orders yet"
-      text="Choose a product from the Marketplace to create a customer order."
+      title={t("No orders yet")}
+      text={t(
+        "Choose a product from the Marketplace to create a customer order.",
+      )}
     />
   ) : (
     <>
-      <div className="space-y-3 sm:hidden" aria-label="Your orders">
+      <div className="space-y-3 sm:hidden" aria-label={t("Your orders")}>
         {orders.map((o) => (
           <article
             key={o.id}
@@ -1242,13 +1312,13 @@ function OrderTable({
               <div className="min-w-0">
                 <button
                   onClick={() => open(o.id)}
-                  className="min-h-11 break-words text-left font-bold text-emerald-800"
-                  aria-label={`View order ${o.name}`}
+                  className="min-h-11 break-words text-start font-bold text-emerald-800"
+                  aria-label={t(`View order ${o.name}`)}
                 >
                   {o.name}
                 </button>
                 <p className="mt-1 break-words text-xs text-slate-500">
-                  {new Date(o.created_at).toLocaleDateString()}
+                  {new Date(o.created_at).toLocaleDateString(language)}
                 </p>
               </div>
               <OrderStatus order={o} />
@@ -1263,19 +1333,20 @@ function OrderTable({
             ))}
             <dl className="mt-4 grid grid-cols-2 gap-3 border-t pt-3 text-sm">
               <div className="min-w-0">
-                <dt className="text-xs text-slate-500">Sale</dt>
+                <dt className="text-xs text-slate-500">{t("Sale")}</dt>
                 <dd className="mt-1 break-words font-semibold">
-                  {money(o.total, o.currency)}
+                  {money(o.total, o.currency, language)}
                 </dd>
               </div>
               <div className="min-w-0">
-                <dt className="text-xs text-slate-500">Earned profit</dt>
+                <dt className="text-xs text-slate-500">{t("Earned profit")}</dt>
                 <dd className="mt-1 break-words font-semibold text-emerald-700">
-                  {money(o.profit, o.currency)}
+                  {money(o.profit, o.currency, language)}
                 </dd>
                 {o.pending_profit > 0 && (
                   <dd className="mt-1 break-words text-xs text-slate-500">
-                    {money(o.pending_profit, o.currency)} expected
+                    {money(o.pending_profit, o.currency, language)}
+                    {t(" expected")}
                   </dd>
                 )}
               </div>
@@ -1284,20 +1355,23 @@ function OrderTable({
               onClick={() => open(o.id)}
               className={`${secondary} mt-3 w-full`}
             >
-              View details & receipt
+              {t("View details & receipt")}
             </button>
             <p className="mt-4 break-words text-xs text-slate-500">
-              {o.status_source === "delivery_app" ? "Delivery app" : "Shopify"}
+              {o.status_source === "delivery_app"
+                ? t("Delivery app")
+                : t("Shopify")}
               {o.tracking_number ? ` · ${o.tracking_number}` : ""}
             </p>
             <p className="mt-1 text-xs text-slate-400">
-              Updated: {lastSync(o.synced_at)}
+              {t("Updated: ")}
+              {t(lastSync(o.synced_at, language))}
             </p>
           </article>
         ))}
       </div>
       <div className="hidden overflow-auto rounded-2xl border bg-white sm:block">
-        <table className="w-full whitespace-nowrap text-left text-sm">
+        <table className="w-full whitespace-nowrap text-start text-sm">
           <thead className="border-b bg-slate-50 text-xs text-slate-500">
             <tr>
               {[
@@ -1309,7 +1383,7 @@ function OrderTable({
                 "Last update",
               ].map((h) => (
                 <th key={h} className="p-4 font-medium">
-                  {h}
+                  {t(String(h))}
                 </th>
               ))}
             </tr>
@@ -1321,12 +1395,12 @@ function OrderTable({
                   <button
                     onClick={() => open(o.id)}
                     className="min-h-11 font-semibold text-emerald-800"
-                    aria-label={`View order ${o.name}`}
+                    aria-label={t(`View order ${o.name}`)}
                   >
                     {o.name}
                   </button>
                   <p className="mt-1 text-xs text-slate-500">
-                    {new Date(o.created_at).toLocaleDateString()}
+                    {new Date(o.created_at).toLocaleDateString(language)}
                   </p>
                 </td>
                 <td className="p-4">
@@ -1344,22 +1418,23 @@ function OrderTable({
                   <OrderStatus order={o} />
                   <p className="mt-2 text-xs text-slate-500">
                     {o.status_source === "delivery_app"
-                      ? "Delivery app"
-                      : "Shopify"}
+                      ? t("Delivery app")
+                      : t("Shopify")}
                     {o.tracking_number ? ` · ${o.tracking_number}` : ""}
                   </p>
                 </td>
-                <td className="p-4">{money(o.total, o.currency)}</td>
+                <td className="p-4">{money(o.total, o.currency, language)}</td>
                 <td className="p-4 font-semibold text-emerald-700">
-                  {money(o.profit, o.currency)}
+                  {money(o.profit, o.currency, language)}
                   {o.pending_profit > 0 && (
                     <p className="mt-1 text-xs font-normal text-slate-400">
-                      {money(o.pending_profit, o.currency)} expected
+                      {money(o.pending_profit, o.currency, language)}
+                      {t(" expected")}
                     </p>
                   )}
                 </td>
                 <td className="p-4 text-xs text-slate-500">
-                  {lastSync(o.synced_at)}
+                  {t(lastSync(o.synced_at, language))}
                 </td>
               </tr>
             ))}
@@ -1370,32 +1445,39 @@ function OrderTable({
   );
 }
 function OrderStatus({ order: o }: { order: any }) {
+  const { t, language } = useAffiliateLocale();
   return (
     <span
       className={`inline-block max-w-full break-words rounded-full px-3 py-1 text-xs font-semibold ${o.state === "needs_review" ? "bg-red-50 text-red-700" : o.status === "delivered" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
     >
-      {o.state === "created"
-        ? o.delivery_status || o.status.replaceAll("_", " ")
-        : o.state.replaceAll("_", " ")}
+      {t(
+        o.state === "created"
+          ? o.delivery_status || o.status.replaceAll("_", " ")
+          : o.state.replaceAll("_", " "),
+      )}
     </span>
   );
 }
-function lastSync(value?: string) {
+function lastSync(value?: string, language = "en") {
   return value
     ? new Date(
         /[zZ]|[+-]\d{2}:\d{2}$/.test(value) ? value : value + "Z",
-      ).toLocaleString()
+      ).toLocaleString(language)
     : "Awaiting sync";
 }
 function PayoutTable({ payouts }: { payouts: any[] }) {
+  const { t, language } = useAffiliateLocale();
   return !payouts.length ? (
     <Empty
-      title="No payout requests"
-      text="Your payout requests and transfer references will appear here."
+      title={t("No payout requests")}
+      text={t("Your payout requests and transfer references will appear here.")}
     />
   ) : (
     <>
-      <div className="space-y-3 sm:hidden" aria-label="Your payout requests">
+      <div
+        className="space-y-3 sm:hidden"
+        aria-label={t("Your payout requests")}
+      >
         {payouts.map((p) => (
           <article
             key={p.id}
@@ -1403,28 +1485,31 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="break-words font-bold">
-                {money(p.amount, p.currency)}
+                {money(p.amount, p.currency, language)}
               </h2>
               <span
                 className={`rounded-full px-3 py-1 text-xs font-semibold capitalize ${p.status === "paid" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700"}`}
               >
-                {p.status}
+                {t(p.status)}
               </span>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Requested {new Date(p.created_at).toLocaleDateString()}
+              {t("Requested ")}
+              {new Date(p.created_at).toLocaleDateString(language)}
             </p>
             <dl className="mt-4 space-y-3 text-sm">
               <div>
-                <dt className="text-xs text-slate-500">Destination</dt>
+                <dt className="text-xs text-slate-500">{t("Destination")}</dt>
                 <dd className="mt-1 break-words [overflow-wrap:anywhere]">
                   {p.destination}
                 </dd>
               </div>
               <div>
-                <dt className="text-xs text-slate-500">Transfer reference</dt>
+                <dt className="text-xs text-slate-500">
+                  {t("Transfer reference")}
+                </dt>
                 <dd className="mt-1 break-words [overflow-wrap:anywhere]">
-                  {p.reference || "Awaiting transfer"}
+                  {p.reference || t("Awaiting transfer")}
                 </dd>
               </div>
             </dl>
@@ -1432,7 +1517,7 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
         ))}
       </div>
       <div className="hidden overflow-auto rounded-2xl border bg-white sm:block">
-        <table className="w-full text-left text-sm">
+        <table className="w-full text-start text-sm">
           <thead className="border-b bg-slate-50 text-xs text-slate-500">
             <tr>
               {[
@@ -1443,7 +1528,7 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
                 "Transfer reference",
               ].map((h) => (
                 <th key={h} className="p-4 font-medium">
-                  {h}
+                  {t(String(h))}
                 </th>
               ))}
             </tr>
@@ -1452,12 +1537,12 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
             {payouts.map((p) => (
               <tr key={p.id} className="border-b last:border-0">
                 <td className="p-4">
-                  {new Date(p.created_at).toLocaleDateString()}
+                  {new Date(p.created_at).toLocaleDateString(language)}
                 </td>
                 <td className="p-4 font-semibold">
-                  {money(p.amount, p.currency)}
+                  {money(p.amount, p.currency, language)}
                 </td>
-                <td className="p-4 capitalize">{p.status}</td>
+                <td className="p-4 capitalize">{t(p.status)}</td>
                 <td className="max-w-xs break-words p-4 text-xs">
                   {p.destination}
                 </td>

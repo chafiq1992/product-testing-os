@@ -65,9 +65,13 @@ export type Receipt = {
   note?: string;
   currency: string;
   total: number;
+  delivery_fee?: number;
+  delivery_included?: boolean;
   items: {
     title: string;
     variant: string;
+    color?: string;
+    size?: string;
     image?: string;
     quantity: number;
     unit_price: number;
@@ -75,8 +79,12 @@ export type Receipt = {
   }[];
 };
 
-export function money(value: number | string, currency = "MAD") {
-  return new Intl.NumberFormat("en", {
+export function money(
+  value: number | string,
+  currency = "MAD",
+  language = "en",
+) {
+  return new Intl.NumberFormat(language === "ar" ? "ar-MA" : language, {
     style: "currency",
     currency,
     maximumFractionDigits: 2,

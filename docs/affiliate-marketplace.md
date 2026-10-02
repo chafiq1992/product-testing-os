@@ -44,8 +44,11 @@ That original Shopify price remains the recommended selling price. The full
 order margin must also cover the delivery deduction.
 The server rechecks account approval, store/vendor access, product status, variant
 ownership, stock, currency and cost at submission. Orders use the existing
-Shopify client, decrement inventory and carry seller and
-submission tags. One order contains products from one store. Sellers can create
+Shopify client, decrement inventory and carry `affiliate`, `aff_s:<seller UUID>`
+and `aff_o:<local order UUID>` tags. Each tag stays within Shopify's
+[40-character order-tag limit](https://help.shopify.com/en/manual/fulfillment/managing-orders/managing-order-details).
+Full seller and original submission IDs also appear in order note attributes.
+One order contains products from one store. Sellers can create
 separate orders for different stores.
 
 Product costs and the delivery deduction are fixed on the order at submission.
@@ -93,18 +96,42 @@ phone, city, address and note. Country is fixed to Morocco without a country-cod
 control. City selection uses the delivery app's Active routing cities; submission
 checks the current city list before any customer or order write.
 
-The editor shows a customer receipt estimate with a Share receipt button. Saved
-orders open their details and receipt from history. New orders retain immutable
-receipt data, including product images, variant names and the entered customer
-details. Shared receipts contain customer sale prices and totals, excluding
-affiliate costs, delivery deductions and earnings. Sharing uses the phone's native
-share sheet, with clipboard or text download as fallbacks. Older orders derive
-their receipt from the saved Shopify snapshot.
+The editor shows the seller's sale total, product costs, delivery deduction and
+expected profit above the customer fields. Submit order is the final control,
+immediately below Order note. There is no receipt sharing before submission.
+A confirmed order opens a success popup with confetti (disabled for reduced-motion
+preferences) and its customer receipt. Rejected or uncertain submissions never
+trigger the celebration. History opens saved order details and the same receipt.
+
+New orders retain immutable receipt data, including product images, color, size,
+variant names, sale prices and entered customer details. The designed receipt
+includes the delivery fee as **included** in the customer's total; the default
+33 MAD remains deducted once from affiliate profit, without increasing the
+customer total. The exact Arabic inspection/return notice appears on every receipt.
+Affiliate costs, private earnings, store and vendor identities are excluded.
+Older orders derive their receipt from their saved Shopify snapshot and delivery
+terms, preserving original accounting.
+
+Sharing sends a PNG file through the phone's native file share sheet when
+`navigator.canShare({files})` supports it, with PNG download as the fallback.
+The image is prepared before the click to preserve the user gesture required by
+native sharing. Language and width changes regenerate it. Loaded product photos
+are rasterized before canvas export to preserve SVG and contain sizing. Failed
+image preparation offers a retry; receipt fetching can retry without resubmitting
+the order.
+
+The seller workspace, sign-in, application, customer list, order editor, details
+and receipts support English, French and Arabic. A language selector in the header
+and popups stores the preference locally. Arabic uses right-to-left layout,
+including navigation, fields and modal content. Product titles/descriptions and
+entered customer data retain their original language. The compact header places
+refresh and exit next to the seller's welcome name and has no currency selector.
+Accounts using several settlement currencies retain their selector in content.
 
 Order entry saves a local customer by
 seller and normalized phone number. Existing customers can be reused. Shopify
-customers carry `affiliate` and `affiliate_seller:<seller UUID>` tags, matching
-the seller tag on orders. Matching existing Shopify customers retain their names,
+customers carry `affiliate` and `affiliate_seller:<seller UUID>` tags. Customer
+tags support the longer format; orders use the shorter `aff_s:` prefix. Matching existing Shopify customers retain their names,
 addresses and other tags; tags are added atomically using GraphQL `tagsAdd`.
 New customers receive the entered address without an account invitation. Sellers
 only see their own local customer records and their own orders, including when a
@@ -157,8 +184,10 @@ available balance negative and block further payouts.
 Duplicate order requests use the same submission ID and do not create another
 Shopify order. If the response is lost after creation, the order is marked
 `needs_review`; resubmission is blocked. The seller review panel lets an admin
-link the numeric Shopify order ID after checking matching seller and submission
-tags. If Shopify never created it, staff should investigate before accepting a
+link the numeric Shopify order ID after checking matching `aff_s:` seller and
+`aff_o:` local-order tags. Reconciliation also accepts the original
+`affiliate_seller:` and `affiliate_request:` pair on legacy submissions.
+If Shopify never created it, staff should investigate before accepting a
 new submission; there is no automatic retry of uncertain writes.
 
 An explicit Shopify validation or authorization rejection is recorded as
@@ -183,8 +212,11 @@ keypads for prices and quantities, and customer autofill. Content reserves space
 for the bottom navigation and device safe area. Sign-in appears before the
 introductory text on phones.
 The Marketplace uses two compact columns on phones and more columns on larger
-screens. Product details open full-screen on phones with focus trapping and
-44px option controls.
+screens. Product selection and details use bounded, rounded popups on phones,
+leaving the order page visible behind them. A Back to products control returns
+from variant selection to the picker; adding returns to the same editor without
+changing the URL or losing entered customer data. Nested focus trapping and
+Escape handling restore scrolling when all popups close. Option controls are 44px.
 
 `backend/tests/test_affiliates.py` covers account approval, session revocation,
 store/vendor/variant isolation, stock, pricing, original costs, duplicate
@@ -193,10 +225,17 @@ It also checks collection discounts, immutable delivery deductions, marks,
 customer isolation/reuse, customer tagging and failed pricing/customer reads.
 Additional checks cover cached catalog authorization, progressive pagination,
 active routing cities, immutable seller-owned receipts and explicit Shopify
-rejections. Mobile browser QA covers the complete multiple-product order flow,
-draft and saved receipt sharing, nested popup focus and Escape behavior, HTML
-error responses, image bounds and horizontal overflow at 320–430px, plus tablet
-and desktop layouts.
+rejections, the 40-character order-tag limit, original submission IDs in note
+attributes, idempotent retries, and immutable receipt color/size/delivery totals.
+The affiliate, operator-gate and Shopify-registry regression suites pass 81 tests.
+`node --test frontend/tests/affiliate-translations.test.cjs` checks dynamic
+messages, preservation of customer/product data, and static seller-label coverage.
+Mobile browser QA covers the complete multiple-product order flow, English/French/
+Arabic persistence and RTL, confirmed PNG receipt sharing with an active user
+gesture, product-photo pixels in the exported file, language regeneration and
+download fallback. It also covers customer reuse, nested popup focus and Escape,
+HTML errors without success UI, image bounds and horizontal overflow at 320–430px,
+plus tablet and desktop layouts.
 Delivery tests live in `delvery-app-v3/backend/tests/test_affiliate_tracking.py`.
 The browser QA uses an isolated synthetic database, not production stores.
 

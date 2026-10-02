@@ -1,7 +1,7 @@
 "use client";
+import { useAffiliateLocale } from "@/lib/affiliate-locale";
 import { useState } from "react";
 import { AffiliateCustomer, field, money, secondary } from "@/lib/affiliates";
-
 export default function AffiliateCustomers({
   customers,
   useCustomer,
@@ -9,6 +9,7 @@ export default function AffiliateCustomers({
   customers: AffiliateCustomer[];
   useCustomer: (customer: AffiliateCustomer) => void;
 }) {
+  const { t, language } = useAffiliateLocale();
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState("");
   const filtered = customers.filter((c) =>
@@ -17,22 +18,23 @@ export default function AffiliateCustomers({
       .includes(search.toLowerCase()),
   );
   return (
-    <section aria-label="Your customers">
-      <h2 className="text-lg font-bold">Customer list</h2>
+    <section aria-label={t("Your customers")}>
+      <h2 className="text-lg font-bold">{t("Customer list")}</h2>
       <p className="mt-1 text-sm text-slate-500">
-        Customers are saved when you create an order. Only your customer list
-        appears here.
+        {t(
+          "Customers are saved when you create an order. Only your customer list appears here.",
+        )}
       </p>
       <input
-        aria-label="Search customers"
-        placeholder="Search name, phone or city"
+        aria-label={t("Search customers")}
+        placeholder={t("Search name, phone or city")}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className={`${field} my-4`}
       />
       {!filtered.length ? (
         <p className="rounded-xl border border-dashed bg-white p-6 text-sm text-slate-500">
-          No customers found.
+          {t("No customers found.")}
         </p>
       ) : (
         <div className="space-y-3">
@@ -52,7 +54,7 @@ export default function AffiliateCustomers({
                   </p>
                 </div>
                 <button onClick={() => useCustomer(c)} className={secondary}>
-                  New order
+                  {t("New order")}
                 </button>
               </div>
               <button
@@ -60,8 +62,9 @@ export default function AffiliateCustomers({
                 aria-expanded={expanded === c.id}
                 className="mt-3 min-h-11 text-sm font-semibold text-slate-600"
               >
-                {c.orders_count} {c.orders_count === 1 ? "order" : "orders"} ·{" "}
-                {expanded === c.id ? "Hide history" : "View history"}
+                {c.orders_count}{" "}
+                {c.orders_count === 1 ? t("order") : t("orders")} ·{" "}
+                {expanded === c.id ? t("Hide history") : t("View history")}
               </button>
               {expanded === c.id && (
                 <div className="mt-3 space-y-2 border-t pt-3">
@@ -73,14 +76,15 @@ export default function AffiliateCustomers({
                       <div>
                         <p className="font-semibold">{o.name}</p>
                         <p className="mt-1 text-xs capitalize text-slate-500">
-                          {o.status.replaceAll("_", " ")} ·{" "}
-                          {new Date(o.created_at).toLocaleDateString()}
+                          {t(o.status.replaceAll("_", " "))} ·{" "}
+                          {new Date(o.created_at).toLocaleDateString(language)}
                         </p>
                       </div>
-                      <div className="text-right">
-                        <p>{money(o.total, o.currency)}</p>
+                      <div className="text-end">
+                        <p>{money(o.total, o.currency, language)}</p>
                         <p className="mt-1 text-xs text-emerald-800">
-                          Earned {money(o.profit, o.currency)}
+                          {t("Earned ")}
+                          {money(o.profit, o.currency, language)}
                         </p>
                       </div>
                     </div>

@@ -1,5 +1,5 @@
 "use client";
-
+import { useAffiliateLocale } from "@/lib/affiliate-locale";
 import { useEffect, useState } from "react";
 import AffiliateModal from "@/components/AffiliateModal";
 import { Bookmark, Package, Search } from "lucide-react";
@@ -12,7 +12,6 @@ import {
   secondary,
   productImage,
 } from "@/lib/affiliates";
-
 export const productTypes: Record<string, string> = {
   men: "Men",
   women: "Women",
@@ -23,7 +22,6 @@ export const productTypes: Record<string, string> = {
   unisex_adult: "Unisex adult",
   other: "Other",
 };
-
 function colorPaint(value: string) {
   const colors: Record<string, string> = {
     black: "#1e293b",
@@ -55,7 +53,6 @@ function colorPaint(value: string) {
   };
   return colors[value.toLowerCase().trim()];
 }
-
 function ColorDot({
   color,
   available = true,
@@ -77,14 +74,12 @@ function ColorDot({
     </span>
   );
 }
-
 function minimumPrice(product: AffiliateProduct) {
   const prices = product.variants
     .map((v) => Number(v.price))
     .filter((p) => p > 0);
   return prices.length ? Math.min(...prices) : 0;
 }
-
 export default function AffiliateMarketplace({
   products,
   mark,
@@ -96,6 +91,7 @@ export default function AffiliateMarketplace({
   add: (product: AffiliateProduct, variant: string, price: string) => void;
   selecting?: boolean;
 }) {
+  const { t, language } = useAffiliateLocale();
   const [search, setSearch] = useState("");
   const [size, setSize] = useState("");
   const [category, setCategory] = useState("");
@@ -157,36 +153,36 @@ export default function AffiliateMarketplace({
         <div className="relative col-span-2">
           <Search
             size={18}
-            className="absolute left-3 top-3.5 text-slate-400"
+            className="absolute start-3 top-3.5 text-slate-400"
           />
           <input
-            aria-label="Search Marketplace"
-            placeholder="Search products"
+            aria-label={t("Search Marketplace")}
+            placeholder={t("Search products")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className={`${field} pl-10`}
+            className={`${field} ps-10`}
           />
         </div>
         <select
-          aria-label="Filter product type"
+          aria-label={t("Filter product type")}
           value={category}
           onChange={(e) => setCategory(e.target.value)}
           className={field}
         >
-          <option value="">All types</option>
+          <option value="">{t("All types")}</option>
           {Object.entries(productTypes).map(([id, label]) => (
             <option key={id} value={id}>
-              {label}
+              {t(String(label))}
             </option>
           ))}
         </select>
         <select
-          aria-label="Filter size"
+          aria-label={t("Filter size")}
           value={size}
           onChange={(e) => setSize(e.target.value)}
           className={field}
         >
-          <option value="">All sizes</option>
+          <option value="">{t("All sizes")}</option>
           {sizes.map((s) => (
             <option key={s}>{s}</option>
           ))}
@@ -197,35 +193,39 @@ export default function AffiliateMarketplace({
           className={`${marked ? button : secondary} min-w-0 px-2 text-xs`}
         >
           <Bookmark size={15} fill={marked ? "currentColor" : "none"} />
-          Marked ({products.filter((p) => p.marked).length})
+          {t("Marked (")}
+          {products.filter((p) => p.marked).length})
         </button>
         <select
-          aria-label="Sort Marketplace"
+          aria-label={t("Sort Marketplace")}
           value={sort}
           onChange={(e) => setSort(e.target.value)}
           className={`${field} px-2`}
         >
-          {selecting && <option value="marked_first">Marked first</option>}
-          <option value="newest">New to old</option>
-          <option value="quantity">Most stock first</option>
-          <option value="price_low">Price: low to high</option>
-          <option value="price_high">Price: high to low</option>
+          {selecting && (
+            <option value="marked_first">{t("Marked first")}</option>
+          )}
+          <option value="newest">{t("New to old")}</option>
+          <option value="quantity">{t("Most stock first")}</option>
+          <option value="price_low">{t("Price: low to high")}</option>
+          <option value="price_high">{t("Price: high to low")}</option>
         </select>
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        {shown.length} products ·{" "}
+        {shown.length}
+        {t(" products \u00B7")}{" "}
         {selecting
-          ? "Choose a product and its size to build your order."
-          : "Tap a product for photos, details and sizes."}
+          ? t("Choose a product and its size to build your order.")
+          : t("Tap a product for photos, details and sizes.")}
       </p>
       {!shown.length ? (
         <div className="rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500">
-          No products match these filters.
+          {t("No products match these filters.")}
         </div>
       ) : (
         <div
           className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-          aria-label="Marketplace products"
+          aria-label={t("Marketplace products")}
         >
           {shown.slice(0, limit).map((product) => {
             const key = `${product.store}:${product.id}`;
@@ -249,7 +249,7 @@ export default function AffiliateMarketplace({
                 <div className="relative">
                   <button
                     onClick={() => setOpened(key)}
-                    aria-label={`View ${product.title}`}
+                    aria-label={t(`View ${product.title}`)}
                     className="relative flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-100"
                     title={product.title}
                   >
@@ -265,11 +265,13 @@ export default function AffiliateMarketplace({
                     )}
                   </button>
                   <button
-                    aria-label={`${product.marked ? "Unmark" : "Mark"} ${product.title}`}
+                    aria-label={t(
+                      `${product.marked ? "Unmark" : "Mark"} ${product.title}`,
+                    )}
                     aria-pressed={!!product.marked}
                     disabled={!!marking}
                     onClick={() => void toggleMark(product)}
-                    className="absolute right-0 top-0 flex h-11 w-11 items-center justify-center rounded-bl-xl bg-white/95 text-emerald-800 disabled:opacity-40"
+                    className="absolute end-0 top-0 flex h-11 w-11 items-center justify-center rounded-es-xl bg-white/95 text-emerald-800 disabled:opacity-40"
                   >
                     <Bookmark
                       size={18}
@@ -281,7 +283,7 @@ export default function AffiliateMarketplace({
                   {!!colors.length && (
                     <div
                       className="flex flex-wrap gap-1"
-                      aria-label={`Colors for ${product.title}`}
+                      aria-label={t(`Colors for ${product.title}`)}
                     >
                       {colors.slice(0, 7).map((color) => {
                         const available = product.variants.some(
@@ -290,8 +292,8 @@ export default function AffiliateMarketplace({
                         return (
                           <span
                             key={color}
-                            title={`${color}${available ? "" : " — out of stock"}`}
-                            aria-label={`${color}${available ? "" : " — out of stock"}`}
+                            title={`${t(color)}${available ? "" : ` — ${t("Out of stock")}`}`}
+                            aria-label={`${t(color)}${available ? "" : ` — ${t("Out of stock")}`}`}
                           >
                             <ColorDot color={color} available={available} />
                           </span>
@@ -307,7 +309,7 @@ export default function AffiliateMarketplace({
                   {!!sizes.length && (
                     <div
                       className="flex flex-wrap gap-1"
-                      aria-label={`Sizes for ${product.title}`}
+                      aria-label={t(`Sizes for ${product.title}`)}
                     >
                       {sizes.slice(0, 8).map((s) => {
                         const available = product.variants.some(
@@ -316,7 +318,7 @@ export default function AffiliateMarketplace({
                         return (
                           <span
                             key={s}
-                            title={`${s}${available ? "" : " — out of stock"}`}
+                            title={`${s}${available ? "" : ` — ${t("Out of stock")}`}`}
                             className={`rounded border px-1.5 py-0.5 text-[10px] ${available ? "border-slate-200 text-slate-700" : "border-slate-100 text-slate-300 line-through"}`}
                           >
                             {s}
@@ -332,22 +334,22 @@ export default function AffiliateMarketplace({
                   )}
                   <div>
                     <p className="text-[10px] text-slate-500">
-                      Recommended selling price
+                      {t("Recommended selling price")}
                     </p>
                     <p className="break-words text-sm font-bold">
-                      {money(minimumPrice(product), product.currency)}
+                      {money(minimumPrice(product), product.currency, language)}
                     </p>
                   </div>
                   <p className="break-words text-[11px] text-emerald-800">
-                    Your cost{" "}
+                    {t("Your cost")}{" "}
                     {Number.isFinite(cost)
-                      ? money(cost, product.currency)
-                      : "unavailable"}
+                      ? money(cost, product.currency, language)
+                      : t("unavailable")}
                   </p>
                   <p className="text-[10px] text-slate-500">
                     {product.inventory_tracked
-                      ? `${product.inventory_quantity} available`
-                      : "Stock available"}
+                      ? t(`${product.inventory_quantity} available`)
+                      : t("Stock available")}
                   </p>
                 </div>
               </article>
@@ -360,13 +362,16 @@ export default function AffiliateMarketplace({
           onClick={() => setLimit(limit + 40)}
           className={`${secondary} mt-4 w-full`}
         >
-          Show more products ({shown.length - limit} remaining)
+          {t("Show more products (")}
+          {shown.length - limit}
+          {t(" remaining)")}
         </button>
       )}
       {openedProduct && (
         <ProductDetails
           key={opened}
           product={openedProduct}
+          selecting={selecting}
           close={() => setOpened("")}
           add={(variant, price) => {
             add(openedProduct, variant, price);
@@ -377,16 +382,18 @@ export default function AffiliateMarketplace({
     </>
   );
 }
-
 function ProductDetails({
   product,
   close,
   add,
+  selecting = false,
 }: {
   product: AffiliateProduct;
   close: () => void;
   add: (variant: string, price: string) => void;
+  selecting?: boolean;
 }) {
+  const { t, language } = useAffiliateLocale();
   const first =
     product.variants.find((v) => v.available) || product.variants[0];
   const [variantId, setVariantId] = useState(first?.id || "");
@@ -410,7 +417,12 @@ function ProductDetails({
     (v) => v.color === variant?.color && v.size === variant?.size,
   );
   return (
-    <AffiliateModal title="Product details" close={close}>
+    <AffiliateModal title={t("Product details")} close={close}>
+      {selecting && (
+        <button onClick={close} className={`${secondary} mb-4`}>
+          {t("Back to products")}
+        </button>
+      )}
       <div className="grid min-w-0 gap-5 sm:grid-cols-2">
         <div className="min-w-0">
           <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-xl bg-slate-100">
@@ -430,7 +442,7 @@ function ProductDetails({
                 <button
                   key={src}
                   onClick={() => setImage(src)}
-                  aria-label={`Product image ${i + 1}`}
+                  aria-label={t(`Product image ${i + 1}`)}
                   aria-pressed={image === src}
                   className={`h-14 w-14 shrink-0 overflow-hidden rounded-lg border-2 ${image === src ? "border-emerald-700" : "border-transparent"}`}
                 >
@@ -446,7 +458,7 @@ function ProductDetails({
         </div>
         <div className="min-w-0">
           <p className="text-xs text-slate-500">
-            {productTypes[product.category] || "Product"}
+            {t(productTypes[product.category] || "Product")}
           </p>
           <h2
             id="product-details-title"
@@ -455,19 +467,22 @@ function ProductDetails({
             {product.title}
           </h2>
           <p className="mt-4 text-xs text-slate-500">
-            Recommended selling price
+            {t("Recommended selling price")}
           </p>
           <p className="text-2xl font-bold">
-            {money(variant?.price || 0, product.currency)}
+            {money(variant?.price || 0, product.currency, language)}
           </p>
           <p className="mt-1 text-sm text-emerald-800">
-            Your cost {money(variant?.unit_cost || 0, product.currency)} ·{" "}
-            {product.discount_percent}% off
+            {t("Your cost ")}
+            {money(variant?.unit_cost || 0, product.currency, language)} ·{" "}
+            {product.discount_percent}
+            {t("% off")}
           </p>
           {!!colors.length && (
             <fieldset className="mt-5">
               <legend className="text-sm font-semibold">
-                Color {variant?.color && `· ${variant.color}`}
+                {t("Color ")}
+                {variant?.color && `· ${variant.color}`}
               </legend>
               <div className="mt-2 flex flex-wrap gap-2">
                 {colors.map((color) => {
@@ -484,12 +499,12 @@ function ProductDetails({
                             variants[0],
                         )
                       }
-                      aria-label={`Color ${color}`}
+                      aria-label={t(`Color ${color}`)}
                       aria-pressed={variant?.color === color}
                       className={`flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg border px-2 text-xs ${variant?.color === color ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:opacity-30 disabled:line-through`}
                     >
                       <ColorDot color={color} available={!!variants.length} />
-                      {color}
+                      {t(color)}
                     </button>
                   );
                 })}
@@ -498,7 +513,7 @@ function ProductDetails({
           )}
           {!!sizes.length && (
             <fieldset className="mt-4">
-              <legend className="text-sm font-semibold">Size</legend>
+              <legend className="text-sm font-semibold">{t("Size")}</legend>
               <div className="mt-2 flex flex-wrap gap-2">
                 {sizes.map((size) => {
                   const candidate = product.variants.find(
@@ -511,7 +526,7 @@ function ProductDetails({
                     <button
                       key={size}
                       disabled={!candidate}
-                      aria-label={`Size ${size}`}
+                      aria-label={t(`Size ${size}`)}
                       aria-pressed={variant?.size === size}
                       onClick={() => select(candidate)}
                       className={`min-h-11 min-w-11 rounded-lg border px-3 text-sm ${variant?.size === size ? "border-emerald-700 bg-emerald-50" : "border-slate-200"} disabled:text-slate-300 disabled:line-through`}
@@ -525,7 +540,7 @@ function ProductDetails({
           )}
           {((!colors.length && !sizes.length) || choices.length > 1) && (
             <fieldset className="mt-4">
-              <legend className="text-sm font-semibold">Option</legend>
+              <legend className="text-sm font-semibold">{t("Option")}</legend>
               <div className="mt-2 flex flex-wrap gap-2">
                 {(!colors.length && !sizes.length
                   ? product.variants
@@ -547,12 +562,15 @@ function ProductDetails({
           <p className="mt-4 text-sm text-slate-500">
             {variant?.available
               ? variant.inventory_quantity === null
-                ? "In stock"
-                : `${variant.inventory_quantity} available in this size and color`
-              : "This option is out of stock"}
+                ? t("In stock")
+                : t(
+                    `${variant.inventory_quantity} available in this size and color`,
+                  )
+              : t("This option is out of stock")}
           </p>
           <label className="mt-4 block text-sm font-medium">
-            Your selling price ({product.currency})
+            {t("Your selling price (")}
+            {product.currency})
             <input
               type="number"
               inputMode="decimal"
@@ -564,12 +582,13 @@ function ProductDetails({
             />
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Margin before delivery:{" "}
+            {t("Margin before delivery:")}{" "}
             {money(
               Math.max(0, Number(price) - Number(variant?.unit_cost)),
               product.currency,
+              language,
             )}{" "}
-            per item. Delivery is deducted once per order.
+            {t("per item. Delivery is deducted once per order.")}
           </p>
           <button
             disabled={
@@ -578,14 +597,14 @@ function ProductDetails({
             onClick={() => add(variantId, price)}
             className={`${button} mt-4 w-full`}
           >
-            Add to order
+            {t("Add to order")}
           </button>
         </div>
       </div>
       <section className="mt-6 border-t pt-4">
-        <h3 className="font-semibold">About this product</h3>
+        <h3 className="font-semibold">{t("About this product")}</h3>
         <p className="mt-2 whitespace-pre-line break-words text-sm leading-6 text-slate-600">
-          {product.description || "No description available."}
+          {product.description || t("No description available.")}
         </p>
       </section>
     </AffiliateModal>
