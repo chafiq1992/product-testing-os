@@ -1,6 +1,7 @@
 "use client"
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
+import ProductAdAnalysis from '@/components/ProductAdAnalysis'
 import axios from 'axios'
 import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
 import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers } from 'lucide-react'
@@ -2618,6 +2619,9 @@ export default function AdsManagementPage(){
           },
           campaign_age_days: ageDays,
           campaign_key: cid || rk,
+          store: (row as any)._store || store,
+          ad_account: (row as any)._adAccount || undefined,
+          date_range: effectiveYmdRange(datePreset),
         }, { signal: controller.signal })
         if(res?.data){
           results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
@@ -2809,6 +2813,7 @@ export default function AdsManagementPage(){
         </div>
         {/* Controls row */}
         <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-2 lg:px-6">
+          <Link href={`/ads-management/settings/?store=${encodeURIComponent(store)}`} className="shrink-0 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100">AI agent settings</Link>
           <MultiCheckDropdown
             label="Store"
             icon={<Store className="h-3.5 w-3.5 text-slate-400"/>}
@@ -3645,63 +3650,18 @@ export default function AdsManagementPage(){
                             }}
                             className={`${UI.icon} text-blue-600`}
                           ><BarChart3 className="w-3.5 h-3.5"/></button>}
-                          {!profitMode && <button
-                            disabled={analysisLoading===pid}
-                            onClick={async()=>{
-                              setAnalysisLoading(pid)
-                              setAnalysisError(null)
-                              try{
-                                const ids = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
-                                // Compute campaign age from first campaign's created_time
-                                const firstCt = (d.rows[0] as any)?.created_time
-                                let ageDays: number|undefined = undefined
-                                if(firstCt){
-                                  const diff = Date.now() - new Date(firstCt).getTime()
-                                  ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24)))
-                                }
-                                const campaignKey = ids[0] || pid
-                                const res = await campaignAnalyze({
-                                  campaign_ids: ids,
-                                  campaign_name: d.primary.name || undefined,
-                                  product_id: pid||undefined,
-                                  metrics: {
-                                    spend: Number(m.spend||0),
-                                    purchases: Number(m.purchases||0),
-                                    ctr: m.ctr!=null? m.ctr : undefined,
-                                    cpp: m.cpp!=null? m.cpp : undefined,
-                                    add_to_cart: Number(m.add_to_cart||0),
-                                    shopify_orders: orders,
-                                    true_cpp: trueCppVal,
-                                    status: statusLabel,
-                                  },
-                                  campaign_age_days: ageDays,
-                                  campaign_key: campaignKey,
-                                })
-                                if(res?.error){ setAnalysisError(res.error) }
-                                else if(res?.data){
-                                  setAnalysisResult(res.data); setAnalysisOpen(true)
-                                  setAnalysisCampaignKey(campaignKey)
-                                  // Load saved checks for this campaign
-                                  try{
-                                    const checksRes = await campaignAnalysisChecksGet(campaignKey, store)
-                                    if(checksRes?.data) setAnalysisChecks(checksRes.data)
-                                    else setAnalysisChecks({})
-                                  }catch{ setAnalysisChecks({}) }
-                                  // Refresh campaign meta to pick up new timeline entry
-                                  try{
-                                    const metaRes = await campaignMetaList(store)
-                                    applyCampaignMetaSummary((metaRes as any)?.data)
-                                  }catch{}
-                                }
-                              }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
-                              finally{ setAnalysisLoading(null) }
-                            }}
-                            title="Analyze"
-                            className={`${UI.icon} text-violet-600 ${analysisLoading===pid ? 'animate-pulse' : ''}`}
-                          ><Sparkles className="w-3.5 h-3.5"/></button>}
+
                           </div>
                         </td>
                       </tr>
+                      {!profitMode && <tr><td colSpan={tableColSpan} className="bg-violet-50/30 px-3 py-2"><ProductAdAnalysis
+                        key={`${store}:${pid}`} campaignKey={pid} productId={pid}
+                        initialSignal={campaignMeta[pid]?.ads_analysis_signal}
+                        campaignIds={(d.rows || []).map((row: any) => String(row.campaign_id || '')).filter(Boolean)}
+                        name={d.primary.name || `Product ${pid}`} store={(d.primary as any)._store || store}
+                        adAccount={(d.primary as any)._adAccount || undefined} range={effectiveYmdRange(datePreset)}
+                      /></td></tr>}
+
                     </Fragment>
                   )
                 }
@@ -3980,7 +3940,7 @@ export default function AdsManagementPage(){
                                     if(!ok) return
                                     try{
                                       setTogglingCampaign(prev=> ({ ...prev, [cid]: true }))
-                                      const res = await metaSetCampaignStatus(String(cid), next as any)
+                                      const res = await metaSetCampaignStatus(String(cid), next as any, { store: (c as any)._store || store, ad_account: (c as any)._adAccount || undefined })
                                       if((res as any)?.error){
                                         alert(`Failed: ${(res as any).error}`)
                                       } else {
@@ -4176,76 +4136,18 @@ export default function AdsManagementPage(){
                           </button>
                         )
                       })()}
-                      {!profitMode && <button
-                        title="Analyze"
-                        disabled={analysisLoading===rowKey}
-                        onClick={async()=>{
-                          const cid = String(c.campaign_id||'')
-                          if(!cid) return
-                          setAnalysisLoading(rowKey)
-                          setAnalysisError(null)
-                          try{
-                            const rk = (c.campaign_id || c.name || '') as any
-                            const conf = (manualIds as any)[rk]
-                            const prodId = (conf && conf.kind==='product' && conf.id)? conf.id : (pidSelf||undefined)
-                            const ct = (c as any)?.created_time
-                            let ageDays: number|undefined = undefined
-                            if(ct){
-                              const diff = Date.now() - new Date(ct).getTime()
-                              ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24)))
-                            }
-                            const res = await campaignAnalyze({
-                              campaign_id: cid,
-                              campaign_name: c.name || undefined,
-                              product_id: prodId,
-                              metrics: {
-                                spend: Number(c.spend||0),
-                                purchases: Number(c.purchases||0),
-                                ctr: c.ctr!=null? c.ctr : undefined,
-                                cpp: c.cpp!=null? c.cpp : undefined,
-                                add_to_cart: Number((c as any).add_to_cart||0),
-                                shopify_orders: orders,
-                                true_cpp: trueCppVal,
-                                status: (c.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
-                              },
-                              campaign_age_days: ageDays,
-                              campaign_key: cid,
-                            })
-                            if(res?.error){ setAnalysisError(res.error) }
-                            else if(res?.data){
-                              setAnalysisResult(res.data); setAnalysisOpen(true)
-                              setAnalysisCampaignKey(cid)
-                              // Auto-add analysis result to campaign timeline
-                              try{
-                                const timelineEntry = JSON.stringify({
-                                  type: 'analysis',
-                                  verdict: res.data.overall_verdict||'',
-                                  confidence: res.data.confidence_level||'',
-                                  summary: res.data.summary||'',
-                                  age_days: ageDays,
-                                  analysis: res.data,
-                                })
-                                await campaignTimelineAdd({ campaign_key: cid, text: timelineEntry, store })
-                              }catch{}
-                              // Load saved checks for this campaign
-                              try{
-                                const checksRes = await campaignAnalysisChecksGet(cid, store)
-                                if(checksRes?.data) setAnalysisChecks(checksRes.data)
-                                else setAnalysisChecks({})
-                              }catch{ setAnalysisChecks({}) }
-                              try{
-                                const metaRes = await campaignMetaList(store)
-                                applyCampaignMetaSummary((metaRes as any)?.data)
-                              }catch{}
-                            }
-                          }catch(e:any){ setAnalysisError(e?.message||'Analysis failed') }
-                          finally{ setAnalysisLoading(null) }
-                        }}
-                        className={`${UI.icon} text-violet-600 ${analysisLoading===rowKey ? 'animate-pulse' : ''}`}
-                      ><Sparkles className="w-3.5 h-3.5"/></button>}
+
                       </div>
                     </td>
                   </tr>
+                  {!profitMode && !isChild && <tr><td colSpan={tableColSpan} className="bg-violet-50/30 px-3 py-2"><ProductAdAnalysis
+                    key={`${(c as any)._store || store}:${rowKey}`} campaignKey={rowKey} productId={pidSelf || undefined}
+                    initialSignal={campaignMeta[rowKey]?.ads_analysis_signal}
+                    campaignIds={[String(c.campaign_id || '')].filter(Boolean)} name={c.name || rowKey}
+                    store={(c as any)._store || store} adAccount={(c as any)._adAccount || undefined}
+                    range={effectiveYmdRange(datePreset)}
+                  /></td></tr>}
+
                   {(()=>{
                     const rk = (c.campaign_id || c.name || '') as any
                     const conf = (manualIds as any)[rk]
@@ -4325,7 +4227,7 @@ export default function AdsManagementPage(){
                                                   if(!ok) return
                                                   try{
                                                     setTogglingAdset(prev=> ({ ...prev, [aid]: true }))
-                                                    const res = await metaSetAdsetStatus(aid, next as any)
+                                                    const res = await metaSetAdsetStatus(aid, next as any, { store: (c as any)._store || store, ad_account: (c as any)._adAccount || undefined })
                                                     if((res as any)?.error){
                                                       alert(`Failed: ${(res as any).error}`)
                                                     } else {

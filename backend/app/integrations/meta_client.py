@@ -4,7 +4,7 @@ from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -84,14 +84,28 @@ def _redact_url(url: str) -> str:
     except Exception:
         return url
 
+class MetaAPIError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _retryable_status_error(exc: BaseException) -> bool:
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout)) or (
+        isinstance(exc, MetaAPIError) and exc.retryable
+    )
+
+
 def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeError:
     """Create a user-friendly error while avoiding leaking sensitive data."""
     safe_url = _redact_url(url)
+    retryable = r.status_code == 429 or r.status_code >= 500
     # Default fallback body
     body_text = None
     try:
         payload = r.json()
         err = payload.get("error") or {}
+        retryable = retryable or err.get("is_transient") is True
         err_msg = err.get("message") or ""
         err_type = err.get("type") or ""
         err_code = err.get("code")
@@ -99,14 +113,14 @@ def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeErro
         # Special-case common permission error from Marketing API
         if r.status_code == 403 and err_code == 200:
             hint = (
-                "Meta permissions error: The ad account owner must grant 'ads_management' or 'ads_read' "
+                "Meta permissions error: The ad account owner must grant the required Marketing API permission "
                 f"to the app/user for ad account act_{AD_ACCOUNT_ID}. Ensure: "
                 "1) The access token belongs to a user or system user with access to the ad account; "
                 "2) The app is in Live mode (or using a system user token); "
                 "3) The app has the Marketing API permissions approved or you're using a Business System User token "
                 "assigned to the ad account."
             )
-            return RuntimeError(hint)
+            return MetaAPIError(hint, retryable=retryable)
 
         # Generic structured error with helpful fields when available
         user_msg = err.get("error_user_msg")
@@ -119,13 +133,13 @@ def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeErro
             if blame:
                 parts.append(f"Field: {blame}")
         summary = "; ".join(parts) or (payload if isinstance(payload, str) else "")
-        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {summary}{suffix}")
+        return MetaAPIError(f"Meta API {verb} error {r.status_code} at {safe_url}: {summary}{suffix}", retryable=retryable)
     except Exception:
         try:
             body_text = r.text
         except Exception:
             body_text = "<no body>"
-        return RuntimeError(f"Meta API {verb} error {r.status_code} at {safe_url}: {body_text}")
+        return MetaAPIError(f"Meta API {verb} error {r.status_code} at {safe_url}: {body_text}", retryable=retryable)
 
 def _post(path: str, payload: dict, files=None):
     payload = {**payload, "access_token": _active_token()}
@@ -342,7 +356,7 @@ def list_ad_accounts(access_token: str | None = None) -> list[dict]:
     )
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def set_campaign_status(campaign_id: str, status: str) -> dict:
     """Set campaign status to 'ACTIVE' or 'PAUSED'. Returns API response."""
     if not _active_token():
@@ -352,7 +366,9 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
         raise RuntimeError("Invalid status. Use 'ACTIVE' or 'PAUSED'.")
     # POST to /{campaign_id}
     res = _post(f"{campaign_id}", {"status": status})
-    return res if isinstance(res, dict) else {"ok": True}
+    if not isinstance(res, dict) or res.get("success") is not True:
+        raise RuntimeError("Meta did not confirm the status update. Refresh the campaign before retrying.")
+    return res
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
@@ -585,7 +601,7 @@ def list_ads_with_tracking_for_adsets(
     return out
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def set_adset_status(adset_id: str, status: str) -> dict:
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
@@ -593,7 +609,9 @@ def set_adset_status(adset_id: str, status: str) -> dict:
     if status not in ("ACTIVE", "PAUSED"):
         raise RuntimeError("Invalid status. Use 'ACTIVE' or 'PAUSED'.")
     res = _post(f"{adset_id}", {"status": status})
-    return res if isinstance(res, dict) else {"ok": True}
+    if not isinstance(res, dict) or res.get("success") is not True:
+        raise RuntimeError("Meta did not confirm the status update. Refresh the campaign before retrying.")
+    return res
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))

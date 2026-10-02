@@ -54,6 +54,9 @@ from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
 from app.integrations.clarity_client import summarize_for_campaign as summarize_clarity_for_campaign
 from app.campaign_analyzer import analyze_campaign as run_campaign_analysis, generate_action_tasks as run_action_task_generation
+from app.ads_analyzer_settings import AnalyzerSettings, get_settings as get_ads_analyzer_settings, save_settings as save_ads_analyzer_settings, model_catalog as ads_analyzer_models
+from app.ads_analyzer_data import analysis_range, preceding_range, fetch_window as fetch_analysis_window
+from app.ads_analyzer_evidence import capture_landing_page
 from app.storage import save_file
 from app.config import BASE_URL, UPLOADS_DIR, CHATKIT_WORKFLOW_ID
 from app.config import SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_OAUTH_SCOPES
@@ -2512,6 +2515,40 @@ async def _ads_management_bundle_compute(acct, date_preset, start, end, store, p
 # In-memory job store: { job_id: { status, result, error } }
 _analysis_jobs: Dict[str, Dict[str, Any]] = {}
 
+
+@app.get("/api/ads-management/agent/settings")
+async def api_ads_agent_settings(store: str | None = None):
+    return {"data": (await run_in_threadpool(get_ads_analyzer_settings, store)).model_dump()}
+
+
+class AdsAgentSettingsRequest(BaseModel):
+    store: Optional[str] = None
+    settings: AnalyzerSettings
+
+
+@app.put("/api/ads-management/agent/settings")
+async def api_ads_agent_settings_save(req: AdsAgentSettingsRequest):
+    try:
+        await run_in_threadpool(save_ads_analyzer_settings, req.store, req.settings)
+        return {"data": req.settings.model_dump()}
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/ads-management/agent/models")
+async def api_ads_agent_models(refresh: bool = False):
+    return {"data": await run_in_threadpool(ads_analyzer_models, refresh)}
+
+
+@app.get("/api/ads-management/agent/reports")
+async def api_ads_agent_reports(campaign_key: str, store: str | None = None):
+    return {"data": await run_in_threadpool(db.get_app_setting, _canonical_store_label(store), f"ads_analysis:{campaign_key}") or []}
+
+
+def _save_analysis_job(job_id: str, state: dict):
+    _analysis_jobs[job_id] = state
+    db.set_app_setting(None, f"ads_analysis_job:{job_id}", state)
+
 class CampaignAnalyzeRequest(BaseModel):
     campaign_id: Optional[str] = None
     campaign_ids: Optional[List[str]] = None  # for group analysis
@@ -2579,6 +2616,15 @@ def _analysis_landing_urls(ad_creatives: list, product_info: dict, store: str | 
 
 
 def _run_analysis_job(job_id: str, req_data: dict):
+    try:
+        with meta_access_token_scope(reporting_token(req_data.get("store"), req_data.get("ad_account"))):
+            _run_analysis_job_impl(job_id, req_data)
+    except Exception:
+        logger.exception("Ads analysis connection failed")
+        _save_analysis_job(job_id, {"status": "error", "store": req_data.get("store"), "error": "Could not read the connected Meta account. Check Connections and retry."})
+
+
+def _run_analysis_job_impl(job_id: str, req_data: dict):
     """Run the full analysis pipeline in a background thread."""
     try:
         cids = req_data.get("cids", [])
@@ -2589,30 +2635,29 @@ def _run_analysis_job(job_id: str, req_data: dict):
         campaign_age_days = req_data.get("campaign_age_days")
         campaign_key = req_data.get("campaign_key", "")
         campaign_name = req_data.get("campaign_name", "")
+        settings = AnalyzerSettings.model_validate(req_data.get("settings") or get_ads_analyzer_settings(store).model_dump())
 
         # 1) Campaign metrics
-        campaign_metrics = req_data.get("metrics") or {}
-        if not campaign_metrics:
+        campaign_metrics = fetch_analysis_window(cids, s_date, e_date)
+        if settings.compare_previous_period:
+            ps, pe = preceding_range(s_date, e_date)
             try:
-                if s_date and e_date:
-                    summary = get_campaign_summary(cids[0], since=s_date, until=e_date)
-                else:
-                    summary = get_campaign_summary(cids[0], since="2024-01-01", until="2030-12-31")
-                campaign_metrics = {
-                    "spend": summary.get("spend", 0),
-                    "purchases": summary.get("purchases", 0),
-                    "cpp": summary.get("cpp"),
-                    "ctr": summary.get("ctr"),
-                    "add_to_cart": summary.get("add_to_cart", 0),
-                    "status": summary.get("status"),
-                }
+                campaign_metrics["previous_period"] = fetch_analysis_window(cids, ps, pe)
             except Exception:
-                pass
+                campaign_metrics["previous_period"] = {"date_range": {"start": ps, "end": pe}, "error": "Previous-period insights are unavailable"}
+        # Product-level Shopify totals are kept separate from Meta-attributed purchases.
+        if pid and pid.isdigit():
+            try:
+                counts = count_orders_by_product_or_variant_processed_batch([pid], s_date, e_date, store=store, include_closed=True)
+                campaign_metrics["shopify_orders"] = int((counts or {}).get(pid, 0))
+            except Exception:
+                campaign_metrics["shopify_orders"] = None
+        campaign_metrics["true_cpp"] = None  # Cannot label un-attributed product orders as paid-ad CPP.
 
         # 2) Fetch ad creatives + product info
         ad_creatives: list = []
         try:
-            for cid in cids[:2]:
+            for cid in cids:
                 creatives = get_campaign_ad_creatives(cid)
                 ad_creatives.extend(creatives or [])
         except Exception:
@@ -2730,7 +2775,8 @@ def _run_analysis_job(job_id: str, req_data: dict):
                 campaign_name=campaign_name,
                 landing_urls=_analysis_landing_urls(ad_creatives, product_info, store),
                 num_days=_clarity_days_for_range(s_date, e_date),
-            )
+            ) if settings.clarity_enabled else {"enabled": False, "note": "Clarity is disabled in agent settings"}
+            clarity_insights["coverage_note"] = "Recent Clarity export only (up to 3 days); may not overlap the selected Meta period."
             logger.info(
                 "Campaign Analyzer: Clarity summary enabled=%s matched_rows=%s matched_by=%s error=%s urls=%s",
                 clarity_insights.get("enabled"),
@@ -2742,12 +2788,18 @@ def _run_analysis_job(job_id: str, req_data: dict):
         except Exception as clarity_err:
             logger.warning("Failed to summarize Clarity data: %s", clarity_err)
             clarity_insights = {"enabled": False, "error": str(clarity_err)}
+        visual_evidence, image_data_urls = capture_landing_page(
+            _analysis_landing_urls(ad_creatives, product_info, store), persist_blob=_persist_upload_blob,
+        ) if settings.screenshots_enabled else ([], [])
         result = run_campaign_analysis(
             campaign_metrics=campaign_metrics,
             ad_creatives=ad_creatives,
             product_info=product_info,
             clarity_insights=clarity_insights,
             previous_analysis_context=previous_analysis_context,
+            settings=settings,
+            visual_evidence=visual_evidence,
+            image_data_urls=image_data_urls,
         )
 
         # Attach raw inputs
@@ -2755,6 +2807,13 @@ def _run_analysis_job(job_id: str, req_data: dict):
         result["ad_creatives_input"] = ad_creatives[:10]
         result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
         result["clarity_insights_input"] = clarity_insights
+        result.update(date_range={"start": s_date, "end": e_date}, campaign_ids=cids, product_id=pid,
+                      campaign_key=campaign_key or cids[0], campaign_name=campaign_name,
+                      analyzed_at=datetime.utcnow().isoformat() + "Z")
+        ck = campaign_key or cids[0]
+        report_key = f"ads_analysis:{ck}"
+        history = db.get_app_setting(store, report_key) or []
+        db.set_app_setting(store, report_key, [result, *history][:5])
 
         # 5) Auto-save analysis to timeline + reset checks for new analysis
         try:
@@ -2771,15 +2830,18 @@ def _run_analysis_job(job_id: str, req_data: dict):
                 }, ensure_ascii=False)
                 db.append_campaign_timeline(store, ck, timeline_text)
                 # Reset analysis checks for the new analysis
-                db.set_campaign_meta(store, ck, {"analysis_checks": {}})
+                db.set_campaign_meta(store, ck, {"analysis_checks": {}, "ads_analysis_signal": {
+                    "product_signal": result.get("product_signal"), "confidence_level": result.get("confidence_level"),
+                    "date_range": result.get("date_range"), "analyzed_at": result.get("analyzed_at"),
+                }})
         except Exception as save_err:
             logger.warning("Failed to save analysis to timeline: %s", save_err)
 
-        _analysis_jobs[job_id] = {"status": "done", "result": result}
+        _save_analysis_job(job_id, {"status": "done", "store": store, "result": result})
     except Exception as e:
         import traceback
         traceback.print_exc()
-        _analysis_jobs[job_id] = {"status": "error", "error": str(e)}
+        _save_analysis_job(job_id, {"status": "error", "store": req_data.get("store"), "error": "Analysis failed. Check Meta, OpenAI and agent settings, then retry. No new report was saved."})
 
 
 @app.post("/api/campaign/analyze")
@@ -2792,9 +2854,18 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
         cids = [str(c).strip() for c in cids if str(c or "").strip()]
         if not cids:
             return {"error": "campaign_id or campaign_ids required"}
+        cids = list(dict.fromkeys(cids))
+        if len(cids) > 20 or any(not cid.isdigit() for cid in cids):
+            return {"error": "Select up to 20 valid Meta campaign IDs"}
+        store = _canonical_store_label(req.store)
+        settings = await run_in_threadpool(get_ads_analyzer_settings, store)
+        if not settings.enabled:
+            return {"error": "Ads analyzer is paused in AI agent settings"}
+        dr = req.date_range or {}
+        s_date, e_date = analysis_range(dr.get("start"), dr.get("end"))
 
         job_id = str(uuid4())
-        _analysis_jobs[job_id] = {"status": "pending"}
+        _save_analysis_job(job_id, {"status": "pending", "store": store, "started_at": time.time()})
 
         # Clean old jobs (keep last 50)
         if len(_analysis_jobs) > 60:
@@ -2803,10 +2874,6 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
                 _analysis_jobs.pop(old_key, None)
 
         pid = (req.product_id or "").strip()
-        store = req.store or None
-        dr = req.date_range or {}
-        s_date = (dr.get("start") or "").split("T")[0]
-        e_date = (dr.get("end") or "").split("T")[0]
 
         req_data = {
             "cids": cids,
@@ -2818,6 +2885,8 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
             "campaign_age_days": req.campaign_age_days,
             "campaign_key": (req.campaign_key or "").strip(),
             "campaign_name": (req.campaign_name or "").strip(),
+            "ad_account": req.ad_account,
+            "settings": settings.model_dump(),
         }
 
         def _tracked_analysis(_jid: str, _rd: dict):
@@ -2837,11 +2906,15 @@ async def api_campaign_analyze(req: CampaignAnalyzeRequest):
 
 
 @app.get("/api/campaign/analyze/status/{job_id}")
-async def api_campaign_analyze_status(job_id: str):
+async def api_campaign_analyze_status(job_id: str, store: str | None = None):
     """Poll for analysis job status. Returns {status: 'pending'|'done'|'error', result?, error?}"""
-    job = _analysis_jobs.get(job_id)
+    job = await run_in_threadpool(db.get_app_setting, None, f"ads_analysis_job:{job_id}")
     if not job:
         return {"status": "not_found", "error": "Job not found"}
+    if job.get("store") != _canonical_store_label(store):
+        return {"status": "not_found", "error": "Job not found for this store"}
+    if job.get("status") == "pending" and time.time() - job.get("started_at", 0) > 900:
+        return {"status": "error", "error": "Analysis was interrupted or exceeded 15 minutes. Retry the analysis."}
     return job
 
 
@@ -3036,8 +3109,8 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
         seen_campaigns: set[str] = set()
         for acct in accounts:
             try:
-                rows = list_active_campaigns_with_insights(
-                    "last_7d",
+                rows = _run_with_meta_connection(
+                    reporting_token(store, acct), list_active_campaigns_with_insights, "last_7d",
                     ad_account_id=acct or None,
                     since=s_date,
                     until=e_date,
@@ -3148,7 +3221,7 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                 try:
                     cid0 = str(rows[0].get("campaign_id", ""))
                     if cid0:
-                        ad_creatives = get_campaign_ad_creatives(cid0) or []
+                        ad_creatives = _run_with_meta_connection(reporting_token(store, rows[0].get("_ad_account")), get_campaign_ad_creatives, cid0) or []
                 except Exception:
                     pass
 
@@ -3206,6 +3279,7 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                 if age_days is not None:
                     campaign_metrics["campaign_age_days"] = age_days
 
+                settings = get_ads_analyzer_settings(store)
                 clarity_insights: dict = {}
                 try:
                     first_row = rows[0] if rows else {}
@@ -3214,18 +3288,34 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                         campaign_name=str(first_row.get("name") or product_info.get("title") or ""),
                         landing_urls=_analysis_landing_urls(ad_creatives, product_info, store),
                         num_days=_clarity_days_for_range(s_date, e_date),
-                    )
+                    ) if settings.clarity_enabled else {"enabled": False}
                 except Exception as clarity_err:
                     logger.warning("Failed to summarize Clarity data for bulk group %s: %s", pid, clarity_err)
                     clarity_insights = {"enabled": False, "error": str(clarity_err)}
 
-                # Run AI analysis
+                # Use the same store controls and evidence pipeline as individual reports.
+                if not settings.enabled:
+                    raise ValueError("Ads analyzer is paused in AI agent settings")
+                cids = [str(c.get("campaign_id")) for c in rows]
+                with meta_access_token_scope(reporting_token(store, rows[0].get("_ad_account"))):
+                    campaign_metrics = fetch_analysis_window(cids, s_date, e_date)
+                    if settings.compare_previous_period:
+                        ps, pe = preceding_range(s_date, e_date)
+                        try:
+                            campaign_metrics["previous_period"] = fetch_analysis_window(cids, ps, pe)
+                        except Exception:
+                            campaign_metrics["previous_period"] = {"error": "Previous-period data unavailable"}
+                campaign_metrics["shopify_orders"] = shopify_orders
+                campaign_metrics["campaign_age_days"] = age_days
+                if not settings.clarity_enabled:
+                    clarity_insights = {"enabled": False}
+                evidence, images = capture_landing_page(_analysis_landing_urls(ad_creatives, product_info, store), persist_blob=_persist_upload_blob) if settings.screenshots_enabled else ([], [])
                 result = run_campaign_analysis(
-                    campaign_metrics=campaign_metrics,
-                    ad_creatives=ad_creatives,
-                    product_info=product_info,
-                    clarity_insights=clarity_insights,
+                    campaign_metrics=campaign_metrics, ad_creatives=ad_creatives,
+                    product_info=product_info, clarity_insights=clarity_insights,
+                    settings=settings, visual_evidence=evidence, image_data_urls=images,
                 )
+                result.update(date_range={"start": s_date, "end": e_date}, analyzed_at=datetime.utcnow().isoformat() + "Z")
                 result["meta_inputs"] = campaign_metrics
                 result["product_info_input"] = {k: v for k, v in product_info.items() if k != "description"}
                 result["clarity_insights_input"] = clarity_insights
@@ -3233,6 +3323,13 @@ def _run_bulk_analysis_job(job_id: str, store: str | None, ad_accounts: list[str
                 result["campaign_key"] = pid
                 result["product_id"] = pid
                 result["campaign_ids"] = [str(c.get("campaign_id", "")) for c in rows]
+                report_key = f"ads_analysis:{pid}"
+                history = db.get_app_setting(store, report_key) or []
+                db.set_app_setting(store, report_key, [result, *history][:5])
+                db.set_campaign_meta(store, pid, {"ads_analysis_signal": {
+                    "product_signal": result.get("product_signal"), "confidence_level": result.get("confidence_level"),
+                    "date_range": result.get("date_range"), "analyzed_at": result.get("analyzed_at"),
+                }})
 
                 # Save the group analysis on each concrete campaign. Product-group
                 # timelines are retired in favor of per-campaign daily activity.
@@ -3405,16 +3502,11 @@ async def api_analyze_all_campaigns(req: BulkAnalyzeRequest):
     try:
         job_id = str(uuid4())
         store = req.store or None
+        settings = await run_in_threadpool(get_ads_analyzer_settings, store)
+        if not settings.enabled:
+            return {"error": "Ads analyzer is paused in AI agent settings"}
         dr = req.date_range or {}
-        s_date = (dr.get("start") or "").split("T")[0]
-        e_date = (dr.get("end") or "").split("T")[0]
-
-        # Default to last 7 days if no range provided
-        if not s_date or not e_date:
-            from datetime import timedelta
-            now = datetime.utcnow()
-            s_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-            e_date = now.strftime("%Y-%m-%d")
+        s_date, e_date = analysis_range(dr.get("start"), dr.get("end"))
 
         # Save initial job state
         db.save_bulk_analysis_job(store, job_id, {
@@ -5845,6 +5937,7 @@ async def api_list_ad_accounts(store: str | None = None, stores: str | None = No
 class CampaignStatusUpdateRequest(BaseModel):
     status: str  # ACTIVE | PAUSED
     store: Optional[str] = None
+    ad_account: Optional[str] = None
 
 
 def _run_with_meta_connection(token, operation, *args, **kwargs):
@@ -5858,7 +5951,7 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store), set_campaign_status, campaign_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store, req.ad_account), set_campaign_status, campaign_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -5866,6 +5959,8 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
         _invalidate_caches_for_status_change()
         return {"data": res, "status": status}
     except Exception as e:
+        if isinstance(e, RetryError):
+            e = e.last_attempt.exception() or e
         return {"error": str(e)}
 
 
@@ -6177,6 +6272,7 @@ async def api_campaign_collection_orders(campaign_id: str, collection_id: str, s
 class AdsetStatusUpdateRequest(BaseModel):
     status: str
     store: Optional[str] = None
+    ad_account: Optional[str] = None
 
 
 @app.post("/api/meta/adsets/{adset_id}/status")
@@ -6185,7 +6281,7 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         status = (req.status or "").upper()
         if status not in ("ACTIVE", "PAUSED"):
             return {"error": "invalid_status"}
-        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store), set_adset_status, adset_id, status)
+        res = await run_in_threadpool(_run_with_meta_connection, reporting_token(req.store, req.ad_account), set_adset_status, adset_id, status)
         # Verify the update succeeded
         if isinstance(res, dict) and res.get("error"):
             return {"error": str(res.get("error"))}
@@ -6193,6 +6289,8 @@ async def api_update_adset_status(adset_id: str, req: AdsetStatusUpdateRequest):
         _invalidate_caches_for_status_change()
         return {"data": res, "status": status}
     except Exception as e:
+        if isinstance(e, RetryError):
+            e = e.last_attempt.exception() or e
         return {"error": str(e)}
 
 

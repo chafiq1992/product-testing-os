@@ -9,6 +9,8 @@ import logging
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential
 from app.integrations.openai_client import client, DEFAULT_LLM_MODEL
+from app.ads_analyzer_settings import AnalyzerSettings, get_client
+from app.ads_analyzer_report import build_report
 
 logger = logging.getLogger(__name__)
 
@@ -44,98 +46,6 @@ CUSTOMER_PROFILER_PROMPT = (
     "- Be extremely specific. No generic personas.\n"
     "- If the product is from Morocco/MENA region, factor in local culture, COD preference, WhatsApp shopping.\n"
     "- Match language of product info.\n"
-    "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
-)
-
-
-# ─────────────── Phase 2: Campaign Analyst ───────────────
-
-CAMPAIGN_ANALYST_PROMPT = (
-    "You are an elite team of 3 experts working together:\n"
-    "1) A Meta Ads specialist with 10+ years managing $100M+ in ad spend\n"
-    "2) A direct-response marketing strategist who has scaled 500+ products\n"
-    "3) A consumer behavior analyst who understands buying psychology\n\n"
-    "Task: Analyze the provided CAMPAIGN DATA (metrics, ad creatives, product info, customer profile) "
-    "and optional CLARITY BEHAVIOR DATA, then produce actionable, prioritized recommendations.\n\n"
-    "ANALYSIS FRAMEWORK:\n"
-    "- CTR benchmarks: <1% = poor, 1-2% = average, 2-4% = good, >4% = excellent\n"
-    "- CPP benchmarks: depends on product price. True CPP should be < 30-40% of product price for profitability\n"
-    "- Add-to-cart vs Purchase ratio: >3:1 = landing page or pricing issue, <2:1 = healthy\n"
-    "- Clarity landing-page diagnosis: high dead/rage/error clicks usually indicates technical or UX problems; "
-    "high quickbacks or very low engagement/scroll usually indicates offer/message/price mismatch; "
-    "good engagement with low purchase usually indicates trust, COD, delivery, exchange, or pricing objections.\n"
-    "- If spend is low (<$20), note that data may not be statistically significant\n"
-    "- CAMPAIGN AGE: Consider how many days the campaign has been running (campaign_age_days in metrics). "
-    "Day 1-3 = testing phase (need patience, focus on creative testing). "
-    "Day 3-6 = action phase (evaluate initial data, make early optimizations). "
-    "Day 6-13 = micro-scaling phase (if metrics are good, start scaling budgets). "
-    "Day 13+ = macro-scaling phase (aggressive scaling if unit economics are solid). "
-    "Tailor your recommendations to the campaign's current phase.\n\n"
-    "Output Contract — return ONE valid JSON object:\n"
-    "{\n"
-    '  "overall_verdict": string ("kill"|"optimize"|"scale"|"scale_aggressively"),\n'
-    '  "confidence_level": string ("low - insufficient data"|"medium"|"high"),\n'
-    '  "summary": string (2-3 sentence executive summary),\n'
-    '  "recommendations": [\n'
-    "    {\n"
-    '      "priority": number (1=most critical, 5=nice-to-have),\n'
-    '      "category": string ("creative"|"targeting"|"budget"|"pricing"|"landing_page"|"offer"|"ad_copy"|"product"),\n'
-    '      "finding": string (what the data shows — be specific with numbers),\n'
-    '      "recommendation": string (exactly what to do — be actionable),\n'
-    '      "expected_impact": string (estimated improvement)\n'
-    "    }\n"
-    "  ] (5-10 recommendations, sorted by priority ascending),\n"
-    '  "scaling_plan": {\n'
-    '    "current_phase": string ("testing"|"early_results"|"optimization"|"scaling"|"mature"),\n'
-    '    "verdict": string (detailed reasoning for the overall verdict),\n'
-    '    "next_steps": string[] (3-5 concrete, ordered next steps to take),\n'
-    '    "budget_recommendation": string (specific budget change recommendation),\n'
-    '    "timeline": string (expected timeline for improvements)\n'
-    "  },\n"
-    '  "creative_analysis": {\n'
-    '    "headline_score": number (1-10),\n'
-    '    "headline_feedback": string,\n'
-    '    "ad_copy_score": number (1-10),\n'
-    '    "ad_copy_feedback": string,\n'
-    '    "suggested_headlines": string[] (3 improved headlines),\n'
-    '    "suggested_ad_copy": string (improved primary text),\n'
-    '    "new_creative_examples": [\n'
-    "      {\n"
-    '        "concept_name": string (short name for the creative concept),\n'
-    '        "angle": string (core buyer angle or objection),\n'
-    '        "format": string ("image"|"video"|"carousel"),\n'
-    '        "hook": string (first line or first 3 seconds),\n'
-    '        "visual_direction": string (exact visual brief for designer/video editor),\n'
-    '        "primary_text": string (ready-to-use ad copy),\n'
-    '        "headline": string (ready-to-use headline),\n'
-    '        "why_it_should_work": string (why this creative should improve performance)\n'
-    "      }\n"
-    "    ] (3-5 ready-to-brief new creative examples)\n"
-    "  },\n"
-    '  "landing_page_diagnosis": {\n'
-    '    "primary_issue": string ("none"|"technical_problem"|"mobile_ux_problem"|"price_problem"|"offer_problem"|"trust_problem"|"message_mismatch"|"insufficient_data"),\n'
-    '    "confidence": string ("low"|"medium"|"high"),\n'
-    '    "evidence": string[] (specific Clarity + Meta/Shopify signals),\n'
-    '    "recommended_fixes": string[] (3-5 specific landing-page fixes)\n'
-    "  },\n"
-    '  "customer_alignment": {\n'
-    '    "score": number (1-10, how well the current ads align with the target customer),\n'
-    '    "gaps": string[] (specific misalignments between ad creative and customer needs),\n'
-    '    "opportunities": string[] (untapped angles based on customer profile)\n'
-    "  }\n"
-    "}\n\n"
-    "Rules:\n"
-    "- Every recommendation must reference specific numbers from the data.\n"
-    "- If CLARITY BEHAVIOR DATA is present, use it to separate landing-page problems into technical, mobile UX, price, offer, trust, or message-mismatch causes.\n"
-    "- If Clarity has no matched rows or an error, say insufficient data and do not invent heatmap findings.\n"
-    "- Sort recommendations from MOST IMPACTFUL to least impactful.\n"
-    "- Be brutally honest. If the product should be killed, say so.\n"
-    "- For Morocco/MENA: factor in COD, WhatsApp, local shopping patterns.\n"
-    "- Suggested headlines: keep emojis, start with a HOOK, ≤12 words.\n"
-    "- New creative examples must be specific enough for a designer or media buyer to build immediately: "
-    "include the exact angle, format, first hook, visual direction, primary text, headline, and why it should work.\n"
-    "- Provide 3-5 distinct new creative examples, not generic advice.\n"
-    "- Match language of the ad copy (if Arabic/French, write suggestions in same language).\n"
     "CRITICAL: Return ONLY the JSON object. No markdown, no prose.\n"
 )
 
@@ -178,6 +88,9 @@ def analyze_campaign(
     customer_profile_override: dict | None = None,
     model: str | None = None,
     previous_analysis_context: str | None = None,
+    settings: AnalyzerSettings | None = None,
+    visual_evidence: list | None = None,
+    image_data_urls: list | None = None,
 ) -> dict:
     """Run the two-phase analysis pipeline.
 
@@ -193,12 +106,17 @@ def analyze_campaign(
     Returns:
         { customer_profile, recommendations, scaling_plan, creative_analysis, ... }
     """
-    use_model = model or ANALYZER_MODEL
+    settings = settings or AnalyzerSettings()
+    if not settings.enabled:
+        raise ValueError("Ads analyzer is paused in AI agent settings")
+    if model:
+        settings = settings.model_copy(update={"model": model})
+    use_model = settings.model
 
     # ── Phase 1: Customer Profiler ──
     if customer_profile_override:
         customer_profile = customer_profile_override
-    else:
+    elif settings.profiler_enabled:
         product_context = (
             f"PRODUCT DATA:\n"
             f"Title: {product_info.get('title', 'Unknown')}\n"
@@ -208,61 +126,26 @@ def analyze_campaign(
             f"Image URL: {product_info.get('image_url', '')}\n"
         )
         logger.info("Campaign Analyzer: Phase 1 (Customer Profiler) with %s", use_model)
-        customer_profile = _call_llm(CUSTOMER_PROFILER_PROMPT, product_context, model=use_model)
+        profiler_options = {"reasoning": {"effort": settings.reasoning_effort}} if use_model.startswith(("gpt-5", "gpt-6", "o3", "o4")) else {}
+        response = get_client().responses.create(
+            model=use_model, instructions=CUSTOMER_PROFILER_PROMPT + "\nSeparate evidence from demographic hypotheses. Do not invent buyer facts.",
+            input=product_context, text={"format": {"type": "json_object"}},
+            max_output_tokens=settings.max_output_tokens, store=False, **profiler_options,
+        )
+        if response.status != "completed" or not response.output_text:
+            raise RuntimeError("Customer profiler did not complete; retry or disable profiling")
+        customer_profile = json.loads(response.output_text)
         if not customer_profile:
             customer_profile = {"error": "Could not generate customer profile"}
+    else:
+        customer_profile = {"note": "Customer profiling is disabled"}
 
-    # ── Phase 2: Campaign Analyst ──
-    analyst_input = (
-        f"CUSTOMER PROFILE:\n{json.dumps(customer_profile, ensure_ascii=False)}\n\n"
-        f"CAMPAIGN METRICS:\n{json.dumps(campaign_metrics, ensure_ascii=False)}\n\n"
-        f"AD CREATIVES:\n{json.dumps(ad_creatives[:5], ensure_ascii=False)}\n\n"
-        f"PRODUCT INFO:\n{json.dumps({k: v for k, v in product_info.items() if k != 'description'}, ensure_ascii=False)}\n\n"
-        f"CLARITY BEHAVIOR DATA:\n{json.dumps(clarity_insights or {}, ensure_ascii=False)}\n"
+    return build_report(
+        settings=settings, campaign_metrics=campaign_metrics, ad_creatives=ad_creatives,
+        product_info=product_info, customer_profile=customer_profile,
+        clarity_insights=clarity_insights or {}, previous_analysis_context=previous_analysis_context,
+        visual_evidence=visual_evidence or [], image_data_urls=image_data_urls or [],
     )
-
-    # Inject previous analysis context for feedback loop
-    if previous_analysis_context:
-        analyst_input += (
-            f"\n\n--- FEEDBACK LOOP: PREVIOUS ANALYSIS & IMPLEMENTATION STATUS ---\n"
-            f"{previous_analysis_context}\n"
-            f"---\n"
-            f"IMPORTANT INSTRUCTIONS FOR THIS FOLLOW-UP ANALYSIS:\n"
-            f"1. Review the IMPLEMENTED items above. Evaluate whether those changes likely improved performance based on the current metrics.\n"
-            f"2. For NOT YET IMPLEMENTED items, decide if they are still relevant given the current data — keep, update, or drop them.\n"
-            f"3. DO NOT repeat recommendations that were already implemented unless they need further iteration.\n"
-            f"4. Provide NEW, more advanced recommendations building on what was already done.\n"
-            f"5. In your summary, briefly mention what progress was made since the last analysis.\n"
-        )
-
-    logger.info("Campaign Analyzer: Phase 2 (Campaign Analyst) with %s", use_model)
-    analysis = _call_llm(CAMPAIGN_ANALYST_PROMPT, analyst_input, model=use_model)
-
-    # Normalize output
-    if not isinstance(analysis.get("recommendations"), list):
-        analysis["recommendations"] = []
-    if not isinstance(analysis.get("scaling_plan"), dict):
-        analysis["scaling_plan"] = {}
-    if not isinstance(analysis.get("creative_analysis"), dict):
-        analysis["creative_analysis"] = {}
-    if not isinstance(analysis["creative_analysis"].get("new_creative_examples"), list):
-        analysis["creative_analysis"]["new_creative_examples"] = []
-    if not isinstance(analysis.get("customer_alignment"), dict):
-        analysis["customer_alignment"] = {}
-    if not isinstance(analysis.get("landing_page_diagnosis"), dict):
-        analysis["landing_page_diagnosis"] = {}
-
-    # Sort recommendations by priority
-    try:
-        analysis["recommendations"].sort(key=lambda r: int(r.get("priority", 99)))
-    except Exception:
-        pass
-
-    return {
-        "customer_profile": customer_profile,
-        **analysis,
-    }
-
 
 # ─────────────── Action Task Agent ───────────────
 

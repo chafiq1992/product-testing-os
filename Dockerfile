@@ -40,6 +40,9 @@ RUN pip install --no-cache-dir --compile -r requirements.txt && \
     find /usr/local -name '*.pyc' -delete 2>/dev/null; \
     true
 
+# Install the screenshot browser in the runtime image.
+RUN python -m playwright install --with-deps chromium
+
 # Copy backend code from build stage
 COPY --from=backend-build /app/app ./app
 

@@ -456,6 +456,7 @@ export async function campaignMappingUpsert(payload:{ campaign_key:string, kind:
 
 // Campaign meta (supplier fields + timeline)
 export type CampaignMetaRecord = {
+  ads_analysis_signal?: Pick<CampaignAnalysisResult, 'product_signal' | 'confidence_level' | 'date_range' | 'analyzed_at'>,
   supplier_name?: string,
   supplier_alt_name?: string,
   supply_available?: string,
@@ -721,8 +722,8 @@ export async function metaAdAccountTimezone(adAccount?: string, store?: string){
   return data as { data?: { id?: string, timezone_name?: string, timezone_offset_hours_utc?: number }, error?: string }
 }
 
-export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED'){
-  const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status, store: selectedStore() })
+export async function metaSetCampaignStatus(campaign_id: string, status: 'ACTIVE'|'PAUSED', context?: { store?: string, ad_account?: string }){
+  const {data} = await axios.post(`${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/status`, { status, store: context?.store ?? selectedStore(), ad_account: context?.ad_account })
   return data as { data?: any, error?: string }
 }
 
@@ -750,8 +751,8 @@ export async function fetchCampaignAdsets(campaign_id: string, datePreset?: stri
   })
 }
 
-export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAUSED'){
-  const {data} = await axios.post(`${base}/api/meta/adsets/${encodeURIComponent(adset_id)}/status`, { status, store: selectedStore() })
+export async function metaSetAdsetStatus(adset_id: string, status: 'ACTIVE'|'PAUSED', context?: { store?: string, ad_account?: string }){
+  const {data} = await axios.post(`${base}/api/meta/adsets/${encodeURIComponent(adset_id)}/status`, { status, store: context?.store ?? selectedStore(), ad_account: context?.ad_account })
   return data as { data?: any, error?: string }
 }
 
@@ -1192,6 +1193,17 @@ export async function productLifeInstructionsSet(payload:{ phases: Record<string
 
 // -------- Campaign AI Analyzer --------
 export type CampaignAnalysisResult = {
+  product_signal?: 'potential_winner' | 'at_risk' | 'needs_optimization' | 'inconclusive'
+  warnings?: Array<{ severity: string, title: string, explanation: string }>
+  data_gaps?: string[]
+  funnel_stages?: Array<{ stage: string, status: string, evidence: string[], hypothesis: string, suggested_test: string }>
+  visual_evidence?: Array<{ id: string, status: string, title?: string, url?: string, source_url?: string, note: string }>
+  visual_findings?: Array<{ evidence_id: string, area: string, observation: string, why_it_matters: string, suggested_change: string }>
+  date_range?: { start: string, end: string }
+  analyzed_at?: string
+  campaign_ids?: string[]
+  agent?: { model: string, reasoning_effort: string, reviewer_model?: string | null }
+  review?: { decision_supported: boolean, summary: string, concerns: string[] }
   customer_profile: Record<string, any>
   overall_verdict?: string
   confidence_level?: string
@@ -1265,19 +1277,20 @@ export async function campaignAnalyze(payload: {
     // Fallback: old-style response with data/error directly
     return startRes.data as { data?: CampaignAnalysisResult, error?: string }
   }
-  // Step 2: Poll for result every 3 seconds (up to 5 minutes)
-  const maxAttempts = 100  // 100 * 3s = 5 minutes
+  // Jobs and final reports persist across reloads and server instances.
+  const maxAttempts = 300
   for(let i = 0; i < maxAttempts; i++){
     if(options?.signal?.aborted) return { error: 'Analysis cancelled' }
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 3000)
-      options?.signal?.addEventListener('abort', () => {
+      const onAbort = () => {
         clearTimeout(timer)
         reject(new DOMException('Analysis cancelled', 'AbortError'))
-      }, { once: true })
+      }
+      const timer = setTimeout(() => { options?.signal?.removeEventListener('abort', onAbort); resolve() }, 3000)
+      options?.signal?.addEventListener('abort', onAbort, { once: true })
     })
     try{
-      const statusRes = await axios.get(`${base}/api/campaign/analyze/status/${jobId}`, { timeout: 10000, signal: options?.signal })
+      const statusRes = await axios.get(`${base}/api/campaign/analyze/status/${jobId}`, { params: { store: body.store }, timeout: 10000, signal: options?.signal })
       const job = statusRes.data
       if(job.status === 'done'){
         return { data: job.result as CampaignAnalysisResult }
@@ -1290,12 +1303,41 @@ export async function campaignAnalyze(payload: {
       }
       // status === 'pending' → keep polling
     }catch(pollErr: any){
+      if(options?.signal?.aborted) throw pollErr
       // Network blip during polling — keep trying
       console.warn('Analysis poll error:', pollErr?.message)
     }
   }
-  return { error: 'Analysis timed out after 5 minutes' }
+  return { error: 'Analysis exceeded 15 minutes. Reopen the saved reports before retrying.' }
 }
+
+export type AdsAnalyzerSettings = {
+  enabled: boolean, model: string, reasoning_effort: 'low' | 'medium' | 'high', max_output_tokens: number,
+  profiler_enabled: boolean, reviewer_enabled: boolean, reviewer_model: string, clarity_enabled: boolean,
+  screenshots_enabled: boolean, compare_previous_period: boolean, min_purchases: number, min_spend: number,
+  target_cpa: number | null, target_roas: number | null, language: 'auto' | 'English' | 'Arabic' | 'French', instructions: string
+}
+export type AdsModelCatalog = { models: Array<{ id: string, available: boolean }>, source: string, error?: string | null }
+export async function adsAgentSettings(store?: string): Promise<AdsAnalyzerSettings> {
+  const { data } = await axios.get(`${base}/api/ads-management/agent/settings`, { params: { store: store ?? selectedStore() } })
+  if(data.error) throw new Error(data.error)
+  return data.data
+}
+export async function adsAgentSettingsSave(settings: AdsAnalyzerSettings, store?: string) {
+  const { data } = await axios.put(`${base}/api/ads-management/agent/settings`, { settings, store: store ?? selectedStore() })
+  if(data.error) throw new Error(data.error)
+  return data.data as AdsAnalyzerSettings
+}
+export async function adsAgentModels(refresh = false): Promise<AdsModelCatalog> {
+  const { data } = await axios.get(`${base}/api/ads-management/agent/models`, { params: { refresh } })
+  return data.data
+}
+export async function adsAgentReports(campaignKey: string, store?: string): Promise<CampaignAnalysisResult[]> {
+  const { data } = await axios.get(`${base}/api/ads-management/agent/reports`, { params: { campaign_key: campaignKey, store: store ?? selectedStore() } })
+  if(data.error) throw new Error(data.error)
+  return data.data || []
+}
+export function analysisEvidenceUrl(path: string) { return path.startsWith('/uploads/ads-evidence-') ? `${base}${path}` : '' }
 
 // -------- Campaign Analysis Checks (implementation checkmarks) --------
 export async function campaignAnalysisChecksSave(payload: { campaign_key: string, checks: Record<string, boolean>, store?: string }){
