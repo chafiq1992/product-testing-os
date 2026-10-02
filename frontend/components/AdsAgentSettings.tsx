@@ -39,6 +39,7 @@ export default function AdsAgentSettings({ store }: { store: string }) {
           <label className="text-sm font-medium">Reasoning depth<select className={fieldClass} value={settings.reasoning_effort} onChange={e => update('reasoning_effort', e.target.value)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           <label className="text-sm font-medium">Output token limit<input className={fieldClass} type="number" min={3000} max={16000} step={500} required value={settings.max_output_tokens} onChange={e => update('max_output_tokens', Number(e.target.value))} /></label>
         </div>
+        <p className="mt-3 text-xs text-slate-500">The token budget includes both reasoning and the report. If High reasoning reaches the limit before finishing, choose Medium or Low.</p>
         <button type="button" className="mt-4 text-sm font-medium text-violet-700 underline" onClick={async () => { try { setCatalog(await adsAgentModels(true)) } catch { setError('Could not refresh model catalog') } }}>Refresh available models</button>
       </section>
       <section className="rounded-2xl border bg-white p-5"><h2 className="font-semibold">Specialists and evidence tools</h2>

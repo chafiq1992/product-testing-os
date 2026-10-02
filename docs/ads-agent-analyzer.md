@@ -71,6 +71,18 @@ High reasoning and the configured output-token limit are preserved. Timeout
 errors now identify OpenAI and suggest retrying or changing reasoning depth.
 See [OpenAI streaming responses](https://developers.openai.com/api/docs/guides/streaming-responses).
 
+The output-token limit covers both reasoning and the visible report. High
+reasoning can exhaust that budget before producing a complete JSON report.
+Token cutoffs identify the configured limit; at the 16,000-token settings cap,
+the error recommends reducing reasoning or selecting another model rather than
+offering an unavailable budget increase. Incomplete reports are never saved.
+See [OpenAI reasoning token budgets](https://developers.openai.com/api/docs/guides/reasoning).
+
+First-screen and lower-page capture results are independent. Buying-section
+scrolling targets visible cart/add controls; when those cannot be located, the
+fallback image is labeled as a lower-page capture. A failure keeps its own
+evidence ID and never invalidates or duplicates a successfully captured view.
+
 The Responses API returns a validated structured report covering delivery,
 hook, creative, ad CTA, landing page, offer, checkout, fulfillment and tracking.
 The report separates observations from hypotheses and proposes controlled tests.

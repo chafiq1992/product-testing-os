@@ -46,23 +46,28 @@ def capture_landing_page(urls: list[str], persist_blob=None) -> tuple[list[dict]
                 page.wait_for_timeout(1200)
                 # Capture the actual first screen and one screen near the buying controls.
                 for identifier, title, scroll in (("landing-mobile", "Mobile first screen", False), ("landing-buying", "Mobile buying section", True)):
-                    if scroll:
-                        controls = page.locator('button[type="submit"], input[type="submit"], [name="add"]')
-                        if controls.count():
-                            controls.first.scroll_into_view_if_needed()
-                        else:
-                            page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight - innerHeight, 1600))")
-                    png = page.screenshot(type="png", full_page=False, timeout=15000)
-                    filename = f"ads-evidence-{uuid4().hex}.png"
-                    path = save_file(filename, png)
-                    if persist_blob:
-                        persist_blob(filename, png, "image/png")
-                    images.append("data:image/png;base64," + base64.b64encode(png).decode())
-                    evidence.append({"id": identifier, "status": "captured", "title": title, "url": path, "source_url": page.url, "note": "Current page capture; not a historical recording for the analysis period."})
+                    try:
+                        if scroll:
+                            controls = page.locator('[name="add"]:visible, form[action*="/cart/add"] button[type="submit"]:visible, form[action*="/cart/add"] input[type="submit"]:visible')
+                            if controls.count():
+                                controls.first.scroll_into_view_if_needed()
+                            else:
+                                page.evaluate("window.scrollTo(0, Math.min(document.body.scrollHeight - innerHeight, 1600))")
+                                title = "Mobile lower page (buying controls not located)"
+                        png = page.screenshot(type="png", full_page=False, timeout=15000)
+                        filename = f"ads-evidence-{uuid4().hex}.png"
+                        path = save_file(filename, png)
+                        if persist_blob:
+                            persist_blob(filename, png, "image/png")
+                        images.append("data:image/png;base64," + base64.b64encode(png).decode())
+                        evidence.append({"id": identifier, "status": "captured", "title": title, "url": path, "source_url": page.url, "note": "Current page capture; not a historical recording for the analysis period."})
+                    except Exception:
+                        evidence.append({"id": identifier, "status": "unavailable", "title": title, "note": "This view could not be captured; visual observations are unavailable for this screenshot."})
             finally:
                 browser.close()
     except Exception:
-        evidence.append({"id": "landing-mobile", "status": "unavailable", "note": "Screenshot capture failed. Check Chromium installation and landing-page access; no visual conclusions are available."})
+        if not evidence:
+            evidence.append({"id": "landing-mobile", "status": "unavailable", "note": "Screenshot capture failed. Check Chromium installation and landing-page access; no visual conclusions are available."})
     finally:
         _capture_lock.release()
     return evidence, images

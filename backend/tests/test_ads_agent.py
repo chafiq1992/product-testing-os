@@ -192,6 +192,46 @@ def test_screenshot_failure_returns_explicit_evidence_gap():
     assert not images and evidence_rows[0]["status"] == "unavailable"
 
 
+@pytest.mark.parametrize("failed_view", [None, "landing-mobile", "landing-buying"])
+def test_capture_preserves_independent_views_and_avoids_hidden_forms(monkeypatch, failed_view):
+    import playwright.sync_api
+    page = Mock()
+    page.url = "https://public.example/products/example"
+    page.goto.return_value = SimpleNamespace(status=200)
+    controls = Mock()
+    controls.count.return_value = 1
+    def locate(selector):
+        # A generic first submit button can be a hidden search/newsletter form.
+        if ':visible' not in selector or '/cart/add' not in selector:
+            hidden = Mock()
+            hidden.count.return_value = 1
+            hidden.first.scroll_into_view_if_needed.side_effect = RuntimeError("hidden form")
+            return hidden
+        return controls
+    page.locator.side_effect = locate
+    def screenshot(**kwargs):
+        identifier = "landing-mobile" if page.screenshot.call_count == 1 else "landing-buying"
+        if identifier == failed_view:
+            raise RuntimeError("private browser diagnostic")
+        return identifier.encode()
+    page.screenshot.side_effect = screenshot
+    browser = Mock()
+    browser.new_context.return_value.new_page.return_value = page
+    chromium = Mock()
+    chromium.launch.return_value = browser
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", lambda: nullcontext(SimpleNamespace(chromium=chromium)))
+    monkeypatch.setattr(evidence, "public_url", lambda url: True)
+    monkeypatch.setattr(evidence, "save_file", lambda name, png: "/files/" + name)
+    persist = Mock()
+    rows, images = evidence.capture_landing_page([page.url], persist)
+    assert [row['id'] for row in rows] == ["landing-mobile", "landing-buying"]
+    assert [row['id'] for row in rows if row['status'] == 'unavailable'] == ([failed_view] if failed_view else [])
+    assert len(images) == persist.call_count == (1 if failed_view else 2)
+    assert "private browser diagnostic" not in json.dumps(rows)
+    controls.first.scroll_into_view_if_needed.assert_called_once()
+    browser.close.assert_called_once()
+
+
 def test_job_ignores_client_metrics_and_persists_full_group_and_period(monkeypatch):
     from app import main
     stored, windows = {}, []
@@ -342,7 +382,8 @@ def test_stream_without_completed_event_closes_and_never_returns_partial_report(
     assert closed == [True]
 
 
-def test_stream_token_cutoff_identifies_configured_budget_before_sdk_finalization(monkeypatch):
+@pytest.mark.parametrize("budget", [8000, config.MAX_ANALYSIS_OUTPUT_TOKENS])
+def test_stream_token_cutoff_identifies_configured_budget_before_sdk_finalization(monkeypatch, budget):
     sdk = Mock()
     sdk.with_options.return_value = sdk
     terminal = SimpleNamespace(status="incomplete", incomplete_details=SimpleNamespace(reason="max_output_tokens"))
@@ -350,6 +391,11 @@ def test_stream_token_cutoff_identifies_configured_budget_before_sdk_finalizatio
     stream.get_final_response = Mock(side_effect=RuntimeError("SDK has no completed response"))
     sdk.responses.stream.return_value = nullcontext(stream)
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
-    with pytest.raises(reports.AnalyzerResponseError, match="8,000-token output limit"):
-        reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings(reasoning_effort="high"))
+    with pytest.raises(reports.AnalyzerResponseError, match=f"{budget:,}-token output limit") as caught:
+        reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings(reasoning_effort="high", max_output_tokens=budget))
+    if budget == config.MAX_ANALYSIS_OUTPUT_TOKENS:
+        assert "Lower reasoning depth" in str(caught.value)
+        assert "Increase the output token limit" not in str(caught.value)
+    else:
+        assert "Increase the output token limit" in str(caught.value)
     stream.get_final_response.assert_not_called()

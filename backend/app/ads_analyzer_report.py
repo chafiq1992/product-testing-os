@@ -3,7 +3,7 @@ import json
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from openai import APITimeoutError, APIConnectionError, AuthenticationError, BadRequestError, RateLimitError
-from app.ads_analyzer_settings import AnalyzerSettings, get_client
+from app.ads_analyzer_settings import AnalyzerSettings, MAX_ANALYSIS_OUTPUT_TOKENS, get_client
 
 
 class AnalyzerResponseError(RuntimeError):
@@ -173,7 +173,8 @@ def structured_response(contract, *, instructions: str, content: list, model: st
         if terminal is not None and terminal.status == "incomplete":
             reason = getattr(getattr(terminal, "incomplete_details", None), "reason", None)
             if reason == "max_output_tokens":
-                raise AnalyzerResponseError(f"OpenAI reached the {settings.max_output_tokens:,}-token output limit before finishing the report. Increase the output token limit or lower reasoning depth in AI agent settings.")
+                action = "Increase the output token limit or lower reasoning depth" if settings.max_output_tokens < MAX_ANALYSIS_OUTPUT_TOKENS else "Lower reasoning depth or choose a different analysis model"
+                raise AnalyzerResponseError(f"OpenAI reached the {settings.max_output_tokens:,}-token output limit before finishing the report. {action} in AI agent settings.")
             raise AnalyzerResponseError("OpenAI returned an incomplete analysis. Retry the analysis.")
         if terminal is not None and terminal.status == "failed":
             raise AnalyzerResponseError("OpenAI could not finish the analysis stream. Retry the analysis.")
