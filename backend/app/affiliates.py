@@ -569,6 +569,10 @@ def order_details(order_id: str, seller=Depends(active_seller)):
                 'unit_price': float(li.get('price') or 0), 'total': float(li.get('price') or 0) * int(li.get('quantity') or 0)}
                 for li in snap.get('line_items', [])]}
         receipt['name'] = snap.get('name') or 'Order awaiting confirmation'
+        if 'delivery_fee' not in receipt:
+            terms = session.get(OrderTerms, order_id)
+            receipt['delivery_fee'] = (terms.delivery_fee_cents if terms else 0) / 100
+        receipt['delivery_included'] = True
         return {'data': {'order': order_view(row), 'receipt': receipt}}
 
 
@@ -654,13 +658,17 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
             variant = next(v for v in product['variants'] if str(v['id']) == item.variant_id)
             image = next((im.get('src') for im in product.get('images', []) if im.get('id') == variant.get('image_id')), None)
             image = image or next((im.get('src') for im in product.get('images', []) if im.get('src')), None)
-            receipt_items.append({'title': product['title'], 'variant': variant.get('title', ''), 'image': image,
+            options = {str(o.get('name', '')).casefold(): variant.get(f"option{o.get('position', 1)}", '') for o in product.get('options', [])}
+            color = next((value for key, value in options.items() if key in {'color', 'colour', 'couleur', 'اللون'}), '')
+            size = next((value for key, value in options.items() if key in {'size', 'taille', 'pointure', 'المقاس'}), '')
+            receipt_items.append({'title': product['title'], 'variant': variant.get('title', ''), 'image': image, 'color': color, 'size': size,
                 'quantity': item.quantity, 'unit_price': prices[item.variant_id] / 100,
                 'total': prices[item.variant_id] * item.quantity / 100})
         session.add(OrderReceipt(order_id=oid, data=json.dumps({
             'customer_name': customer['customer_name'], 'customer_phone': customer['customer_phone'],
             'city': body.city, 'address': customer['address'], 'note': body.note, 'currency': currency,
-            'items': receipt_items, 'total': sum(prices[vid] * qty for vid, qty in quantities.items()) / 100})))
+            'items': receipt_items, 'delivery_fee': fee / 100, 'delivery_included': True,
+            'total': sum(prices[vid] * qty for vid, qty in quantities.items()) / 100})))
         try:
             session.commit()
         except IntegrityError:
@@ -674,7 +682,12 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
             "line_items": [{"variant_id": int(vid), "quantity": qty, "price": str(Decimal(prices[vid]) / 100)} for vid, qty in quantities.items()],
             "shipping_address": address, "billing_address": address,
             "customer": {"id": int(cid)},
-            "tags": f"affiliate,affiliate_seller:{seller['id']},affiliate_request:{body.request_id}",
+            # Shopify order tags have a 40-character limit. Keep full UUIDs
+            # using short prefixes; the original submission ID stays in the
+            # database and order attributes for audit and duplicate protection.
+            "tags": f"affiliate,aff_s:{seller['id']},aff_o:{oid}",
+            "note_attributes": [{"name": "affiliate_seller_id", "value": seller['id']},
+                                {"name": "affiliate_request_id", "value": body.request_id}],
             "note": body.note, "financial_status": "pending", "inventory_behaviour": "decrement_obeying_policy",
             "send_receipt": False, "send_fulfillment_receipt": False}}).get("order")
         if not snapshot or not snapshot.get("id"):
@@ -1046,7 +1059,9 @@ def reconcile_order(oid: str, body: ReconcileOrder, admin=Depends(require_admin)
             raise HTTPException(409, "Order is already linked")
         snapshot = read_shopify(row.store, f"/orders/{body.shopify_id}.json").get("order", {})
         tags = {t.strip() for t in str(snapshot.get("tags", "")).split(",")}
-        if not {f"affiliate_seller:{row.seller_id}", f"affiliate_request:{row.request_id}"}.issubset(tags):
+        current_tags = {f"aff_s:{row.seller_id}", f"aff_o:{row.id}"}
+        legacy_tags = {f"affiliate_seller:{row.seller_id}", f"affiliate_request:{row.request_id}"}
+        if not (current_tags.issubset(tags) or legacy_tags.issubset(tags)):
             raise HTTPException(422, "Shopify order does not match this seller submission")
         row.snapshot, row.shopify_id, row.state, row.synced_at = json.dumps(snapshot), body.shopify_id, "created", datetime.utcnow()
         try:

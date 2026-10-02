@@ -110,6 +110,7 @@ def market(monkeypatch):
             customer = {**payload['customer'], 'id': int(cid)}
             remote_customers[cid] = customer
             return {'customer': customer}
+        assert all(len(tag.strip()) <= 40 for tag in payload['order']['tags'].split(',')), 'Shopify order tags are limited to 40 characters'
         writes.append((store, payload))
         subtotal = sum(a.cents(item['price']) * item['quantity'] for item in payload['order']['line_items']) / 100
         order = {**payload['order'], 'id': 100 + len(writes), 'name': '#1001', 'currency': 'MAD',
@@ -593,10 +594,38 @@ def test_receipt_is_owned_immutable_and_excludes_private_earnings(market):
     receipt = result.json()['data']['receipt']
     assert receipt['items'][0]['variant'] == 'Blue / 40' and receipt['items'][0]['image'].endswith('shoe.jpg')
     assert receipt['total'] == 240 and receipt['customer_phone'] == '+212612345678'
-    assert not {'cost', 'profit', 'delivery_fee', 'store', 'vendor'} & receipt.keys()
+    assert not {'cost', 'profit', 'store', 'vendor'} & receipt.keys()
+    assert receipt['delivery_fee'] == 0 and receipt['delivery_included'] is True
     product['title'] = 'Changed title'
     assert client.get('/api/affiliates/order-details', headers=first, params={'order_id': created['id']}).json()['data']['receipt']['items'][0]['title'] == 'Shoe'
     assert client.get('/api/affiliates/order-details', headers=second, params={'order_id': created['id']}).status_code == 404
+
+
+def test_order_tags_preserve_full_identity_within_shopify_limit_and_long_request_id(market):
+    client, _, writes, product = market
+    sid, headers = account(client)
+    request_id = 'x' * 100
+    created = create(client, headers, request_id=request_id)
+    payload = writes[0][1]['order']
+    tags = {tag.strip() for tag in payload['tags'].split(',')}
+    assert tags == {'affiliate', f'aff_s:{sid}', f'aff_o:{created["id"]}'}
+    assert all(len(tag) <= 40 for tag in tags)
+    attributes = {item['name']: item['value'] for item in payload['note_attributes']}
+    assert attributes == {'affiliate_seller_id': sid, 'affiliate_request_id': request_id}
+    assert create(client, headers, request_id=request_id)['id'] == created['id'] and len(writes) == 1
+
+
+def test_receipt_includes_delivery_without_changing_customer_total_or_profit(market):
+    client, _, _, product = market
+    _, headers = account(client)
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN, json={'discount_percent':35,'delivery_fees':{'MAD':33}}).status_code == 200
+    product['options'] = [{'name':'Color','position':1},{'name':'Size','position':2}]
+    product['variants'][0].update({'option1':'Blue','option2':'40','title':'Blue / 40'})
+    created = create(client, headers, items=[{'product_id':'10','variant_id':'20','quantity':1,'sale_price':'240'}])
+    receipt = client.get('/api/affiliates/order-details', headers=headers, params={'order_id':created['id']}).json()['data']['receipt']
+    assert receipt['delivery_fee'] == 33 and receipt['delivery_included'] is True and receipt['total'] == 240
+    assert receipt['items'][0]['color'] == 'Blue' and receipt['items'][0]['size'] == '40'
+    assert created['pending_profit'] == 77
 
 
 def test_explicit_shopify_rejection_surfaces_validation_error_without_retry(market, monkeypatch):
