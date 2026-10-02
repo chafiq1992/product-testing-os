@@ -7,7 +7,7 @@ import time
 from functools import lru_cache
 from typing import Literal
 
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError, PermissionDeniedError, RateLimitError, APIConnectionError
 from pydantic import BaseModel, ConfigDict, Field
 from app import db
 
@@ -82,9 +82,20 @@ def model_catalog(refresh: bool = False) -> dict:
             available = [m for m in get_client().models.list() if is_analysis_model(m.id)]
             available.sort(key=lambda m: (m.id in LATEST_MODELS, m.created or 0, m.id), reverse=True)
             data = {"models": [{"id": m.id, "available": True} for m in available], "source": "openai", "error": None}
-        except Exception:
+        except Exception as exc:
             # A documented catalog is useful for setup, but never claim account availability.
-            data = {"models": [{"id": m, "available": False} for m in LATEST_MODELS], "source": "documented", "error": "Could not verify account models. Check the server OpenAI key and connection."}
+            message = "Could not verify account models. Check the server OpenAI key and connection."
+            if isinstance(exc, AuthenticationError):
+                message = "OpenAI rejected the server credential (401). Sync OPENAI_API_KEY from Google Secret Manager and restart the app containers."
+            elif isinstance(exc, PermissionDeniedError):
+                message = "The server OpenAI project does not permit model access (403). Check its API key permissions."
+            elif isinstance(exc, RateLimitError):
+                message = "OpenAI temporarily limited model discovery (429). Wait briefly and refresh available models."
+            elif isinstance(exc, APIConnectionError):
+                message = "The server could not reach OpenAI. Check its network connection and refresh available models."
+            elif not os.getenv("OPENAI_API_KEY", "").strip() and not os.getenv("ADS_ANALYZER_OPENAI_SECRET_VERSION", "").strip():
+                message = "The server OpenAI key is missing. Sync OPENAI_API_KEY from Google Secret Manager and restart the app containers."
+            data = {"models": [{"id": m, "available": False} for m in LATEST_MODELS], "source": "documented", "error": message}
         _model_cache.update(expires=time.monotonic() + (300 if data["source"] == "openai" else 30), data=data)
         return data
 

@@ -2,12 +2,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { adsAgentReports, analysisEvidenceUrl, campaignAnalyze, type CampaignAnalysisResult } from '@/lib/api'
 
-type Props = { campaignKey: string, campaignIds: string[], productId?: string, name: string, store: string, adAccount?: string, range: { start: string, end: string }, initialSignal?: Pick<CampaignAnalysisResult, 'product_signal' | 'confidence_level' | 'date_range' | 'analyzed_at'> }
+type Props = { open: boolean, onClose: () => void, panelId: string, campaignKey: string, campaignIds: string[], productId?: string, name: string, store: string, adAccount?: string, range: { start: string, end: string }, initialSignal?: Pick<CampaignAnalysisResult, 'product_signal' | 'confidence_level' | 'date_range' | 'analyzed_at'> }
 const label = (value?: string) => (value || 'unknown').replace(/_/g, ' ')
 const tone = (value?: string) => value === 'potential_winner' || value === 'healthy' ? 'bg-emerald-50 text-emerald-800' : value === 'at_risk' || value === 'issue' ? 'bg-rose-50 text-rose-800' : 'bg-amber-50 text-amber-800'
 
 export default function ProductAdAnalysis(props: Props) {
-  const [open, setOpen] = useState(false)
+  const loadedKey = useRef('')
   const [busy, setBusy] = useState(false)
   const [reports, setReports] = useState<CampaignAnalysisResult[]>([])
   const [selected, setSelected] = useState(0)
@@ -16,14 +16,14 @@ export default function ProductAdAnalysis(props: Props) {
   const abort = useRef<AbortController | null>(null)
   useEffect(() => () => abort.current?.abort(), [])
   useEffect(() => {
-    if(!open) return
+    const reportKey = `${props.store}:${props.campaignKey}`
+    if(!props.open || loadedKey.current === reportKey) return
     let active = true
     setLoading(true)
-    adsAgentReports(props.campaignKey, props.store).then(rows => { if(active) { setReports(rows); setSelected(0) } }).catch(e => { if(active) setError(e.message || 'Saved reports could not load') }).finally(() => { if(active) setLoading(false) })
+    adsAgentReports(props.campaignKey, props.store).then(rows => { if(active) { setReports(rows); setSelected(0); loadedKey.current = reportKey } }).catch(e => { if(active) setError(e.message || 'Saved reports could not load') }).finally(() => { if(active) setLoading(false) })
     return () => { active = false }
-  }, [open, props.campaignKey, props.store])
+  }, [props.open, props.campaignKey, props.store])
   const result = reports[selected]
-  const signal = result || props.initialSignal
   const metrics = result?.meta_inputs || {}
   const run = async () => {
     setBusy(true); setError('')
@@ -36,10 +36,11 @@ export default function ProductAdAnalysis(props: Props) {
     } catch(e: any) { if(!controller.signal.aborted) setError(e.message || 'Analysis failed') }
     finally { setBusy(false); abort.current = null }
   }
-  return <details open={open} onToggle={e => setOpen(e.currentTarget.open)} className="max-w-[calc(100vw-3rem)] rounded-lg border border-violet-100 bg-white text-sm md:max-w-none">
-    <summary className="cursor-pointer px-3 py-2 font-medium text-violet-700">Ads specialist · analyze ads and saved reports {signal?.product_signal && <span title={`Saved analysis: ${signal.date_range?.start} → ${signal.date_range?.end}`} className={`ml-2 inline-block rounded-full px-2 py-0.5 text-xs capitalize ${tone(signal.product_signal)}`}>{label(signal.product_signal)} · {signal.date_range?.end}</span>} {busy && <span role="status">· Analyzing…</span>}</summary>
-    {open && <div className="space-y-5 border-t p-4 md:p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-semibold">{props.name}</p><p className="mt-1 text-xs text-slate-500">Selected period: {props.range.start} → {props.range.end} · {props.campaignIds.length} campaign(s)</p></div><div className="flex gap-2"><button type="button" disabled={busy || loading || !props.campaignIds.length} onClick={run} className="rounded-lg bg-violet-600 px-4 py-2 font-semibold text-white disabled:opacity-50">{busy ? 'Analyzing funnel…' : 'Analyze ads'}</button>{busy && <button type="button" className="rounded-lg border px-3 py-2" onClick={() => { abort.current?.abort(); setBusy(false); setError('Stopped waiting. The server may finish the report; reopen this panel to retrieve it.') }}>Stop waiting</button>}</div></div>
+  if(!props.open) return null
+  return <section id={props.panelId} aria-label={`Ad analysis for ${props.name}`} className="max-w-[calc(100vw-3rem)] rounded-lg border border-violet-100 bg-white text-sm md:max-w-none">
+    <div className="space-y-5 p-4 md:p-5">
+      <div className="flex items-center justify-between gap-3"><h2 className="font-semibold text-violet-700">Ad analysis</h2><button type="button" aria-label="Close ad analysis" onClick={props.onClose} className="rounded-lg border px-3 py-1 text-xs hover:bg-slate-50">Close</button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-semibold">{props.name}</p><p className="mt-1 text-xs text-slate-500">Selected period: {props.range.start} → {props.range.end} · {props.campaignIds.length} campaign(s)</p></div><div className="flex gap-2"><button type="button" disabled={busy || loading || !props.campaignIds.length} onClick={run} className="rounded-lg bg-violet-600 px-4 py-2 font-semibold text-white disabled:opacity-50">{busy ? 'Analyzing funnel…' : 'Analyze ads'}</button>{busy && <button type="button" className="rounded-lg border px-3 py-2" onClick={() => { abort.current?.abort(); loadedKey.current = ''; setBusy(false); setError('Stopped waiting. The server may finish the report; reopen this panel to retrieve it.') }}>Stop waiting</button>}</div></div>
       {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-rose-700">{error}</p>}
       {loading && <p role="status" className="text-slate-500">Loading saved reports…</p>}
       {busy && <p role="status" className="text-slate-500">Reading period KPIs, comparing campaigns, and reviewing funnel evidence. You can collapse this panel while it runs.</p>}
@@ -56,6 +57,6 @@ export default function ProductAdAnalysis(props: Props) {
         {!!result.data_gaps?.length && <section className="rounded-xl bg-amber-50 p-4"><h3 className="font-semibold">Evidence still needed</h3><ul className="mt-2 list-inside list-disc space-y-1">{result.data_gaps.map((gap, i) => <li key={i} dir="auto">{gap}</li>)}</ul></section>}
         {result.review && <section className="rounded-xl border p-4"><h3 className="font-semibold">Independent review</h3><p className="mt-2" dir="auto">{result.review.summary}</p><ul className="mt-2 list-inside list-disc">{result.review.concerns.map((concern, i) => <li key={i} dir="auto">{concern}</li>)}</ul></section>}
       </>}
-    </div>}
-  </details>
+    </div>
+  </section>
 }

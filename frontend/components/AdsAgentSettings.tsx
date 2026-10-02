@@ -33,6 +33,7 @@ export default function AdsAgentSettings({ store }: { store: string }) {
         <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Agent and models</h2><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.enabled} onChange={e => update('enabled', e.target.checked)} />Analyzer enabled</label></div>
         <p className="mt-2 text-sm text-slate-500">Models are fetched from your server’s OpenAI account. Credentials stay in the server Secret Manager configuration.</p>
         {catalog?.error && <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{catalog.error}</p>}
+        {catalog?.source === 'openai' && <p role="status" className="mt-3 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">OpenAI connected · {catalog.models.length} available analysis models</p>}
         <div className="mt-4 grid gap-4 md:grid-cols-3">
           <label className="text-sm font-medium">Analysis model{modelSelect('model')}</label>
           <label className="text-sm font-medium">Reasoning depth<select className={fieldClass} value={settings.reasoning_effort} onChange={e => update('reasoning_effort', e.target.value)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>

@@ -47,6 +47,22 @@ To re-pull configuration after someone changes it on Cloud Run:
 ./deploy/pull-env.sh deploy@159.195.204.91
 ```
 
+## Refreshing the OpenAI credential
+
+The live Netcup containers load `OPENAI_API_KEY` from `/opt/pto/app.env`. Rotating
+Google Secret Manager alone does not update existing containers. From an
+authenticated gcloud workstation, run:
+
+```powershell
+python deploy/sync-openai-secret.py
+```
+
+This validates the latest `OPENAI_API_KEY` secret against OpenAI from the live
+server and updates only that runtime variable over SSH. No value is logged or
+written locally. Perform a normal release (or recreate the app containers) to
+load it. `pull-env.sh` also resolves this specific secret as `latest`; other
+credentials retain their Cloud Run version pins.
+
 ## The one switch that matters
 
 `WORKER_LOOPS` in `/opt/pto/.env`. It gates both sources of background work:

@@ -1,12 +1,13 @@
 # Ads specialist and funnel analyzer
 
 The ads manager now has a dedicated **AI agent settings** tab at
-`/ads-management/settings/`. Each product group and standalone campaign has an
-expandable report panel. Open it, select the dashboard period, and click
-**Analyze ads**. The dashboard defaults to seven calendar days including today.
+`/ads-management/settings/`. Each product group and standalone campaign has a
+compact **Analyze ads** action button. Click it to open the report dropdown,
+select the dashboard period, and click **Analyze ads** in the report.
+The dashboard defaults to seven calendar days including today.
 Reports label the exact period, model, capture limitations and evidence gaps.
-The latest five reports are saved per store and product/campaign key. A saved
-winner/risk signal appears on the collapsed panel with its report date.
+The latest five reports are saved per store and product/campaign key.
+Winner/risk signals and their dates appear inside the report.
 
 ## Controls
 
@@ -32,8 +33,14 @@ Official sources checked October 2, 2026:
 ## Secret Manager
 
 The existing deployment uses `OPENAI_API_KEY` injected from Google Secret
-Manager on Cloud Run, or synced by `deploy/pull-env.sh` for Netcup. No API key is
-sent to the frontend or accepted in settings.
+Manager on Cloud Run, or synced by `deploy/pull-env.sh` for Netcup. OpenAI uses
+the latest Google secret
+version even if the sealed Cloud Run revision still points to an older key.
+To refresh only this credential, run `python deploy/sync-openai-secret.py`
+from an authenticated gcloud workstation, then perform a normal release or
+recreate the app containers. The helper validates model access from the server
+before atomically updating only `OPENAI_API_KEY`. It never logs secret values.
+No API key is sent to the frontend or accepted in settings.
 
 For optional direct Google Secret Manager access, configure the server:
 
@@ -93,13 +100,18 @@ cross-instance polling, disabled controls and preservation of previous reports
 after provider failure. A production Secret Manager/Meta/OpenAI run remains
 necessary to confirm account access in the deployed environment.
 
-Verification completed locally: 274 backend tests passed (30 cover this
+Verification completed locally: 276 backend tests passed (32 cover this
 analyzer), TypeScript checking and the production Next.js build passed. A
 headless browser exercised model selection, a store-specific settings save,
 analysis submission/polling and saved reports using explicit API fixtures.
 Desktop and 390px mobile screenshots were inspected; mobile page overflow and
-browser page errors were checked in a fresh session. A separate preseeded
-localStorage run exposed the upstream dashboard store/account hydration mismatch.
+browser page errors were checked, including stored browser preferences.
+Campaigns and settings share a persistent layout. Each tab loads on its first
+visit and stays mounted while hidden; filters, reports, active analysis and
+unsaved settings survive tab switches. A full browser refresh still reloads
+server data. Browser coverage asserts no additional bundle, report, settings or
+model requests on tab return. Browser-dependent campaign preferences initialize
+inside a client-only tab, avoiding the prior static hydration mismatch.
 The existing main-branch deployment workflow is preserved.
 
 ## Campaign toggles

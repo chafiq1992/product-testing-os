@@ -119,7 +119,12 @@ for item in entries:
         notes.append(f"skipped {name}: set by compose.yaml instead")
         continue
 
-    if "value" in item:
+    # OpenAI keys can be rotated independently of the sealed Cloud Run service.
+    # Always use the active Secret Manager version rather than its old snapshot.
+    if name == "OPENAI_API_KEY":
+        value = secret("OPENAI_API_KEY", "latest")
+        src = "secret OPENAI_API_KEY:latest"
+    elif "value" in item:
         value = item["value"]
         src = "literal"
     else:

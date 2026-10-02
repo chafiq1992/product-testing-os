@@ -1,0 +1,6347 @@
+"use client"
+import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
+import Link from 'next/link'
+import ProductAdAnalysis from '@/components/ProductAdAnalysis'
+import axios from 'axios'
+import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
+import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers } from 'lucide-react'
+import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
+import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
+import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
+import { PLATFORM_META, type PlatformKey } from '@/components/brand/PlatformIcons'
+
+const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
+type VariantInventoryData = { sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>, total_available: number }
+type AdsetOrdersInfo = { count:number, orders: AttributedOrder[] }
+type DeliveryRateResult = { fulfilledOrders:number, paidOrDeliveredOrders:number, rate:number }
+
+function adsetUtmTrueCpp(spendInput: number, ordersInfo?: AdsetOrdersInfo): number | null{
+  if(!ordersInfo) return null
+  const spend = Number(spendInput || 0)
+  const orders = Number(ordersInfo.count || 0)
+  if(orders > 0) return spend / orders
+  return spend > 0 ? spend : null
+}
+
+function inventorySizeSortKey(value: string): [number, number, number, string] | [number, string]{
+  const text = String(value || '').trim().toLowerCase()
+  const apparel: Record<string, number> = { xxs: 10, xs: 20, s: 30, m: 40, l: 50, xl: 60, xxl: 70, xxxl: 80, os: 90, 'one size': 90 }
+  if(text in apparel) return [0, apparel[text], apparel[text], text]
+  const numeric = text.match(/^(\d+(?:\.\d+)?)(?:\s*[-/]\s*(\d+(?:\.\d+)?))?/)
+  if(numeric) return [1, Number(numeric[1]), Number(numeric[2] || numeric[1]), text]
+  const toddler = text.match(/^(\d+)t$/)
+  if(toddler) return [2, Number(toddler[1]), Number(toddler[1]), text]
+  return [3, text]
+}
+
+function isSizeLikeValue(value: string){
+  const text = String(value || '').trim().toLowerCase()
+  if(!text) return false
+  if(['xxs','xs','s','m','l','xl','xxl','xxxl','os','one size'].includes(text)) return true
+  return /^\d+(?:\.\d+)?(?:\s*[./-]\s*\d+(?:\.\d+)?)?/.test(text)
+}
+
+function normalizeInventoryData(data?: VariantInventoryData | null): VariantInventoryData | null{
+  if(!data) return null
+  const unique = (values: string[]) => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for(const raw of values || []){
+      const value = String(raw || '').trim()
+      if(!value || seen.has(value)) continue
+      seen.add(value)
+      out.push(value)
+    }
+    return out
+  }
+  let sizes = unique(data.sizes || [])
+  if(sizes.length && sizes.every(isSizeLikeValue)){
+    sizes = sizes.slice().sort((a,b) => {
+      const ak = inventorySizeSortKey(a) as any[]
+      const bk = inventorySizeSortKey(b) as any[]
+      for(let i = 0; i < Math.max(ak.length, bk.length); i += 1){
+        if(ak[i] === bk[i]) continue
+        return ak[i] < bk[i] ? -1 : 1
+      }
+      return 0
+    })
+  }
+  const colors = unique(data.colors || [])
+  const colorIndex = new Map(colors.map((color, index) => [color, index]))
+  const rankedColors = colors.slice().sort((a,b) => {
+    const rowA = data.matrix[a] || {}
+    const rowB = data.matrix[b] || {}
+    const availableSizesA = sizes.reduce((acc, size) => acc + (((rowA[size] ?? 0) > 0) ? 1 : 0), 0)
+    const availableSizesB = sizes.reduce((acc, size) => acc + (((rowB[size] ?? 0) > 0) ? 1 : 0), 0)
+    if(availableSizesA !== availableSizesB) return availableSizesB - availableSizesA
+    const totalA = Object.values(rowA).reduce((acc, qty) => acc + Math.max(0, Number(qty || 0)), 0)
+    const totalB = Object.values(rowB).reduce((acc, qty) => acc + Math.max(0, Number(qty || 0)), 0)
+    if(totalA !== totalB) return totalB - totalA
+    return (colorIndex.get(a) || 0) - (colorIndex.get(b) || 0)
+  })
+  return { ...data, sizes, colors: rankedColors }
+}
+
+function normalizeStoreValue(value?: string | null): string{
+  const v = String(value || '').trim().toLowerCase()
+  return v === 'nouralibas' ? 'irrakids' : v
+}
+function normalizeStoreList(values?: string[], options?: Array<{ value: string }>): string[]{
+  const allowed = options ? new Set(options.map(s => s.value)) : null
+  const seen = new Set<string>()
+  const out: string[] = []
+  for(const raw of values || []){
+    const v = normalizeStoreValue(raw)
+    if(!v || (allowed && !allowed.has(v)) || seen.has(v)) continue
+    seen.add(v)
+    out.push(v)
+  }
+  return out
+}
+type CampaignMapping = { kind: 'product'|'collection', id: string, store?: string }
+const CAMPAIGN_OWNERS = ['chafiq', 'nour', 'adil'] as const
+type CampaignOwner = typeof CAMPAIGN_OWNERS[number]
+type CampaignOwnerFilter = CampaignOwner|'unassigned'|''
+type CampaignStatusFilter = 'all'|'active'|'paused'
+type CampaignMetaState = CampaignMetaRecord & { product_life_checks?: Record<string, Record<string, boolean>> }
+type LifeCampaignRef = { id: string, name: string, createdTime?: string }
+type LifeDayState = { open: boolean, date: string, campaigns: LifeCampaignRef[] }
+
+// ── Reporting clock ──
+// Everything on this page (Meta ranges, Shopify order windows, "today") follows
+// the Meta ad account's timezone, so spend and orders always cover the same hours.
+const REPORTING_TZ_HEADER = 'X-Reporting-Timezone'
+
+function isValidTimeZone(tz?: string|null): tz is string{
+  if(!tz) return false
+  try{ new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true }catch{ return false }
+}
+
+// Calendar date (YYYY-MM-DD) for `date` as seen in timezone `tz` (browser zone when unset)
+function ymdInTimeZone(date: Date, tz?: string|null): string{
+  if(isValidTimeZone(tz)){
+    try{
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
+      const get = (type: string) => parts.find(part => part.type === type)?.value || ''
+      return `${get('year')}-${get('month')}-${get('day')}`
+    }catch{}
+  }
+  return localDateKey(date)
+}
+
+function shiftYmd(ymd: string, days: number): string{
+  const [y, m, d] = ymd.split('-').map(Number)
+  const date = new Date(Date.UTC(y, (m || 1) - 1, d || 1))
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+function timeZoneClock(tz?: string|null): string{
+  if(!isValidTimeZone(tz)) return ''
+  try{ return new Intl.DateTimeFormat(undefined, { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date()) }catch{ return '' }
+}
+
+function localDateKey(input: Date | string = new Date()): string{
+  const date = input instanceof Date ? input : new Date(input)
+  if(Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function lifeEntryPayload(text?: string): any | null{
+  try{
+    const parsed = JSON.parse(String(text || ''))
+    return parsed && typeof parsed === 'object' ? parsed : null
+  }catch{
+    return null
+  }
+}
+
+function lifeActivityForDay(meta: CampaignMetaState | undefined, day: string): { actions: number, notes: number }{
+  if(Array.isArray(meta?.timeline)){
+    let actions = 0
+    let notes = 0
+    for(const entry of meta.timeline){
+      const payload = lifeEntryPayload(entry.text)
+      const entryDay = String(payload?.day || entry.at || '').slice(0, 10)
+      if(entryDay !== day) continue
+      if(payload?.type === 'campaign_action') actions += 1
+      else if(payload?.type === 'life_note' || !payload) notes += 1
+    }
+    return { actions, notes }
+  }
+  const saved = meta?.life_activity_days?.[day]
+  return { actions: Number(saved?.actions || 0), notes: Number(saved?.notes || 0) }
+}
+
+function mergeCampaignMetaRecords(current: Record<string, CampaignMetaState>, incoming: Record<string, CampaignMetaRecord>): Record<string, CampaignMetaState>{
+  const next = { ...current }
+  for(const [key, value] of Object.entries(incoming || {})) next[key] = { ...(current[key] || {}), ...(value || {}) }
+  return next
+}
+
+function incompleteTaskCount(meta?: CampaignMetaState): number{
+  if(typeof meta?.incomplete_tasks === 'number') return Number(meta.incomplete_tasks || 0)
+  let count = 0
+  for(const entry of (meta?.timeline || [])){
+    try{ const value = JSON.parse(entry.text || ''); if(value?.type === 'task' && !value.done) count += 1 }catch{}
+  }
+  return count
+}
+// Backend accepts up to 25 product ids per hydrate request; 10×3 keeps requests
+// well under the server's 35s budget while halving the number of round-trips.
+const SHOPIFY_HYDRATE_BATCH_SIZE = 10
+const SHOPIFY_HYDRATE_CONCURRENCY = 3
+
+// Shared control styles so every button on the page reads as one system.
+const UI = {
+  btn: 'inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-50',
+  primary: 'bg-slate-900 text-white shadow-sm hover:bg-slate-800',
+  secondary: 'border border-slate-200 bg-white text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50',
+  accent: 'bg-violet-600 text-white shadow-sm hover:bg-violet-700',
+  danger: 'bg-rose-600 text-white shadow-sm hover:bg-rose-700',
+  icon: 'relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-wait disabled:opacity-60',
+  seg: 'inline-flex h-8 items-center gap-0.5 rounded-lg bg-slate-100 p-0.5',
+  segBtn: (on: boolean) => `inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-semibold capitalize transition-all ${on ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-600 hover:text-slate-900'}`,
+  field: 'h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-sm font-medium text-slate-800 shadow-sm outline-none transition-colors hover:border-slate-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniField: 'h-6 rounded-md border border-slate-200 bg-white px-1.5 text-xs font-medium text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20',
+  miniBtn: 'inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900',
+}
+
+function MultiCheckDropdown({ label, options, selected, onChange, className, icon }: {
+  label: string,
+  options: Array<{ value: string, label: string }>,
+  selected: string[],
+  onChange: (next: string[]) => void,
+  className?: string,
+  icon?: React.ReactNode,
+}){
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(()=>{
+    const handler = (e: MouseEvent) => { if(ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+  const display = selected.length === 0 ? 'None'
+    : selected.length === options.length && options.length > 1 ? 'All'
+    : selected.map(s => options.find(o => o.value === s)?.label || s).join(', ')
+  return (
+    <div ref={ref} className={`relative ${className||''}`}>
+      <button
+        onClick={() => setOpen(!open)}
+        type="button"
+        aria-expanded={open}
+        className={`${UI.field} flex min-w-[140px] items-center justify-between gap-2`}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {icon}
+          <span className="text-slate-400">{label}</span>
+          <span className="max-w-[180px] truncate font-medium text-slate-800">{display}</span>
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}/>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-[60] mt-1.5 min-w-[220px] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10">
+          {options.map(o => {
+            const checked = selected.includes(o.value)
+            return (
+              <div
+                key={o.value}
+                onClick={() => {
+                  if(checked) onChange(selected.filter(s => s !== o.value))
+                  else onChange([...selected, o.value])
+                }}
+                className="flex cursor-pointer select-none items-center gap-2.5 px-3 py-1.5 text-[13px] text-slate-700 hover:bg-slate-50"
+              >
+                <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300'}`}>
+                  {checked && <Check className="h-3 w-3"/>}
+                </span>
+                <span className="truncate">{o.label}</span>
+              </div>
+            )
+          })}
+          {options.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">Nothing to choose yet</div>}
+          {options.length > 1 && (
+            <div className="mt-1 flex gap-3 border-t border-slate-100 px-3 pb-1 pt-1.5">
+              <button type="button" onClick={() => onChange(options.map(o => o.value))} className="text-xs font-medium text-blue-600 hover:underline">Select all</button>
+              <button type="button" onClick={() => onChange([])} className="text-xs font-medium text-slate-500 hover:underline">Clear</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Product image with a large floating preview on hover, so products can be
+// recognised without opening Shopify.
+function ProductThumb({ src, loading, size = 60, alt = 'Product' }: { src?: string|null, loading?: boolean, size?: number, alt?: string }){
+  const [rect, setRect] = useState<DOMRect|null>(null)
+  useEffect(()=>{
+    if(!rect) return
+    const close = () => setRect(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
+  }, [rect])
+  if(!src){
+    return <span style={{ width: size, height: size }} className={`block shrink-0 rounded-lg border border-slate-200 ${loading ? 'animate-pulse bg-slate-100' : 'bg-slate-50'}`} />
+  }
+  const PREVIEW = 320
+  let preview: { top: number, left: number } | null = null
+  if(rect && typeof window !== 'undefined'){
+    const gap = 14
+    let left = rect.right + gap
+    if(left + PREVIEW > window.innerWidth - 8) left = Math.max(8, rect.left - gap - PREVIEW)
+    const top = Math.min(Math.max(8, rect.top + rect.height / 2 - PREVIEW / 2), window.innerHeight - PREVIEW - 8)
+    preview = { top, left }
+  }
+  return (
+    <>
+      <span
+        style={{ width: size, height: size }}
+        className="group relative block shrink-0 cursor-zoom-in overflow-hidden rounded-lg border border-slate-200 bg-white"
+        onMouseEnter={(e) => setRect(e.currentTarget.getBoundingClientRect())}
+        onMouseLeave={() => setRect(null)}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={src} alt={alt} loading="lazy" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-110" />
+      </span>
+      {preview && (
+        <span
+          className="pointer-events-none fixed z-[1000] block overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-2xl shadow-slate-900/25"
+          style={{ top: preview.top, left: preview.left, width: PREVIEW, height: PREVIEW }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={src} alt={alt} className="h-full w-full rounded-xl object-contain" />
+        </span>
+      )}
+    </>
+  )
+}
+
+// True-CPP health: thin left accent per row and a soft pill on the value.
+function cppAccent(value: number|null): string{
+  if(value == null) return 'border-l-[3px] border-l-transparent'
+  return value < 2 ? 'border-l-[3px] border-l-emerald-400' : value < 3 ? 'border-l-[3px] border-l-amber-400' : 'border-l-[3px] border-l-rose-400'
+}
+// Whole-row tint so good / borderline / bad products read at a glance.
+function cppRowFill(value: number|null, isChild: boolean): string{
+  if(value == null) return isChild ? 'bg-slate-50 hover:bg-slate-100/70' : 'hover:bg-slate-50'
+  return value < 2 ? 'bg-emerald-50 hover:bg-emerald-100/70' : value < 3 ? 'bg-amber-50 hover:bg-amber-100/70' : 'bg-rose-50 hover:bg-rose-100/70'
+}
+function cppPill(value: number|null): string{
+  const tone = value == null ? 'bg-slate-100 text-slate-600'
+    : value < 2 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/15'
+    : value < 3 ? 'bg-amber-50 text-amber-700 ring-amber-600/15'
+    : 'bg-rose-50 text-rose-700 ring-rose-600/15'
+  return `inline-flex items-center rounded-md px-2 py-0.5 text-[13px] font-bold tabular-nums ring-1 ring-inset ${tone}`
+}
+
+function Switch({ on, busy }: { on: boolean, busy?: boolean }){
+  return (
+    <span aria-hidden="true" className={`relative inline-block h-[18px] w-8 rounded-full transition-colors ${on ? 'bg-emerald-500' : 'bg-slate-300'} ${busy ? 'animate-pulse' : ''}`}>
+      <span className={`absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform ${on ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+    </span>
+  )
+}
+
+// Compact KPI tile: label, headline value with a short note, and a 6px mini chart.
+function KpiTile({ label, value, sub, hint, children, className }: { label: string, value: React.ReactNode, sub?: React.ReactNode, hint?: React.ReactNode, children?: React.ReactNode, className?: string }){
+  return (
+    <div className={`flex min-w-[180px] flex-1 flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm ${className||''}`}>
+      <div className="flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+        <span className="truncate">{label}</span>
+        {hint && <span className="truncate normal-case tracking-normal font-medium text-slate-500">{hint}</span>}
+      </div>
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <span className="text-xl font-bold leading-none tracking-tight text-slate-900 tabular-nums">{value}</span>
+        {sub && <span className="truncate text-xs font-medium leading-none text-slate-500">{sub}</span>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+// Thin stacked bar: segments separated by a 2px surface gap, with a native
+// tooltip per segment and a text legend underneath (identity is never color-only).
+function StackedBar({ segments, height = 8 }: { segments: Array<{ key: string, value: number, color: string, label: string }>, height?: number }){
+  const total = segments.reduce((acc, seg) => acc + Math.max(0, seg.value), 0)
+  if(total <= 0) return <div style={{ height }} className="w-full rounded-full bg-slate-100" />
+  return (
+    <div className="flex w-full gap-[2px]" style={{ height }}>
+      {segments.filter(seg => seg.value > 0).map(seg => (
+        <div
+          key={seg.key}
+          title={seg.label}
+          className="h-full rounded-[3px] transition-opacity hover:opacity-80"
+          style={{ width: `${(seg.value / total) * 100}%`, backgroundColor: seg.color, minWidth: 3 }}
+        />
+      ))}
+    </div>
+  )
+}
+
+export default function AdsManagementPage(){
+  const [items, setItems] = useState<MetaCampaignRow[]>([])
+  const [loading, setLoading] = useState<boolean>(false)
+  const loadSeqToken = useRef(0)
+  const [datePreset, setDatePreset] = useState<string>('last_7d_incl_today')
+  const [customStart, setCustomStart] = useState<string>('')
+  const [customEnd, setCustomEnd] = useState<string>('')
+  const [error, setError] = useState<string|undefined>(undefined)
+  const [shopifyCounts, setShopifyCounts] = useState<Record<string, number>>({})
+  const ordersSeqToken = useRef(0)
+  // Multi-store and multi-ad-account selection
+  const [selectedStores, setSelectedStores] = useState<string[]>(()=>{
+    try{
+      const saved = localStorage.getItem('ptos_stores_multi')
+      if(saved){
+        const parsed = JSON.parse(saved)
+        if(Array.isArray(parsed) && parsed.length){
+          const normalized = normalizeStoreList(parsed)
+          if(normalized.length) return normalized
+        }
+      }
+    }catch{}
+    try{
+      const s = normalizeStoreValue(localStorage.getItem('ptos_store'))
+      if(s) return normalizeStoreList([s])
+    }catch{}
+    return ['irrakids']
+  })
+  const [selectedAdAccounts, setSelectedAdAccounts] = useState<string[]>(()=>{
+    try{
+      const saved = localStorage.getItem('ptos_ad_accounts_multi')
+      if(saved){ const parsed = JSON.parse(saved); if(Array.isArray(parsed) && parsed.length) return parsed }
+    }catch{}
+    try{ const s = localStorage.getItem('ptos_ad_account'); if(s) return [s] }catch{}
+    return []
+  })
+  // Keep legacy single-value for backward compat with other parts of the code
+  const store = normalizeStoreValue(selectedStores[0]) || 'irrakids'
+  const { stores: configuredShopifyStores } = useShopifyStores(store)
+  const storeOptions = useMemo(
+    () => configuredShopifyStores.length
+      ? configuredShopifyStores.map(item => ({ value: item.label, label: item.label }))
+      : DEFAULT_STORE_OPTIONS,
+    [configuredShopifyStores],
+  )
+  const adAccount = selectedAdAccounts[0] || ''
+  const setStore = (v: string) => {
+    const next = normalizeStoreList([v])
+    const finalStores = next.length ? next : ['irrakids']
+    setSelectedStores(finalStores)
+    try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
+  }
+  const setAdAccount = (v: string) => { setSelectedAdAccounts(prev => { const next = prev.includes(v) ? prev : [v, ...prev]; try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)); localStorage.setItem('ptos_ad_account', v) }catch{}; return next }) }
+  const [adAccounts, setAdAccounts] = useState<Array<{id:string,name:string,account_status?:number}>>([])
+  const [productBriefs, setProductBriefs] = useState<Record<string, { image?: string|null, total_available: number, zero_variants: number, zero_sizes?: number, price?: number|null }>>({})
+  const [productHydrating, setProductHydrating] = useState<Record<string, { brief?: boolean, orders?: boolean }>>({})
+  const [visibleProductIds, setVisibleProductIds] = useState<Record<string, true>>({})
+  const hydratedProductIdsRef = useRef<Set<string>>(new Set())
+  const hydratingProductIdsRef = useRef<Set<string>>(new Set())
+  // Ids already re-fetched once after the server returned stale cached data
+  const staleRefreshedIdsRef = useRef<Set<string>>(new Set())
+  // Shared hydration queue: pending ids (ordered), membership set, live worker count,
+  // and per-id retry pass counter. Priority enqueues (search, visible rows) jump the line.
+  const hydratePendingRef = useRef<string[]>([])
+  const hydratePendingSetRef = useRef<Set<string>>(new Set())
+  const hydrateWorkersRef = useRef<number>(0)
+  const hydrateRetryPassRef = useRef<Map<string, number>>(new Map())
+  const hydrateContextRef = useRef<{
+    token: number,
+    start: string,
+    end: string,
+    storeList: string[],
+    primaryStore: string,
+    campaigns: MetaCampaignRow[],
+    mappings: Record<string, CampaignMapping>,
+    profitOnly: boolean,
+    countsById: Record<string, number>,
+    reveal?: (countsById: Record<string, number>) => void,
+    allProductIds?: string[],
+    collectionRows?: MetaCampaignRow[],
+    collectionDone?: Set<string>,
+  } | null>(null)
+  const rowObserverRef = useRef<IntersectionObserver|null>(null)
+  const [adAccountName, setAdAccountName] = useState<string>('')
+  const [notes, setNotes] = useState<Record<string, string>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_notes')||'{}') }catch{ return {} }
+  })
+  const [manualIds, setManualIds] = useState<Record<string, CampaignMapping>>({})
+  const [manualDrafts, setManualDrafts] = useState<Record<string, { kind: 'product'|'collection', id: string }>>({})
+  const [manualCounts, setManualCounts] = useState<Record<string, number>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [collectionOrders, setCollectionOrders] = useState<Record<string, CollectionCampaignOrders>>({})
+  const [childrenError, setChildrenError] = useState<Record<string, string>>({})
+  const collectionRequestIds = useRef<Record<string, number>>({})
+  const [childrenLoading, setChildrenLoading] = useState<Record<string, boolean>>({})
+  const [adsetsExpanded, setAdsetsExpanded] = useState<Record<string, boolean>>({})
+  const [adsetsLoading, setAdsetsLoading] = useState<Record<string, boolean>>({})
+  const [adsetsByCampaign, setAdsetsByCampaign] = useState<Record<string, MetaAdsetRow[]>>({})
+  const [adsetOrdersByCampaign, setAdsetOrdersByCampaign] = useState<Record<string, Record<string, AdsetOrdersInfo>>>({})
+  const [adsetOrdersLoading, setAdsetOrdersLoading] = useState<Record<string, boolean>>({})
+  const [adsetOrdersExpanded, setAdsetOrdersExpanded] = useState<Record<string, boolean>>({})
+  const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
+  const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
+  const [sortKey, setSortKey] = useState<'campaign'|'spend'|'purchases'|'cpp'|'ctr'|'add_to_cart'|'shopify_orders'|'true_cpp'|'inventory'|'zero_variant'>('spend')
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
+  const [perfOpen, setPerfOpen] = useState<boolean>(false)
+  const [perfLoading, setPerfLoading] = useState<boolean>(false)
+  const [perfCampaign, setPerfCampaign] = useState<{ id:string, name:string }|null>(null)
+  const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
+  const [perfOrders, setPerfOrders] = useState<number[]>([])
+  const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+  const [profitMode, setProfitMode] = useState<boolean>(false)
+  const [profitProductCosts, setProfitProductCosts] = useState<Record<string, string>>({})
+  const [profitCostSaving, setProfitCostSaving] = useState<Record<string, boolean>>({})
+  const [profitCostSaved, setProfitCostSaved] = useState<Record<string, boolean>>({})
+  const [profitCostErrors, setProfitCostErrors] = useState<Record<string, string>>({})
+  const profitCostsLoadSeq = useRef(0)
+  const [profitProductPrices, setProfitProductPrices] = useState<Record<string, string>>({})
+  const [profitServiceCost, setProfitServiceCost] = useState<number>(70)
+  const [profitPaidCounts, setProfitPaidCounts] = useState<Record<string, number>>({})
+  const [profitLoading, setProfitLoading] = useState<Record<string, boolean>>({})
+  const [profitResults, setProfitResults] = useState<Record<string, { paidOrders:number, productPrice:number, productCost:number, spendUsd:number, spendMad:number, costsMad:number, profit:number }>>({})
+  const [deliveryRateLoading, setDeliveryRateLoading] = useState<Record<string, boolean>>({})
+  const [deliveryRateResults, setDeliveryRateResults] = useState<Record<string, DeliveryRateResult>>({})
+  // AI Campaign Analyzer state
+  const [analysisOpen, setAnalysisOpen] = useState<boolean>(false)
+  const [analysisPanels, setAnalysisPanels] = useState<Record<string, boolean>>({})
+  const [analysisLoading, setAnalysisLoading] = useState<string|null>(null) // campaign key being analyzed
+  const [analysisResult, setAnalysisResult] = useState<CampaignAnalysisResult|null>(null)
+  const [analysisError, setAnalysisError] = useState<string|null>(null)
+  const [analysisChecks, setAnalysisChecks] = useState<Record<string, boolean>>({})
+  const [analysisCampaignKey, setAnalysisCampaignKey] = useState<string|null>(null)
+  const [analysisSaving, setAnalysisSaving] = useState<boolean>(false)
+  // Multi-campaign analysis state
+  const [multiAnalysisResults, setMultiAnalysisResults] = useState<Record<string, CampaignAnalysisResult>>({})
+  const [multiAnalysisLoading, setMultiAnalysisLoading] = useState<boolean>(false)
+  const [multiAnalysisProgress, setMultiAnalysisProgress] = useState<{ done: number, total: number }>({ done: 0, total: 0 })
+  const multiAnalysisAbortRef = useRef<AbortController|null>(null)
+  const multiAnalysisCancelledRef = useRef<boolean>(false)
+  // Action Tasks state
+  const [actionTasks, setActionTasks] = useState<ActionTask[]>([])
+  const [actionTasksSummary, setActionTasksSummary] = useState<string>('')
+  const [actionTasksOpen, setActionTasksOpen] = useState<boolean>(false)
+  const [actionTasksLoading, setActionTasksLoading] = useState<boolean>(false)
+  const [actionTasksLoaded, setActionTasksLoaded] = useState<boolean>(false)
+  // Selection + Grouping state
+  const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_selected')||'{}') }catch{ return {} }
+  })
+  const [groupExpanded, setGroupExpanded] = useState<Record<string, boolean>>({})
+  const [groupNotes, setGroupNotes] = useState<Record<string, string>>(()=>{
+    try{ return JSON.parse(localStorage.getItem('ptos_ads_group_notes_by_product')||'{}') }catch{ return {} }
+  })
+  const [groupTarget, setGroupTarget] = useState<string>('') // product id
+  const [campaignMeta, setCampaignMeta] = useState<Record<string, CampaignMetaState>>({})
+  const [ownerFilter, setOwnerFilter] = useState<CampaignOwnerFilter>('')
+  const [statusFilter, setStatusFilter] = useState<CampaignStatusFilter>('all')
+  const [ownerSaveError, setOwnerSaveError] = useState<string>('')
+  const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
+  const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
+  const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
+  const [timelineDraft, setTimelineDraft] = useState<string>('')
+  const [lifeDay, setLifeDay] = useState<LifeDayState>({ open: false, date: '', campaigns: [] })
+  const [lifeDayLoading, setLifeDayLoading] = useState<boolean>(false)
+  const [lifeDaySaving, setLifeDaySaving] = useState<boolean>(false)
+  const browserTz = useMemo(()=>{
+    try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined }catch{ return undefined }
+  }, [])
+  // Search state
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [searchActive, setSearchActive] = useState<string>('')  // confirmed filter
+  const [searchFocused, setSearchFocused] = useState<boolean>(false)
+  // When a single campaign is picked from suggestions, filter by exact campaign id
+  const [searchFocusId, setSearchFocusId] = useState<string>('')
+  // When a product is picked from suggestions, filter (and hydrate) that product only
+  const [searchFocusProductId, setSearchFocusProductId] = useState<string>('')
+  const [searchHighlight, setSearchHighlight] = useState<number>(-1)
+  // While a search focus is active, only these products / campaign keys may load Shopify data
+  const hydrateFocusRef = useRef<{ pids: Set<string>, rowKeys: Set<string> }|null>(null)
+  const [metaConnected, setMetaConnected] = useState<boolean|null>(null)
+  // Meta ad account timezone = the page's single reporting clock (ref so load() sees it immediately)
+  const [reportingTz, setReportingTzState] = useState<string>('')
+  const reportingTzRef = useRef<string>('')
+  const searchRef = useRef<HTMLInputElement>(null)
+  const preSearchPresetRef = useRef<string>('')  // remember preset before search
+  // Inventory hover tooltip state
+  const [invHover, setInvHover] = useState<{ pid: string, rect?: DOMRect }|null>(null)
+  const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
+  const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
+
+  // Products with at least one ACTIVE campaign. Status filtering works per product,
+  // so a product with both on and off campaigns counts as active and keeps all its rows.
+  const activeProductIds = useMemo(()=> {
+    const ids = new Set<string>()
+    for(const row of (items || [])){
+      if(!isCampaignActive(row)) continue
+      const pid = getProductIdForRow(row)
+      if(pid) ids.add(pid)
+    }
+    return ids
+  }, [items, manualIds])
+
+  function isRowProductActive(row: MetaCampaignRow): boolean{
+    const pid = getProductIdForRow(row)
+    return pid ? activeProductIds.has(pid) : isCampaignActive(row)
+  }
+
+  const visibleItems = useMemo(()=> {
+    let base = items || []
+    // Search filter first: when focused, the whole page (totals included) scopes
+    // to the matching product / campaign(s)
+    const focusId = (searchFocusId||'').trim()
+    const focusPid = (searchFocusProductId||'').trim()
+    const q = (searchActive||'').trim().toLowerCase()
+    if(focusPid) base = base.filter(r => getProductIdForRow(r) === focusPid)
+    else if(focusId) base = base.filter(r => String(r.campaign_id||'') === focusId)
+    else if(q) base = base.filter(r => String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q) || String(getProductIdForRow(r)||'').includes(q))
+    // A picked product/campaign is always shown, whatever the browse filters say
+    if(focusPid || focusId) return base
+    if(statusFilter !== 'all'){
+      base = base.filter(r => statusFilter === 'active' ? isRowProductActive(r) : !isRowProductActive(r))
+    }
+    if(ownerFilter === 'unassigned') return base.filter(r => !ownerOfRow(r))
+    if(ownerFilter) return base.filter(r => ownerOfRow(r) === ownerFilter)
+    return base
+  }, [items, campaignMeta, ownerFilter, statusFilter, searchActive, searchFocusId, searchFocusProductId, manualIds, activeProductIds])
+
+  // Counted per product (ungrouped campaigns count on their own), matching the table rows.
+  const statusStats = useMemo(()=> {
+    const units = new Map<string, boolean>()
+    let activeCampaigns = 0
+    for(const row of (items || [])){
+      const pid = getProductIdForRow(row)
+      const key = pid ? `p:${pid}` : `c:${campaignMergeKey(row)}`
+      const on = isCampaignActive(row)
+      if(on) activeCampaigns += 1
+      units.set(key, !!units.get(key) || on)
+    }
+    let active = 0
+    units.forEach(on => { if(on) active += 1 })
+    return { all: units.size, active, paused: units.size - active, campaigns: (items || []).length, activeCampaigns }
+  }, [items, manualIds])
+
+  // Fallback lookup: product id -> first manual-mapped campaign count (avoids O(n) scan per call)
+  const manualCountsByPid = useMemo(()=>{
+    const map: Record<string, number> = {}
+    for(const k of Object.keys(manualIds||{})){
+      const m = (manualIds as any)[k]
+      if(m && m.kind==='product'){
+        const c = (manualCounts as any)[String(k)]
+        if(typeof c === 'number' && map[String(m.id)] == null) map[String(m.id)] = c
+      }
+    }
+    return map
+  }, [manualIds, manualCounts])
+
+  const totalSpend = useMemo(()=> (visibleItems||[]).reduce((acc, it)=> acc + Number(it.spend||0), 0), [visibleItems])
+  const tableOrdersTotal = useMemo(()=>{
+    // Sum orders while respecting product-grouping (count each product once)
+    const pidToAnyRow: Record<string, MetaCampaignRow> = {}
+    const ungrouped: MetaCampaignRow[] = []
+    for(const r of (visibleItems||[])){
+      const pid = getProductIdForRow(r)
+      if(pid){
+        if(!pidToAnyRow[pid]) pidToAnyRow[pid] = r
+      }else{
+        ungrouped.push(r)
+      }
+    }
+    let sum = 0
+    for(const pid of Object.keys(pidToAnyRow)){
+      const v = getOrdersByProductId(pid)
+      if(typeof v==='number' && v>0) sum += v
+    }
+    for(const r of ungrouped){
+      const v = getOrders(r)
+      if(typeof v==='number' && v>0) sum += v
+    }
+    return sum
+  }, [visibleItems, shopifyCounts, manualCounts, manualIds])
+  const totalCPP = useMemo(()=> (tableOrdersTotal>0? (totalSpend / tableOrdersTotal) : null), [totalSpend, tableOrdersTotal])
+  const storeCPP = useMemo(()=> ((storeOrdersTotal||0)>0? (totalSpend / Number(storeOrdersTotal||0)) : null), [totalSpend, storeOrdersTotal])
+  const ownerStats = useMemo(()=> {
+    const stats: Record<CampaignOwner, { spend:number, orders:number, trueCpp:number|null, campaigns:number }> = {
+      chafiq: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+      nour: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+      adil: { spend: 0, orders: 0, trueCpp: null, campaigns: 0 },
+    }
+    const seenPids: Record<CampaignOwner, Set<string>> = {
+      chafiq: new Set(), nour: new Set(), adil: new Set(),
+    }
+    for(const r of (items||[])){
+      const owner = ownerOfRow(r)
+      if(!owner) continue
+      const rowSpend = Number(r.spend||0)
+      if(!Number.isFinite(rowSpend) || rowSpend <= 0) continue
+      const s = stats[owner]
+      s.campaigns += 1
+      s.spend += rowSpend
+      const pid = getProductIdForRow(r)
+      if(pid){
+        if(!seenPids[owner].has(pid)){
+          seenPids[owner].add(pid)
+          const v = getOrdersByProductId(pid)
+          if(typeof v === 'number' && v > 0) s.orders += v
+        }
+      }else{
+        const v = getOrders(r)
+        if(typeof v === 'number' && v > 0) s.orders += v
+      }
+    }
+    for(const owner of CAMPAIGN_OWNERS){
+      stats[owner].trueCpp = stats[owner].orders > 0 ? stats[owner].spend / stats[owner].orders : null
+    }
+    return stats
+  }, [items, campaignMeta, shopifyCounts, manualCounts, manualIds])
+
+  function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
+  function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
+
+  function extractNumericId(s?: string|null){
+    const n = String(s||'')
+    const m = n.match(/(\d{3,})/)
+    return m? m[1] : null
+  }
+
+  function normalizeOwner(v?: string|null): CampaignOwner|''{
+    const s = String(v||'').trim().toLowerCase()
+    return (CAMPAIGN_OWNERS as readonly string[]).includes(s) ? (s as CampaignOwner) : ''
+  }
+
+  function isCampaignActive(row: MetaCampaignRow): boolean{
+    return String(row?.status || '').trim().toUpperCase() === 'ACTIVE'
+  }
+
+  function productOwnerKey(productId: string): string{
+    return `product-owner:${String(productId || '').trim()}`
+  }
+
+  function ownerOfKey(key: string): CampaignOwner|''{
+    return normalizeOwner((campaignMeta as any)[String(key||'')]?.owner)
+  }
+
+  function ownerOfRow(row: MetaCampaignRow): CampaignOwner|''{
+    const productId = getProductIdForRow(row)
+    return productId ? ownerOfKey(productOwnerKey(productId)) : ''
+  }
+
+  async function saveProductOwner(productId: string, owner: string){
+    const nextOwner = normalizeOwner(owner)
+    const productKey = productOwnerKey(productId)
+    if(!productId) return
+    const productStore = normalizeStoreValue(storesForProduct(productId, false)[0]) || store
+    setOwnerSaveError('')
+    const previous = campaignMeta[productKey]?.owner || ''
+    setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: nextOwner } }))
+    try{
+      const result = await campaignMetaUpsert({ campaign_key: productKey, owner: nextOwner, store: productStore })
+      if((result as any)?.error) throw new Error((result as any).error)
+    }catch{
+      setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: previous } }))
+      setOwnerSaveError('The product owner could not be saved. Refresh and try again.')
+    }
+  }
+
+  function applyReportingTz(tz?: string|null){
+    const next = isValidTimeZone(tz) ? String(tz) : ''
+    reportingTzRef.current = next
+    setReportingTzState(next)
+    // Every Shopify request from this page uses the same day boundaries as Meta
+    if(next) axios.defaults.headers.common[REPORTING_TZ_HEADER] = next
+    else delete axios.defaults.headers.common[REPORTING_TZ_HEADER]
+  }
+
+  // Resolve the primary ad account's timezone before any range is computed.
+  // Cached per account, so only the very first visit waits for Meta.
+  async function ensureReportingTz(acct: string, storeLabel: string){
+    const id = String(acct || '').replace(/^act_/i, '')
+    const key = `ptos_reporting_tz:${id || `store:${storeLabel}`}`
+    let cached = ''
+    try{ cached = localStorage.getItem(key) || '' }catch{}
+    const fetchTz = async () => {
+      const res = await metaAdAccountTimezone(id || undefined, storeLabel)
+      const tz = res?.data?.timezone_name
+      if(isValidTimeZone(tz)){ try{ localStorage.setItem(key, tz) }catch{} }
+      return isValidTimeZone(tz) ? tz : ''
+    }
+    if(isValidTimeZone(cached)){
+      applyReportingTz(cached)
+      // Refresh quietly for next time (an account's timezone almost never changes)
+      fetchTz().then(tz => { if(tz && tz !== cached && reportingTzRef.current === cached) applyReportingTz(tz) }).catch(()=>{})
+      return
+    }
+    try{
+      const tz = await Promise.race([fetchTz(), new Promise<string>(resolve => setTimeout(()=> resolve(''), 5000))])
+      if(tz) applyReportingTz(tz)
+    }catch{}
+  }
+
+  // Date range in the reporting (Meta ad account) timezone.
+  function computeRange(preset: string){
+    const today = ymdInTimeZone(new Date(), reportingTzRef.current)
+    const back = (days: number) => ({ start: shiftYmd(today, -(days - 1)), end: today })
+    switch(preset){
+      case 'maximum':
+        // All-time search mode: use a wide window for Shopify order counts
+        return { start: shiftYmd(today, -3 * 365), end: today }
+      case 'today': return { start: today, end: today }
+      case 'yesterday': { const y = shiftYmd(today, -1); return { start: y, end: y } }
+      case 'last_3d_incl_today': return back(3)
+      case 'last_4d_incl_today': return back(4)
+      case 'last_5d_incl_today': return back(5)
+      case 'last_6d_incl_today': return back(6)
+      case 'last_7d_incl_today':
+      default:
+        return back(7)
+    }
+  }
+
+  function presetLabel(p: string){
+    switch(p){
+      case 'today': return 'today'
+      case 'yesterday': return 'yesterday'
+      case 'last_3d_incl_today': return 'last 3 days (including today)'
+      case 'last_4d_incl_today': return 'last 4 days (including today)'
+      case 'last_5d_incl_today': return 'last 5 days (including today)'
+      case 'last_6d_incl_today': return 'last 6 days (including today)'
+      case 'last_7d_incl_today': return 'last 7 days (including today)'
+      case 'custom': return 'custom'
+      case 'maximum': return 'all time (search)'
+      default: return p
+    }
+  }
+
+  function metaRangeParams(preset: string): { datePreset?: string, range?: { start: string, end: string } }{
+    if(preset==='custom'){
+      if(customStart && customEnd) return { range: { start: customStart, end: customEnd } }
+      const { start, end } = computeRange('last_7d_incl_today')
+      return { range: { start, end } }
+    }
+    // For all presets that include today, use explicit time range to ensure today's data is included
+    if(preset==='last_3d_incl_today' || preset==='last_4d_incl_today' || preset==='last_5d_incl_today' || preset==='last_6d_incl_today' || preset==='last_7d_incl_today'){
+      const { start, end } = computeRange(preset)
+      return { range: { start, end } }
+    }
+    // Exact days also go as explicit dates from the reporting clock, so Meta and
+    // Shopify can never disagree on which day "today" is around midnight.
+    if(preset==='today' || preset==='yesterday') return { range: computeRange(preset) }
+    if(preset==='maximum') return { datePreset: 'maximum' }
+    // Fallback to a safe default
+    const { start, end } = computeRange('last_7d_incl_today')
+    return { range: { start, end } }
+  }
+
+  function effectiveYmdRange(preset: string){
+    if(preset==='custom' && customStart && customEnd) return { start: customStart, end: customEnd }
+    return computeRange(preset)
+  }
+
+  function performanceOrderStores(rowStore?: string | null): Array<string | undefined>{
+    const stores = normalizeStoreList(selectedStores||[], storeOptions)
+    if(stores.length>0) return Array.from(new Set(stores))
+    const fallback = normalizeStoreValue(rowStore || store || '')
+    return fallback ? [fallback] : [undefined]
+  }
+
+  async function loadPerformanceOrdersByDay(
+    days: Array<{ date: string }>,
+    source: { productId?: string | null, collectionId?: string | null, rowStore?: string | null }
+  ): Promise<number[]>{
+    const productId = String(source.productId||'').trim()
+    const collectionId = String(source.collectionId||'').trim()
+    if(!productId && !collectionId) return (days||[]).map(()=> 0)
+    const storesToUse = performanceOrderStores(source.rowStore)
+    return Promise.all((days||[]).map(async (dd) => {
+      const dayDate = String(dd?.date||'').trim()
+      if(!dayDate) return 0
+      try{
+        if(productId){
+          const results = await Promise.allSettled(storesToUse.map(st =>
+            shopifyOrdersCountByTitle({ names: [productId], start: dayDate, end: dayDate, store: st, include_closed: true, date_field: 'processed' })
+          ))
+          return results.reduce((sum, res) => {
+            if(res.status !== 'fulfilled') return sum
+            return sum + (Number(((res.value as any)?.data||{})[productId] ?? 0) || 0)
+          }, 0)
+        }
+        const results = await Promise.allSettled(storesToUse.map(st =>
+          shopifyOrdersCountByCollection({ collection_id: collectionId, start: dayDate, end: dayDate, store: st, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+        ))
+        return results.reduce((sum, res) => {
+          if(res.status !== 'fulfilled') return sum
+          return sum + (Number(((res.value as any)?.data||{})?.count ?? 0) || 0)
+        }, 0)
+      }catch{
+        return 0
+      }
+    }))
+  }
+
+  function uniqueStores(values: Array<string | undefined | null>): Array<string | undefined>{
+    const out: Array<string | undefined> = []
+    const seen = new Set<string>()
+    for(const raw of values){
+      const val = normalizeStoreValue(raw || '')
+      const key = val || '__default__'
+      if(seen.has(key)) continue
+      seen.add(key)
+      out.push(val || undefined)
+    }
+    return out
+  }
+
+  function storesForProduct(productId?: string, includeKnownFallback = false): Array<string | undefined>{
+    const pid = String(productId || '').trim()
+    const mappedStores = Object.values(manualIds || {})
+      .filter(m => m && m.kind === 'product' && String(m.id || '') === pid && String(m.store || '').trim())
+      .map(m => normalizeStoreValue(m.store))
+    const selected = normalizeStoreList(selectedStores||[], storeOptions)
+    const known = includeKnownFallback ? storeOptions.map(s => s.value) : []
+    const stores = uniqueStores([...mappedStores, ...selected, store, ...known])
+    return stores.length ? stores : [store || undefined]
+  }
+
+  async function paidOrdersForStores(productId: string, storesToUse: Array<string | undefined>): Promise<number>{
+    const { start, end } = effectiveYmdRange(datePreset)
+    const results = await Promise.allSettled(storesToUse.map(st =>
+      shopifyOrdersCountPaidByTitle({ names: [productId], start, end, store: st, include_closed: true, date_field: 'processed' })
+    ))
+    return results.reduce((sum, res) => {
+      if(res.status !== 'fulfilled') return sum
+      return sum + (Number(((res.value as any)?.data||{})[productId] ?? 0) || 0)
+    }, 0)
+  }
+
+  async function loadPaidOrdersForProduct(pid: string): Promise<number>{
+    const productId = String(pid||'').trim()
+    if(!productId) return 0
+    const primaryStores = storesForProduct(productId, false)
+    const primaryTotal = await paidOrdersForStores(productId, primaryStores)
+    if(primaryTotal > 0) return primaryTotal
+
+    const primaryKeys = new Set(primaryStores.map(st => String(st || '')))
+    const fallbackStores = storesForProduct(productId, true).filter(st => !primaryKeys.has(String(st || '')))
+    if(fallbackStores.length === 0) return primaryTotal
+    return primaryTotal + await paidOrdersForStores(productId, fallbackStores)
+  }
+
+  async function deliveryRateForStores(productId: string, storesToUse: Array<string | undefined>): Promise<DeliveryRateResult>{
+    const { start, end } = effectiveYmdRange(datePreset)
+    const results = await Promise.allSettled(storesToUse.map(st =>
+      shopifyOrdersDeliveryRateByTitle({ names: [productId], start, end, store: st, include_closed: true })
+    ))
+    const totals = results.reduce((acc, result) => {
+      if(result.status !== 'fulfilled') return acc
+      const record = ((result.value as any)?.data||{})[productId] || {}
+      acc.fulfilledOrders += Number(record.fulfilled_orders || 0)
+      acc.paidOrDeliveredOrders += Number(record.paid_or_delivered_orders || 0)
+      return acc
+    }, { fulfilledOrders: 0, paidOrDeliveredOrders: 0 })
+    const paidOrDeliveredOrders = Math.min(totals.fulfilledOrders, totals.paidOrDeliveredOrders)
+    return {
+      fulfilledOrders: totals.fulfilledOrders,
+      paidOrDeliveredOrders,
+      rate: totals.fulfilledOrders > 0 ? (paidOrDeliveredOrders / totals.fulfilledOrders) * 100 : 0,
+    }
+  }
+
+  async function loadDeliveryRateForProduct(pid: string): Promise<DeliveryRateResult>{
+    const productId = String(pid||'').trim()
+    if(!productId) return { fulfilledOrders: 0, paidOrDeliveredOrders: 0, rate: 0 }
+    const primaryStores = storesForProduct(productId, false)
+    const primaryResult = await deliveryRateForStores(productId, primaryStores)
+    if(primaryResult.fulfilledOrders > 0) return primaryResult
+
+    const primaryKeys = new Set(primaryStores.map(st => String(st || '')))
+    const fallbackStores = storesForProduct(productId, true).filter(st => !primaryKeys.has(String(st || '')))
+    if(fallbackStores.length === 0) return primaryResult
+    return deliveryRateForStores(productId, fallbackStores)
+  }
+
+  async function calculateDeliveryRate(pid: string){
+    const productId = String(pid||'').trim()
+    if(!productId) return
+    setDeliveryRateLoading(prev=> ({ ...prev, [productId]: true }))
+    try{
+      const result = await loadDeliveryRateForProduct(productId)
+      setDeliveryRateResults(prev=> ({ ...prev, [productId]: result }))
+    }finally{
+      setDeliveryRateLoading(prev=> ({ ...prev, [productId]: false }))
+    }
+  }
+
+  async function loadProductBriefForProduct(productId: string): Promise<any | null>{
+    const storesToUse = storesForProduct(productId, true)
+    const results = await Promise.allSettled(storesToUse.map(st => shopifyProductsBrief({ ids: [productId], store: st, fresh_inventory: true })))
+    const merged = mergeBriefResults(results)
+    if(Object.keys(merged).length > 0) setProductBriefs(prev=> ({ ...prev, ...merged }))
+    return merged[productId] || null
+  }
+
+  async function calculateGroupProfit(pid: string, spendUsd: number){
+    const productId = String(pid||'').trim()
+    if(!productId) return
+    setProfitLoading(prev=> ({ ...prev, [productId]: true }))
+    try{
+      let brief = productBriefs[productId]
+      const priceOverride = profitProductPrices[productId]
+      const hasPriceOverride = typeof priceOverride === 'string' && priceOverride.trim() !== ''
+      const paidOrdersPromise = loadPaidOrdersForProduct(productId).then(paidOrders => {
+        // Show the count as soon as Shopify answers; inventory/price hydration
+        // should not hold back the value the user is waiting for.
+        setProfitPaidCounts(prev=> ({ ...prev, [productId]: paidOrders }))
+        return paidOrders
+      })
+      let briefPromise: Promise<any | null> = Promise.resolve(null)
+      if(!hasPriceOverride && (!brief || brief.price == null)){
+        briefPromise = loadProductBriefForProduct(productId).catch(()=> null)
+      }
+      const [paidOrders, nextBrief] = await Promise.all([paidOrdersPromise, briefPromise])
+      if(nextBrief) brief = nextBrief
+      const productPrice = hasPriceOverride ? Number(priceOverride) : Number((brief as any)?.price || 0)
+      const spendMad = Number(spendUsd||0) * 10
+      const productCost = Number(profitProductCosts[productId] || 0)
+      const costPerOrder = productCost + Number(profitServiceCost||0)
+      const costsMad = costPerOrder * paidOrders
+      const profit = (productPrice * paidOrders) - spendMad - costsMad
+      setProfitResults(prev=> ({
+        ...prev,
+        [productId]: { paidOrders, productPrice, productCost, spendUsd: Number(spendUsd||0), spendMad, costsMad, profit },
+      }))
+    }finally{
+      setProfitLoading(prev=> ({ ...prev, [productId]: false }))
+    }
+  }
+
+  function clearProfitResult(productId: string){
+    setProfitResults(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
+  }
+
+  function updateProfitProductPrice(productId: string, value: string){
+    setProfitProductPrices(prev=> ({ ...prev, [productId]: value }))
+    // A displayed result was calculated with the previous selling price.
+    setProfitResults(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
+  }
+
+  function updateProfitProductCost(productId: string, value: string){
+    setProfitProductCosts(prev=> ({ ...prev, [productId]: value }))
+    setProfitCostSaved(prev=> ({ ...prev, [productId]: false }))
+    setProfitCostErrors(prev=> {
+      if(!(productId in prev)) return prev
+      const next = { ...prev }
+      delete next[productId]
+      return next
+    })
+    // Require a recalculation so profit and inventory summary use the same cost.
+    clearProfitResult(productId)
+  }
+
+  async function saveProfitProductCost(productId: string, value: string){
+    const pid = String(productId || '').trim()
+    if(!pid) return
+    const trimmed = String(value ?? '').trim()
+    const productCost = trimmed === '' ? 0 : Number(trimmed)
+    if(!Number.isFinite(productCost) || productCost < 0){
+      setProfitCostErrors(prev=> ({ ...prev, [pid]: 'Enter a valid cost' }))
+      return
+    }
+    const productStore = normalizeStoreValue(storesForProduct(pid, false)[0]) || store
+    setProfitCostSaving(prev=> ({ ...prev, [pid]: true }))
+    setProfitCostSaved(prev=> ({ ...prev, [pid]: false }))
+    setProfitCostErrors(prev=> {
+      if(!(pid in prev)) return prev
+      const next = { ...prev }
+      delete next[pid]
+      return next
+    })
+    try{
+      const response = await profitCostsUpsert({ product_id: pid, product_cost: productCost, store: productStore })
+      if(response?.error) throw new Error(String(response.error))
+      const savedCost = response?.data?.product_cost
+      setProfitProductCosts(prev=> ({ ...prev, [pid]: String(savedCost ?? productCost) }))
+      setProfitCostSaved(prev=> ({ ...prev, [pid]: true }))
+    }catch(e:any){
+      setProfitCostErrors(prev=> ({ ...prev, [pid]: String(e?.message || 'Save failed') }))
+    }finally{
+      setProfitCostSaving(prev=> ({ ...prev, [pid]: false }))
+    }
+  }
+
+  function productIdsForCampaigns(campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>): string[]{
+    const idsOrdered: string[] = []
+    const seen: Record<string, true> = {}
+    for(const c of campaigns){
+      const rk = (c.campaign_id || c.name || '') as any
+      const manual = mappings[rk]
+      let pid: string | null = null
+      if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(manual.id)) pid = manual.id
+      else pid = extractNumericId(c.name||'')
+      if(pid && !seen[pid]){
+        seen[pid] = true
+        idsOrdered.push(pid)
+      }
+    }
+    return idsOrdered
+  }
+
+  function campaignHasSpend(campaign: MetaCampaignRow): boolean{
+    return Number(campaign?.spend || 0) > 0
+  }
+
+  function campaignProductId(campaign: MetaCampaignRow, mappings: Record<string, CampaignMapping>): string | null{
+    const rowKey = String(campaign?.campaign_id || campaign?.name || '')
+    const manual = mappings[rowKey]
+    if(manual && manual.kind === 'product' && manual.id && /^\d+$/.test(String(manual.id))) return String(manual.id)
+    const pid = extractNumericId(campaign?.name || '')
+    return pid && /^\d+$/.test(pid) ? pid : null
+  }
+
+  function campaignMergeKey(campaign: MetaCampaignRow): string{
+    const acct = String((campaign as any)?._adAccount || '')
+    return `${String(campaign?.campaign_id || campaign?.name || '')}__${acct}`
+  }
+
+  function mergeCampaignRows(current: MetaCampaignRow[], additions: MetaCampaignRow[]): MetaCampaignRow[]{
+    if(additions.length === 0) return current
+    const seen = new Set(current.map(campaignMergeKey))
+    const next = current.slice()
+    for(const row of additions){
+      const key = campaignMergeKey(row)
+      if(seen.has(key)) continue
+      seen.add(key)
+      next.push(row)
+    }
+    next.sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+    return next
+  }
+
+  function mergeBriefResults(results: PromiseSettledResult<any>[]): Record<string, any>{
+    const mergedBriefs: Record<string, any> = {}
+    for(const pbRes of results){
+      if(pbRes.status === 'fulfilled'){
+        const data = ((pbRes.value as any)?.data) || {}
+        for(const [k, v] of Object.entries(data)){
+          if(!mergedBriefs[k]) mergedBriefs[k] = v
+          else if(!mergedBriefs[k].image && (v as any)?.image) mergedBriefs[k] = v
+        }
+      }
+    }
+    return mergedBriefs
+  }
+
+  function mergeHydratedProducts(products: Record<string, any>, campaigns: MetaCampaignRow[], mappings: Record<string, CampaignMapping>){
+    const nextBriefs: Record<string, any> = {}
+    const nextCounts: Record<string, number> = {}
+    for(const [pid, data] of Object.entries(products || {})){
+      if(!data || typeof data !== 'object') continue
+      if('image' in data || 'total_available' in data || 'zero_variants' in data || 'zero_sizes' in data || 'price' in data){
+        nextBriefs[pid] = {
+          image: data.image ?? null,
+          total_available: Number(data.total_available ?? 0),
+          zero_variants: Number(data.zero_variants ?? 0),
+          zero_sizes: typeof data.zero_sizes === 'number' ? Number(data.zero_sizes || 0) : undefined,
+          price: data.price ?? null,
+        }
+      }
+      if(typeof data.orders === 'number') nextCounts[pid] = Number(data.orders || 0)
+    }
+    if(Object.keys(nextBriefs).length > 0) setProductBriefs(prev => ({ ...prev, ...nextBriefs }))
+    if(Object.keys(nextCounts).length > 0){
+      setShopifyCounts(prev => ({ ...prev, ...nextCounts }))
+      const manualNext: Record<string, number> = {}
+      for(const row of campaigns || []){
+        const rowKey = String(row.campaign_id || row.name || '')
+        const manual = mappings[rowKey]
+        if(manual && manual.kind === 'product' && nextCounts[String(manual.id)] != null){
+          manualNext[rowKey] = nextCounts[String(manual.id)]
+        }
+      }
+      if(Object.keys(manualNext).length > 0) setManualCounts(prev => ({ ...prev, ...manualNext }))
+    }
+    return nextCounts
+  }
+
+  function markProductsHydrating(ids: string[], loading: boolean){
+    setProductHydrating(prev => {
+      const next = { ...prev }
+      for(const id of ids){
+        if(loading) next[id] = { brief: true, orders: true }
+        else delete next[id]
+      }
+      return next
+    })
+  }
+
+  // Returns true when a hydrate response entry actually carries the data we asked for.
+  // The backend returns an empty placeholder ({cached:false}) when its Shopify calls fail,
+  // so "response arrived" is not the same as "data arrived".
+  function isHydrateEntryComplete(entry: any): boolean{
+    if(!entry || typeof entry !== 'object') return false
+    const hasOrders = typeof entry.orders === 'number'
+    const hasBrief = ('image' in entry) || ('total_available' in entry)
+    return hasOrders && hasBrief
+  }
+
+  // Add product ids to the shared hydration queue. Priority enqueues (search focus,
+  // rows scrolled into view) go to the FRONT of the queue so they load next instead
+  // of waiting behind the full table.
+  function enqueueProductHydration(idsInput: string[], opts?: { priority?: boolean, resetRetries?: boolean }){
+    const context = hydrateContextRef.current
+    if(!context || context.profitOnly) return
+    const seen = new Set<string>()
+    const toAdd: string[] = []
+    for(const raw of idsInput){
+      const id = String(raw || '').trim()
+      if(!id || !/^\d+$/.test(id) || seen.has(id)) continue
+      seen.add(id)
+      // Search focus: never spend requests on products outside the picked one(s)
+      if(hydrateFocusRef.current && !hydrateFocusRef.current.pids.has(id)) continue
+      if(hydratedProductIdsRef.current.has(id)) continue
+      if(opts?.resetRetries) hydrateRetryPassRef.current.delete(id)
+      if(hydratingProductIdsRef.current.has(id)) continue // request already in flight
+      if(hydratePendingSetRef.current.has(id)){
+        if(opts?.priority){
+          const arr = hydratePendingRef.current
+          const idx = arr.indexOf(id)
+          if(idx > 0){ arr.splice(idx, 1); arr.unshift(id) }
+        }
+        continue
+      }
+      toAdd.push(id)
+    }
+    if(toAdd.length > 0){
+      for(const id of toAdd) hydratePendingSetRef.current.add(id)
+      if(opts?.priority) hydratePendingRef.current.unshift(...toAdd)
+      else hydratePendingRef.current.push(...toAdd)
+      // Loading indicator goes on as soon as a row is queued, not when its chunk starts
+      markProductsHydrating(toAdd, true)
+    }
+    pumpHydrationWorkers()
+  }
+
+  function pumpHydrationWorkers(){
+    // A searched product gets an extra lane so it never waits behind in-flight table batches
+    const limit = SHOPIFY_HYDRATE_CONCURRENCY + (hydrateFocusRef.current ? 1 : 0)
+    while(hydrateWorkersRef.current < limit && hydratePendingRef.current.length > 0){
+      hydrateWorkersRef.current += 1
+      hydrationWorker().catch(()=>{}).finally(()=>{
+        hydrateWorkersRef.current = Math.max(0, hydrateWorkersRef.current - 1)
+        // An enqueue can land after a worker observes an empty queue but before
+        // this counter is decremented. Pump again so those rows never get stuck.
+        if(hydratePendingRef.current.length > 0) pumpHydrationWorkers()
+      })
+    }
+  }
+
+  function scheduleHydrationRetry(ids: string[], token: number){
+    const retry: string[] = []
+    const giveUp: string[] = []
+    for(const id of ids){
+      const passes = hydrateRetryPassRef.current.get(id) || 0
+      if(passes < 3){ hydrateRetryPassRef.current.set(id, passes + 1); retry.push(id) }
+      else giveUp.push(id)
+    }
+    // Exhausted retries: clear the indicator so rows show "—" instead of spinning forever
+    if(giveUp.length > 0) markProductsHydrating(giveUp, false)
+    if(retry.length > 0){
+      // Keep the loading indicator on during the wait; retry jumps the queue
+      const retryPass = Math.max(...retry.map(id => hydrateRetryPassRef.current.get(id) || 1))
+      const retryDelayMs = Math.min(12000, 2000 * Math.pow(2, Math.max(0, retryPass - 1)))
+      setTimeout(()=>{
+        if(token !== ordersSeqToken.current) return
+        enqueueProductHydration(retry, { priority: true })
+      }, retryDelayMs)
+    }
+  }
+
+  async function hydrationWorker(){
+    while(true){
+      const context = hydrateContextRef.current
+      if(!context || context.profitOnly) return
+      const token = context.token
+      if(token !== ordersSeqToken.current) return
+      const chunk: string[] = []
+      while(chunk.length < SHOPIFY_HYDRATE_BATCH_SIZE && hydratePendingRef.current.length > 0){
+        const id = hydratePendingRef.current.shift() as string
+        hydratePendingSetRef.current.delete(id)
+        if(hydratedProductIdsRef.current.has(id) || hydratingProductIdsRef.current.has(id)) continue
+        if(hydrateFocusRef.current && !hydrateFocusRef.current.pids.has(id)){ markProductsHydrating([id], false); continue }
+        chunk.push(id)
+      }
+      if(chunk.length === 0) return
+      for(const id of chunk) hydratingProductIdsRef.current.add(id)
+      let products: Record<string, any> | null = null
+      // Retry transient failures (network blips, timeouts) before giving up on the chunk
+      for(let attempt = 0; attempt < 2 && token === ordersSeqToken.current; attempt++){
+        try{
+          const res = await shopifyHydrateProducts({
+            product_ids: chunk,
+            start: context.start,
+            end: context.end,
+            store: context.primaryStore,
+            stores: context.storeList,
+            include: ['brief', 'orders'],
+            cache_mode: 'stale_then_refresh',
+          })
+          if((res as any)?.error) throw new Error(String((res as any).error))
+          products = ((res as any)?.data || {}).products || {}
+          break
+        }catch{
+          if(attempt === 0) await new Promise(r => setTimeout(r, 1500))
+        }
+      }
+      for(const id of chunk) hydratingProductIdsRef.current.delete(id)
+      if(token !== ordersSeqToken.current) return
+      if(products){
+        const nextCounts = mergeHydratedProducts(products, context.campaigns, context.mappings)
+        for(const [pid, count] of Object.entries(nextCounts)){
+          context.countsById[pid] = Number(count || 0)
+        }
+        context.reveal?.(context.countsById)
+        const completed: string[] = []
+        const failed: string[] = []
+        const stale: string[] = []
+        for(const id of chunk){
+          const entry = (products as any)[id]
+          if(isHydrateEntryComplete(entry)){
+            hydratedProductIdsRef.current.add(id)
+            completed.push(id)
+            // Server returned stale cached values and is refreshing in the background:
+            // schedule one follow-up fetch to pick up the fresh numbers.
+            if(entry.refreshing === true && !staleRefreshedIdsRef.current.has(id)){
+              staleRefreshedIdsRef.current.add(id)
+              stale.push(id)
+            }
+          }else{
+            failed.push(id)
+          }
+        }
+        if(completed.length > 0) markProductsHydrating(completed, false)
+        if(failed.length > 0) scheduleHydrationRetry(failed, token)
+        if(stale.length > 0){
+          setTimeout(()=>{
+            if(token !== ordersSeqToken.current) return
+            for(const id of stale) hydratedProductIdsRef.current.delete(id)
+            enqueueProductHydration(stale)
+          }, 5000)
+        }
+      }else{
+        scheduleHydrationRetry(chunk, token)
+      }
+    }
+  }
+
+  // Collection-mapped campaigns load their order counts in a background lane.
+  // Rows outside an active search focus are skipped and picked up once it clears.
+  async function runCollectionLane(context: NonNullable<typeof hydrateContextRef.current>){
+    for(const row of (context.collectionRows || [])){
+      if(context.token !== ordersSeqToken.current) break
+      const rowKey = String(row.campaign_id || row.name || '')
+      if(context.collectionDone?.has(rowKey)) continue
+      const focus = hydrateFocusRef.current
+      if(focus && !focus.rowKeys.has(rowKey)) continue
+      const conf = context.mappings[rowKey]
+      if(!conf || conf.kind !== 'collection' || !conf.id || !/^\d+$/.test(conf.id)) continue
+      context.collectionDone?.add(rowKey)
+      const rowStore = (row as any)._store || context.primaryStore
+      try{
+        const oc = await shopifyOrdersCountByCollection({ collection_id: conf.id, start: context.start, end: context.end, store: rowStore, include_closed: true, aggregate: 'sum_product_orders', date_field: 'processed' })
+        if(context.token !== ordersSeqToken.current) break
+        const count = Number(((oc as any)?.data||{})?.count ?? 0)
+        setManualCounts(prev => ({ ...prev, [rowKey]: count }))
+        if(!campaignHasSpend(row) && count > 0) setItems(prev => mergeCampaignRows(prev, [row]))
+      }catch{
+        setManualCounts(prev => ({ ...prev, [rowKey]: 0 }))
+      }
+    }
+  }
+
+  // Scope Shopify loading to the searched product(s). Pending work for every other
+  // product is dropped; clearing the focus resumes the full table in the background.
+  function setHydrationFocus(focus: { pids: string[], rowKeys: string[] } | null){
+    const context = hydrateContextRef.current
+    if(focus){
+      const pidSet = new Set(focus.pids)
+      hydrateFocusRef.current = { pids: pidSet, rowKeys: new Set(focus.rowKeys) }
+      const dropped = hydratePendingRef.current.filter(id => !pidSet.has(id))
+      hydratePendingRef.current = hydratePendingRef.current.filter(id => pidSet.has(id))
+      for(const id of dropped) hydratePendingSetRef.current.delete(id)
+      if(dropped.length > 0) markProductsHydrating(dropped, false)
+      if(focus.pids.length > 0) enqueueProductHydration(focus.pids, { priority: true, resetRetries: true })
+      if(context && !context.profitOnly) void runCollectionLane(context)
+      return
+    }
+    if(!hydrateFocusRef.current) return
+    hydrateFocusRef.current = null
+    if(!context || context.profitOnly) return
+    enqueueProductHydration([...Object.keys(visibleProductIds || {}), ...(context.allProductIds || [])])
+    void runCollectionLane(context)
+  }
+
+  async function load(preset?: string, opts?: { stores?: string[], adAccounts?: string[], profit?: boolean, focus?: { query?: string, campaignId?: string, productId?: string } }){
+    const loadToken = ++loadSeqToken.current
+    setLoading(true); setError(undefined)
+    try{
+      const effPreset = preset||datePreset
+      const effStores = opts?.stores ?? selectedStores
+      const effAdAccounts = opts?.adAccounts ?? selectedAdAccounts
+      await ensureReportingTz(effAdAccounts[0] || '', normalizeStoreValue(effStores[0]) || 'irrakids')
+      if(loadToken !== loadSeqToken.current) return
+      const profitOnly = opts?.profit ?? profitMode
+      // Search focus: when set, only the matching campaign(s) get hydrated so the
+      // searched campaign's data loads first instead of waiting behind the full table.
+      const focus = opts?.focus
+      let shapedForFocus: Record<string, CampaignMapping> = {}
+      const focusMatch = focus ? (c: MetaCampaignRow) => {
+        if(focus.productId) return campaignProductId(c, shapedForFocus) === String(focus.productId)
+        if(focus.campaignId) return String(c.campaign_id||'') === String(focus.campaignId)
+        const q = String(focus.query||'').trim().toLowerCase()
+        if(!q) return true
+        return String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q)
+      } : null
+      const metaParams = metaRangeParams(effPreset)
+
+      // Route each connected account through its store's Meta token and mapping workspace.
+      let allCampaigns: MetaCampaignRow[] = []
+      const bundleErrors: string[] = []
+      let shaped: Record<string, CampaignMapping> = {}
+      let allMeta: Record<string, any> = {}
+      const primaryStore = effStores[0] || 'irrakids'
+      const acctList = effAdAccounts.length > 0 ? effAdAccounts : ['']
+      const accountStores: Record<string, string> = {}
+      if(effStores.length > 1){
+        try{
+          const connections = await metaListAdAccounts(effStores)
+          for(const account of connections.data || []){
+            const id = String(account.id || '').replace(/^act_/i, '')
+            if(id && account.store) accountStores[id] = account.store
+          }
+        }catch(error: any){ bundleErrors.push(String(error?.message || error)) }
+      }
+
+      // Only send an explicit time range when the preset resolves to one — the backend
+      // prefers since/until over date_preset, so sending a fallback range here would
+      // silently override presets like 'maximum' (all-time search) with last-7-days.
+      const bundlePromises = acctList.map(acct =>
+        fetchAdsManagementBundle({
+          date_preset: metaParams.datePreset,
+          ad_account: acct || undefined,
+          store: accountStores[String(acct || '').replace(/^act_/i, '')] || primaryStore,
+          start: metaParams.range?.start,
+          end: metaParams.range?.end,
+          profit_only: profitOnly,
+        }).catch(error => ({ error: String(error?.message || error) }))
+      )
+      const bundleResults = await Promise.allSettled(bundlePromises)
+      if(loadToken !== loadSeqToken.current) return
+
+      const seenCampaignIds = new Set<string>()
+      for(let idx = 0; idx < bundleResults.length; idx++){
+        const r = bundleResults[idx]
+        if(r.status !== 'fulfilled' || !r.value){ bundleErrors.push(`Could not load ad account ${acctList[idx] || 'default'}`); continue }
+        if((r.value as any)?.error){ bundleErrors.push(`${acctList[idx] || 'default'}: ${(r.value as any).error}`); continue }
+        const bundle = (r.value as any)?.data
+        if(!bundle){ bundleErrors.push(`Could not load ad account ${acctList[idx] || 'default'}`); continue }
+        const acct = acctList[idx]
+        const accountStore = accountStores[String(acct || '').replace(/^act_/i, '')] || primaryStore
+
+        const bundleAdAccount = bundle?.ad_account
+        if(bundleAdAccount?.id){
+          setAdAccountName(prev => prev || String(bundleAdAccount.name || ''))
+        }
+
+        for(const c of (bundle?.campaigns || [])){
+          const cid = String(c.campaign_id || c.name || '')
+          const dedupeKey = `${cid}__${acct}`
+          if(!seenCampaignIds.has(dedupeKey)){
+            seenCampaignIds.add(dedupeKey)
+            allCampaigns.push({ ...c, _store: accountStore, _adAccount: acct } as any)
+          }
+        }
+
+        const bundleMappings = bundle?.mappings || {}
+        for(const k of Object.keys(bundleMappings)){
+          const v = bundleMappings[k]
+          if(v && (v.kind==='product' || v.kind==='collection') && v.id) shaped[k] = { kind: v.kind, id: v.id, store: v.store || accountStore }
+        }
+        allMeta = { ...allMeta, ...(bundle?.campaign_meta || {}) }
+      }
+
+      // Load mappings and product owners for every selected store.
+      if(effStores.length > 1){
+        const extraStoreData = await Promise.allSettled(
+          effStores.slice(1).map(async st => Promise.all([campaignMappingsList(st), campaignMetaList(st)]))
+        )
+        for(const r of extraStoreData){
+          if(r.status !== 'fulfilled') continue
+          const map = ((r.value[0] as any)?.data) || {}
+          allMeta = { ...allMeta, ...((r.value[1] as any)?.data || {}) }
+          for(const k of Object.keys(map)){
+            const v = map[k]
+            if(v && (v.kind==='product' || v.kind==='collection') && v.id && !shaped[k]) shaped[k] = { kind: v.kind, id: v.id, store: v.store }
+          }
+        }
+      }
+
+      if(allCampaigns.length === 0 && acctList.length > 0){
+        try {
+          const res = await fetchMetaCampaigns(metaParams.datePreset, acctList[0]||undefined, metaParams.range, profitOnly)
+          if(loadToken !== loadSeqToken.current) return
+          if(!(res as any)?.error) allCampaigns = (res as any)?.data || []
+          else bundleErrors.push(String((res as any).error))
+        } catch(error: any) { bundleErrors.push(String(error?.message || error)) }
+      }
+      if(bundleErrors.length) setError(`Some ads data could not be loaded. ${Array.from(new Set(bundleErrors)).join('; ')}`)
+
+      shapedForFocus = shaped
+      const rankedAllCampaigns = (allCampaigns as MetaCampaignRow[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+      const spendingCampaigns = rankedAllCampaigns.filter(campaignHasSpend)
+      const zeroSpendCampaigns = rankedAllCampaigns.filter(c => !campaignHasSpend(c))
+      // Active campaigns stay visible even before they spend in the selected range,
+      // otherwise a product whose running campaign has no spend yet looks paused
+      // (or vanishes under the "Active" filter).
+      const zeroSpendActiveCampaigns = zeroSpendCampaigns.filter(isCampaignActive)
+      const revealZeroSpendCampaigns = (countsById: Record<string, number>) => {
+        const rowsToReveal = zeroSpendCampaigns.filter(row => {
+          const pid = campaignProductId(row, shaped)
+          return !!pid && Number(countsById[pid] || 0) > 0
+        })
+        if(rowsToReveal.length > 0) setItems(prev => mergeCampaignRows(prev, rowsToReveal))
+      }
+
+      setItems(mergeCampaignRows(spendingCampaigns, zeroSpendActiveCampaigns))
+      setManualIds(shaped)
+      setCampaignMeta(allMeta)
+
+      // Reset Shopify data + expansion state
+      setShopifyCounts({})
+      setProductBriefs({})
+      setManualCounts({})
+      setStoreOrdersTotal(null)
+      setExpanded({})
+      setCollectionOrders({})
+      setChildrenError({})
+      setChildrenLoading({})
+      setAdsetsExpanded({})
+      setAdsetsLoading({})
+      setAdsetsByCampaign({})
+      setAdsetOrdersByCampaign({})
+      setAdsetOrdersLoading({})
+      setAdsetOrdersExpanded({})
+      setProductHydrating({})
+      setVisibleProductIds({})
+      hydratedProductIdsRef.current = new Set()
+      hydratingProductIdsRef.current = new Set()
+      staleRefreshedIdsRef.current = new Set()
+      hydratePendingRef.current = []
+      hydratePendingSetRef.current = new Set()
+      hydrateRetryPassRef.current = new Map()
+
+      setLoading(false)
+
+      // When search focus is active, hydrate only the matching campaigns' products
+      const hydrateSpendingCampaigns = focusMatch ? spendingCampaigns.filter(focusMatch) : spendingCampaigns
+      const hydrateAllCampaigns = focusMatch ? rankedAllCampaigns.filter(focusMatch) : rankedAllCampaigns
+      const spendingProductIds = productIdsForCampaigns(hydrateSpendingCampaigns, shaped)
+      const allProductIds = productIdsForCampaigns(hydrateAllCampaigns, shaped)
+      if(focusMatch){
+        hydrateFocusRef.current = {
+          pids: new Set(allProductIds),
+          rowKeys: new Set(hydrateAllCampaigns.map(c => String(c.campaign_id || c.name || ''))),
+        }
+      }
+      const spendingProductIdSet = new Set(spendingProductIds)
+      const idsOrdered = [
+        ...spendingProductIds,
+        ...allProductIds.filter(id => !spendingProductIdSet.has(id)),
+      ]
+      const storeList = (effStores.length ? effStores : [primaryStore]).map(normalizeStoreValue).filter(Boolean)
+      const ordersToken = ++ordersSeqToken.current
+      const { start, end } = effectiveYmdRange(effPreset)
+      const hydrationContext = {
+        token: ordersToken,
+        start,
+        end,
+        storeList: storeList.length ? storeList : [primaryStore],
+        primaryStore,
+        campaigns: rankedAllCampaigns,
+        mappings: shaped,
+        profitOnly,
+        countsById: {} as Record<string, number>,
+        reveal: revealZeroSpendCampaigns,
+        allProductIds: productIdsForCampaigns(rankedAllCampaigns, shaped),
+        collectionRows: rankedAllCampaigns.filter(row => shaped[String(row.campaign_id || row.name || '')]?.kind === 'collection'),
+        collectionDone: new Set<string>(),
+      }
+      hydrateContextRef.current = hydrationContext
+
+      // Fire store-total in background for each store (skip in focused search mode:
+      // an all-time store total is a heavy query and isn't shown for a single campaign)
+      if(!profitOnly && !focusMatch){
+        ;(async()=>{
+          try{
+            const totals = await Promise.allSettled(
+              (storeList.length ? storeList : ['irrakids']).map(st =>
+                shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
+              )
+            )
+            if(ordersToken !== ordersSeqToken.current) return
+            let sum = 0
+            for(const t of totals){
+              if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
+            }
+            setStoreOrdersTotal(sum)
+          }catch{
+            if(ordersToken !== ordersSeqToken.current) return
+            setStoreOrdersTotal(0)
+          }
+        })()
+      }
+
+      if(profitOnly){
+        ;(async()=>{
+          for(let i = 0; i < spendingProductIds.length; i += SHOPIFY_HYDRATE_BATCH_SIZE){
+            if(ordersToken !== ordersSeqToken.current) break
+            const chunk = spendingProductIds.slice(i, i + SHOPIFY_HYDRATE_BATCH_SIZE)
+            markProductsHydrating(chunk, true)
+            try{
+              const res = await shopifyHydrateProducts({ product_ids: chunk, start, end, store: primaryStore, stores: hydrationContext.storeList, include: ['brief'], cache_mode: 'stale_then_refresh' })
+              if(ordersToken !== ordersSeqToken.current) break
+              mergeHydratedProducts((((res as any)?.data || {}).products || {}), rankedAllCampaigns, shaped)
+            }catch{} finally {
+              markProductsHydrating(chunk, false)
+            }
+          }
+        })()
+        return
+      }
+
+      // UTM warm-up scans the whole order range; skip it for focused all-time searches
+      if(!focusMatch && !hydrateFocusRef.current) warmShopifyUtmOrders({ start, end, store: primaryStore, stores: hydrationContext.storeList }).catch(()=>{})
+
+      // Phase 2: Progressive Shopify hydration. Visible/high-spend rows go first.
+      // (When focused via search, skip stale visible ids from before the reload.)
+      const priorityIds = [
+        ...(focusMatch ? [] : Object.keys(visibleProductIds || {})),
+        ...spendingProductIds.slice(0, 10),
+        ...idsOrdered,
+      ]
+      enqueueProductHydration(priorityIds)
+
+      // Phase 3: Manual mapped collection rows stay in a background lane.
+      void runCollectionLane(hydrationContext)
+
+    }catch(e:any){ setError(String(e?.message||e)); setItems([]) }
+    finally{ if(loadToken === loadSeqToken.current) setLoading(false) }
+  }
+
+  async function loadCollectionChildren(rowKey: any, collectionId: string, rowStore = store){
+    const key = String(rowKey)
+    const loadToken = loadSeqToken.current
+    const requestId = (collectionRequestIds.current[key] || 0) + 1
+    collectionRequestIds.current[key] = requestId
+    const isCurrent = ()=> loadToken === loadSeqToken.current && collectionRequestIds.current[key] === requestId
+    setChildrenLoading(prev=> ({ ...prev, [key]: true }))
+    setChildrenError(prev=> ({ ...prev, [key]: '' }))
+    try{
+      const result = await fetchCampaignCollectionOrders(key, collectionId, effectiveYmdRange(datePreset), rowStore)
+      if(result.error) throw new Error(result.error)
+      if(!Array.isArray(result.data?.product_ids)) throw new Error('Collection UTM orders are unavailable')
+      if(isCurrent()) setCollectionOrders(prev=> ({ ...prev, [key]: result.data }))
+      // The main Orders column keeps total product sales, as for product campaigns.
+      // Only this drilldown shows campaign-attributed UTM orders.
+    }catch(e:any){
+      if(isCurrent()) setChildrenError(prev=> ({ ...prev, [key]: e?.message || 'Collection UTM orders are unavailable' }))
+    }finally{
+      if(isCurrent()) setChildrenLoading(prev=> ({ ...prev, [key]: false }))
+    }
+  }
+
+  function applyCampaignMetaSummary(incoming?: Record<string, CampaignMetaRecord>){
+    if(incoming) setCampaignMeta(prev => mergeCampaignMetaRecords(prev, incoming))
+  }
+
+  async function openCampaignTimeline(campaign: { id:string, name?:string }){
+    const key = String(campaign.id || campaign.name || '')
+    setTimelineDraft('')
+    setTimelineOpen({ open: true, campaign })
+    setTimelineMetaLoading(true)
+    try{
+      const result = await campaignMetaGet(key, store)
+      if((result as any)?.data){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+      }
+    }catch{} finally {
+      setTimelineMetaLoading(false)
+    }
+  }
+
+  async function openLifeDay(date: string, rows: MetaCampaignRow[]){
+    const campaigns: LifeCampaignRef[] = []
+    const seen = new Set<string>()
+    for(const row of (rows || [])){
+      const id = String(row.campaign_id || row.name || '').trim()
+      if(!id || seen.has(id)) continue
+      seen.add(id)
+      campaigns.push({
+        id,
+        name: String(row.name || id),
+        createdTime: String((row as any).created_time || ''),
+      })
+    }
+    if(campaigns.length === 0) return
+    setLifeDay({ open: true, date, campaigns })
+    setLifeDayLoading(true)
+    try{
+      const results = await Promise.allSettled(campaigns.map(campaign => campaignMetaGet(campaign.id, store)))
+      const incoming: Record<string, CampaignMetaRecord> = {}
+      results.forEach((result, index) => {
+        if(result.status === 'fulfilled' && (result.value as any)?.data){
+          incoming[campaigns[index].id] = (result.value as any).data
+        }
+      })
+      if(Object.keys(incoming).length > 0){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, incoming))
+      }
+    }finally{
+      setLifeDayLoading(false)
+    }
+  }
+
+  async function appendLifeEntry(campaignKey: string, day: string, payload: Record<string, any>){
+    const key = String(campaignKey || '').trim()
+    if(!key || !day) return
+    const current = Array.isArray(campaignMeta[key]?.timeline) ? [...(campaignMeta[key]?.timeline || [])] : []
+    const today = localDateKey()
+    const at = day === today ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString()
+    const timeline = [...current, { at, text: JSON.stringify({ ...payload, day }) }]
+    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), timeline } }))
+    const result = await campaignMetaUpsert({ campaign_key: key, timeline, store })
+    if((result as any)?.error) throw new Error((result as any).error)
+    if((result as any)?.data){
+      setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+    }
+  }
+
+  async function deleteLifeNote(campaignKey: string, entryIndex: number){
+    const key = String(campaignKey || '').trim()
+    const timeline = [...(campaignMeta[key]?.timeline || [])]
+    if(entryIndex < 0 || entryIndex >= timeline.length) return
+    const payload = lifeEntryPayload(timeline[entryIndex]?.text)
+    if(payload && payload.type !== 'life_note') return
+    timeline.splice(entryIndex, 1)
+    setCampaignMeta(prev => ({ ...prev, [key]: { ...(prev[key] || {}), timeline } }))
+    const result = await campaignMetaUpsert({ campaign_key: key, timeline, store })
+    if((result as any)?.error) throw new Error((result as any).error)
+    if((result as any)?.data){
+      setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+    }
+  }
+
+  async function recordCampaignAction(campaignKey: string, action: string, label: string, details: Record<string, any> = {}){
+    const key = String(campaignKey || '').trim()
+    if(!key) return
+    try{
+      const result = await campaignTimelineAdd({
+        campaign_key: key,
+        store,
+        text: JSON.stringify({
+          type: 'campaign_action',
+          day: localDateKey(),
+          action,
+          label,
+          ...details,
+        }),
+      })
+      if((result as any)?.data){
+        setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [key]: (result as any).data }))
+      }
+    }catch{}
+  }
+
+  function renderLifeDays(rows: MetaCampaignRow[]){
+    const campaigns = (rows || []).filter(Boolean)
+    if(campaigns.length === 0) return <span className="text-slate-400">—</span>
+    const creationDates = campaigns
+      .map(row => new Date(String((row as any).created_time || '')))
+      .filter(date => !Number.isNaN(date.getTime()))
+    const start = creationDates.length > 0
+      ? new Date(Math.min(...creationDates.map(date => date.getTime())))
+      : new Date()
+    start.setHours(0, 0, 0, 0)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const totalDays = Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000) + 1)
+    const visibleDays = Math.min(22, totalDays)
+    const points = Array.from({ length: visibleDays }, (_, index) => {
+      const dayNumber = totalDays - index
+      const date = new Date(start)
+      date.setDate(start.getDate() + dayNumber - 1)
+      const day = localDateKey(date)
+      let actions = 0
+      let notes = 0
+      for(const campaign of campaigns){
+        const key = String(campaign.campaign_id || campaign.name || '')
+        const counts = lifeActivityForDay(campaignMeta[key], day)
+        actions += counts.actions
+        notes += counts.notes
+      }
+      return { day, dayNumber, actions, notes }
+    })
+    return (
+      <div className="flex items-start gap-2" title={`${totalDays} campaign days`}>
+        <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-xs font-bold text-violet-700">Day {totalDays}</span>
+        <div className="flex max-w-[330px] flex-wrap gap-0.5 py-1">
+          {points.map(point => {
+            const changed = point.actions > 0
+            const hasNotes = point.notes > 0
+            const isLatest = point.dayNumber === totalDays
+            return (
+              <button
+                key={point.day}
+                type="button"
+                onClick={()=> openLifeDay(point.day, campaigns)}
+                className={`relative h-5 min-w-5 shrink-0 rounded-full px-0.5 text-center text-[10px] font-bold leading-5 text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
+                  changed ? 'bg-orange-500' : 'bg-emerald-500'
+                } ${hasNotes ? "ring-2 ring-blue-500 ring-offset-1 after:absolute after:-right-0.5 after:-top-0.5 after:h-1.5 after:w-1.5 after:rounded-full after:bg-blue-600 after:ring-1 after:ring-white after:content-['']" : ''} ${
+                  isLatest ? 'scale-110 outline outline-2 outline-violet-600 outline-offset-1' : ''
+                }`}
+                title={`Day ${point.dayNumber} · ${point.day} · ${point.actions} actions · ${point.notes} notes`}
+                aria-label={`Open day ${point.dayNumber}, ${point.actions} actions and ${point.notes} notes`}
+              >{point.dayNumber}</button>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  // The reporting-timezone header belongs to this page only
+  useEffect(()=> () => { delete axios.defaults.headers.common[REPORTING_TZ_HEADER] }, [])
+  useEffect(()=>{ // initialize custom range defaults
+    const { start, end } = computeRange('last_7d_incl_today')
+    setCustomStart(start)
+    setCustomEnd(end)
+    // Don't call load() here: the store-scoped bootstrap effect below loads the
+    // default ad account first, then fetches campaigns once (avoids duplicate requests).
+  },[])
+  useEffect(()=>{
+    const requestSeq = ++profitCostsLoadSeq.current
+    const storesToLoad = uniqueStores([...selectedStores, store]).filter((value): value is string => !!value)
+    ;(async()=>{
+      const results = await Promise.allSettled(storesToLoad.map(selectedStore => profitCostsList(selectedStore)))
+      if(requestSeq !== profitCostsLoadSeq.current) return
+      const loadedCosts: Record<string, string> = {}
+      let loadedAnyStore = false
+      for(const result of results){
+        if(result.status !== 'fulfilled' || result.value?.error) continue
+        loadedAnyStore = true
+        for(const [productId, saved] of Object.entries(result.value?.data || {})){
+          if(productId in loadedCosts || saved?.product_cost == null) continue
+          loadedCosts[productId] = String(saved.product_cost)
+        }
+      }
+      if(loadedAnyStore) setProfitProductCosts(loadedCosts)
+    })()
+  }, [selectedStores, store])
+  const initialLoadDone = useRef(false)
+  useEffect(()=>{
+    const loadAccounts = async () => {
+      try{
+        const res = await metaListAdAccounts(selectedStores)
+        if(res.error) throw new Error(res.error)
+        const items = ((res as any)?.data)||[]
+        setMetaConnected(items.length > 0)
+        const connected = res.connected === true
+        const extras: Array<{id:string,name:string}> = connected ? [] : selectedAdAccounts.map(id => ({ id, name: id }))
+        const byId: Record<string, {id:string,name:string,account_status?:number}> = {}
+        const accountKey = (id: string) => String(id || '').replace(/^act_/i, '')
+        for(const a of items){ const key = accountKey(a.id); if(key) byId[key] = a }
+        for(const e of extras){ const key = accountKey(e.id); if(key && !byId[key]) byId[key] = e as any }
+        setAdAccounts(Object.values(byId))
+        const available = Object.values(byId).map(account => account.id)
+        const accountKeyOf = (id: string) => String(id || '').replace(/^act_/i, '')
+        const validSelected = connected ? selectedAdAccounts.filter(id => available.some(candidate => accountKeyOf(candidate) === accountKeyOf(id))) : selectedAdAccounts
+        const nextSelected = validSelected.length ? validSelected : available
+        if(nextSelected.join(',') !== selectedAdAccounts.join(',')){
+          setSelectedAdAccounts(nextSelected)
+          try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(nextSelected)) }catch{}
+        }
+        return nextSelected
+      }catch{ setAdAccounts([]); setMetaConnected(false) }
+      return selectedAdAccounts
+    }
+    ;(async()=>{
+      const accounts = await loadAccounts()
+      if(!initialLoadDone.current){
+        initialLoadDone.current = true
+        load(undefined, { stores: selectedStores, adAccounts: accounts })
+      }
+      // Load saved action tasks
+      if(!actionTasksLoaded){
+        try{
+          const res = await getActionTasks(store)
+          if(res?.data){
+            setActionTasks(res.data.tasks || [])
+            setActionTasksSummary(res.data.summary || '')
+            setActionTasksLoaded(true)
+          }
+        }catch{}
+      }
+    })()
+  }, [])
+
+  function getId(row: MetaCampaignRow){
+    return (row.name||'').trim()
+  }
+  function getOrders(row: MetaCampaignRow){
+    const id = getId(row)
+    // If manual mapping exists for this row, prefer it
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    if(manual && manualCounts[String(rowKey)]!=null){
+      return manualCounts[String(rowKey)]
+    }
+    const pid = extractNumericId(id)
+    if(!pid) return null
+    const v = shopifyCounts[pid]
+    return typeof v==='number'? v : null
+  }
+  function getInventory(row: MetaCampaignRow){
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    let pid: string | null = null
+    if(manual && manual.kind==='product' && manual.id) pid = manual.id
+    else pid = extractNumericId(getId(row))
+    if(!pid) return null
+    const brief = productBriefs[pid]
+    if(!brief) return null
+    return typeof brief.total_available==='number'? brief.total_available : null
+  }
+  function getZeroVariants(row: MetaCampaignRow){
+    const rowKey = (row.campaign_id || row.name || '') as any
+    const manual = (manualIds as any)[rowKey]
+    let pid: string | null = null
+    if(manual && manual.kind==='product' && manual.id) pid = manual.id
+    else pid = extractNumericId(getId(row))
+    if(!pid) return null
+    const brief = productBriefs[pid]
+    if(!brief) return null
+    return typeof brief.zero_variants==='number'? Number(brief.zero_variants||0) : null
+  }
+  function getTrueCpp(row: MetaCampaignRow){
+    const orders = getOrders(row)
+    if(orders==null || orders<=0) return null
+    const spend = row.spend||0
+    return spend/orders
+  }
+  function getSortValue(row: MetaCampaignRow){
+    switch(sortKey){
+      case 'campaign': return (row.name||'').toLowerCase()
+      case 'spend': return row.spend||0
+      case 'purchases': return row.purchases||0
+      case 'cpp': return row.cpp==null? null : Number(row.cpp)
+      case 'ctr': return row.ctr==null? null : Number(row.ctr)
+      case 'add_to_cart': return row.add_to_cart||0
+      case 'shopify_orders': return getOrders(row)
+      case 'true_cpp': return getTrueCpp(row)
+      case 'inventory': return getInventory(row)
+      case 'zero_variant': return getZeroVariants(row)
+      default: return null
+    }
+  }
+  function compareRows(a: MetaCampaignRow, b: MetaCampaignRow){
+    const av = getSortValue(a) as any
+    const bv = getSortValue(b) as any
+    // Always push null/undefined to the bottom, regardless of sort direction
+    const aNull = (av==null)
+    const bNull = (bv==null)
+    if(aNull && bNull) return 0
+    if(aNull && !bNull) return 1
+    if(!aNull && bNull) return -1
+    let res = 0
+    if(typeof av==='string' || typeof bv==='string'){
+      res = String(av).localeCompare(String(bv))
+    }else{
+      res = (Number(av)||0) - (Number(bv)||0)
+    }
+    return sortDir==='asc'? res : -res
+  }
+  function rowKeyOf(r: MetaCampaignRow){
+    return String(r.campaign_id||r.name||'')
+  }
+
+  function getProductIdForRow(r: MetaCampaignRow): string | null{
+    const rk = rowKeyOf(r) as any
+    const manual = (manualIds as any)[rk]
+    if(manual && manual.kind==='product' && manual.id && /^\d+$/.test(String(manual.id))) return String(manual.id)
+    const pid = extractNumericId((r.name||'').trim())
+    if(pid && /^\d+$/.test(pid)) return pid
+    return null
+  }
+
+  function getOrdersByProductId(pid: string): number | null{
+    const v = shopifyCounts[String(pid)]
+    if(typeof v === 'number') return v
+    // Fallback: if a row is manually mapped to this product, use its computed manual count
+    const c = manualCountsByPid[String(pid)]
+    return typeof c === 'number' ? c : null
+  }
+
+  type ParentRow =
+    | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
+    | { kind:'single', row: MetaCampaignRow }
+
+  const parentRows = useMemo<ParentRow[]>(()=>{
+    const byPid: Record<string, MetaCampaignRow[]> = {}
+    const singles: MetaCampaignRow[] = []
+    for(const r of (visibleItems||[])){
+      const pid = getProductIdForRow(r)
+      if(pid){
+        ;(byPid[pid] ||= []).push(r)
+      }else{
+        singles.push(r)
+      }
+    }
+    const out: ParentRow[] = []
+    for(const pid of Object.keys(byPid)){
+      const rows = byPid[pid] || []
+      if(rows.length<=1){
+        if(rows[0]) singles.push(rows[0])
+        continue
+      }
+      const primary = rows.slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))[0] || rows[0]
+      out.push({ kind:'group', productId: pid, rows, primary })
+    }
+    for(const r of singles){
+      out.push({ kind:'single', row: r })
+    }
+    return out
+  }, [visibleItems, manualIds, shopifyCounts, manualCounts])
+
+  function parentMetric(p: ParentRow){
+    if(p.kind==='group'){
+      const spend = p.rows.reduce((acc,r)=> acc + Number(r.spend||0), 0)
+      const purchases = p.rows.reduce((acc,r)=> acc + Number(r.purchases||0), 0)
+      const add_to_cart = p.rows.reduce((acc,r)=> acc + Number(r.add_to_cart||0), 0)
+      const orders = getOrdersByProductId(p.productId)
+      const trueCpp = (orders!=null && orders>0) ? (spend / orders) : null
+      const cpp = purchases>0 ? (spend / purchases) : null
+      let ctr: number | null = null
+      try{
+        const spendingCtrs = p.rows
+          .filter(r => Number(r.spend||0) > 0 && r.ctr != null && Number.isFinite(Number(r.ctr)))
+          .map(r => Number(r.ctr))
+        if(spendingCtrs.length > 0){
+          ctr = spendingCtrs.reduce((sum, value)=> sum + value, 0) / spendingCtrs.length
+        }
+      }catch{}
+      const brief = productBriefs[p.productId]
+      const inventory = brief && typeof brief.total_available==='number' ? Number(brief.total_available||0) : null
+      const zero_variant = brief && typeof brief.zero_variants==='number' ? Number(brief.zero_variants||0) : null
+      const active = p.rows.filter(r=> String(r.status||'').toUpperCase()==='ACTIVE').length
+      const paused = p.rows.length - active
+      return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
+    }
+    const row = p.row
+    const spend = Number(row.spend||0)
+    const purchases = Number(row.purchases||0)
+    const add_to_cart = Number(row.add_to_cart||0)
+    const orders = getOrders(row)
+    const trueCpp = (orders!=null && orders>0) ? (spend / orders) : null
+    const cpp = row.cpp==null ? (purchases>0 ? (spend/purchases) : null) : Number(row.cpp)
+    const ctr = row.ctr==null ? null : Number(row.ctr)
+    const inventory = getInventory(row)
+    const zero_variant = getZeroVariants(row)
+    const active = String(row.status||'').toUpperCase()==='ACTIVE' ? 1 : 0
+    const paused = 1 - active
+    return { spend, purchases, add_to_cart, orders, trueCpp, cpp, ctr, inventory, zero_variant, active, paused }
+  }
+
+  function parentMetricKey(p: ParentRow): string{
+    return p.kind==='group' ? `g:${p.productId}` : `s:${campaignMergeKey(p.row)}`
+  }
+
+  // Precompute metrics once per parent row: sorting and rendering both read from
+  // this map instead of recomputing parentMetric() per comparison/per row.
+  const parentMetrics = useMemo(()=>{
+    const map: Record<string, ReturnType<typeof parentMetric>> = {}
+    for(const p of parentRows){
+      map[parentMetricKey(p)] = parentMetric(p)
+    }
+    return map
+  }, [parentRows, shopifyCounts, productBriefs, manualIds, manualCounts, manualCountsByPid])
+
+  function compareParents(a: ParentRow, b: ParentRow){
+    const am = (parentMetrics[parentMetricKey(a)] || parentMetric(a)) as any
+    const bm = (parentMetrics[parentMetricKey(b)] || parentMetric(b)) as any
+    const av = (()=>{
+      switch(sortKey){
+        case 'campaign': return (a.kind==='group'? (a.primary.name||a.productId) : (a.row.name||'')).toLowerCase()
+        case 'spend': return am.spend
+        case 'purchases': return am.purchases
+        case 'cpp': return am.cpp
+        case 'ctr': return am.ctr
+        case 'add_to_cart': return am.add_to_cart
+        case 'shopify_orders': return am.orders
+        case 'true_cpp': return am.trueCpp
+        case 'inventory': return am.inventory
+        case 'zero_variant': return am.zero_variant
+        default: return null
+      }
+    })()
+    const bv = (()=>{
+      switch(sortKey){
+        case 'campaign': return (b.kind==='group'? (b.primary.name||b.productId) : (b.row.name||'')).toLowerCase()
+        case 'spend': return bm.spend
+        case 'purchases': return bm.purchases
+        case 'cpp': return bm.cpp
+        case 'ctr': return bm.ctr
+        case 'add_to_cart': return bm.add_to_cart
+        case 'shopify_orders': return bm.orders
+        case 'true_cpp': return bm.trueCpp
+        case 'inventory': return bm.inventory
+        case 'zero_variant': return bm.zero_variant
+        default: return null
+      }
+    })()
+    const aNull = (av==null)
+    const bNull = (bv==null)
+    if(aNull && bNull) return 0
+    if(aNull && !bNull) return 1
+    if(!aNull && bNull) return -1
+    let res = 0
+    if(typeof av==='string' || typeof bv==='string'){
+      res = String(av).localeCompare(String(bv))
+    }else{
+      res = (Number(av)||0) - (Number(bv)||0)
+    }
+    return sortDir==='asc'? res : -res
+  }
+
+  const sortedParents = useMemo(()=>{
+    const arr = parentRows.slice()
+    try{ arr.sort(compareParents) }catch{}
+    return arr
+  }, [parentRows, parentMetrics, sortKey, sortDir])
+
+  type DisplayRow =
+    | { kind:'group', productId: string, rows: MetaCampaignRow[], primary: MetaCampaignRow }
+    | { kind:'campaign', row: MetaCampaignRow, groupProductId?: string, isChild?: boolean }
+
+  // Fuzzy search suggestions (instant, client-side on ALL loaded campaigns —
+  // not the filtered view, so a new search works while a filter is active)
+  const searchSuggestions = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q || q.length < 1) return []
+    const results: Array<{ id:string, name:string, score:number }> = []
+    for(const c of (items||[])){
+      const name = String(c.name||'').toLowerCase()
+      const id = String(c.campaign_id||'')
+      let score = 0
+      // Exact ID match = highest priority
+      if(id === q) score = 100
+      else if(id.includes(q)) score = 80
+      // Name starts with query
+      else if(name.startsWith(q)) score = 70
+      // Name contains query
+      else if(name.includes(q)) score = 50
+      // Fuzzy: check if all chars of query appear in order in name
+      else {
+        let qi = 0
+        for(let ni = 0; ni < name.length && qi < q.length; ni++){
+          if(name[ni] === q[qi]) qi++
+        }
+        if(qi === q.length) score = 20
+      }
+      if(score > 0) results.push({ id, name: c.name||id, score })
+    }
+    // Deduplicate by id
+    const seen = new Set<string>()
+    const deduped = results.filter(r => { if(seen.has(r.id)) return false; seen.add(r.id); return true })
+    deduped.sort((a,b) => b.score - a.score)
+    return deduped.slice(0, 12)
+  }, [searchQuery, items])
+
+  // Product suggestions: campaigns grouped by the product they sell, matched on
+  // product id or any of its campaign names. Picking one scopes the page to it.
+  const productSearchSuggestions = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q) return []
+    const byPid: Record<string, { pid: string, name: string, spend: number, campaigns: number, active: number, score: number }> = {}
+    for(const c of (items||[])){
+      const pid = getProductIdForRow(c)
+      if(!pid) continue
+      const name = String(c.name||'').toLowerCase()
+      let score = 0
+      if(pid === q) score = 100
+      else if(pid.startsWith(q)) score = 90
+      else if(pid.includes(q)) score = 75
+      else if(name.startsWith(q)) score = 65
+      else if(name.includes(q)) score = 50
+      const entry = byPid[pid] ||= { pid, name: String(c.name||`Product ${pid}`), spend: 0, campaigns: 0, active: 0, score: 0 }
+      entry.campaigns += 1
+      if(isCampaignActive(c)) entry.active += 1
+      const spend = Number(c.spend||0)
+      if(spend > entry.spend){ entry.spend = spend; entry.name = String(c.name||entry.name) }
+      entry.score = Math.max(entry.score, score)
+    }
+    return Object.values(byPid).filter(p => p.score > 0).sort((a,b)=> b.score - a.score || b.spend - a.spend).slice(0, 6)
+  }, [searchQuery, items, manualIds])
+
+  // Number of loaded campaigns whose name or id contains the query (for "show all" option)
+  const searchMatchCount = useMemo(()=>{
+    const q = (searchQuery||'').trim().toLowerCase()
+    if(!q) return 0
+    let count = 0
+    for(const c of (items||[])){
+      if(String(c.name||'').toLowerCase().includes(q) || String(c.campaign_id||'').includes(q) || String(getProductIdForRow(c)||'').includes(q)) count++
+    }
+    return count
+  }, [searchQuery, items, manualIds])
+
+  // Flat, keyboard-navigable option list for the suggestions dropdown
+  type SearchOption =
+    | { kind: 'all' }
+    | { kind: 'product', pid: string, name: string, campaigns: number, active: number }
+    | { kind: 'campaign', id: string, name: string, score: number }
+    | { kind: 'alltime' }
+  const searchOptions = useMemo<SearchOption[]>(()=>{
+    if(!(searchQuery||'').trim()) return []
+    const out: SearchOption[] = []
+    if(searchMatchCount > 0) out.push({ kind: 'all' })
+    for(const p of productSearchSuggestions) out.push({ kind: 'product', pid: p.pid, name: p.name, campaigns: p.campaigns, active: p.active })
+    for(const c of searchSuggestions.slice(0, 8)) out.push({ kind: 'campaign', id: c.id, name: c.name, score: c.score })
+    out.push({ kind: 'alltime' })
+    return out
+  }, [searchQuery, searchMatchCount, productSearchSuggestions, searchSuggestions])
+
+  useEffect(()=>{ setSearchHighlight(-1) }, [searchQuery])
+
+  function pickSearchOption(opt: SearchOption){
+    const q = searchQuery.trim()
+    if(opt.kind === 'all') applySearchFocus({ query: q, label: q })
+    else if(opt.kind === 'product') applySearchFocus({ productId: opt.pid, label: opt.pid })
+    else if(opt.kind === 'campaign') applySearchFocus({ campaignId: opt.id || undefined, query: opt.name, label: opt.name })
+    else applySearchFocus({ query: q, label: q, allTime: true })
+  }
+
+  // Apply a search selection. Default: INSTANT — filter the already-loaded table
+  // client-side and load Shopify data for the matching product(s) ONLY; every other
+  // product's pending work is dropped until the search is cleared. `allTime` opts
+  // into the heavy all-time reload (needed to find old campaigns outside the range).
+  function applySearchFocus(sel: { campaignId?: string, productId?: string, query?: string, label: string, allTime?: boolean }){
+    const productId = String(sel.productId || '').trim()
+    setSearchQuery(sel.label)
+    setSearchActive(productId ? '' : sel.label.toLowerCase())
+    setSearchFocusId(productId ? '' : (sel.campaignId || ''))
+    setSearchFocusProductId(productId)
+    setSearchFocused(false)
+    setSearchHighlight(-1)
+    searchRef.current?.blur()
+    if(sel.allTime){
+      if(!preSearchPresetRef.current) preSearchPresetRef.current = datePreset
+      // Nothing from the current range should keep loading while the all-time search runs
+      hydrateFocusRef.current = { pids: new Set(), rowKeys: new Set() }
+      hydratePendingRef.current = []
+      hydratePendingSetRef.current = new Set()
+      setDatePreset('maximum')
+      load('maximum', {
+        stores: selectedStores,
+        adAccounts: selectedAdAccounts,
+        focus: productId ? { productId } : sel.campaignId ? { campaignId: sel.campaignId } : { query: sel.query || sel.label },
+      })
+      return
+    }
+    const q = (sel.query || sel.label || '').trim().toLowerCase()
+    const matched = (items||[]).filter(r => {
+      if(productId) return getProductIdForRow(r) === productId
+      if(sel.campaignId) return String(r.campaign_id||'') === String(sel.campaignId)
+      return String(r.name||'').toLowerCase().includes(q) || String(r.campaign_id||'').includes(q) || String(getProductIdForRow(r)||'').includes(q)
+    })
+    const pids = productId ? [productId] : productIdsForCampaigns(matched, manualIds)
+    setHydrationFocus({ pids, rowKeys: matched.map(r => String(r.campaign_id || r.name || '')) })
+  }
+
+  function clearSearchFocus(){
+    const prev = preSearchPresetRef.current || 'last_7d_incl_today'
+    preSearchPresetRef.current = ''
+    setSearchQuery('')
+    setSearchActive('')
+    setSearchFocusId('')
+    setSearchFocusProductId('')
+    setSearchFocused(false)
+    if(datePreset === 'maximum'){
+      hydrateFocusRef.current = null
+      setDatePreset(prev)
+      load(prev, { stores: selectedStores, adAccounts: selectedAdAccounts })
+      return
+    }
+    setHydrationFocus(null)
+  }
+
+  const displayRows = useMemo<DisplayRow[]>(()=>{
+    const activeFilter = (searchActive||'').trim().toLowerCase()
+    const focusId = (searchFocusId||'').trim()
+    const focusPid = (searchFocusProductId||'').trim()
+    const rowMatches = (r: MetaCampaignRow) => {
+      if(focusPid) return getProductIdForRow(r) === focusPid
+      if(focusId) return String(r.campaign_id||'') === focusId
+      const name = String(r.name||'').toLowerCase()
+      const id = String(r.campaign_id||'')
+      return name.includes(activeFilter) || id.includes(activeFilter) || String(getProductIdForRow(r)||'').includes(activeFilter)
+    }
+    const filtering = !!focusPid || !!focusId || !!activeFilter
+    const out: DisplayRow[] = []
+    for(const p of sortedParents){
+      if(p.kind==='group'){
+        // If search active, check if any campaign in the group matches
+        if(filtering && !p.rows.some(rowMatches)) continue
+        out.push({ kind:'group', productId: p.productId, rows: p.rows, primary: p.primary })
+        if(!profitMode && groupExpanded[p.productId]){
+          const children = (p.rows||[]).slice().sort((a,b)=> Number(b.spend||0) - Number(a.spend||0))
+          for(const r of children){
+            out.push({ kind:'campaign', row: r, groupProductId: p.productId, isChild: true })
+          }
+        }
+      }else{
+        if(filtering && !rowMatches(p.row)) continue
+        out.push({ kind:'campaign', row: p.row, isChild: false })
+      }
+    }
+    return out
+  }, [sortedParents, groupExpanded, searchActive, searchFocusId, searchFocusProductId, profitMode, manualIds])
+
+  useEffect(()=>{
+    if(typeof window === 'undefined' || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver((entries)=>{
+      const next: Record<string, true> = {}
+      for(const entry of entries){
+        if(!entry.isIntersecting) continue
+        const pid = (entry.target as HTMLElement).dataset.productId
+        if(pid) next[pid] = true
+      }
+      if(Object.keys(next).length > 0) setVisibleProductIds(prev => {
+        // Skip the state update (and full re-render) when nothing new became visible
+        let hasNew = false
+        for(const pid of Object.keys(next)){ if(!prev[pid]){ hasNew = true; break } }
+        return hasNew ? { ...prev, ...next } : prev
+      })
+    }, { root: null, rootMargin: '320px 0px', threshold: 0.01 })
+    rowObserverRef.current = observer
+    return () => {
+      observer.disconnect()
+      if(rowObserverRef.current === observer) rowObserverRef.current = null
+    }
+  }, [])
+
+  const registerProductRow = useCallback((pid?: string | null) => {
+    let observedEl: HTMLTableRowElement | null = null
+    return (el: HTMLTableRowElement | null) => {
+      // Unobserve detached rows so the observer doesn't accumulate dead nodes across reloads
+      if(observedEl && observedEl !== el) rowObserverRef.current?.unobserve(observedEl)
+      observedEl = el
+      if(!pid || !el) return
+      el.dataset.productId = String(pid)
+      rowObserverRef.current?.observe(el)
+    }
+  }, [])
+
+  useEffect(()=>{
+    const context = hydrateContextRef.current
+    if(!context || context.profitOnly) return
+    const ids = Object.keys(visibleProductIds || {})
+    if(ids.length === 0) return
+    // Rows on screen jump the queue; also gives gave-up ids another chance
+    enqueueProductHydration(ids, { priority: true, resetRetries: true })
+  }, [visibleProductIds])
+
+  const selectedCount = useMemo(()=> Object.keys(selectedKeys).filter(k=> !!selectedKeys[k]).length, [selectedKeys])
+  function campaignKeysForRows(rows: MetaCampaignRow[]): string[]{
+    const keys: string[] = []
+    for(const r of (rows||[])){
+      const rk = rowKeyOf(r)
+      if(rk) keys.push(rk)
+    }
+    return keys
+  }
+  function getGroupSelectionState(rows: MetaCampaignRow[]){
+    const keys = campaignKeysForRows(rows)
+    const total = keys.length
+    if(total===0) return { checked: false, indeterminate: false, selected: 0, total: 0 }
+    let selected = 0
+    for(const k of keys){
+      if(!!selectedKeys[k]) selected += 1
+    }
+    return {
+      checked: selected>0 && selected===total,
+      indeterminate: selected>0 && selected<total,
+      selected,
+      total,
+    }
+  }
+  function toggleGroupSelect(rows: MetaCampaignRow[], v?: boolean){
+    const keys = campaignKeysForRows(rows)
+    if(keys.length===0) return
+    setSelectedKeys(prev=>{
+      const next = { ...prev }
+      const shouldSelect = v==null ? !keys.every(k=> !!prev[k]) : !!v
+      for(const k of keys){
+        next[k] = shouldSelect
+      }
+      try{ localStorage.setItem('ptos_ads_selected', JSON.stringify(next)) }catch{}
+      return next
+    })
+  }
+  const productIdToCount = useMemo(()=>{
+    const map: Record<string, number> = {}
+    for(const r of (visibleItems||[])){
+      const pid = getProductIdForRow(r)
+      if(!pid) continue
+      map[pid] = (map[pid]||0) + 1
+    }
+    return map
+  }, [visibleItems, manualIds])
+  const productIdOptions = useMemo(()=>{
+    const ids = Object.keys(productIdToCount||{})
+    ids.sort((a,b)=> (Number(a)||0) - (Number(b)||0))
+    return ids
+  }, [productIdToCount])
+
+  function toggleSelect(k:string, v?:boolean){
+    setSelectedKeys(prev=>{ const next={...prev, [k]: v==null? !prev[k] : !!v}; try{ localStorage.setItem('ptos_ads_selected', JSON.stringify(next)) }catch{}; return next })
+  }
+  function clearSelection(){ setSelectedKeys(()=>{ try{ localStorage.setItem('ptos_ads_selected','{}') }catch{}; return {} }) }
+  async function addSelectedToGroupProduct(targetProductId: string){
+    const pid = String(targetProductId||'').trim()
+    if(!pid || !/^\d+$/.test(pid)){ alert('Select a valid product ID group.'); return }
+    const keys = Object.keys(selectedKeys).filter(k=> !!selectedKeys[k])
+    if(keys.length===0){ alert('Select at least 1 campaign to add.'); return }
+    // Assign selected campaigns to the target product id (so they auto-merge into one group row)
+    setManualIds(prev=> {
+      const next = { ...prev }
+      for(const rk of keys){
+        ;(next as any)[rk] = { kind:'product', id: pid, store }
+      }
+      return next
+    })
+    for(const rk of keys){
+      try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: 'product', id: pid, store }) }catch{}
+    }
+    clearSelection()
+  }
+
+  function toggleSort(key: typeof sortKey){
+    if(sortKey===key){
+      setSortDir(prev=> prev==='asc'? 'desc' : 'asc')
+    }else{
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  function SortArrow(){
+    return sortDir==='asc'? <ArrowUp className="w-3.5 h-3.5"/> : <ArrowDown className="w-3.5 h-3.5"/>
+  }
+
+  async function loadVariantInventory(pid: string){
+    if(variantInventoryLoading[pid]) return
+    setVariantInventoryLoading(prev => ({ ...prev, [pid]: true }))
+    try{
+      // Try all selected stores in parallel – use the first one that returns real data
+      const storesToTry = selectedStores.length > 0 ? selectedStores : [store]
+      const results = await Promise.allSettled(
+        storesToTry.map(st => shopifyProductVariantsInventory({ product_id: pid, store: st }))
+      )
+      let best: any = null
+      for(const r of results){
+        if(r.status === 'fulfilled'){
+          const d = (r.value as any)?.data
+          if(d && (d.sizes?.length > 0 || d.total_available > 0)){
+            best = d
+            break
+          }
+          if(!best && d) best = d
+        }
+      }
+      if(best){
+        const normalized = normalizeInventoryData(best)
+        if(normalized) setVariantInventoryCache(prev => ({ ...prev, [pid]: normalized }))
+      }
+    }catch{}
+    finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
+  }
+
+  function InventoryTooltip(){
+    if(!invHover || !invHover.rect) return null
+    const pid = invHover.pid
+    // Cache entries are normalized in loadVariantInventory; no need to re-sort on every render
+    const data = variantInventoryCache[pid] || null
+    const loading = variantInventoryLoading[pid]
+    const rect = invHover.rect
+    const alertVariants = data
+      ? data.colors.reduce((count, color) => count + data.sizes.reduce((inner, size) => {
+          const row = data.matrix[color] || {}
+          return inner + (Object.prototype.hasOwnProperty.call(row, size) && Number(row[size]) <= 0 ? 1 : 0)
+        }, 0), 0)
+      : 0
+    // Position tooltip below the hovered element
+    const top = rect.bottom + 4
+    const left = Math.max(4, rect.left - 60)
+    return (
+      <div
+        className="fixed z-[999] bg-white border border-slate-200 rounded-lg shadow-xl p-2 text-xs"
+        style={{ top, left, maxWidth: '420px', maxHeight: '320px', overflowY: 'auto' }}
+        onMouseEnter={() => {}} // keep tooltip visible
+        onMouseLeave={() => setInvHover(null)}
+      >
+        {loading && <div className="text-slate-400 py-2 px-3">Loading variants…</div>}
+        {!loading && !data && <div className="text-slate-400 py-2 px-3">No data</div>}
+        {!loading && data && data.sizes.length === 0 && <div className="text-slate-400 py-2 px-3">No variants</div>}
+        {!loading && data && data.sizes.length > 0 && (
+          <>
+          {alertVariants > 0 && (
+            <div className="mb-2 rounded-md bg-rose-50 px-2 py-1 font-semibold text-rose-700">
+              {alertVariants} {alertVariants === 1 ? 'variant needs' : 'variants need'} attention (0 or negative)
+            </div>
+          )}
+          <table className="border-collapse w-full">
+            <thead>
+              <tr>
+                <th className="px-1.5 py-1 text-left text-slate-500 font-medium border-b border-slate-100" style={{minWidth:'44px'}}></th>
+                {data.sizes.map(s => (
+                  <th key={s} className="px-1.5 py-1 text-center text-slate-600 font-semibold border-b border-slate-100 whitespace-nowrap" style={{minWidth:'28px'}}>{s}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.colors.map(color => (
+                <tr key={color} className="border-b border-slate-50 last:border-b-0">
+                  <td className="px-1.5 py-0.5 text-slate-600 font-medium whitespace-nowrap">{color}</td>
+                  {data.sizes.map(size => {
+                    const row = data.matrix[color] || {}
+                    const hasVariant = Object.prototype.hasOwnProperty.call(row, size)
+                    const qty = hasVariant ? Number(row[size]) : null
+                    const bg = hasVariant && Number(qty) <= 0
+                      ? 'bg-rose-600 text-white ring-1 ring-rose-700'
+                      : 'bg-slate-100 text-slate-700'
+                    return (
+                      <td key={size} className="px-1.5 py-0.5 text-center">
+                        <span className={`inline-block min-w-[22px] px-1 py-0.5 rounded text-[10px] font-bold ${bg}`}>{hasVariant ? qty : '—'}</span>
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </>
+        )}
+      </div>
+    )
+  }
+
+  const profitSummary = useMemo(()=>{
+    return Object.entries(profitResults).reduce((summary, [productId, result])=>{
+      const availableItems = Math.max(0, Number(productBriefs[productId]?.total_available || 0))
+      const inventoryWorth = availableItems * Math.max(0, Number(result.productCost || 0))
+      summary.calculatedProducts += 1
+      summary.availableItems += availableItems
+      summary.inventoryWorth += inventoryWorth
+      summary.totalProfit += Number(result.profit || 0)
+      summary.netInventoryMoney = summary.inventoryWorth - summary.totalProfit
+      return summary
+    }, {
+      calculatedProducts: 0,
+      availableItems: 0,
+      inventoryWorth: 0,
+      totalProfit: 0,
+      netInventoryMoney: 0,
+    })
+  }, [profitResults, productBriefs])
+
+  async function analyzeSelectedCampaigns(){
+    const keys = Object.keys(selectedKeys).filter(k => !!selectedKeys[k])
+    if(keys.length === 0) return
+    const controller = new AbortController()
+    multiAnalysisAbortRef.current = controller
+    multiAnalysisCancelledRef.current = false
+    setMultiAnalysisLoading(true)
+    setMultiAnalysisResults({})
+    setMultiAnalysisProgress({ done: 0, total: keys.length })
+    const results: Record<string, CampaignAnalysisResult> = {}
+    for(let i = 0; i < keys.length; i++){
+      if(multiAnalysisCancelledRef.current) break
+      const rk = keys[i]
+      // Find the campaign row
+      const row = (items||[]).find(r => String(r.campaign_id||r.name||'') === rk)
+      if(!row) { setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 })); continue }
+      try{
+        const cid = String(row.campaign_id||'')
+        const rkSelf = (row.campaign_id || row.name || '') as any
+        const confSelf = (manualIds as any)[rkSelf]
+        const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id) ? confSelf.id : extractNumericId((row.name||'').trim())
+        const ct = (row as any)?.created_time
+        let ageDays: number|undefined = undefined
+        if(ct){ const diff = Date.now() - new Date(ct).getTime(); ageDays = Math.max(0, Math.floor(diff / (1000*60*60*24))) }
+        const orders = getOrders(row)
+        const trueCppVal = (orders!=null && orders>0)? ((Number(row.spend||0)) / orders) : null
+        const res = await campaignAnalyze({
+          campaign_id: cid || undefined,
+          campaign_name: row.name || undefined,
+          product_id: pidSelf || undefined,
+          metrics: {
+            spend: Number(row.spend||0),
+            purchases: Number(row.purchases||0),
+            ctr: row.ctr!=null? row.ctr : undefined,
+            cpp: row.cpp!=null? row.cpp : undefined,
+            add_to_cart: Number((row as any).add_to_cart||0),
+            shopify_orders: orders,
+            true_cpp: trueCppVal,
+            status: (row.status||'').toUpperCase()==='ACTIVE'? 'Active' : 'Paused',
+          },
+          campaign_age_days: ageDays,
+          campaign_key: cid || rk,
+          store: (row as any)._store || store,
+          ad_account: (row as any)._adAccount || undefined,
+          date_range: effectiveYmdRange(datePreset),
+        }, { signal: controller.signal })
+        if(res?.data){
+          results[rk] = { ...res.data, campaign_name: row.name||cid, campaign_key: cid||rk } as any
+        }
+      }catch(e:any){
+        if(controller.signal.aborted || multiAnalysisCancelledRef.current) break
+      }
+      setMultiAnalysisProgress(p => ({ ...p, done: p.done+1 }))
+      setMultiAnalysisResults({ ...results })
+    }
+    setMultiAnalysisResults(results)
+    multiAnalysisAbortRef.current = null
+    setMultiAnalysisLoading(false)
+  }
+
+  async function generateActionsFromAnalyses(){
+    setActionTasksLoading(true)
+    try{
+      const analyses = Object.values(multiAnalysisResults)
+      const res = await generateActionTasks({ analyses, store })
+      if(res?.data){
+        setActionTasks(res.data.tasks || [])
+        setActionTasksSummary(res.data.summary || '')
+        setActionTasksOpen(true)
+        // Auto-add tasks to the exact campaign timelines they came from.
+        const tasks = res.data.tasks || []
+        for(const task of tasks){
+          const campaignLabels = (task.campaigns || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+          const campaignKeys = ((task as any).campaign_keys || []).map((cn: string) => String(cn||'').trim()).filter(Boolean)
+          const lookupLabels = [...campaignKeys, ...campaignLabels]
+          const matchedRows = lookupLabels.map((cn: string) => {
+            const lc = cn.toLowerCase()
+            return (items||[]).find((r: any) => {
+              const name = String(r.name||'')
+              const id = String(r.campaign_id||'')
+              const nameLc = name.toLowerCase()
+              const idLc = id.toLowerCase()
+              return name === cn || id === cn || (!!id && idLc === lc) || (!!name && (nameLc.includes(lc) || lc.includes(nameLc)))
+            })
+          }).filter(Boolean) as MetaCampaignRow[]
+          const uniqueRows = [...new Map(matchedRows.map((r: any) => [String(r.campaign_id || r.name || ''), r])).values()] as MetaCampaignRow[]
+          for(const row of uniqueRows){
+            const campaignKey = String((row as any).campaign_id || (row as any).name || '').trim()
+            if(!campaignKey) continue
+            const refs = [{ id: String((row as any).campaign_id||''), name: String((row as any).name||'') }]
+            try{
+              const taskEntry = JSON.stringify({
+                type: 'task',
+                id: task.id,
+                priority: task.priority,
+                urgency: task.urgency,
+                category: task.category,
+                title: task.title,
+                title_ar: (task as any).title_ar,
+                description: task.description,
+                description_ar: (task as any).description_ar,
+                campaigns: task.campaigns || [],
+                campaign_keys: (task as any).campaign_keys || [],
+                campaign_references: refs,
+                campaign_key: campaignKey,
+                expected_impact: task.expected_impact,
+                expected_impact_ar: (task as any).expected_impact_ar,
+                source_recommendation: (task as any).source_recommendation,
+                done: false,
+              })
+              await campaignTimelineAdd({ campaign_key: campaignKey, text: taskEntry, store })
+            }catch{}
+          }
+        }
+        // Refresh meta to show task badges
+        try{
+          const metaRes = await campaignMetaList(store)
+          applyCampaignMetaSummary((metaRes as any)?.data)
+        }catch{}
+        setMultiAnalysisResults({})
+      }
+    }catch{}
+    finally{ setActionTasksLoading(false) }
+  }
+
+  // Header platform badges: brand color when connected, grey when not.
+  const platformStatus = useMemo(()=>{
+    const selected = new Set(selectedStores.map(normalizeStoreValue))
+    const relevant = configuredShopifyStores.filter(item => selected.has(normalizeStoreValue(item.label)))
+    const connectedStores = relevant.filter(item => item.connected === true).map(item => item.label)
+    const shopifyConnected = connectedStores.length > 0 || Object.keys(productBriefs).length > 0
+    const metaOn = metaConnected === true || items.length > 0
+    const accountCount = adAccounts.length || selectedAdAccounts.length
+    return [
+      { key: 'shopify', connected: shopifyConnected, detail: shopifyConnected ? (connectedStores.join(', ') || 'Connected') : 'No store connected' },
+      { key: 'meta', connected: metaOn, detail: metaOn ? `${accountCount} ad account${accountCount === 1 ? '' : 's'}` : 'Not connected' },
+      { key: 'tiktok', connected: false, detail: 'Not connected' },
+      { key: 'google_ads', connected: false, detail: 'Not connected' },
+    ] as Array<{ key: PlatformKey, connected: boolean, detail: string }>
+  }, [selectedStores, configuredShopifyStores, productBriefs, metaConnected, items, adAccounts, selectedAdAccounts])
+
+  // Analytics bar data — always follows the filtered table.
+  const analytics = useMemo(()=>{
+    const products = parentRows.map(p => {
+      const m = parentMetrics[parentMetricKey(p)] || parentMetric(p)
+      return {
+        key: parentMetricKey(p),
+        label: p.kind === 'group' ? (p.primary.name || `Product ${p.productId}`) : (p.row.name || '—'),
+        spend: Number(m.spend || 0),
+        trueCpp: m.trueCpp,
+        orders: m.orders,
+      }
+    })
+    const spenders = products.filter(p => p.spend > 0).sort((a,b)=> b.spend - a.spend)
+    const spendTotal = spenders.reduce((acc, p)=> acc + p.spend, 0)
+    const top = spenders.slice(0, 5)
+    const otherSpend = spenders.slice(5).reduce((acc, p)=> acc + p.spend, 0)
+    const topShare = spendTotal > 0 ? top.reduce((acc, p)=> acc + p.spend, 0) / spendTotal : 0
+    const bands = { good: 0, ok: 0, high: 0, none: 0 }
+    for(const p of spenders){
+      if(p.trueCpp == null) bands.none += 1
+      else if(p.trueCpp < 2) bands.good += 1
+      else if(p.trueCpp < 3) bands.ok += 1
+      else bands.high += 1
+    }
+    let activeCampaigns = 0
+    for(const row of (visibleItems || [])) if(isCampaignActive(row)) activeCampaigns += 1
+    return { products: products.length, spenders: spenders.length, top, otherSpend, topShare, bands, campaigns: (visibleItems || []).length, activeCampaigns }
+  }, [parentRows, parentMetrics, visibleItems])
+
+  const ownerMaxSpend = Math.max(1, ...CAMPAIGN_OWNERS.map(owner => ownerStats[owner].spend))
+  const searchFocusLabel = searchFocusProductId
+    ? `Product ${searchFocusProductId}`
+    : searchFocusId ? (searchQuery || searchFocusId) : searchActive
+
+  const tableColSpan = profitMode ? 10 : 15
+
+  const incompleteActionTasks = actionTasks.filter(t => !t.done).length
+  const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
+
+  return (
+    <div className="min-h-screen w-full bg-slate-50 font-[Inter,ui-sans-serif,system-ui,-apple-system,'Segoe_UI',Roboto,sans-serif] text-slate-800 antialiased">
+      <InventoryTooltip />
+      <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
+        {/* Brand row */}
+        <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
+          <Link href="/" className="flex shrink-0 items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" aria-label="True Manager home">
+            <TrueManagerLogo className="h-6 w-auto text-slate-900" markClassName="text-blue-600" />
+          </Link>
+          <span className="hidden h-5 w-px bg-slate-200 sm:block" />
+          <div className="hidden items-center gap-1.5 text-sm sm:flex">
+            <Megaphone className="h-4 w-4 text-slate-400" />
+            <span className="font-medium text-slate-700">Ads Manager</span>
+          </div>
+          <div className="flex-1" />
+          <Link
+            href={`/settings/connections?store=${encodeURIComponent(store)}`}
+            className="group hidden items-center gap-1 rounded-full border border-slate-200 bg-white py-1 pl-1 pr-2.5 shadow-sm transition-colors hover:border-slate-300 md:flex"
+            title="Manage connected platforms"
+          >
+            {platformStatus.map(platform => {
+              const { Icon, label } = PLATFORM_META[platform.key]
+              return (
+                <span
+                  key={platform.key}
+                  title={`${label} · ${platform.connected ? 'Connected' : 'Not connected'}${platform.connected ? ` (${platform.detail})` : ''}`}
+                  className={`relative flex h-7 w-7 items-center justify-center rounded-full ${platform.connected ? 'bg-slate-50' : 'bg-slate-50/60'}`}
+                >
+                  <Icon className={`h-4 w-4 ${platform.connected ? '' : 'opacity-60'}`} muted={!platform.connected} />
+                  <span className={`absolute bottom-0.5 right-0.5 h-2 w-2 rounded-full ring-2 ring-white ${platform.connected ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                </span>
+              )
+            })}
+            <span className="ml-1 text-xs font-medium text-slate-500 group-hover:text-slate-800">
+              {platformStatus.filter(p => p.connected).length}/{platformStatus.length} connected
+            </span>
+          </Link>
+          <span className="hidden h-5 w-px bg-slate-200 md:block" />
+          <button
+            onClick={()=> setActionTasksOpen(true)}
+            className={`${UI.btn} ${UI.secondary} relative px-2.5`}
+            title="Action tasks"
+          >
+            <ClipboardList className="h-4 w-4"/>
+            <span className="hidden lg:inline">Tasks</span>
+            {incompleteActionTasks > 0 && (
+              <span className="ml-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">{incompleteActionTasks}</span>
+            )}
+          </button>
+          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading? 'animate-spin' : ''}`}/> <span className="hidden sm:inline">{loading? 'Updating…' : 'Refresh'}</span>
+          </button>
+          <Link href="/" className={`${UI.btn} ${UI.secondary} px-2.5`} title="Home"><Home className="h-4 w-4"/></Link>
+        </div>
+        {/* Controls row */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-2 lg:px-6">
+          <Link href={`/ads-management/settings/?store=${encodeURIComponent(store)}`} className="shrink-0 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100">AI agent settings</Link>
+          <MultiCheckDropdown
+            label="Store"
+            icon={<Store className="h-3.5 w-3.5 text-slate-400"/>}
+            options={storeOptions}
+            selected={selectedStores}
+            onChange={(next) => {
+              const normalized = normalizeStoreList(next, storeOptions)
+              const finalStores = normalized.length ? normalized : ['irrakids']
+              setSelectedStores(finalStores)
+              setDeliveryRateResults({})
+              try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
+            }}
+          />
+          <MultiCheckDropdown
+            label="Accounts"
+            icon={<Layers className="h-3.5 w-3.5 text-slate-400"/>}
+            options={adAccounts.map(a => ({ value: a.id, label: a.name || a.id }))}
+            selected={selectedAdAccounts}
+            onChange={(next) => { setSelectedAdAccounts(next); try{ localStorage.setItem('ptos_ad_accounts_multi', JSON.stringify(next)) }catch{} }}
+          />
+          <div className="relative">
+            <CalendarDays className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"/>
+            <select
+              value={datePreset}
+              onChange={(e)=>{ const v=e.target.value; setDatePreset(v); setDeliveryRateResults({}); if(v!=='custom') load(v, { stores: selectedStores, adAccounts: selectedAdAccounts }) }}
+              className={`${UI.field} appearance-none pl-8 pr-8 font-medium`}
+              aria-label="Date range"
+            >
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="last_3d_incl_today">Last 3 days</option>
+              <option value="last_4d_incl_today">Last 4 days</option>
+              <option value="last_5d_incl_today">Last 5 days</option>
+              <option value="last_6d_incl_today">Last 6 days</option>
+              <option value="last_7d_incl_today">Last 7 days</option>
+              <option value="custom">Custom range…</option>
+              {datePreset==='maximum' && <option value="maximum">All time (search)</option>}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"/>
+          </div>
+          {datePreset==='custom' && (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={customStart} onChange={(e)=>{ setCustomStart(e.target.value); setDeliveryRateResults({}) }} className={UI.field} aria-label="Start date" />
+              <span className="text-xs text-slate-400">to</span>
+              <input type="date" value={customEnd} onChange={(e)=>{ setCustomEnd(e.target.value); setDeliveryRateResults({}) }} className={UI.field} aria-label="End date" />
+              <button onClick={()=> load('custom', { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`}>Apply</button>
+            </div>
+          )}
+          <span className="mx-0.5 hidden h-5 w-px bg-slate-200 lg:block" />
+          <div className={UI.seg} role="group" aria-label="Filter products by campaign status">
+            <button onClick={()=> setStatusFilter('all')} aria-pressed={statusFilter === 'all'} className={UI.segBtn(statusFilter==='all')}>
+              All <span className="tabular-nums text-slate-400">{statusStats.all}</span>
+            </button>
+            <button onClick={()=> setStatusFilter('active')} aria-pressed={statusFilter === 'active'} className={UI.segBtn(statusFilter==='active')} title="Products with at least one active campaign">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"/>Active <span className="tabular-nums text-slate-400">{statusStats.active}</span>
+            </button>
+            <button onClick={()=> setStatusFilter('paused')} aria-pressed={statusFilter === 'paused'} className={UI.segBtn(statusFilter==='paused')} title="Products whose campaigns are all paused">
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-400"/>Paused <span className="tabular-nums text-slate-400">{statusStats.paused}</span>
+            </button>
+          </div>
+          <div className={UI.seg} role="group" aria-label="Filter products by owner">
+            <button onClick={()=> setOwnerFilter('')} aria-pressed={ownerFilter === ''} className={UI.segBtn(ownerFilter==='')}>Everyone</button>
+            {CAMPAIGN_OWNERS.map(owner => (
+              <button key={owner} onClick={()=> setOwnerFilter(owner)} aria-pressed={ownerFilter === owner} className={UI.segBtn(ownerFilter===owner)}>{owner}</button>
+            ))}
+            <button onClick={()=> setOwnerFilter('unassigned')} aria-pressed={ownerFilter === 'unassigned'} className={UI.segBtn(ownerFilter==='unassigned')}>Unassigned</button>
+          </div>
+          <label className={`inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg border px-2.5 text-[13px] font-medium shadow-sm transition-colors ${profitMode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
+            <input
+              type="checkbox"
+              checked={profitMode}
+              onChange={(e)=> {
+                const next = e.target.checked
+                setProfitMode(next)
+                setProfitPaidCounts({})
+                setProfitResults({})
+                setDeliveryRateResults({})
+                setSortKey('spend')
+                setSortDir('desc')
+                setShopifyCounts({})
+                setManualCounts({})
+                setStoreOrdersTotal(null)
+                setExpanded({})
+                setCollectionOrders({})
+                setChildrenError({})
+                setAdsetsExpanded({})
+                setAdsetsByCampaign({})
+                setAdsetOrdersByCampaign({})
+                if(next) ++ordersSeqToken.current
+                load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts, profit: next })
+              }}
+              className="sr-only"
+            />
+            <span className={`relative h-4 w-7 rounded-full transition-colors ${profitMode ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+              <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${profitMode ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+            </span>
+            Profit mode
+          </label>
+          {profitMode && (
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+              Service / order
+              <input
+                type="number"
+                value={profitServiceCost}
+                min={0}
+                onChange={(e)=> setProfitServiceCost(Number(e.target.value||0))}
+                className={`${UI.field} w-20`}
+              />
+              MAD
+            </label>
+          )}
+          <div className="flex-1" />
+          {(selectedCount > 0 || multiAnalysisLoading) && (
+            <button
+              disabled={multiAnalysisLoading}
+              onClick={analyzeSelectedCampaigns}
+              className={`${UI.btn} ${UI.accent} ${multiAnalysisLoading ? 'cursor-wait animate-pulse' : ''}`}
+            >
+              <Sparkles className="h-4 w-4"/>
+              {multiAnalysisLoading
+                ? `Analyzing ${multiAnalysisProgress.done}/${multiAnalysisProgress.total}…`
+                : `Analyze ${selectedCount} selected`
+              }
+            </button>
+          )}
+          {multiAnalysisLoading && (
+            <button
+              onClick={()=>{
+                multiAnalysisCancelledRef.current = true
+                multiAnalysisAbortRef.current?.abort()
+                setMultiAnalysisLoading(false)
+              }}
+              className={`${UI.btn} ${UI.secondary} text-rose-600`}
+              title="Cancel selected campaign analysis"
+            >
+              <X className="h-4 w-4"/>
+              Cancel
+            </button>
+          )}
+          {Object.keys(multiAnalysisResults).length > 0 && !multiAnalysisLoading && (
+            <button
+              disabled={actionTasksLoading}
+              onClick={generateActionsFromAnalyses}
+              className={`${UI.btn} bg-amber-500 text-white shadow-sm hover:bg-amber-600 ${actionTasksLoading ? 'cursor-wait animate-pulse' : ''}`}
+            >
+              <Zap className="h-4 w-4"/>
+              {actionTasksLoading ? 'Generating tasks…' : `Generate actions (${Object.keys(multiAnalysisResults).length})`}
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main className="space-y-3 px-4 py-3 lg:px-6">
+        {(error || ownerSaveError) && (
+          <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">{error || ownerSaveError}</div>
+        )}
+
+        {/* Context line */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium text-slate-600">
+          <span className="font-semibold text-slate-900">{adAccountName || adAccount || 'No ad account'}</span>
+          <span className="text-slate-300">/</span>
+          <span>{selectedStores.join(', ') || '—'}</span>
+          <span className="text-slate-300">/</span>
+          <span className="capitalize">{rangeLabel}</span>
+          {reportingTz && (
+            <>
+              <span className="text-slate-300">/</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 ring-1 ring-blue-600/15" title="Dates for Meta spend and Shopify orders both follow the Meta ad account's timezone, so 'today' is the same day everywhere.">
+                <Clock className="h-3 w-3"/>Meta time · {reportingTz.replace(/_/g, ' ')} · {timeZoneClock(reportingTz)}
+              </span>
+            </>
+          )}
+          {statusFilter !== 'all' && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{statusFilter} products</span>}
+          {ownerFilter && <span className="rounded-full bg-slate-200/70 px-2 py-0.5 font-medium capitalize text-slate-700">{ownerFilter}</span>}
+        </div>
+
+        {/* Analytics bar — one compact row */}
+        <section className="flex gap-2 overflow-x-auto pb-0.5" aria-label="Performance summary">
+          <KpiTile
+            label="Ad spend"
+            value={fmtCurrency(totalSpend)}
+            sub={profitMode ? `${Math.round(totalSpend*10).toLocaleString()} MAD` : `${analytics.spenders} products`}
+            hint={`Top 5 · ${Math.round(analytics.topShare*100)}%`}
+          >
+            <StackedBar height={6} segments={[
+              ...analytics.top.map(p => ({ key: p.key, value: p.spend, color: '#3b82f6', label: `${p.label}: ${fmtCurrency(p.spend)}` })),
+              { key: 'other', value: analytics.otherSpend, color: '#cbd5e1', label: `Other products: ${fmtCurrency(analytics.otherSpend)}` },
+            ]} />
+          </KpiTile>
+
+          {!profitMode && (()=>{
+            const share = storeOrdersTotal ? Math.min(1, tableOrdersTotal / Math.max(1, storeOrdersTotal)) : 0
+            return (
+              <KpiTile
+                label="Shopify orders"
+                value={fmtInt(tableOrdersTotal)}
+                sub={storeOrdersTotal!=null ? `of ${fmtInt(storeOrdersTotal)} store` : 'store total…'}
+                hint={storeOrdersTotal ? `${Math.round(share*100)}% from ads` : undefined}
+              >
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100" title={`${Math.round(share*100)}% of store orders come from products in this table`}>
+                  <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${share*100}%` }} />
+                </div>
+              </KpiTile>
+            )
+          })()}
+
+          {!profitMode && (
+            <KpiTile
+              label="True CPP"
+              value={totalCPP!=null ? fmtCurrency(totalCPP) : '—'}
+              sub={`blended ${storeCPP!=null ? fmtCurrency(storeCPP) : '—'}`}
+              hint={<span className="flex items-center gap-1.5 tabular-nums">
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-emerald-500"/>{analytics.bands.good}</span>
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-amber-500"/>{analytics.bands.ok}</span>
+                <span className="flex items-center gap-0.5"><span className="h-1.5 w-1.5 rounded-sm bg-rose-500"/>{analytics.bands.high}</span>
+              </span>}
+            >
+              <StackedBar height={6} segments={[
+                { key: 'good', value: analytics.bands.good, color: '#10b981', label: `${analytics.bands.good} products under $2` },
+                { key: 'ok', value: analytics.bands.ok, color: '#f59e0b', label: `${analytics.bands.ok} products between $2 and $3` },
+                { key: 'high', value: analytics.bands.high, color: '#f43f5e', label: `${analytics.bands.high} products at $3 or more` },
+                { key: 'none', value: analytics.bands.none, color: '#cbd5e1', label: `${analytics.bands.none} products without orders yet` },
+              ]} />
+            </KpiTile>
+          )}
+
+          <KpiTile
+            label="Campaigns"
+            value={<>{fmtInt(analytics.activeCampaigns)}<span className="text-sm font-semibold text-slate-400"> / {fmtInt(analytics.campaigns)}</span></>}
+            sub="active"
+            hint={`${analytics.products} rows`}
+          >
+            <StackedBar height={6} segments={[
+              { key: 'active', value: analytics.activeCampaigns, color: '#10b981', label: `${analytics.activeCampaigns} active campaigns` },
+              { key: 'paused', value: analytics.campaigns - analytics.activeCampaigns, color: '#cbd5e1', label: `${analytics.campaigns - analytics.activeCampaigns} paused campaigns` },
+            ]} />
+          </KpiTile>
+
+          {!profitMode && (
+            <div className="flex min-w-[300px] flex-[1.4] flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm">
+              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                <span>Owners</span>
+                <span className="normal-case tracking-normal font-medium text-slate-500">tCPP · orders</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {CAMPAIGN_OWNERS.map(owner => {
+                  const st = ownerStats[owner]
+                  const on = ownerFilter === owner
+                  return (
+                    <button
+                      key={owner}
+                      onClick={()=> setOwnerFilter(on ? '' : owner)}
+                      className={`group min-w-0 rounded-md px-1 py-0.5 text-left transition-colors ${on ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-slate-50'}`}
+                      title={`${owner}: ${fmtCurrency(st.spend)} spend · ${fmtInt(st.orders)} orders · ${st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'} tCPP. Click to filter.`}
+                    >
+                      <div className="flex items-baseline justify-between gap-1 text-xs leading-none">
+                        <span className="truncate font-semibold capitalize text-slate-800">{owner}</span>
+                        <span className="tabular-nums text-slate-500"><span className="font-semibold text-slate-800">{st.trueCpp!=null ? fmtCurrency(st.trueCpp) : '—'}</span> · {fmtInt(st.orders)}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100">
+                        <div className={`h-full rounded-full transition-all duration-500 ${on ? 'bg-blue-600' : 'bg-blue-400 group-hover:bg-blue-500'}`} style={{ width: `${(st.spend / ownerMaxSpend) * 100}%` }} />
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
+        {profitMode && (
+          <section className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Calculated products profit summary</div>
+                <div className="text-[11px] text-slate-500">Only products with a completed profit calculation are included.</div>
+              </div>
+              <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-600/20">
+                {profitSummary.calculatedProducts} calculated
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Available inventory</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{fmtInt(profitSummary.availableItems)} items</div>
+              </div>
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Inventory cost value</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{Math.round(profitSummary.inventoryWorth).toLocaleString()} MAD</div>
+              </div>
+              <div className={`rounded-lg px-3 py-2.5 ${profitSummary.totalProfit >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                <div className={`text-[11px] font-medium uppercase tracking-wider ${profitSummary.totalProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>Total profit</div>
+                <div className={`mt-0.5 text-lg font-semibold ${profitSummary.totalProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>{Math.round(profitSummary.totalProfit).toLocaleString()} MAD</div>
+              </div>
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-slate-500">Net inventory money</div>
+                <div className="mt-0.5 text-lg font-semibold text-slate-900">{Math.round(profitSummary.netInventoryMoney).toLocaleString()} MAD</div>
+                <div className="text-[10px] text-slate-500">Inventory cost value − total profit</div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Search + table toolbar */}
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="relative w-full md:max-w-xl">
+            <div className={`flex h-10 items-center gap-2.5 rounded-xl border bg-white px-3.5 shadow-sm transition-all ${searchFocused ? 'border-blue-400 ring-4 ring-blue-500/10' : 'border-slate-200 hover:border-slate-300'}`}>
+              <Search className="h-4 w-4 flex-shrink-0 text-slate-400"/>
+              <input
+                ref={searchRef}
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value)
+                  if(!e.target.value.trim() && (searchActive || searchFocusId || searchFocusProductId)) clearSearchFocus()
+                }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+                onKeyDown={(e) => {
+                  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+                    if(searchOptions.length === 0) return
+                    e.preventDefault()
+                    const dir = e.key==='ArrowDown' ? 1 : -1
+                    setSearchHighlight(prev => (prev + dir + searchOptions.length) % searchOptions.length)
+                  }
+                  if(e.key==='Enter'){
+                    const q = searchQuery.trim()
+                    if(!q) return
+                    const opt = searchOptions[searchHighlight]
+                    if(opt) pickSearchOption(opt)
+                    // Enter without a highlighted option = every campaign matching the query
+                    else applySearchFocus({ query: q, label: q })
+                  }
+                  if(e.key==='Escape'){
+                    searchRef.current?.blur()
+                    clearSearchFocus()
+                  }
+                }}
+                placeholder="Search by product ID, product or campaign name…"
+                className="h-full flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                aria-label="Search products and campaigns"
+              />
+              {(searchQuery || searchActive || searchFocusProductId) ? (
+                <button
+                  onClick={() => { clearSearchFocus(); searchRef.current?.focus() }}
+                  className="rounded-md p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Clear search"
+                >
+                  <X className="h-4 w-4"/>
+                </button>
+              ) : (
+                <kbd className="hidden rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-slate-400 sm:block">Enter ↵</kbd>
+              )}
+            </div>
+            {/* Suggestions dropdown */}
+            {searchFocused && searchQuery.trim() && (
+              <div className="absolute left-0 right-0 z-50 mt-1.5 max-h-[420px] overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10">
+                {searchOptions.map((opt, idx) => {
+                  const hl = idx === searchHighlight
+                  const base = `flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${hl ? 'bg-slate-100' : 'hover:bg-slate-50'}`
+                  const pick = (e: React.MouseEvent) => { e.preventDefault(); pickSearchOption(opt) }
+                  const prevKind = idx > 0 ? searchOptions[idx-1].kind : null
+                  const heading = (opt.kind === 'product' && prevKind !== 'product') ? 'Products'
+                    : (opt.kind === 'campaign' && prevKind !== 'campaign') ? 'Campaigns' : null
+                  return (
+                    <Fragment key={`${opt.kind}-${idx}`}>
+                      {heading && <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{heading}</div>}
+                      {opt.kind === 'all' && (
+                        <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          <Search className="h-4 w-4 flex-shrink-0 text-blue-500"/>
+                          <span className="flex-1 font-medium text-slate-800">Show all {searchMatchCount} campaign{searchMatchCount===1?'':'s'} matching “{searchQuery.trim()}”</span>
+                        </button>
+                      )}
+                      {opt.kind === 'product' && (
+                        <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          {productBriefs[opt.pid]?.image ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={String(productBriefs[opt.pid]?.image)} alt="" className="h-9 w-9 flex-shrink-0 rounded-md border border-slate-200 object-cover" />
+                          ) : (
+                            <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50"><Package className="h-4 w-4 text-slate-400"/></span>
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium text-slate-800">{opt.name}</span>
+                            <span className="block font-mono text-[11px] text-slate-400">#{opt.pid} · {opt.campaigns} campaign{opt.campaigns===1?'':'s'}</span>
+                          </span>
+                          {opt.active > 0
+                            ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-600/20">{opt.active} active</span>
+                            : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">paused</span>}
+                        </button>
+                      )}
+                      {opt.kind === 'campaign' && (()=>{
+                        const q = searchQuery.trim().toLowerCase()
+                        const matchIdx = opt.name.toLowerCase().indexOf(q)
+                        return (
+                          <button className={base} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                            <Megaphone className="h-4 w-4 flex-shrink-0 text-slate-300"/>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-slate-700">
+                                {matchIdx >= 0 ? (
+                                  <>
+                                    {opt.name.slice(0, matchIdx)}
+                                    <span className="rounded bg-blue-50 px-0.5 font-semibold text-blue-700">{opt.name.slice(matchIdx, matchIdx + q.length)}</span>
+                                    {opt.name.slice(matchIdx + q.length)}
+                                  </>
+                                ) : opt.name}
+                              </span>
+                              <span className="block font-mono text-[11px] text-slate-400">ID {opt.id}</span>
+                            </span>
+                            {opt.score >= 80 && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">ID match</span>}
+                          </button>
+                        )
+                      })()}
+                      {opt.kind === 'alltime' && (
+                        <button className={`${base} mt-1 border-t border-slate-100`} onMouseDown={pick} onMouseEnter={()=> setSearchHighlight(idx)}>
+                          <Clock className="h-4 w-4 flex-shrink-0 text-amber-500"/>
+                          <span className="flex-1 text-slate-600">
+                            {searchOptions.length === 1 && <span className="mr-1 text-slate-400">Nothing loaded matches.</span>}
+                            Search <span className="font-medium text-slate-800">all time</span> for “{searchQuery.trim()}”
+                          </span>
+                          <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">slower</span>
+                        </button>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </div>
+            )}
+            {(searchActive || searchFocusProductId) && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 font-medium text-blue-700 ring-1 ring-blue-600/15">
+                  {searchFocusProductId ? <Package className="h-3 w-3"/> : <Search className="h-3 w-3"/>}
+                  <span className="max-w-[260px] truncate">{searchFocusLabel}</span>
+                </span>
+                <span>Only this selection is loading.</span>
+                <button onClick={clearSearchFocus} className="font-medium text-slate-500 hover:text-rose-600">Clear</button>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedCount > 0 ? (
+              <>
+                <span className="text-xs font-medium text-slate-600">{selectedCount} selected</span>
+                <select
+                  value={groupTarget}
+                  onChange={(e)=> setGroupTarget(e.target.value)}
+                  className={`${UI.field} min-w-56`}
+                  title="Choose a product ID group"
+                >
+                  <option value="">Add to product group…</option>
+                  {productIdOptions.map(pid=> (
+                    <option key={pid} value={pid}>{pid} ({productIdToCount[pid]||0} campaigns)</option>
+                  ))}
+                </select>
+                <button
+                  onClick={()=> addSelectedToGroupProduct(groupTarget)}
+                  disabled={!groupTarget}
+                  className={`${UI.btn} ${UI.primary}`}
+                >Add to group</button>
+                <button onClick={clearSelection} className={`${UI.btn} ${UI.secondary}`}>Clear selection</button>
+              </>
+            ) : (
+              <span className="text-xs text-slate-400">{analytics.products} row{analytics.products===1?'':'s'} · select campaigns to analyze or group them</span>
+            )}
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white shadow-sm">
+          <table className="min-w-full text-[13px] text-slate-800">
+            <thead className="border-b border-slate-200 bg-slate-50/80">
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-600 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-bold">
+                <th className="px-2 py-2.5 font-semibold w-6"></th>
+                <th className="px-2 py-2.5 font-semibold w-[80px]"></th>
+                <th className="w-[290px] max-w-[290px] px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>Campaign</span>
+                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                <th className="px-2 py-2.5 font-semibold">
+                  <span>Status</span>
+                </th>
+                <th className="px-2 py-2.5 font-semibold">
+                  <span>Owner</span>
+                </th>
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>Spend</span>
+                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                {!profitMode && (
+                  <>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>Purch</span>
+                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>CPP</span>
+                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>CTR</span>
+                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>ATC</span>
+                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                  </>
+                )}
+                <th className="px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>{profitMode ? 'Paid' : 'Orders'}</span>
+                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>{profitMode ? 'Ad CPP' : 'tCPP'}</span>
+                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                {profitMode && (
+                  <th className="min-w-[145px] px-2 py-2.5 font-semibold text-right">Inventory cost value</th>
+                )}
+                {!profitMode && (
+                  <>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>Inv</span>
+                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                      <span className="mx-0.5 text-slate-300">/</span>
+                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>0v</span>
+                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="w-[360px] max-w-[360px] px-2 py-2.5 font-semibold">Life days</th>
+                  </>
+                )}
+                <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400"><RefreshCw className="mx-auto mb-2 h-5 w-5 animate-spin text-slate-300"/>Loading campaigns…</td>
+                </tr>
+              )}
+              {!loading && items.length===0 && (
+                <tr>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400">No campaigns for this range.</td>
+                </tr>
+              )}
+              {!loading && items.length>0 && displayRows.length===0 && (
+                <tr>
+                  <td colSpan={tableColSpan} className="px-3 py-14 text-center text-sm text-slate-400">Nothing matches these filters.</td>
+                </tr>
+              )}
+              {!loading && displayRows.map((d)=>{
+                if(d.kind==='group'){
+                  const pid = d.productId
+                  const m = parentMetrics[`g:${pid}`] || parentMetric({ kind:'group', productId: pid, rows: d.rows, primary: d.primary } as any)
+                  const orders = m.orders
+                  const trueCppVal = m.trueCpp
+                  const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
+                  const ctr = m.ctr!=null? `${m.ctr.toFixed(2)}%` : '—'
+                  const cpp = m.cpp!=null? `$${m.cpp.toFixed(2)}` : '—'
+                  const brief = productBriefs[pid]
+                  const img = brief? brief.image : null
+                  const inv = m.inventory
+                  const zeros = m.zero_variant
+                  const hydrating = productHydrating[pid] || {}
+                  const hydratingBrief = !!hydrating.brief
+                  const hydratingOrders = !!hydrating.orders
+                  const hasInventoryAlert = zeros != null && Number(zeros) > 0
+                  const severityAccent = cppAccent(trueCppVal)
+                  const colorClass = cppRowFill(trueCppVal, false)
+                  const active = Number((m as any).active||0)
+                  const paused = Number((m as any).paused||0)
+                  const statusLabel = active===0 ? 'Paused' : (paused===0 ? 'Active' : `Mixed (${active} active / ${paused} paused)`)
+                  const statusClass = active===0 ? 'bg-slate-100 text-slate-600 ring-slate-500/15' : (paused===0 ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-amber-50 text-amber-700 ring-amber-600/20')
+                  const statusDot = active===0 ? 'bg-slate-400' : (paused===0 ? 'bg-emerald-500' : 'bg-amber-500')
+                  const noteVal = groupNotes[pid] || ''
+                  const groupSelection = getGroupSelectionState(d.rows)
+                  const paidOrders = profitPaidCounts[pid]
+                  const profitResult = profitResults[pid]
+                  const deliveryRateResult = deliveryRateResults[pid]
+                  const priceDraft = profitProductPrices[pid]
+                  const spendMad = Number(m.spend||0) * 10
+                  const profitTrueCpp = profitMode && paidOrders && paidOrders > 0 ? spendMad / paidOrders : null
+                  const inventoryProductCost = Math.max(0, Number(profitProductCosts[pid] || 0))
+                  const inventoryItems = inv == null ? null : Math.max(0, Number(inv || 0))
+                  const inventoryWorth = inventoryItems == null ? null : inventoryItems * inventoryProductCost
+                  return (
+                    <Fragment key={`group-${pid}`}>
+                      <tr ref={registerProductRow(pid)} className={`border-b border-slate-200/70 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                        <td className="px-2 py-2">
+                          <input
+                            type="checkbox"
+                            checked={groupSelection.checked}
+                            ref={(el)=>{ if(el) el.indeterminate = groupSelection.indeterminate }}
+                            onChange={(e)=> toggleGroupSelect(d.rows, e.target.checked)}
+                            aria-label={`Select product group ${pid}`}
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <ProductThumb src={img} loading={hydratingBrief} alt={d.primary.name || `Product ${pid}`} />
+                        </td>
+                        <td className="w-[290px] max-w-[290px] whitespace-normal px-2 py-2 align-top">
+                          <div className="flex items-start gap-1">
+                            {!profitMode && <button
+                              onClick={()=> setGroupExpanded(prev=> ({ ...prev, [pid]: !prev[pid] }))}
+                              className={`${UI.icon} h-6 w-6`}
+                              title={groupExpanded[pid] ? 'Hide campaigns' : 'Show campaigns'}
+                              aria-expanded={!!groupExpanded[pid]}
+                            ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${groupExpanded[pid] ? 'rotate-90' : ''}`}/></button>}
+                            <div className="min-w-0 flex-1">
+                              <span className="break-words text-sm font-semibold leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
+                              <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                                <span>#{pid}</span>
+                                <span className="rounded-full bg-white/80 px-1.5 py-px font-semibold text-slate-700 ring-1 ring-slate-900/10">{d.rows.length} campaigns</span>
+                              </span>
+                            </div>
+                          </div>
+                          {profitMode && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+                              <label className="inline-flex items-center gap-1 rounded bg-white border px-1.5 py-0.5">
+                                <span>Product cost</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={profitProductCosts[pid] || ''}
+                                  placeholder="0"
+                                  onChange={(e)=> updateProfitProductCost(pid, e.target.value)}
+                                  onBlur={(e)=> void saveProfitProductCost(pid, e.currentTarget.value)}
+                                  onKeyDown={(e)=> { if(e.key === 'Enter') e.currentTarget.blur() }}
+                                  className="w-14 bg-transparent outline-none text-right font-semibold"
+                                />
+                              </label>
+                              {profitCostSaving[pid] && <span className="text-amber-600">Saving…</span>}
+                              {!profitCostSaving[pid] && profitCostSaved[pid] && <span className="text-emerald-600">Saved</span>}
+                              {!profitCostSaving[pid] && profitCostErrors[pid] && <span className="text-rose-600" title={profitCostErrors[pid]}>Save failed</span>}
+                              <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
+                                <span>Selling price</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={priceDraft ?? ((brief as any)?.price != null ? String((brief as any).price) : '')}
+                                  placeholder="0"
+                                  onChange={(e)=> updateProfitProductPrice(pid, e.target.value)}
+                                  className="w-16 bg-transparent outline-none text-right font-semibold"
+                                />
+                              </label>
+                              <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrders!=null ? fmtInt(paidOrders) : '—'}</span>
+                              {deliveryRateResult && (
+                                <span
+                                  className="rounded bg-cyan-50 text-cyan-700 px-1.5 py-0.5 font-semibold"
+                                  title={`${deliveryRateResult.paidOrDeliveredOrders} paid or DELIVERED orders from ${deliveryRateResult.fulfilledOrders} fulfilled orders`}
+                                >
+                                  Delivery {deliveryRateResult.rate.toFixed(1)}% ({deliveryRateResult.paidOrDeliveredOrders}/{deliveryRateResult.fulfilledOrders})
+                                </span>
+                              )}
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMad).toLocaleString()} MAD</span>
+                              {profitResult && (
+                                <span className={`rounded px-1.5 py-0.5 font-bold ${profitResult.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                  Profit {Math.round(profitResult.profit).toLocaleString()} MAD
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${statusClass}`} title={statusLabel}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${statusDot}`}/>
+                            {active===0 ? 'Paused' : paused===0 ? 'Active' : `${active} on · ${paused} off`}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2">
+                          {(()=>{
+                            const owner = ownerOfKey(productOwnerKey(pid))
+                            return (
+                              <select
+                                value={owner}
+                                onChange={(e)=> saveProductOwner(pid, e.target.value)}
+                                className={`${UI.miniField} h-7 capitalize`}
+                                title="Owner for all campaigns in this product"
+                              >
+                                <option value="">No owner</option>
+                                {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
+                              </select>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                          {profitMode ? (
+                            <div>
+                              <div>${Number(m.spend||0).toFixed(2)}</div>
+                              <div className="text-[10px] text-slate-500">{Math.round(spendMad).toLocaleString()} MAD</div>
+                            </div>
+                          ) : `$${Number(m.spend||0).toFixed(2)}`}
+                        </td>
+                        {!profitMode && (
+                          <>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{Number(m.purchases||0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{cpp}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{ctr}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{Number(m.add_to_cart||0)}</td>
+                          </>
+                        )}
+                        <td className="px-2 py-2">
+                          {profitMode ? (
+                            paidOrders==null ? (
+                              <span className="text-slate-400">—</span>
+                            ) : (
+                              <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{paidOrders} paid</span>
+                            )
+                          ) : orders==null ? (
+                            hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{orders}</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                          {profitMode ? (
+                            profitTrueCpp!=null ? `${Math.round(profitTrueCpp).toLocaleString()} MAD` : '—'
+                          ) : (
+                            orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : <span className={cppPill(trueCppVal)}>{trueCpp}</span>
+                          )}
+                        </td>
+                        {profitMode && (
+                          <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                            {inventoryItems == null ? (
+                              hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
+                            ) : (
+                              <div title={`${fmtInt(inventoryItems)} items × ${inventoryProductCost.toLocaleString()} MAD product cost`}>
+                                <div className="font-semibold text-indigo-700">{fmtInt(inventoryItems)} items</div>
+                                <div className="text-[10px] text-slate-500">× {inventoryProductCost.toLocaleString()} MAD cost</div>
+                                <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorth || 0)).toLocaleString()} MAD</div>
+                              </div>
+                            )}
+                          </td>
+                        )}
+                        {!profitMode && (
+                          <>
+                            <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
+                              <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                                onMouseEnter={(e) => {
+                                  const rect = e.currentTarget.getBoundingClientRect()
+                                  setInvHover({ pid, rect })
+                                  loadVariantInventory(pid)
+                                }}
+                                onMouseLeave={() => setInvHover(null)}
+                              >
+                                {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
+                                  <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
+                                )}
+                                <span className="text-slate-300">/</span>
+                                {zeros==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
+                                  <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
+                              {renderLifeDays(d.rows)}
+                            </td>
+                          </>
+                        )}
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                          <div className="flex items-center justify-end gap-1.5">
+                          {profitMode && (
+                            <>
+                              <button
+                                title="Calculate profit"
+                                disabled={!!profitLoading[pid]}
+                                onClick={()=> calculateGroupProfit(pid, Number(m.spend||0))}
+                                className={`${UI.icon} text-emerald-600 ${profitLoading[pid] ? 'animate-pulse' : ''}`}
+                              ><Calculator className="w-3.5 h-3.5"/></button>
+                              {profitResult && (
+                                <button
+                                  title="Clear profit result"
+                                  aria-label="Clear profit result"
+                                  onClick={()=> clearProfitResult(pid)}
+                                  className={`${UI.icon} text-rose-600`}
+                                ><X className="w-3.5 h-3.5"/></button>
+                              )}
+                              <button
+                                title="Calculate delivery rate"
+                                disabled={!!deliveryRateLoading[pid]}
+                                onClick={()=> calculateDeliveryRate(pid)}
+                                className={`${UI.icon} text-cyan-600 ${deliveryRateLoading[pid] ? 'animate-pulse' : ''}`}
+                              ><Truck className="w-3.5 h-3.5"/></button>
+                            </>
+                          )}
+                          {!profitMode && <button
+                            title="Performance"
+                            onClick={async()=>{
+                              setPerfOpen(true)
+                              setPerfLoading(true)
+                              setPerfOrders([])
+                              try{
+                                const campaignIds = (d.rows||[]).map((r:any)=> String(r.campaign_id||'')).filter(Boolean)
+                                setPerfCampaign({ id: pid, name: d.primary.name || `Product ${pid}` })
+                                // Fetch performance for all campaigns in the group and merge by date
+                                const allPerf = await Promise.all(campaignIds.map(cid =>
+                                  fetchCampaignPerformance(cid, 6, reportingTzRef.current || browserTz).then(r => (((r as any)?.data||{}).days)||[]).catch(()=> [])
+                                ))
+                                // Merge by date: sum spend, purchases, add_to_cart per date
+                                const dateMap: Record<string, {date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number}> = {}
+                                for(const days of allPerf){
+                                  for(const dd of days){
+                                    if(!dateMap[dd.date]) dateMap[dd.date] = { date: dd.date, spend: 0, purchases: 0, add_to_cart: 0 }
+                                    dateMap[dd.date].spend += Number(dd.spend||0)
+                                    dateMap[dd.date].purchases += Number(dd.purchases||0)
+                                    dateMap[dd.date].add_to_cart += Number(dd.add_to_cart||0)
+                                  }
+                                }
+                                const mergedDays = Object.values(dateMap).sort((a,b) => a.date.localeCompare(b.date))
+                                setPerfMetrics(mergedDays)
+                                const ordersPerDay = await loadPerformanceOrdersByDay(mergedDays, { productId: pid })
+                                setPerfOrders(ordersPerDay)
+                              }finally{
+                                setPerfLoading(false)
+                              }
+                            }}
+                            className={`${UI.icon} text-blue-600`}
+                          ><BarChart3 className="w-3.5 h-3.5"/></button>}
+
+                          {!profitMode && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${d.primary.name || `Product ${pid}`}`} aria-expanded={!!analysisPanels[`${(d.primary as any)._store || store}:${pid}`]} aria-controls={`ad-analysis-${`${(d.primary as any)._store || store}:${pid}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(d.primary as any)._store || store}:${pid}`]: !previous[`${(d.primary as any)._store || store}:${pid}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
+                          </div>
+                        </td>
+                      </tr>
+                      {!profitMode && <tr hidden={!analysisPanels[`${(d.primary as any)._store || store}:${pid}`]}><td colSpan={tableColSpan} className="bg-violet-50/30 px-3 py-2"><ProductAdAnalysis
+                        key={`${(d.primary as any)._store || store}:${pid}`} campaignKey={pid}
+                        open={!!analysisPanels[`${(d.primary as any)._store || store}:${pid}`]}
+                        panelId={`ad-analysis-${(d.primary as any)._store || store}:${pid}`}
+                        onClose={() => setAnalysisPanels(previous => ({ ...previous, [`${(d.primary as any)._store || store}:${pid}`]: false }))} productId={pid}
+                        initialSignal={campaignMeta[pid]?.ads_analysis_signal}
+                        campaignIds={(d.rows || []).map((row: any) => String(row.campaign_id || '')).filter(Boolean)}
+                        name={d.primary.name || `Product ${pid}`} store={(d.primary as any)._store || store}
+                        adAccount={(d.primary as any)._adAccount || undefined} range={effectiveYmdRange(datePreset)}
+                      /></td></tr>}
+
+                    </Fragment>
+                  )
+                }
+                const c = d.row
+                const isChild = !!d.isChild
+                const cpp = c.cpp!=null? `$${c.cpp.toFixed(2)}` : '—'
+                const ctr = c.ctr!=null? `${(c.ctr*1).toFixed(2)}%` : '—'
+                const rowKey = String(c.campaign_id||c.name||'')
+                const orders = isChild ? null : getOrders(c)
+                const trueCppVal = (!isChild && orders!=null && orders>0)? ((Number(c.spend||0)) / orders) : null
+                const trueCpp = trueCppVal!=null? `$${trueCppVal.toFixed(2)}` : '—'
+                // Resolve product id from manual mapping (product) or numeric id in name
+                const rkSelf = (c.campaign_id || c.name || '') as any
+                const confSelf = (manualIds as any)[rkSelf]
+                const pidSelf = (confSelf && confSelf.kind==='product' && confSelf.id)? confSelf.id : extractNumericId((c.name||'').trim())
+                const ownerProductId = getProductIdForRow(c)
+                const briefSelf = pidSelf? productBriefs[pidSelf] : undefined
+                const img = briefSelf? briefSelf.image : null
+                const invSelf = briefSelf? briefSelf.total_available : null
+                const zerosSelf = briefSelf? briefSelf.zero_variants : null
+                const inv = (invSelf==null || invSelf==undefined)? null : Number(invSelf||0)
+                const zeros = (zerosSelf==null || zerosSelf==undefined)? null : Number(zerosSelf||0)
+                const hasAnyPid = !!pidSelf
+                const hydrating = pidSelf ? (productHydrating[pidSelf] || {}) : {}
+                const hydratingBrief = !!hydrating.brief
+                const hydratingOrders = !!hydrating.orders
+                const paidOrdersSelf = pidSelf ? profitPaidCounts[pidSelf] : undefined
+                const profitResultSelf = pidSelf ? profitResults[pidSelf] : undefined
+                const deliveryRateResultSelf = pidSelf ? deliveryRateResults[pidSelf] : undefined
+                const priceDraftSelf = pidSelf ? profitProductPrices[pidSelf] : undefined
+                const spendMadSelf = Number(c.spend||0) * 10
+                const profitTrueCppSelf = profitMode && paidOrdersSelf && paidOrdersSelf > 0 ? spendMadSelf / paidOrdersSelf : null
+                const inventoryProductCostSelf = Math.max(0, Number(pidSelf ? profitProductCosts[pidSelf] || 0 : 0))
+                const inventoryItemsSelf = inv == null ? null : Math.max(0, Number(inv || 0))
+                const inventoryWorthSelf = inventoryItemsSelf == null ? null : inventoryItemsSelf * inventoryProductCostSelf
+                const hasInventoryAlert = zeros != null && zeros > 0
+                const severityAccent = cppAccent(trueCppVal)
+                const colorClass = cppRowFill(trueCppVal, isChild)
+                return (
+                  <Fragment key={(c.campaign_id || c.name) + (isChild? `-child-${d.groupProductId||''}` : '')}>
+                  <tr ref={registerProductRow(pidSelf)} className={`border-b border-slate-200/70 transition-colors last:border-b-0 ${colorClass} ${severityAccent}`}>
+                    <td className="px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedKeys[String(rowKey)]}
+                        onChange={(e)=> toggleSelect(String(rowKey), e.target.checked)}
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <ProductThumb src={img} loading={hasAnyPid && hydratingBrief} size={isChild ? 44 : 60} alt={c.name || 'Product'} />
+                    </td>
+                    <td className="w-[290px] max-w-[290px] whitespace-normal px-2 py-2 align-top">
+                      <div className="flex items-start gap-2">
+                        {!profitMode && <button
+                          onClick={async()=>{
+                            const cid = String(c.campaign_id||'')
+                            if(!cid) return
+                            const open = !adsetsExpanded[cid]
+                            setAdsetsExpanded(prev=> ({ ...prev, [cid]: open }))
+                            const collectionMapping = manualIds[String(rowKey)]
+                            if(collectionMapping?.kind === 'collection'){
+                              setExpanded(prev=> ({ ...prev, [String(rowKey)]: open }))
+                              if(open) void loadCollectionChildren(rowKey, collectionMapping.id, collectionMapping.store || (c as any)._store || store)
+                            }
+                            if(open && !adsetsByCampaign[cid] && !adsetsLoading[cid]){
+                              setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
+                              ;(async()=>{
+                                try{
+                                  const m = metaRangeParams(datePreset)
+                                  const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
+                                  const items = ((res as any)?.data)||[]
+                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
+                                }catch{
+                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
+                                }finally{
+                                  setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
+                                }
+                              })()
+                            }
+                            // UTM attribution is independent of the visible Meta ad-set request.
+                            // Start both immediately so expanding a campaign waits only for the slower one.
+                            if(open && !adsetOrdersByCampaign[cid] && !adsetOrdersLoading[cid]){
+                              ;(async()=>{
+                                try{
+                                  const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
+                                  const rowStore = manualIds[String(rowKey)]?.store || (c as any)._store || store
+                                  const mappingKind = ((manualIds as any)[String(rowKey)]?.kind) as ('product'|'collection'|undefined)
+                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, mappingKind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mappingKind)
+                                  if((ord as any)?.error) throw new Error(String((ord as any).error))
+                                  const mapping = ((ord as any)?.data)||{}
+                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
+                                }catch{} finally{
+                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
+                                }
+                              })()
+                            }
+                          }}
+                          className={`${UI.icon} h-6 w-6`}
+                          title={adsetsExpanded[String(c.campaign_id||'')] ? 'Hide ad sets' : 'Show ad sets'}
+                          aria-expanded={!!adsetsExpanded[String(c.campaign_id||'')]}
+                        ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${adsetsExpanded[String(c.campaign_id||'')] ? 'rotate-90' : ''}`}/></button>}
+                        <span className="min-w-0 flex-1">
+                          <span className={`block break-words leading-snug ${isChild ? 'text-[13px] font-medium text-slate-700' : 'text-sm font-semibold text-slate-900'}`}>{c.name||'-'}</span>
+                          {!isChild && pidSelf && <span className="mt-0.5 block text-xs font-medium text-slate-500">#{pidSelf}</span>}
+                        </span>
+                      </div>
+                      {!profitMode && (()=>{
+                        const rk = String(rowKey)
+                        const meta = (campaignMeta as any)[rk] || {}
+                        const s1 = (meta.supplier_name||'').trim()
+                        const s2raw = String(meta.supply_available||meta.supplier_alt_name||'').trim().toLowerCase()
+                        const s2 = s2raw ? (['yes','y','true','1'].includes(s2raw)? 'Yes' : 'No') : ''
+                        if(!s1 && !s2) return null
+                        return (
+                          <div className="mt-1 text-xs text-slate-500">
+                            {s1? <span className="mr-2">Supplier: <span className="font-medium text-slate-700">{s1}</span></span> : null}
+                            {s2? <span>Supply available: <span className="font-medium text-slate-700">{s2}</span></span> : null}
+                          </div>
+                        )
+                      })()}
+                      {profitMode && pidSelf && !isChild && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-600">
+                          <label className="inline-flex items-center gap-1 rounded bg-white border px-1.5 py-0.5">
+                            <span>Product cost</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={profitProductCosts[pidSelf] || ''}
+                              placeholder="0"
+                              onChange={(e)=> updateProfitProductCost(pidSelf, e.target.value)}
+                              onBlur={(e)=> void saveProfitProductCost(pidSelf, e.currentTarget.value)}
+                              onKeyDown={(e)=> { if(e.key === 'Enter') e.currentTarget.blur() }}
+                              className="w-14 bg-transparent outline-none text-right font-semibold"
+                            />
+                          </label>
+                          {profitCostSaving[pidSelf] && <span className="text-amber-600">Saving…</span>}
+                          {!profitCostSaving[pidSelf] && profitCostSaved[pidSelf] && <span className="text-emerald-600">Saved</span>}
+                          {!profitCostSaving[pidSelf] && profitCostErrors[pidSelf] && <span className="text-rose-600" title={profitCostErrors[pidSelf]}>Save failed</span>}
+                          <label className="inline-flex items-center gap-1 rounded bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5">
+                            <span>Selling price</span>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={priceDraftSelf ?? ((briefSelf as any)?.price != null ? String((briefSelf as any).price) : '')}
+                              placeholder="0"
+                              onChange={(e)=> updateProfitProductPrice(pidSelf, e.target.value)}
+                              className="w-16 bg-transparent outline-none text-right font-semibold"
+                            />
+                          </label>
+                          <span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">Paid {paidOrdersSelf!=null ? fmtInt(paidOrdersSelf) : '—'}</span>
+                          {deliveryRateResultSelf && (
+                            <span
+                              className="rounded bg-cyan-50 text-cyan-700 px-1.5 py-0.5 font-semibold"
+                              title={`${deliveryRateResultSelf.paidOrDeliveredOrders} paid or DELIVERED orders from ${deliveryRateResultSelf.fulfilledOrders} fulfilled orders`}
+                            >
+                              Delivery {deliveryRateResultSelf.rate.toFixed(1)}% ({deliveryRateResultSelf.paidOrDeliveredOrders}/{deliveryRateResultSelf.fulfilledOrders})
+                            </span>
+                          )}
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5">Ads {Math.round(spendMadSelf).toLocaleString()} MAD</span>
+                          {profitResultSelf && (
+                            <span className={`rounded px-1.5 py-0.5 font-bold ${profitResultSelf.profit>=0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                              Profit {Math.round(profitResultSelf.profit).toLocaleString()} MAD
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                        {(()=>{
+                          const rk = (c.campaign_id || c.name || '') as any
+                          const draft = manualDrafts[rk] || manualIds[rk] || { kind:'product', id:'' }
+                          return (
+                            <>
+                              <select
+                                value={draft.kind}
+                                onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ id:'', kind:'product' }), kind: (e.target.value as any) } }))}
+                                className={UI.miniField}
+                              >
+                                <option value="product">Product</option>
+                                <option value="collection">Collection</option>
+                              </select>
+                              <input
+                                value={draft.id||''}
+                                onChange={(e)=> setManualDrafts(prev=> ({ ...prev, [rk]: { ...(prev[rk]||{ kind: draft.kind }), id: e.target.value.replace(/[^0-9]/g,'') } }))}
+                                placeholder="ID"
+                                className={`${UI.miniField} w-24`}
+                              />
+                              <button
+                                onClick={async()=>{
+                                  const next = { kind: (manualDrafts[rk]?.kind || draft.kind) as ('product'|'collection'), id: (manualDrafts[rk]?.id || draft.id || '').trim(), store }
+                                  setManualIds(prev=> ({ ...prev, [rk]: next }))
+                                  // Fetch now for this row respecting current range
+                                  try{
+                                    // Persist mapping server-side
+                                    try{ await campaignMappingUpsert({ campaign_key: String(rk), kind: next.kind, id: next.id, store }) }catch{}
+                                    const { start, end } = computeRange(datePreset)
+                                    if(next.kind==='product'){
+                                      if(profitMode){
+                                        try{ const pb = await shopifyProductsBrief({ ids: [next.id], store, fresh_inventory: true }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
+                                        return
+                                      }
+                                      // ensure product brief is loaded for inventory/zero-variants columns
+                                      try{ const pb = await shopifyProductsBrief({ ids: [next.id], store, fresh_inventory: true }); setProductBriefs(prev=> ({ ...prev, ...(((pb as any)?.data)||{}) })) }catch{}
+                                      const oc = await shopifyOrdersCountByTitle({ names: [next.id], start, end, include_closed: true })
+                                      const count = ((oc as any)?.data||{})[next.id] ?? 0
+                                      setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                    }else{
+                                      if(profitMode) return
+                                      const oc = await shopifyOrdersCountByCollection({ collection_id: next.id, start, end, store, include_closed: true, aggregate: 'sum_product_orders' })
+                                      const count = Number(((oc as any)?.data||{})?.count ?? 0)
+                                      setManualCounts(prev=> ({ ...prev, [String(rk)]: count }))
+                                      // Preload campaign-attributed product counts separately from total sales.
+                                      await loadCollectionChildren(rk, next.id, next.store)
+                                    }
+                                  }catch{
+                                    setManualCounts(prev=> ({ ...prev, [String(rk)]: 0 }))
+                                  }
+                                }}
+                                className={UI.miniBtn}
+                              >Save</button>
+                              {!profitMode && (manualIds as any)[rk] && (manualIds as any)[rk]?.kind==='collection' && (manualIds as any)[rk]?.id && (
+                                <button
+                                  onClick={async()=>{
+                                    const open = !expanded[String(rk)]
+                                    setExpanded(prev=> ({ ...prev, [String(rk)]: open }))
+                                    if(open){
+                                      const collId = String(((manualIds as any)[rk]||{}).id||'')
+                                      if(collId) await loadCollectionChildren(rk, collId, manualIds[String(rk)]?.store || (c as any)._store || store)
+                                    }
+                                  }}
+                                  className={`${UI.miniBtn} text-blue-600`}
+                                >{expanded[String(rk)]? 'Hide products' : 'Show products'}</button>
+                              )}
+                              {(manualIds as any)[rk] && (
+                                <button
+                                  onClick={()=>{
+                                    setManualIds(prev=>{ const m={...prev}; delete (m as any)[rk]; try{ localStorage.setItem('ptos_campaign_ids', JSON.stringify(m)) }catch{}; return m })
+                                    setManualDrafts(prev=>{ const m={...prev}; delete (m as any)[rk]; return m })
+                                    setManualCounts(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  setExpanded(prev=>{ const m={...prev}; delete (m as any)[String(rk)]; return m })
+                                  collectionRequestIds.current[String(rk)] = (collectionRequestIds.current[String(rk)] || 0) + 1
+                                  setCollectionOrders(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
+                                  setChildrenError(prev=>{ const m={...prev}; delete m[String(rk)]; return m })
+                                  }}
+                                  className={`${UI.miniBtn} text-rose-600`}
+                                >Clear</button>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </div>
+                    </td>
+                    <td className="px-2 py-2">
+                      {(()=>{
+                        const st = (c.status||'').toUpperCase()
+                        const active = st==='ACTIVE'
+                        const color = active? 'bg-emerald-50 text-emerald-700 ring-emerald-600/20' : 'bg-slate-100 text-slate-600 ring-slate-500/15'
+                        const cid = String(c.campaign_id||'')
+                        return (
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${color}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`}/>
+                              {active? 'Active' : 'Paused'}
+                            </span>
+                            {c.campaign_id && (
+                              <label className="inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={active}
+                                  disabled={!!togglingCampaign[cid]}
+                                  onChange={async(e)=>{
+                                    const next = e.target.checked? 'ACTIVE' : 'PAUSED'
+                                    const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this campaign?`)
+                                    if(!ok) return
+                                    try{
+                                      setTogglingCampaign(prev=> ({ ...prev, [cid]: true }))
+                                      const res = await metaSetCampaignStatus(String(cid), next as any, { store: (c as any)._store || store, ad_account: (c as any)._adAccount || undefined })
+                                      if((res as any)?.error){
+                                        alert(`Failed: ${(res as any).error}`)
+                                      } else {
+                                        setItems(prev=> prev.map(row=> row.campaign_id===c.campaign_id? { ...row, status: next } : row))
+                                        void recordCampaignAction(
+                                          cid,
+                                          next === 'ACTIVE' ? 'campaign_turned_on' : 'campaign_turned_off',
+                                          `Campaign ${next === 'ACTIVE' ? 'turned on' : 'turned off'}`,
+                                          { entity: 'campaign', campaign_name: c.name || '', previous_status: st, next_status: next },
+                                        )
+                                      }
+                                    }catch(e:any){ alert(`Failed to update status: ${e?.message||e}`) }
+                                    finally{ setTogglingCampaign(prev=> ({ ...prev, [cid]: false })) }
+                                  }}
+                                  className="sr-only"
+                                  aria-label={`Turn campaign ${active ? 'off' : 'on'}`}
+                                />
+                                <Switch on={active} busy={!!togglingCampaign[cid]} />
+                              </label>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </td>
+                    <td className="px-2 py-2">
+                      {!isChild && ownerProductId ? (
+                        <select
+                          value={ownerOfRow(c)}
+                          onChange={(event)=> saveProductOwner(ownerProductId, event.target.value)}
+                          className={`${UI.miniField} h-7 capitalize`}
+                          aria-label={`Owner for product ${ownerProductId}`}
+                          title="Owner for this product and all its campaigns"
+                        >
+                          <option value="">No owner</option>
+                          {CAMPAIGN_OWNERS.map(owner => <option key={owner} value={owner}>{owner}</option>)}
+                        </select>
+                      ) : <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>}
+                    </td>
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                      {profitMode ? (
+                        <div>
+                          <div>${(c.spend||0).toFixed(2)}</div>
+                          <div className="text-[10px] text-slate-500">{Math.round(spendMadSelf).toLocaleString()} MAD</div>
+                        </div>
+                      ) : `$${(c.spend||0).toFixed(2)}`}
+                    </td>
+                    {!profitMode && (
+                      <>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{c.purchases||0}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{cpp}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{ctr}</td>
+                        <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">{c.add_to_cart||0}</td>
+                      </>
+                    )}
+                    <td className="px-2 py-2">
+                      {profitMode ? (
+                        paidOrdersSelf==null ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{paidOrdersSelf} paid</span>
+                        )
+                      ) : orders==null ? (
+                        hydratingOrders ? <span className="inline-block h-3 w-8 bg-emerald-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-[13px] font-bold tabular-nums text-emerald-800 ring-1 ring-inset ring-emerald-600/20">{orders}</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                      {profitMode ? (
+                        profitTrueCppSelf!=null ? `${Math.round(profitTrueCppSelf).toLocaleString()} MAD` : '—'
+                      ) : isChild ? (
+                        <span className="text-slate-400">—</span>
+                      ) : (
+                        orders==null ? (hydratingOrders ? <span className="inline-block h-3 w-8 bg-slate-100 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : <span className={cppPill(trueCppVal)}>{trueCpp}</span>
+                      )}
+                    </td>
+                    {profitMode && (
+                      <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                        {inventoryItemsSelf == null ? (
+                          hydratingBrief ? <span className="inline-block h-8 w-24 rounded bg-indigo-50 animate-pulse" /> : <span className="text-slate-400">—</span>
+                        ) : (
+                          <div title={`${fmtInt(inventoryItemsSelf)} items × ${inventoryProductCostSelf.toLocaleString()} MAD product cost`}>
+                            <div className="font-semibold text-indigo-700">{fmtInt(inventoryItemsSelf)} items</div>
+                            <div className="text-[10px] text-slate-500">× {inventoryProductCostSelf.toLocaleString()} MAD cost</div>
+                            <div className="text-[10px] font-bold text-slate-800">{Math.round(Number(inventoryWorthSelf || 0)).toLocaleString()} MAD</div>
+                          </div>
+                        )}
+                      </td>
+                    )}
+                    {!profitMode && (
+                      <>
+                        <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
+                          {hasAnyPid ? (
+                            <div className="flex items-center justify-end gap-0.5 cursor-pointer"
+                              onMouseEnter={(e) => {
+                                if(pidSelf){
+                                  const rect = e.currentTarget.getBoundingClientRect()
+                                  setInvHover({ pid: pidSelf, rect })
+                                  loadVariantInventory(pidSelf)
+                                }
+                              }}
+                              onMouseLeave={() => setInvHover(null)}
+                            >
+                              {inv===null || inv===undefined ? (
+                                hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
+                              ) : (
+                                <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
+                              )}
+                              <span className="text-slate-300">/</span>
+                              {zeros===null || zeros===undefined ? (
+                                hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
+                              ) : (
+                                <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
+                          {renderLifeDays([c])}
+                        </td>
+                      </>
+                    )}
+                    <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
+                      <div className="flex items-center justify-end gap-1.5">
+                      {profitMode && !isChild && pidSelf && (
+                        <>
+                          <button
+                            title="Calculate profit"
+                            disabled={!!profitLoading[pidSelf]}
+                            onClick={()=> calculateGroupProfit(pidSelf, Number(c.spend||0))}
+                            className={`${UI.icon} text-emerald-600 ${profitLoading[pidSelf] ? 'animate-pulse' : ''}`}
+                          ><Calculator className="w-3.5 h-3.5"/></button>
+                          {profitResultSelf && (
+                            <button
+                              title="Clear profit result"
+                              aria-label="Clear profit result"
+                              onClick={()=> clearProfitResult(pidSelf)}
+                              className={`${UI.icon} text-rose-600`}
+                            ><X className="w-3.5 h-3.5"/></button>
+                          )}
+                          <button
+                            title="Calculate delivery rate"
+                            disabled={!!deliveryRateLoading[pidSelf]}
+                            onClick={()=> calculateDeliveryRate(pidSelf)}
+                            className={`${UI.icon} text-cyan-600 ${deliveryRateLoading[pidSelf] ? 'animate-pulse' : ''}`}
+                          ><Truck className="w-3.5 h-3.5"/></button>
+                        </>
+                      )}
+                      {!profitMode && !isChild && <button
+                        title="Performance"
+                        onClick={async()=>{
+                          const cid = String(c.campaign_id||'')
+                          setPerfOpen(true)
+                          setPerfLoading(true)
+                          setPerfOrders([])
+                          try{
+                            if(!cid) return
+                            setPerfCampaign({ id: cid, name: c.name||'' })
+                            const res = await fetchCampaignPerformance(cid, 6, reportingTzRef.current || browserTz)
+                            const days = (((res as any)?.data||{}).days)||[]
+                            setPerfMetrics(days)
+                            const rk = (c.campaign_id || c.name || '') as any
+                            const conf = (manualIds as any)[rk]
+                            const extractedPid = extractNumericId((c.name||'').trim())
+                            const useProduct = conf? (conf.kind==='product') : !!extractedPid
+                            const prodId = useProduct? (conf? conf.id : extractedPid) : undefined
+                            const collId = (!useProduct && conf && conf.kind==='collection')? conf.id : undefined
+                            const ordersPerDay = await loadPerformanceOrdersByDay(days, { productId: prodId, collectionId: collId, rowStore: (c as any)._store || store })
+                            setPerfOrders(ordersPerDay)
+                          }finally{
+                            setPerfLoading(false)
+                          }
+                        }}
+                        className={`${UI.icon} text-blue-600`}
+                      ><BarChart3 className="w-3.5 h-3.5"/></button>}
+                      {!profitMode && (()=>{
+                        const ck = String(c.campaign_id||c.name||'')
+                        const incompleteTasks = incompleteTaskCount(campaignMeta[ck])
+                        return (
+                          <button
+                            title="Timeline"
+                            onClick={()=> openCampaignTimeline({ id: String(c.campaign_id||''), name: c.name||'' })}
+                            className={`${UI.icon} text-slate-600`}
+                          >
+                            <Clock className="w-3.5 h-3.5"/>
+                            {incompleteTasks > 0 && (
+                              <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold text-white ring-2 ring-white">
+                                {incompleteTasks}
+                              </span>
+                            )}
+                          </button>
+                        )
+                      })()}
+
+                      {!profitMode && !isChild && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${c.name || rowKey}`} aria-expanded={!!analysisPanels[`${(c as any)._store || store}:${rowKey}`]} aria-controls={`ad-analysis-${`${(c as any)._store || store}:${rowKey}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(c as any)._store || store}:${rowKey}`]: !previous[`${(c as any)._store || store}:${rowKey}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
+                      </div>
+                    </td>
+                  </tr>
+                  {!profitMode && !isChild && <tr hidden={!analysisPanels[`${(c as any)._store || store}:${rowKey}`]}><td colSpan={tableColSpan} className="bg-violet-50/30 px-3 py-2"><ProductAdAnalysis
+                    key={`${(c as any)._store || store}:${rowKey}`} campaignKey={rowKey}
+                    open={!!analysisPanels[`${(c as any)._store || store}:${rowKey}`]}
+                    panelId={`ad-analysis-${(c as any)._store || store}:${rowKey}`}
+                    onClose={() => setAnalysisPanels(previous => ({ ...previous, [`${(c as any)._store || store}:${rowKey}`]: false }))} productId={pidSelf || undefined}
+                    initialSignal={campaignMeta[rowKey]?.ads_analysis_signal}
+                    campaignIds={[String(c.campaign_id || '')].filter(Boolean)} name={c.name || rowKey}
+                    store={(c as any)._store || store} adAccount={(c as any)._adAccount || undefined}
+                    range={effectiveYmdRange(datePreset)}
+                  /></td></tr>}
+
+                  {(()=>{
+                    const rk = (c.campaign_id || c.name || '') as any
+                    const conf = (manualIds as any)[rk]
+                    const colSpan = tableColSpan
+                    const cid = String(c.campaign_id||'')
+                    const showAdsets = !!adsetsExpanded[cid]
+                    const loadingAdsets = !!adsetsLoading[cid]
+                    if(showAdsets){
+                      const adsets = adsetsByCampaign[cid]||[]
+                      return (
+                        <tr className="border-b last:border-b-0">
+                          <td className="px-2 py-2 bg-slate-50" colSpan={colSpan}>
+                            {loadingAdsets ? (
+                              <div className="text-xs text-slate-500">Loading ad sets…</div>
+                            ) : (
+                              <div className="text-xs">
+                                <div className="border rounded bg-white">
+                                  <div className="grid grid-cols-10 gap-2 px-2 py-1 text-slate-500">
+                                    <div className="col-span-3">Ad set</div>
+                                    <div className="text-right">Spend</div>
+                                    <div className="text-right">Meta Purch.</div>
+                                    <div className="text-right">Meta CPP</div>
+                                    <div className="text-right">CTR</div>
+                                    <div className="text-right">UTM Orders</div>
+                                    <div className="text-right">UTM tCPP</div>
+                                    <div className="text-right">Status</div>
+                                  </div>
+                                  {adsets.map(a=>{
+                                    const ast = (a.status||'').toUpperCase()
+                                    const aactive = ast==='ACTIVE'
+                                    const acolor = aactive? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20' : 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-500/15'
+                                    const aid = String(a.adset_id||'')
+                                    const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
+                                    const ordersLoaded = !!ordersInfo
+                                    const utmOrders = Number(ordersInfo?.count || 0)
+                                    const utmTrueCpp = adsetUtmTrueCpp(Number(a.spend || 0), ordersInfo)
+                                    const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
+                                    return (
+                                      <Fragment key={aid||a.name}>
+                                      <div className="grid grid-cols-10 gap-2 px-2 py-1 border-t items-center">
+                                        <div className="col-span-3 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-2">
+                                          <span>{a.name||'-'}</span>
+                                          {adsetOrdersLoading[cid]? (
+                                            <span className="text-[10px] text-slate-500">loading orders…</span>
+                                          ) : ordersLoaded ? (
+                                            hasOrders? (
+                                              <button
+                                                onClick={()=> setAdsetOrdersExpanded(prev=> ({ ...prev, [aid]: !prev[aid] }))}
+                                                className="text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700 border border-emerald-200"
+                                              >Orders {ordersInfo?.count||0} {adsetOrdersExpanded[aid]? '▾' : '▸'}</button>
+                                            ) : (
+                                              <span className="text-[10px] px-1 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">Orders 0</span>
+                                            )
+                                          ) : (
+                                            <span className="text-[10px] text-amber-600">orders unavailable</span>
+                                          )}
+                                        </div>
+                                        <div className="text-right">${(a.spend||0).toFixed(2)}</div>
+                                        <div className="text-right">{a.purchases||0}</div>
+                                        <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
+                                        <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
+                                        <div className="text-right">{ordersLoaded ? utmOrders : <span className="text-slate-400">…</span>}</div>
+                                        <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                          {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
+                                        </div>
+                                        <div className="flex items-center justify-end gap-2">
+                                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${acolor}`}>{aactive? 'Active' : 'Paused'}</span>
+                                          {aid && (
+                                            <label className="inline-flex items-center cursor-pointer">
+                                              <input
+                                                type="checkbox"
+                                                checked={aactive}
+                                                disabled={!!togglingAdset[aid]}
+                                                onChange={async(e)=>{
+                                                  const next = e.target.checked? 'ACTIVE' : 'PAUSED'
+                                                  const ok = window.confirm(`Turn ${next==='ACTIVE'?'ON':'OFF'} this ad set?`)
+                                                  if(!ok) return
+                                                  try{
+                                                    setTogglingAdset(prev=> ({ ...prev, [aid]: true }))
+                                                    const res = await metaSetAdsetStatus(aid, next as any, { store: (c as any)._store || store, ad_account: (c as any)._adAccount || undefined })
+                                                    if((res as any)?.error){
+                                                      alert(`Failed: ${(res as any).error}`)
+                                                    } else {
+                                                      setAdsetsByCampaign(prev=> ({ ...prev, [cid]: (prev[cid]||[]).map(x=> x.adset_id===aid? { ...x, status: next } : x) }))
+                                                      void recordCampaignAction(
+                                                        cid,
+                                                        next === 'ACTIVE' ? 'adset_turned_on' : 'adset_turned_off',
+                                                        `Ad set “${a.name || aid}” ${next === 'ACTIVE' ? 'turned on' : 'turned off'}`,
+                                                        { entity: 'adset', adset_id: aid, adset_name: a.name || '', previous_status: ast, next_status: next },
+                                                      )
+                                                    }
+                                                  }catch(e:any){
+                                                    alert(`Failed to update ad set status: ${e?.message||e}`)
+                                                  }finally{
+                                                    setTogglingAdset(prev=> ({ ...prev, [aid]: false }))
+                                                  }
+                                                }}
+                                                className="sr-only"
+                                                aria-label={`Turn ad set ${aactive ? 'off' : 'on'}`}
+                                              />
+                                              <Switch on={aactive} busy={!!togglingAdset[aid]} />
+                                            </label>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {adsetOrdersExpanded[aid] && hasOrders && (
+                                        <div className="col-span-8 px-2 py-1 border-t bg-slate-50 text-slate-700">
+                                          <div className="text-[11px] text-slate-600 mb-1">Attributed Shopify orders (by UTM ad_id)</div>
+                                          <div className="overflow-x-auto">
+                                            <table className="min-w-full text-xs">
+                                              <thead>
+                                                <tr className="text-left text-slate-500">
+                                                  <th className="px-1 py-1">Order</th>
+                                                  <th className="px-1 py-1">Processed</th>
+                                                  <th className="px-1 py-1">Total</th>
+                                                  <th className="px-1 py-1">ad_id</th>
+                                                  <th className="px-1 py-1">utm_campaign</th>
+                                                  <th className="px-1 py-1">utm_source</th>
+                                                  <th className="px-1 py-1">utm_medium</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {(ordersInfo?.orders||[]).map((o,idx)=> (
+                                                  <tr key={String(o.order_id||idx)} className="border-t">
+                                                    <td className="px-1 py-1 font-mono">{String(o.order_id||'')}</td>
+                                                    <td className="px-1 py-1">{(o.processed_at||'').replace('T',' ').replace('Z','')}</td>
+                                                    <td className="px-1 py-1">{typeof o.total_price==='number'? `$${(o.total_price||0).toFixed(2)}` : '-'}</td>
+                                                    <td className="px-1 py-1">{o.ad_id|| (o.utm||{}).ad_id || ''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_campaign||o.campaign_id||''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_source||''}</td>
+                                                    <td className="px-1 py-1">{(o.utm||{}).utm_medium||''}</td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        </div>
+                                      )}
+                                      </Fragment>
+                                    )
+                                  })}
+                                  {/* Campaign-level orders (matched by utm_campaign but not attributable to a specific ad set) */}
+                                  {(()=>{
+                                    const campOrders = ((adsetOrdersByCampaign[cid]||{})['__campaign__'])
+                                    if(!campOrders || (campOrders.count||0)===0) return null
+                                    const campExpKey = `__camp_${cid}`
+                                    return (
+                                      <Fragment>
+                                        <div className="px-2 py-1 border-t bg-blue-50 flex items-center gap-2 text-[11px] text-blue-700">
+                                          <span>Campaign-level UTM orders (not matched to specific ad set):</span>
+                                          <button
+                                            onClick={()=> setAdsetOrdersExpanded(prev=> ({ ...prev, [campExpKey]: !prev[campExpKey] }))}
+                                            className="px-1 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200"
+                                          >{campOrders.count} orders {adsetOrdersExpanded[campExpKey]? '▾' : '▸'}</button>
+                                        </div>
+                                        {adsetOrdersExpanded[campExpKey] && (
+                                          <div className="px-2 py-1 border-t bg-blue-50/50 text-slate-700">
+                                            <div className="overflow-x-auto">
+                                              <table className="min-w-full text-xs">
+                                                <thead>
+                                                  <tr className="text-left text-slate-500">
+                                                    <th className="px-1 py-1">Order</th>
+                                                    <th className="px-1 py-1">Processed</th>
+                                                    <th className="px-1 py-1">Total</th>
+                                                    <th className="px-1 py-1">utm_content</th>
+                                                    <th className="px-1 py-1">utm_source</th>
+                                                    <th className="px-1 py-1">Store</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {(campOrders.orders||[]).map((o: any,idx: number)=> (
+                                                    <tr key={String(o.order_id||idx)} className="border-t">
+                                                      <td className="px-1 py-1 font-mono">{String(o.order_id||'')}</td>
+                                                      <td className="px-1 py-1">{(o.processed_at||'').replace('T',' ').replace('Z','')}</td>
+                                                      <td className="px-1 py-1">{typeof o.total_price==='number'? `$${(o.total_price||0).toFixed(2)}` : '-'}</td>
+                                                      <td className="px-1 py-1">{(o.utm||{}).utm_content||''}</td>
+                                                      <td className="px-1 py-1">{(o.utm||{}).utm_source||''}</td>
+                                                      <td className="px-1 py-1">{o.store||''}</td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </Fragment>
+                                    )
+                                  })()}
+                                  {adsets.length===0 && (
+                                    <div className="px-2 py-2 text-slate-500 border-t">No ad sets found.</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    }
+                    return null
+                  })()}
+                  {(()=>{
+                    const rk = String(c.campaign_id || c.name || '')
+                    const conf2 = (manualIds as any)[rk]
+                    if(!(conf2 && conf2.kind==='collection' && expanded[String(rk)])) return null
+                    const loadingChildren = !!childrenLoading[String(rk)]
+                    return (
+                      <tr className="border-b last:border-b-0">
+                        <td className="px-2 py-2 bg-slate-50" colSpan={tableColSpan}>
+                          {loadingChildren ? (
+                            <div className="text-xs text-slate-500">Loading collection UTM orders…</div>
+                          ) : childrenError[rk] ? (
+                            <div role="alert" className="text-xs text-amber-700 p-2">
+                              Could not load collection UTM orders. {childrenError[rk]}
+                              <button className="ml-2 underline" onClick={()=> void loadCollectionChildren(rk, conf2.id, conf2.store || (c as any)._store || store)}>Retry</button>
+                            </div>
+                          ) : collectionOrders[rk] ? <CollectionUtmOrders data={collectionOrders[rk]} /> : null}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </main>
+      <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
+      <AnalysisModal
+        open={analysisOpen}
+        onClose={()=>{ setAnalysisOpen(false); setAnalysisResult(null); setAnalysisChecks({}); setAnalysisCampaignKey(null) }}
+        result={analysisResult}
+        checks={analysisChecks}
+        onCheckChange={(key: string, val: boolean) => setAnalysisChecks(prev => ({ ...prev, [key]: val }))}
+        saving={analysisSaving}
+        onSave={async () => {
+          if(!analysisCampaignKey) return
+          setAnalysisSaving(true)
+          try{ await campaignAnalysisChecksSave({ campaign_key: analysisCampaignKey, checks: analysisChecks, store }) }catch{}
+          finally{ setAnalysisSaving(false) }
+        }}
+        campaignKey={analysisCampaignKey}
+      />
+      <TasksPopup
+        open={actionTasksOpen}
+        onClose={()=> setActionTasksOpen(false)}
+        tasks={actionTasks}
+        summary={actionTasksSummary}
+        onToggleTask={async(taskId: string)=>{
+          const updated = actionTasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t)
+          setActionTasks(updated)
+          try{
+            await saveActionTasks({ tasks: updated, store })
+            const metaRes = await campaignMetaList(store)
+            applyCampaignMetaSummary((metaRes as any)?.data)
+          }catch{}
+        }}
+        onClearAll={async()=>{
+          setActionTasks([])
+          setActionTasksSummary('')
+          try{ await clearActionTasks(store) }catch{}
+        }}
+      />
+      <TimelineModal
+        open={timelineOpen.open}
+        onClose={()=> { setTimelineOpen({ open:false }); setTimelineMetaLoading(false) }}
+        campaign={timelineOpen.campaign||null}
+        meta={(timelineOpen.campaign && campaignMeta[String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')]) || undefined}
+        loading={timelineMetaLoading}
+        draft={timelineDraft}
+        setDraft={setTimelineDraft}
+        adding={timelineAdding}
+        onAdd={async(text:string)=>{
+          if(!timelineOpen.campaign) return
+          const ck = String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')
+          try{
+            setTimelineAdding(true)
+            const result = await campaignTimelineAdd({ campaign_key: ck, text, store })
+            setTimelineDraft('')
+            if((result as any)?.data){
+              setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [ck]: (result as any).data }))
+            }
+          }finally{
+            setTimelineAdding(false)
+          }
+        }}
+        onViewAnalysis={(data:any)=>{
+          setAnalysisResult(data as CampaignAnalysisResult)
+          setAnalysisOpen(true)
+        }}
+        onToggleTask={async(entryIdx: number, taskData: any)=>{
+          if(!timelineOpen.campaign) return
+          const ck = String(timelineOpen.campaign.id||timelineOpen.campaign.name||'')
+          const timeline = [...((campaignMeta[ck] as any)?.timeline || [])]
+          if(entryIdx < 0 || entryIdx >= timeline.length) return
+          try{
+            const entry = timeline[entryIdx]
+            const parsed = JSON.parse(entry.text || '{}')
+            const nowDone = !parsed.done
+            const updated = { ...parsed, done: nowDone }
+            if(nowDone) updated.completed_at = new Date().toISOString()
+            else delete updated.completed_at
+            // Update the timeline entry text with new done state
+            timeline[entryIdx] = { ...entry, text: JSON.stringify(updated) }
+            // Optimistically update local state
+            setCampaignMeta(prev => ({
+              ...prev,
+              [ck]: { ...prev[ck], timeline }
+            }))
+            const result = await campaignMetaUpsert({ campaign_key: ck, timeline, store })
+            if((result as any)?.data){
+              setCampaignMeta(prev => mergeCampaignMetaRecords(prev, { [ck]: (result as any).data }))
+            }
+            if(parsed.id){
+              const updatedTasks = actionTasks.map(t => t.id === parsed.id ? { ...t, done: nowDone } : t)
+              setActionTasks(updatedTasks)
+              try{ await saveActionTasks({ tasks: updatedTasks, store }) }catch{}
+            }
+          }catch(err){
+            console.error('Failed to toggle task:', err)
+          }
+        }}
+      />
+
+      <LifeDayModal
+        state={lifeDay}
+        meta={campaignMeta}
+        loading={lifeDayLoading}
+        saving={lifeDaySaving}
+        onClose={()=> setLifeDay({ open: false, date: '', campaigns: [] })}
+        onAddNote={async(campaignKey, text)=>{
+          try{
+            setLifeDaySaving(true)
+            await appendLifeEntry(campaignKey, lifeDay.date, {
+              type: 'life_note',
+              id: `life-note-${Date.now()}`,
+              text,
+            })
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+        onAddAction={async(campaignKey, action, details)=>{
+          try{
+            setLifeDaySaving(true)
+            const labels: Record<string, string> = {
+              budget_increased: 'Campaign budget increased',
+              budget_decreased: 'Campaign budget decreased',
+              creative_changed: 'Campaign creative changed',
+              targeting_changed: 'Campaign targeting changed',
+              other_change: 'Campaign change recorded',
+            }
+            await appendLifeEntry(campaignKey, lifeDay.date, {
+              type: 'campaign_action',
+              id: `life-action-${Date.now()}`,
+              action,
+              label: labels[action] || 'Campaign change recorded',
+              details,
+              entity: 'campaign',
+            })
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+        onDeleteNote={async(campaignKey, entryIndex)=>{
+          try{
+            setLifeDaySaving(true)
+            await deleteLifeNote(campaignKey, entryIndex)
+          }finally{
+            setLifeDaySaving(false)
+          }
+        }}
+      />
+
+    </div>
+  )
+}
+
+function LifeDayModal({ state, meta, loading, saving, onClose, onAddNote, onAddAction, onDeleteNote }: {
+  state: LifeDayState,
+  meta: Record<string, CampaignMetaState>,
+  loading: boolean,
+  saving: boolean,
+  onClose: ()=>void,
+  onAddNote: (campaignKey: string, text: string)=>Promise<void>,
+  onAddAction: (campaignKey: string, action: string, details: string)=>Promise<void>,
+  onDeleteNote: (campaignKey: string, entryIndex: number)=>Promise<void>,
+}){
+  const [campaignKey, setCampaignKey] = useState('')
+  const [noteDraft, setNoteDraft] = useState('')
+  const [actionType, setActionType] = useState('budget_increased')
+  const [actionDetails, setActionDetails] = useState('')
+
+  useEffect(()=>{
+    if(!state.open) return
+    setCampaignKey(state.campaigns[0]?.id || '')
+    setNoteDraft('')
+    setActionType('budget_increased')
+    setActionDetails('')
+  }, [state.open, state.date, state.campaigns])
+
+  useEffect(()=>{
+    if(!state.open) return
+    const onKeyDown = (event: KeyboardEvent) => { if(event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [state.open, onClose])
+
+  if(!state.open) return null
+
+  const events: Array<{
+    campaignKey: string,
+    campaignName: string,
+    entryIndex: number,
+    at: string,
+    kind: 'action'|'note',
+    label: string,
+    details: string,
+  }> = []
+  for(const campaign of state.campaigns){
+    const timeline = meta[campaign.id]?.timeline || []
+    timeline.forEach((entry, entryIndex) => {
+      const payload = lifeEntryPayload(entry.text)
+      const day = String(payload?.day || entry.at || '').slice(0, 10)
+      if(day !== state.date) return
+      if(payload?.type === 'campaign_action'){
+        const detailParts = [
+          payload.adset_name ? `Ad set: ${payload.adset_name}` : '',
+          payload.previous_status && payload.next_status ? `${payload.previous_status} → ${payload.next_status}` : '',
+          typeof payload.details === 'string' ? payload.details : '',
+        ].filter(Boolean)
+        events.push({
+          campaignKey: campaign.id,
+          campaignName: campaign.name,
+          entryIndex,
+          at: entry.at,
+          kind: 'action',
+          label: String(payload.label || payload.action || 'Campaign action'),
+          details: detailParts.join(' · '),
+        })
+      }else if(payload?.type === 'life_note' || !payload){
+        events.push({
+          campaignKey: campaign.id,
+          campaignName: campaign.name,
+          entryIndex,
+          at: entry.at,
+          kind: 'note',
+          label: String(payload?.text || entry.text || ''),
+          details: '',
+        })
+      }
+    })
+  }
+  events.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+
+  const selectedCampaign = campaignKey || state.campaigns[0]?.id || ''
+  const dateLabel = (()=> {
+    try{
+      return new Date(`${state.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })
+    }catch{
+      return state.date
+    }
+  })()
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/60 p-4" onMouseDown={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Campaign activity for ${state.date}`}
+        className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onMouseDown={(event)=> event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between border-b bg-gradient-to-r from-violet-700 to-indigo-600 px-5 py-4 text-white">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-violet-100">Campaign life day</div>
+            <h2 className="mt-0.5 text-lg font-bold">{dateLabel}</h2>
+            <div className="mt-2 flex items-center gap-3 text-xs text-violet-100">
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400"/>Normal day</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-orange-400"/>Action recorded</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-blue-300"/>Has note</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-lg px-2 py-1 text-2xl leading-none text-white/80 hover:bg-white/10 hover:text-white" aria-label="Close">×</button>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-0 md:grid-cols-[1.2fr_0.8fr]">
+          <div className="min-h-0 overflow-y-auto border-r p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900">Notes and actions</h3>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">{events.length} records</span>
+            </div>
+            {loading ? (
+              <div className="rounded-xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500 animate-pulse">Loading day records…</div>
+            ) : events.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No notes or actions recorded for this day.</div>
+            ) : (
+              <div className="space-y-2">
+                {events.map(event => (
+                  <div key={`${event.campaignKey}-${event.entryIndex}`} className={`rounded-xl border p-3 ${event.kind === 'action' ? 'border-orange-200 bg-orange-50' : 'border-blue-200 bg-blue-50'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${event.kind === 'action' ? 'bg-orange-500' : 'bg-blue-500'}`}/>
+                          <span className={`text-[10px] font-bold uppercase tracking-wide ${event.kind === 'action' ? 'text-orange-700' : 'text-blue-700'}`}>{event.kind}</span>
+                        </div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">{event.label}</div>
+                        {event.details && <div className="mt-1 text-xs text-slate-600">{event.details}</div>}
+                        <div className="mt-2 truncate text-[10px] text-slate-500">{event.campaignName}</div>
+                      </div>
+                      {event.kind === 'note' && (
+                        <button
+                          disabled={saving}
+                          onClick={()=> onDeleteNote(event.campaignKey, event.entryIndex)}
+                          className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-100 disabled:opacity-50"
+                        >Delete</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="min-h-0 overflow-y-auto bg-slate-50 p-4">
+            <label className="mb-3 block">
+              <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Campaign</span>
+              <select value={selectedCampaign} onChange={(event)=> setCampaignKey(event.target.value)} className="w-full rounded-lg border bg-white px-3 py-2 text-sm">
+                {state.campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+              </select>
+            </label>
+
+            <div className="rounded-xl border bg-white p-3">
+              <div className="text-sm font-bold text-slate-800">Add a note</div>
+              <textarea
+                value={noteDraft}
+                onChange={(event)=> setNoteDraft(event.target.value)}
+                placeholder="What did the team observe on this day?"
+                className="mt-2 min-h-20 w-full resize-y rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              <button
+                disabled={saving || !selectedCampaign || !noteDraft.trim()}
+                onClick={async()=>{
+                  await onAddNote(selectedCampaign, noteDraft.trim())
+                  setNoteDraft('')
+                }}
+                className="mt-2 w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+              >{saving ? 'Saving…' : 'Save note'}</button>
+            </div>
+
+            <div className="mt-3 rounded-xl border bg-white p-3">
+              <div className="text-sm font-bold text-slate-800">Record a campaign change</div>
+              <select value={actionType} onChange={(event)=> setActionType(event.target.value)} className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm">
+                <option value="budget_increased">Budget increased</option>
+                <option value="budget_decreased">Budget decreased</option>
+                <option value="creative_changed">Creative changed</option>
+                <option value="targeting_changed">Targeting changed</option>
+                <option value="other_change">Other change</option>
+              </select>
+              <input
+                value={actionDetails}
+                onChange={(event)=> setActionDetails(event.target.value)}
+                placeholder="Optional details, e.g. $20 → $30"
+                className="mt-2 w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-orange-400"
+              />
+              <button
+                disabled={saving || !selectedCampaign}
+                onClick={async()=>{
+                  await onAddAction(selectedCampaign, actionType, actionDetails.trim())
+                  setActionDetails('')
+                }}
+                className="mt-2 w-full rounded-lg bg-orange-500 px-3 py-2 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50"
+              >{saving ? 'Saving…' : 'Record change'}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function hasRtlText(value: unknown): boolean{
+  return /[\u0590-\u08FF\uFB1D-\uFEFC]/.test(String(value||''))
+}
+
+function taskTextDirection(task: any): 'rtl'|'ltr'{
+  const campaigns = Array.isArray(task?.campaigns) ? task.campaigns.join(' ') : ''
+  const refs = Array.isArray(task?.campaign_references) ? task.campaign_references.map((r:any)=> `${r?.name||''} ${r?.id||''}`).join(' ') : ''
+  return hasRtlText(`${task?.title||''} ${task?.description||''} ${task?.expected_impact||''} ${campaigns} ${refs}`) ? 'rtl' : 'ltr'
+}
+
+function splitTaskDescription(description: unknown): string[]{
+  const raw = String(description||'').replace(/\r\n/g, '\n').trim()
+  if(!raw) return []
+  const normalized = raw.replace(/[•●]/g, '-')
+  const explicitLines = normalized.split(/\n+/).map(s => s.trim()).filter(Boolean)
+  if(explicitLines.length > 1) return explicitLines
+  const punctuated = normalized.replace(/([.!?؛؟;])\s+/g, '$1\n')
+  let lines = punctuated.split(/\n+/).map(s => s.trim()).filter(Boolean)
+  if(lines.length <= 1 && normalized.length > 150){
+    lines = normalized.split(/\s*[،,]\s+/).map(s => s.trim()).filter(Boolean)
+  }
+  return lines.length ? lines : [raw]
+}
+
+function taskLineParts(line: string, dir: 'rtl'|'ltr', index: number): { label: string, text: string }{
+  const clean = line.replace(/^[-\s]+/, '').trim()
+  const match = clean.match(/^([^:：-]{2,24})\s*[:：-]\s*(.+)$/)
+  const labelsRtl = ['الخطوة', 'التفاصيل', 'المتابعة', 'ملاحظة']
+  const labelsLtr = ['Action', 'Details', 'Check', 'Note']
+  const fallback = dir === 'rtl' ? labelsRtl[Math.min(index, labelsRtl.length-1)] : labelsLtr[Math.min(index, labelsLtr.length-1)]
+  if(!match) return { label: fallback, text: clean }
+  const rawLabel = match[1].trim().toLowerCase()
+  const labelMap: Record<string, string> = dir === 'rtl'
+    ? { action: 'الخطوة', step: 'الخطوة', campaigns: 'الحملات', campaign: 'الحملات', details: 'التفاصيل', detail: 'التفاصيل', check: 'المتابعة', impact: 'النتيجة', why: 'السبب' }
+    : { action: 'Action', step: 'Action', campaigns: 'Campaigns', campaign: 'Campaigns', details: 'Details', detail: 'Details', check: 'Check', impact: 'Impact', why: 'Why' }
+  return { label: labelMap[rawLabel] || match[1].trim(), text: match[2].trim() }
+}
+
+function TaskDetailsBlock({ task, isDone=false, includeCampaigns=true }: { task: any, isDone?: boolean, includeCampaigns?: boolean }){
+  const dir = taskTextDirection(task)
+  const lines = splitTaskDescription(task?.description)
+  const refs = Array.isArray(task?.campaign_references) && task.campaign_references.length
+    ? task.campaign_references
+    : (Array.isArray(task?.campaigns) ? task.campaigns.map((c:string)=> ({ name: c })) : [])
+  const align = dir === 'rtl' ? 'text-right' : 'text-left'
+  return (
+    <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`space-y-2 ${align}`}>
+      {lines.map((line, idx) => {
+        const part = taskLineParts(line, dir, idx)
+        return (
+          <div key={`${idx}-${line.slice(0,16)}`} className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100' : 'bg-white border-slate-100'}`}>
+            <div className="text-[10px] font-bold text-slate-400 mb-1">{part.label}</div>
+            <div className={`${isDone ? 'text-emerald-700/70 line-through' : 'text-slate-700'} leading-relaxed whitespace-pre-wrap`}>{part.text}</div>
+          </div>
+        )
+      })}
+      {includeCampaigns && refs.length > 0 && (
+        <div className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100' : 'bg-indigo-50/60 border-indigo-100'}`}>
+          <div className="text-[10px] font-bold text-slate-400 mb-1">{dir === 'rtl' ? 'الحملات المرتبطة' : 'Referenced campaigns'}</div>
+          <div className={`flex flex-wrap gap-1 ${dir === 'rtl' ? 'justify-end' : 'justify-start'}`}>
+            {refs.map((ref:any, i:number) => {
+              const label = String(ref?.name || ref || '').trim()
+              const id = String(ref?.id || '').trim()
+              return (
+                <span key={`${label}-${id}-${i}`} dir="ltr" className="text-[10px] bg-white text-slate-600 px-2 py-0.5 rounded-full border border-slate-200 max-w-[220px] truncate" title={id ? `${label} (${id})` : label}>
+                  {label || id}{id && label ? ` · ${id}` : ''}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {task?.expected_impact && (
+        <div className={`rounded-lg border px-2.5 py-2 ${isDone ? 'bg-emerald-50/60 border-emerald-100 text-emerald-700/70' : 'bg-violet-50/70 border-violet-100 text-violet-700'}`}>
+          <div className="text-[10px] font-bold opacity-70 mb-1">{dir === 'rtl' ? 'السبب' : 'Why'}</div>
+          <div className={`leading-relaxed ${isDone ? 'line-through' : ''}`}>{task.expected_impact}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function localizedActionTask(task: ActionTask, language: 'original'|'ar'): ActionTask{
+  if(language !== 'ar') return task
+  return {
+    ...task,
+    title: task.title_ar || task.title,
+    description: task.description_ar || task.description,
+    expected_impact: task.expected_impact_ar || task.expected_impact,
+  }
+}
+
+// Timeline Modal
+function TimelineModal({ open, onClose, campaign, meta, loading, onAdd, adding, draft, setDraft, onViewAnalysis, onToggleTask }:{ open:boolean, onClose:()=>void, campaign:{id:string,name?:string}|null, meta?:{ timeline?: Array<{text:string, at:string}> }, loading?:boolean, onAdd:(text:string)=>Promise<void>, adding:boolean, draft:string, setDraft:(v:string)=>void, onViewAnalysis?:(data:any)=>void, onToggleTask?:(entryIdx:number, taskData:any)=>void }){
+  const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({ analysis: true, tasks: true, notes: false })
+  const [expandedTask, setExpandedTask] = useState<string|null>(null)
+  const togglePanel = (key:string) => setOpenPanels(prev => ({ ...prev, [key]: !prev[key] }))
+  if(!open) return null
+  const entries = (meta?.timeline||[]).slice().sort((a,b)=> String(b.at||'').localeCompare(String(a.at||'')))
+  function fmtDelta(prev:string|undefined, cur:string){
+    if(!prev) return '—'
+    try{
+      const pa = new Date(prev).getTime()
+      const ca = new Date(cur).getTime()
+      let ms = Math.max(0, ca - pa)
+      const days = Math.floor(ms / (24*3600*1000)); ms -= days*(24*3600*1000)
+      const hours = Math.floor(ms / (3600*1000)); ms -= hours*(3600*1000)
+      const mins = Math.floor(ms / (60*1000))
+      const parts:string[] = []
+      if(days) parts.push(`${days}d`)
+      if(hours) parts.push(`${hours}h`)
+      parts.push(`${mins}m`)
+      return parts.join(' ')
+    }catch{ return '—' }
+  }
+  // Try to parse structured entries from JSON text
+  function parseStructured(text:string): { type:string, [k:string]:any } | null {
+    try{
+      const obj = JSON.parse(text)
+      if(obj && obj.type) return obj
+    }catch{}
+    return null
+  }
+  const verdictColors: Record<string, string> = {
+    'kill': 'from-rose-500 to-red-600',
+    'optimize': 'from-amber-400 to-orange-500',
+    'scale': 'from-emerald-400 to-green-500',
+    'scale_aggressively': 'from-green-500 to-emerald-600',
+  }
+  const urgencyColors: Record<string, string> = {
+    'critical': 'bg-rose-100 text-rose-700 border-rose-200',
+    'high': 'bg-amber-100 text-amber-700 border-amber-200',
+    'medium': 'bg-blue-100 text-blue-700 border-blue-200',
+    'low': 'bg-slate-100 text-slate-600 border-slate-200',
+  }
+  const catIcons: Record<string, string> = {
+    creative: '🎨', targeting: '🎯', budget: '💰', pricing: '💵',
+    landing_page: '🌐', offer: '🎁', ad_copy: '✍️', product: '📦',
+    scaling: '🚀', optimization: '⚡', kill: '🛑',
+  }
+  // Find original (unsorted) index for a sorted entry
+  const originalTimeline = meta?.timeline || []
+  function findOrigIndex(entry: {text:string, at:string}): number {
+    return originalTimeline.findIndex(e => e.at === entry.at && e.text === entry.text)
+  }
+  const structuredEntries = entries.map((entry, idx) => ({ entry, idx, data: parseStructured(entry.text||''), origIdx: findOrigIndex(entry) }))
+  const taskEntries = structuredEntries.filter(x => x.data?.type === 'task')
+  const analysisEntries = structuredEntries.filter(x => x.data?.type === 'analysis')
+  const noteEntries = structuredEntries.filter(x => !x.data)
+  const incompleteTasks = taskEntries.filter(x => !x.data?.done).length
+  const completedTasks = taskEntries.length - incompleteTasks
+  const progressPct = taskEntries.length ? Math.round((completedTasks / taskEntries.length) * 100) : 0
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{animation:'perfFadeIn 0.2s ease-out'}}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-gradient-to-b from-slate-50 to-white rounded-2xl shadow-2xl w-[94vw] max-w-2xl max-h-[92vh] overflow-auto border border-slate-200/60" style={{animation:'perfSlideUp 0.3s ease-out'}}>
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 py-4 rounded-t-2xl flex items-center justify-between relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_50%,rgba(99,102,241,0.12),transparent_60%)]"/>
+          <div className="relative flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shadow-lg">
+              <Clock className="w-5 h-5 text-white"/>
+            </div>
+            <div>
+              <h2 className="text-white font-bold text-lg tracking-tight">Timeline</h2>
+              <p className="text-white/50 text-xs">{campaign?.name||campaign?.id}</p>
+            </div>
+          </div>
+          <div className="relative flex items-center gap-3">
+            {taskEntries.length > 0 && (
+              <div className="flex items-center gap-2">
+                {incompleteTasks > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-bold">{incompleteTasks} tasks pending</span>
+                )}
+                {completedTasks > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">{completedTasks} done</span>
+                )}
+              </div>
+            )}
+            <button onClick={onClose} className="text-white/60 hover:text-white w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
+          </div>
+        </div>
+        <div className="p-5 space-y-4">
+          {loading && <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-700 animate-pulse">Loading timeline…</div>}
+          {taskEntries.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className="font-semibold text-slate-700">Task progress</span>
+                <span className="font-bold text-slate-800">{completedTasks}/{taskEntries.length} done</span>
+              </div>
+              <div className="h-2 rounded-full bg-white border border-slate-200 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-500" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              value={draft}
+              onChange={(e)=> setDraft(e.target.value)}
+              disabled={loading}
+              placeholder="Add a note…"
+              className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 outline-none transition-all"
+              onKeyDown={(e)=>{ if(e.key==='Enter' && draft.trim()){ e.preventDefault(); onAdd(draft.trim()) }}}
+            />
+            <button
+              onClick={async()=>{ if(draft.trim()){ await onAdd(draft.trim()) } }}
+              disabled={loading || adding || !draft.trim()}
+              className="px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-500 hover:from-indigo-600 hover:to-violet-600 text-white text-sm font-semibold disabled:opacity-40 shadow-sm transition-all"
+            >{adding? 'Adding…' : 'Add'}</button>
+          </div>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <button onClick={()=>togglePanel('analysis')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                <span className="font-semibold text-sm text-slate-800">Full analysis</span>
+                <span className="text-xs text-slate-500">{analysisEntries.length} saved {openPanels.analysis ? 'v' : '>'}</span>
+              </button>
+              {openPanels.analysis && (
+                <div className="p-3 space-y-2">
+                  {analysisEntries.length === 0 && <div className="text-sm text-slate-400">No analysis yet.</div>}
+                  {analysisEntries.map(({ entry, data }, idx) => {
+                    const vc = verdictColors[data?.verdict||''] || 'from-slate-400 to-slate-500'
+                    return (
+                      <div key={`${entry.at || ''}-analysis-${idx}`} className="border rounded-lg overflow-hidden">
+                        <div className={`bg-gradient-to-r ${vc} px-3 py-2 text-white flex items-center justify-between`}>
+                          <div className="font-semibold text-sm">{(data?.verdict||'Analysis').replace('_',' ')}</div>
+                          <div className="text-[10px] opacity-80">{String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                        </div>
+                        <div className="px-3 py-2 bg-white">
+                          {data?.summary && <p className="text-xs text-slate-700 leading-relaxed">{data.summary}</p>}
+                          {onViewAnalysis && data?.analysis && (
+                            <button onClick={()=> onViewAnalysis(data.analysis)} className="mt-2 px-3 py-1 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold">Open full analysis</button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <button onClick={()=>togglePanel('tasks')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                <span className="font-semibold text-sm text-slate-800">Tasks</span>
+                <span className="text-xs text-slate-500">{completedTasks}/{taskEntries.length} done {openPanels.tasks ? 'v' : '>'}</span>
+              </button>
+              {openPanels.tasks && (
+                <div className="p-3 space-y-2">
+                  {taskEntries.length === 0 && <div className="text-sm text-slate-400">No tasks yet.</div>}
+                  {taskEntries.map(({ entry, data, origIdx }, idx) => {
+                    const task: any = data || {}
+                    const isDone = !!task.done
+                    const taskKey = String(task.id || `${entry.at}-${idx}`)
+                    const expanded = expandedTask === taskKey
+                    const dir = taskTextDirection(task)
+                    return (
+                      <div key={taskKey} className={`rounded-lg border p-3 ${isDone ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+                        <div className="flex items-start gap-2">
+                          <button
+                            onClick={()=> onToggleTask && onToggleTask(origIdx, task)}
+                            className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 ${isDone ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 hover:border-emerald-500'}`}
+                            title={isDone ? 'Mark as not done' : 'Mark as done'}
+                          >
+                            {isDone ? <span className="text-xs font-bold">✓</span> : null}
+                          </button>
+                          <button onClick={()=> setExpandedTask(expanded ? null : taskKey)} className={`flex-1 ${dir === 'rtl' ? 'text-right' : 'text-left'}`} dir={dir}>
+                            <div className={`text-sm font-semibold ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`} style={{ unicodeBidi: 'plaintext' }}>{task.title || 'Untitled task'}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">P{task.priority || '-'} · {task.category || 'task'} · {String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                          </button>
+                        </div>
+                        {expanded && (
+                          <div className={`${dir === 'rtl' ? 'mr-7' : 'ml-7'} mt-2 rounded-lg bg-slate-50 border border-slate-100 p-2 text-xs text-slate-700 leading-relaxed`}>
+                            <TaskDetailsBlock task={task} isDone={isDone} />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {noteEntries.length > 0 && (
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <button onClick={()=>togglePanel('notes')} className="w-full px-3 py-2.5 bg-slate-50 hover:bg-slate-100 flex items-center justify-between text-left">
+                  <span className="font-semibold text-sm text-slate-800">Notes</span>
+                  <span className="text-xs text-slate-500">{noteEntries.length} notes {openPanels.notes ? 'v' : '>'}</span>
+                </button>
+                {openPanels.notes && (
+                  <div className="p-3 space-y-2">
+                    {noteEntries.map(({ entry }, idx) => (
+                      <div key={`${entry.at || ''}-note-${idx}`} className="rounded-lg border border-slate-200 p-3 bg-white">
+                        <div className="text-xs text-slate-400 mb-1">{String(entry.at||'').replace('T',' ').replace('Z','').slice(0,16)}</div>
+                        <div className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{entry.text||''}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="hidden">
+            {entries.map((e, idx)=> {
+              const next = idx<entries.length-1? entries[idx+1] : undefined
+              const structured = parseStructured(e.text||'')
+
+              // Task entry
+              if(structured && structured.type === 'task'){
+                const isDone = !!structured.done
+                const urgClass = urgencyColors[(structured.urgency||'').toLowerCase()] || urgencyColors.medium
+                const catIcon = catIcons[(structured.category||'').toLowerCase()] || '📋'
+                const origIdx = findOrigIndex(e)
+                return (
+                  <div key={String(e.at||'')+String(idx)} className={`rounded-xl border overflow-hidden transition-all ${isDone ? 'border-slate-200 bg-slate-50/50 opacity-75' : 'border-indigo-200/60 bg-white shadow-sm hover:shadow-md'}`}>
+                    <div className="px-3 py-2.5 flex items-start gap-2.5">
+                      {/* Checkbox */}
+                      <button
+                        onClick={()=> onToggleTask && onToggleTask(origIdx, structured)}
+                        className={`flex-shrink-0 mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+                          isDone
+                            ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+                            : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50'
+                        }`}
+                        title={isDone ? 'Mark as not done' : 'Mark as done'}
+                      >
+                        {isDone && (
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          <span className="text-sm">{catIcon}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border ${urgClass}`}>{structured.urgency||'medium'}</span>
+                          {structured.priority && (
+                            <span className="px-1 py-0.5 rounded bg-slate-100 text-[9px] text-slate-500 font-mono">P{structured.priority}</span>
+                          )}
+                          <span className="text-[9px] text-slate-400 ml-auto">{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                        </div>
+                        <div className={`text-sm font-semibold ${isDone ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
+                          {structured.title||'Untitled task'}
+                        </div>
+                        {structured.description && (
+                          <div className={`text-xs mt-0.5 ${isDone ? 'text-slate-400 line-through' : 'text-slate-600'}`}>{structured.description}</div>
+                        )}
+                        {structured.expected_impact && (
+                          <div className={`text-[10px] mt-1 italic ${isDone ? 'text-slate-400' : 'text-indigo-600'}`}>📈 {structured.expected_impact}</div>
+                        )}
+                        {isDone && structured.completed_at && (
+                          <div className="text-[9px] text-emerald-500 mt-1 font-medium">✓ Completed {structured.completed_at}</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              }
+
+              // Analysis entry
+              if(structured && structured.type === 'analysis'){
+                const vc = verdictColors[structured.verdict||''] || 'from-slate-400 to-slate-500'
+                return (
+                  <div key={String(e.at||idx)} className="border rounded-xl overflow-hidden shadow-sm">
+                    <div className={`bg-gradient-to-r ${vc} px-3 py-2 text-white flex items-center justify-between`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">✨</span>
+                        <span className="font-semibold text-sm">AI Analysis</span>
+                        {structured.verdict && (
+                          <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wider">{structured.verdict.replace('_',' ')}</span>
+                        )}
+                        {structured.age_days != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">Day {structured.age_days}</span>
+                        )}
+                      </div>
+                      <span className="text-[10px] opacity-80">{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                    </div>
+                    <div className="px-3 py-2 bg-slate-50">
+                      {structured.confidence && (
+                        <div className="text-[10px] text-slate-500 mb-1">Confidence: <span className="font-semibold">{structured.confidence}</span></div>
+                      )}
+                      {structured.summary && (
+                        <p className="text-xs text-slate-700 leading-relaxed">{structured.summary}</p>
+                      )}
+                      {onViewAnalysis && structured.analysis && (
+                        <button
+                          onClick={()=> onViewAnalysis(structured.analysis)}
+                          className="mt-2 px-3 py-1 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white text-xs font-semibold shadow-sm"
+                        >View Full Analysis</button>
+                      )}
+                    </div>
+                  </div>
+                )
+              }
+
+              // Regular text note
+              return (
+                <div key={String(e.at||idx)} className="rounded-xl border border-slate-200/60 p-3 bg-white hover:shadow-sm transition-shadow">
+                  <div className="text-xs text-slate-400 flex items-center justify-between mb-1.5">
+                    <span>{String(e.at||'').replace('T',' ').replace('Z','').slice(0,16)}</span>
+                    <span className="font-mono text-[10px]">{fmtDelta(next?.at, e.at||'')}</span>
+                  </div>
+                  <div className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">{e.text||''}</div>
+                </div>
+              )
+            })}
+            {entries.length===0 && (
+              <div className="text-center py-8">
+                <div className="text-3xl mb-2">📝</div>
+                <div className="text-sm text-slate-500">No timeline entries yet.</div>
+                <div className="text-xs text-slate-400 mt-1">Add notes, and AI analysis &amp; tasks will appear here.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <style jsx>{`
+        @keyframes perfFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes perfSlideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      `}</style>
+    </div>
+  )
+}
+
+// Performance Modal
+function CollectionUtmOrders({ data }: { data: CollectionCampaignOrders }){
+  return (
+    <section aria-label="Collection campaign UTM orders" className="text-xs p-2 border rounded bg-white">
+      <div className="font-semibold text-slate-700">Collection products · campaign UTM orders</div>
+      <div className="text-slate-500 mt-1 mb-2">
+        {data.campaign_count} campaign UTM orders · {data.collection_count} contain collection products in the selected date range.
+        Each order counts once per product, regardless of quantity.
+      </div>
+      <div className="space-y-1">
+        {data.product_ids.map(pid=>{
+          const product = data.products[pid]
+          return (
+            <details key={pid} className="border rounded bg-slate-50">
+              <summary className="cursor-pointer px-2 py-1.5" aria-label={`Product ${pid}: ${product.count} UTM orders`}>
+                <span className="font-mono ml-1">{pid}</span>
+                <span className="ml-3 inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Orders {product.count}</span>
+              </summary>
+              {product.count === 0 ? <div className="px-3 pb-2 text-slate-500">No orders attributed to this campaign for this product.</div> : (
+                <div className="overflow-x-auto p-2 bg-white">
+                  <table className="w-full text-left text-[11px]">
+                    <thead className="text-slate-500"><tr>
+                      <th className="px-1 py-1">Order</th><th className="px-1 py-1">Processed</th><th className="px-1 py-1">Total</th>
+                      <th className="px-1 py-1">utm_campaign</th><th className="px-1 py-1">utm_content</th><th className="px-1 py-1">utm_source</th>
+                    </tr></thead>
+                    <tbody>{product.orders.map(order=>(
+                      <tr key={String(order.order_id)} className="border-t">
+                        <td className="px-1 py-1">{order.name || order.order_id}</td>
+                        <td className="px-1 py-1">{order.processed_at ? new Date(order.processed_at).toLocaleString() : '—'}</td>
+                        <td className="px-1 py-1">{order.total_price ?? '—'} {order.currency || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_campaign || order.campaign_id || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_content || ''}</td>
+                        <td className="px-1 py-1">{order.utm?.utm_source || ''}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
+            </details>
+          )
+        })}
+        {data.product_ids.length === 0 && <div className="text-slate-500">No products in this collection.</div>}
+      </div>
+    </section>
+  )
+}
+
+function PerformanceModal({ open, onClose, loading, campaign, days, orders }:{ open:boolean, onClose:()=>void, loading:boolean, campaign:{id:string,name:string}|null, days:Array<{date:string,spend:number,purchases:number,cpp?:number|null,ctr?:number|null,add_to_cart:number}>, orders:number[] }){
+  if(!open) return null
+  const labels = (days||[]).map(d=> d.date)
+  const spend = (days||[]).map(d=> d.spend||0)
+  const atc = (days||[]).map(d=> d.add_to_cart||0)
+  const ordersArr = (orders||[])
+  const trueCpp = (days||[]).map((d,i)=> {
+    const o = Number(ordersArr[i]||0)
+    const s = Number(d.spend||0)
+    return o>0? (s/o) : 0
+  })
+  const [showOrders, setShowOrders] = useState(true)
+  const [showATC, setShowATC] = useState(true)
+  // Totals for KPI summary
+  const totalSpend = spend.reduce((a,b)=> a+b, 0)
+  const totalOrders = ordersArr.reduce((a,b)=> a+b, 0)
+  const totalATC = atc.reduce((a,b)=> a+b, 0)
+  const totalPurchases = (days||[]).reduce((a,d)=> a+(d.purchases||0), 0)
+  const avgTrueCpp = totalOrders>0? totalSpend/totalOrders : null
+  const avgCtr = (()=>{ const ctrs = (days||[]).filter(d=> d.ctr!=null).map(d=> d.ctr||0); return ctrs.length>0? ctrs.reduce((a,b)=>a+b,0)/ctrs.length : null })()
+  // Spend trend (last day vs first day)
+  const spendTrend = spend.length>=2? (spend[spend.length-1] - spend[0]) : 0
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{animation:'perfFadeIn 0.2s ease-out'}}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-gradient-to-b from-slate-50 to-white rounded-2xl shadow-2xl w-[94vw] max-w-5xl max-h-[92vh] overflow-auto border border-slate-200/60" style={{animation:'perfSlideUp 0.3s ease-out'}}>
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-6 py-4 rounded-t-2xl flex items-center justify-between relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(59,130,246,0.12),transparent_60%)]"/>
+          <div className="relative flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center shadow-lg">
+              <BarChart3 className="w-5 h-5 text-white"/>
+            </div>
+            <div>
+              <h2 className="text-white font-bold text-lg tracking-tight">Performance</h2>
+              <p className="text-white/50 text-xs">{campaign?.name||campaign?.id}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="relative text-white/60 hover:text-white w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
+        </div>
+        <div className="p-5">
+          {loading ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[1,2,3,4].map(i=> <div key={i} className="h-24 rounded-xl bg-slate-100 animate-pulse"/>)}
+              </div>
+              <div className="h-72 rounded-xl bg-slate-100 animate-pulse"/>
+              <div className="grid grid-cols-3 gap-3">
+                {[1,2,3].map(i=> <div key={i} className="h-28 rounded-xl bg-slate-100 animate-pulse"/>)}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* KPI Summary Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200/60 p-4">
+                  <div className="text-xs text-emerald-600 font-medium mb-1">Total Spend</div>
+                  <div className="text-2xl font-bold text-emerald-800">${totalSpend.toFixed(2)}</div>
+                  <div className={`text-[10px] mt-1 font-semibold ${spendTrend<=0?'text-emerald-600':'text-rose-500'}`}>
+                    {spendTrend<=0?'↓':'↑'} ${Math.abs(spendTrend).toFixed(2)} trend
+                  </div>
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200/60 p-4">
+                  <div className="text-xs text-blue-600 font-medium mb-1">Shopify Orders</div>
+                  <div className="text-2xl font-bold text-blue-800">{totalOrders}</div>
+                  <div className="text-[10px] mt-1 text-blue-500 font-semibold">{(days||[]).length} days tracked</div>
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-violet-50 to-violet-100/50 border border-violet-200/60 p-4">
+                  <div className="text-xs text-violet-600 font-medium mb-1">True CPP</div>
+                  <div className="text-2xl font-bold text-violet-800">{avgTrueCpp!=null? `$${avgTrueCpp.toFixed(2)}` : '—'}</div>
+                  <div className="text-[10px] mt-1 text-violet-500 font-semibold">avg cost/order</div>
+                </div>
+                <div className="rounded-xl bg-gradient-to-br from-amber-50 to-amber-100/50 border border-amber-200/60 p-4">
+                  <div className="text-xs text-amber-600 font-medium mb-1">Add to Cart</div>
+                  <div className="text-2xl font-bold text-amber-800">{totalATC}</div>
+                  <div className="text-[10px] mt-1 text-amber-500 font-semibold">
+                    {avgCtr!=null? `${(avgCtr*1).toFixed(2)}% avg CTR` : ''}
+                  </div>
+                </div>
+              </div>
+              {/* Toggle Pills */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={()=> setShowOrders(!showOrders)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                    showOrders ? 'bg-blue-600 text-white shadow-sm shadow-blue-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${showOrders?'bg-white':'bg-blue-400'}`}/>
+                  Orders
+                </button>
+                <button
+                  onClick={()=> setShowATC(!showATC)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                    showATC ? 'bg-amber-500 text-white shadow-sm shadow-amber-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${showATC?'bg-white':'bg-amber-400'}`}/>
+                  Add to Cart
+                </button>
+              </div>
+              {/* Chart */}
+              <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-sm">
+                <PerformanceChart labels={labels} spend={spend} trueCpp={trueCpp} orders={ordersArr} addToCart={atc} showOrders={showOrders} showATC={showATC} />
+              </div>
+              {/* Day-by-day detail cards */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
+                {(days||[]).map((d,i)=> {
+                  const dayTcpp = (ordersArr[i]||0)>0? ((d.spend||0)/(ordersArr[i]||1)) : null
+                  const dayTcppColor = dayTcpp==null? 'text-slate-400' : dayTcpp<2? 'text-emerald-600' : dayTcpp<3? 'text-amber-600' : 'text-rose-600'
+                  return (
+                    <div key={d.date+String(i)} className="rounded-xl border border-slate-200/60 bg-gradient-to-b from-white to-slate-50/50 p-3 hover:shadow-md transition-shadow">
+                      <div className="text-[11px] font-semibold text-slate-800 mb-2 pb-1 border-b border-slate-100">{d.date}</div>
+                      <div className="space-y-1 text-xs">
+                        <div className="flex justify-between"><span className="text-slate-500">Spend</span><span className="font-bold text-emerald-700">${(d.spend||0).toFixed(2)}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Purchases</span><span className="font-bold">{d.purchases||0}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">CPP</span><span className="font-bold">{d.cpp!=null? `$${(d.cpp||0).toFixed(2)}` : '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">CTR</span><span className="font-bold">{d.ctr!=null? `${(d.ctr*1).toFixed(2)}%` : '—'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">ATC</span><span className="font-bold text-amber-700">{d.add_to_cart||0}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-500">Orders</span><span className="font-bold text-blue-700">{(ordersArr[i]||0)}</span></div>
+                        <div className="flex justify-between border-t border-slate-100 pt-1 mt-1"><span className="text-slate-500 font-medium">True CPP</span><span className={`font-bold ${dayTcppColor}`}>{dayTcpp!=null? `$${dayTcpp.toFixed(2)}` : '—'}</span></div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <style jsx>{`
+        @keyframes perfFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes perfSlideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      `}</style>
+    </div>
+  )
+}
+
+function PerformanceChart({ labels, spend, trueCpp, orders, addToCart, showOrders, showATC }:{ labels:string[], spend:number[], trueCpp:number[], orders:number[], addToCart:number[], showOrders:boolean, showATC:boolean }){
+  const [hoverIdx, setHoverIdx] = useState<number|null>(null)
+  const TARGET_CPP = 2
+  const w = 1000, h = 360, padL = 60, padR = 60, padT = 50, padB = 50
+  const innerW = w - padL - padR
+  const innerH = h - padT - padB
+  const n = Math.max(1, labels.length)
+  const xs = labels.map((_, i)=> padL + (i*(innerW))/Math.max(1, n-1))
+  // Left axis: CPP-focused, centered around $2 target
+  const maxCpp = Math.max(TARGET_CPP * 2, ...trueCpp.map(v=>Number(v||0)))
+  const maxLeft = Math.max(4, Math.ceil(maxCpp * 1.2))
+  // Right axis: Orders/ATC
+  const maxDataRight = Math.max(1, ...orders.map(v=>Number(v||0)), ...addToCart.map(v=>Number(v||0)))
+  const maxRight = Math.max(5, Math.ceil(maxDataRight * 1.15 / 5) * 5)
+  const yLeft = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxLeft))/maxLeft)*innerH
+  const yRight = (v:number)=> padT + innerH - (Math.max(0, Math.min(v, maxRight))/maxRight)*innerH
+  const leftTicks = Array.from({length:5}, (_,i)=> Number(((i/4)*maxLeft).toFixed(1)))
+  const rightTicks = Array.from({length:5}, (_,i)=> Math.round((i/4)*maxRight))
+  // Spend scale for background bars
+  const maxSpend = Math.max(1, ...spend.map(v=>Number(v||0)))
+  // Smooth curve helper (monotone cubic)
+  function smoothPath(pts: [number,number][]): string {
+    if(pts.length<2) return pts.length===1? `M ${pts[0][0]},${pts[0][1]}` : ''
+    let d = `M ${pts[0][0]},${pts[0][1]}`
+    for(let i=0;i<pts.length-1;i++){
+      const x0=pts[i][0],y0=pts[i][1],x1=pts[i+1][0],y1=pts[i+1][1]
+      const cx=(x0+x1)/2
+      d += ` C ${cx},${y0} ${cx},${y1} ${x1},${y1}`
+    }
+    return d
+  }
+  // Build smooth paths
+  const tcppPts: [number,number][] = xs.map((x,i)=> [x, yLeft(trueCpp[i]||0)])
+  const ordersPts: [number,number][] = xs.map((x,i)=> [x, yRight(orders[i]||0)])
+  const atcPts: [number,number][] = xs.map((x,i)=> [x, yRight(addToCart[i]||0)])
+  const pathOrders = smoothPath(ordersPts)
+  const pathATC = smoothPath(atcPts)
+  const btm = padT + innerH
+  const targetY = yLeft(TARGET_CPP)
+  const uid = useRef(Math.random().toString(36).slice(2,8))
+  // 3-tier CPP color: <$2 green, $2-$3 amber, >$3 red
+  function cppColor(v: number): string { return v < 2 ? '#10b981' : v < 3 ? '#f59e0b' : '#ef4444' }
+  function cppGradKey(v: number): string { return v < 2 ? 'cppGreen' : v < 3 ? 'cppAmber' : 'cppRed' }
+  // Build segmented CPP line + area
+  const cppSegments: Array<{path:string, areaPath:string, color:string, gradKey:string}> = []
+  for(let i=0;i<tcppPts.length-1;i++){
+    const [x0,y0] = tcppPts[i]
+    const [x1,y1] = tcppPts[i+1]
+    const v0 = trueCpp[i]||0, v1 = trueCpp[i+1]||0
+    const avg = (v0+v1)/2
+    const color = cppColor(avg)
+    const gk = cppGradKey(avg)
+    const cx = (x0+x1)/2
+    const seg = `M ${x0},${y0} C ${cx},${y0} ${cx},${y1} ${x1},${y1}`
+    const area = `${seg} L ${x1},${btm} L ${x0},${btm} Z`
+    cppSegments.push({ path: seg, areaPath: area, color, gradKey: gk })
+  }
+  const barW = Math.max(8, Math.min(60, innerW / Math.max(1, n) * 0.5))
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto select-none" onMouseLeave={()=> setHoverIdx(null)}>
+      <defs>
+        <linearGradient id={`ordG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15"/>
+          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02"/>
+        </linearGradient>
+        <linearGradient id={`atcG_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.12"/>
+          <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.02"/>
+        </linearGradient>
+        <linearGradient id={`cppGreen_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0.03"/>
+        </linearGradient>
+        <linearGradient id={`cppAmber_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.03"/>
+        </linearGradient>
+        <linearGradient id={`cppRed_${uid.current}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#ef4444" stopOpacity="0.18"/>
+          <stop offset="100%" stopColor="#ef4444" stopOpacity="0.03"/>
+        </linearGradient>
+      </defs>
+      <rect x={0} y={0} width={w} height={h} rx={12} fill="#fafbfc"/>
+      {/* Subtle horizontal gridlines */}
+      {leftTicks.map((tick,i)=> (
+        <line key={`h${i}`} x1={padL} y1={yLeft(tick)} x2={w-padR} y2={yLeft(tick)} stroke="#f1f5f9" strokeWidth={0.8}/>
+      ))}
+      {/* Budget/Spend background bars — very faint */}
+      {xs.map((x,i)=> {
+        const barH = (Number(spend[i]||0) / maxSpend) * (innerH * 0.85)
+        return <rect key={`sb${i}`} x={x - barW/2} y={btm - barH} width={barW} height={barH} rx={4} fill="#e2e8f0" opacity={0.35}/>
+      })}
+      {xs.map((x,i)=> {
+        const val = spend[i]||0
+        if(val <= 0) return null
+        const barH = (val / maxSpend) * (innerH * 0.85)
+        return <text key={`sl${i}`} x={x} y={btm - barH - 4} textAnchor="middle" fontSize="8" fill="#94a3b8" fontWeight="500">${val.toFixed(0)}</text>
+      })}
+      {/* $2 Target line */}
+      <line x1={padL} y1={targetY} x2={w-padR} y2={targetY} stroke="#64748b" strokeWidth={1.5} strokeDasharray="8 4" opacity={0.6}/>
+      <rect x={w-padR+4} y={targetY-10} width={50} height={20} rx={4} fill="#f1f5f9" stroke="#e2e8f0" strokeWidth={0.5}/>
+      <text x={w-padR+8} y={targetY+4} fontSize="10" fontWeight="700" fill="#475569">$2 avg</text>
+      {/* Green/Amber/Red zone subtle fills */}
+      <rect x={padL} y={targetY} width={innerW} height={btm - targetY} rx={0} fill="#10b981" opacity={0.03}/>
+      <rect x={padL} y={yLeft(3)} width={innerW} height={targetY - yLeft(3)} rx={0} fill="#f59e0b" opacity={0.03}/>
+      <rect x={padL} y={padT} width={innerW} height={yLeft(3) - padT} rx={0} fill="#ef4444" opacity={0.03}/>
+      {/* CPP colored segments */}
+      {cppSegments.map((seg,i)=> (
+        <g key={`cpps${i}`}>
+          <path d={seg.areaPath} fill={`url(#${seg.gradKey}_${uid.current})`}/>
+          <path d={seg.path} fill="none" stroke={seg.color} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"/>
+        </g>
+      ))}
+      {showOrders && <>
+        <path d={smoothPath(ordersPts) + ` L ${ordersPts[ordersPts.length-1]?.[0]||0},${btm} L ${ordersPts[0]?.[0]||0},${btm} Z`} fill={`url(#ordG_${uid.current})`}/>
+        <path d={pathOrders} fill="none" stroke="#3b82f6" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" opacity={0.7}/>
+      </>}
+      {showATC && <>
+        <path d={smoothPath(atcPts) + ` L ${atcPts[atcPts.length-1]?.[0]||0},${btm} L ${atcPts[0]?.[0]||0},${btm} Z`} fill={`url(#atcG_${uid.current})`}/>
+        <path d={pathATC} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" opacity={0.7}/>
+      </>}
+      {/* Data points */}
+      {xs.map((x,i)=> {
+        const cppVal = trueCpp[i]||0
+        const dotColor = cppColor(cppVal)
+        return (
+          <g key={`dp${i}`}>
+            <circle cx={x} cy={yLeft(cppVal)} r={hoverIdx===i?6:4} fill={dotColor} stroke="white" strokeWidth={2.5} className="transition-all duration-150"/>
+            {showOrders && <circle cx={x} cy={yRight(orders[i]||0)} r={hoverIdx===i?4:2.5} fill="#3b82f6" stroke="white" strokeWidth={1.5} opacity={0.7} className="transition-all duration-150"/>}
+            {showATC && <circle cx={x} cy={yRight(addToCart[i]||0)} r={hoverIdx===i?4:2.5} fill="#f59e0b" stroke="white" strokeWidth={1.5} opacity={0.7} className="transition-all duration-150"/>}
+          </g>
+        )
+      })}
+      {/* CPP value labels */}
+      {xs.map((x,i)=> {
+        const cppVal = trueCpp[i]||0
+        if(cppVal <= 0) return null
+        const dotColor = cppColor(cppVal)
+        return <text key={`cl${i}`} x={x} y={yLeft(cppVal)-10} textAnchor="middle" fontSize="10" fontWeight="700" fill={dotColor}>${cppVal.toFixed(2)}</text>
+      })}
+      {/* Left axis labels */}
+      {leftTicks.map((tick,i)=> (
+        <text key={`lt${i}`} x={padL-10} y={yLeft(tick)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">${tick}</text>
+      ))}
+      {rightTicks.map((tick,i)=> (
+        <text key={`rt${i}`} x={w-padR+10} y={yRight(tick)} textAnchor="start" dominantBaseline="middle" fontSize="10" fill="#94a3b8" fontWeight="500">{tick}</text>
+      ))}
+      <text x={padL-10} y={padT-14} textAnchor="end" fontSize="9" fill="#94a3b8" fontWeight="600">True CPP $</text>
+      <text x={w-padR+10} y={padT-14} textAnchor="start" fontSize="9" fill="#94a3b8" fontWeight="600">Count</text>
+      {xs.map((x,i)=> (
+        <text key={`x${i}`} x={x} y={h-14} textAnchor="middle" fontSize="10" fill="#64748b" fontWeight="500">{labels[i]?.slice(5)||''}</text>
+      ))}
+      {/* Hover zones */}
+      {xs.map((x,i)=> {
+        const colW = innerW / Math.max(1, n-1)
+        return <rect key={`hz${i}`} x={x-colW/2} y={padT} width={colW} height={innerH} fill="transparent" onMouseEnter={()=> setHoverIdx(i)} onMouseMove={()=> setHoverIdx(i)}/>
+      })}
+      {hoverIdx!=null && <line x1={xs[hoverIdx]} y1={padT} x2={xs[hoverIdx]} y2={h-padB} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 2"/>}
+      {hoverIdx!=null && (()=>{
+        const tx = xs[hoverIdx]; const i = hoverIdx
+        const ttW = 160, ttH = 120
+        const ttX = (tx + ttW + 20 > w)? tx - ttW - 12 : tx + 12
+        const ttY = Math.max(padT, Math.min(h - padB - ttH - 10, padT + 20))
+        const cppVal = trueCpp[i]||0
+        const cppClr = cppColor(cppVal)
+        return (
+          <g>
+            <rect x={ttX} y={ttY} width={ttW} height={ttH} rx={10} fill="white" stroke="#e2e8f0" strokeWidth={1} filter="drop-shadow(0 4px 12px rgba(0,0,0,0.08))"/>
+            <text x={ttX+12} y={ttY+18} fontSize="11" fontWeight="700" fill="#1e293b">{labels[i]||''}</text>
+            <line x1={ttX+12} y1={ttY+24} x2={ttX+ttW-12} y2={ttY+24} stroke="#f1f5f9" strokeWidth={1}/>
+            <circle cx={ttX+16} cy={ttY+38} r={4} fill={cppClr}/><text x={ttX+26} y={ttY+42} fontSize="10" fill="#64748b">True CPP</text><text x={ttX+ttW-12} y={ttY+42} textAnchor="end" fontSize="10" fontWeight="700" fill={cppClr}>{cppVal>0?`$${cppVal.toFixed(2)}`:'—'}</text>
+            <circle cx={ttX+16} cy={ttY+56} r={4} fill="#94a3b8"/><text x={ttX+26} y={ttY+60} fontSize="10" fill="#64748b">Spend</text><text x={ttX+ttW-12} y={ttY+60} textAnchor="end" fontSize="10" fontWeight="600" fill="#94a3b8">${(spend[i]||0).toFixed(2)}</text>
+            <circle cx={ttX+16} cy={ttY+74} r={4} fill="#3b82f6"/><text x={ttX+26} y={ttY+78} fontSize="10" fill="#64748b">Orders</text><text x={ttX+ttW-12} y={ttY+78} textAnchor="end" fontSize="10" fontWeight="700" fill="#3b82f6">{orders[i]||0}</text>
+            <circle cx={ttX+16} cy={ttY+92} r={4} fill="#f59e0b"/><text x={ttX+26} y={ttY+96} fontSize="10" fill="#64748b">ATC</text><text x={ttX+ttW-12} y={ttY+96} textAnchor="end" fontSize="10" fontWeight="700" fill="#f59e0b">{addToCart[i]||0}</text>
+          </g>
+        )
+      })()}
+      <g>
+        {[
+          { color: '#10b981', label: 'CPP < $2', x: padL },
+          { color: '#f59e0b', label: 'CPP $2-$3', x: padL + 90 },
+          { color: '#ef4444', label: 'CPP > $3', x: padL + 190 },
+          { color: '#e2e8f0', label: 'Budget', x: padL + 280 },
+          { color: '#3b82f6', label: 'Orders', x: padL + 360 },
+          { color: '#f59e0b', label: 'ATC', x: padL + 440 },
+        ].map(leg=> (
+          <g key={leg.label}>
+            <circle cx={leg.x} cy={14} r={4} fill={leg.color}/>
+            <text x={leg.x+10} y={17} fontSize="11" fill="#475569" fontWeight="500">{leg.label}</text>
+          </g>
+        ))}
+      </g>
+    </svg>
+  )
+}
+
+
+function TasksPopup({ open, onClose, tasks, summary, onToggleTask, onClearAll }:{
+  open: boolean,
+  onClose: ()=>void,
+  tasks: ActionTask[],
+  summary: string,
+  onToggleTask: (taskId: string)=>void,
+  onClearAll: ()=>void,
+}){
+  const [filter, setFilter] = useState<'all'|'urgent'|'done'>('all')
+  const [taskLanguage, setTaskLanguage] = useState<'original'|'ar'>('original')
+
+  if(!open) return null
+
+  const filtered = tasks.filter(t => {
+    if(filter === 'urgent') return !t.done && (t.priority <= 2 || t.urgency === 'immediate' || t.urgency === 'today')
+    if(filter === 'done') return t.done
+    return true
+  })
+  const doneCount = tasks.filter(t => t.done).length
+  const totalCount = tasks.length
+  const urgentCount = tasks.filter(t => !t.done && t.priority <= 2).length
+  const pct = totalCount > 0 ? (doneCount / totalCount) * 100 : 0
+
+  const urgencyColors: Record<string,string> = {
+    immediate: 'bg-rose-100 text-rose-700 border-rose-200',
+    today: 'bg-amber-100 text-amber-700 border-amber-200',
+    this_week: 'bg-blue-100 text-blue-700 border-blue-200',
+    when_possible: 'bg-slate-100 text-slate-600 border-slate-200',
+  }
+  const urgencyLabels: Record<string,string> = {
+    immediate: '🔴 Immediate',
+    today: '🟡 Today',
+    this_week: '🔵 This week',
+    when_possible: '⚪ When possible',
+  }
+  const catIcons: Record<string,string> = {
+    kill: '🛑', scale: '🚀', creative: '🎨', budget: '💰',
+    targeting: '🎯', inventory: '📦', pricing: '💵',
+    optimization: '⚡', testing: '🧪',
+  }
+  catIcons.landing_page = 'LP'
+  catIcons.offer = 'Offer'
+  catIcons.ad_copy = 'Copy'
+  catIcons.product = 'Product'
+  const catColors: Record<string,string> = {
+    kill: 'bg-rose-500', scale: 'bg-emerald-500', creative: 'bg-pink-500',
+    budget: 'bg-amber-500', targeting: 'bg-blue-500', inventory: 'bg-indigo-500',
+    pricing: 'bg-teal-500', optimization: 'bg-violet-500', testing: 'bg-cyan-500',
+  }
+  catColors.landing_page = 'bg-indigo-500'
+  catColors.offer = 'bg-violet-500'
+  catColors.ad_copy = 'bg-cyan-500'
+  catColors.product = 'bg-orange-500'
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-end bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-white/95 backdrop-blur-xl shadow-2xl w-full max-w-lg h-full overflow-hidden flex flex-col border-l border-slate-200"
+        style={{ animation: 'slideInRight 0.3s ease-out' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 px-5 py-4 text-white relative overflow-hidden flex-shrink-0">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_30%,rgba(139,92,246,0.15),transparent_60%)]"/>
+          <div className="relative flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center shadow-lg">
+                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-bold tracking-tight">Action Tasks</h2>
+                <div className="text-[11px] text-white/60">{totalCount} tasks · {doneCount} completed</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {urgentCount > 0 && (
+                <span className="px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-300 text-[11px] font-bold animate-pulse">
+                  {urgentCount} urgent
+                </span>
+              )}
+              <button onClick={onClose} className="text-white/60 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/10 transition-colors text-lg font-bold">✕</button>
+            </div>
+          </div>
+          {/* Progress bar */}
+          {totalCount > 0 && (
+            <div className="relative mt-3 flex items-center gap-3">
+              <div className="flex-1 h-2 rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-700 ease-out ${pct >= 100 ? 'bg-gradient-to-r from-emerald-400 to-emerald-300' : 'bg-gradient-to-r from-violet-400 to-fuchsia-400'}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className={`text-xs font-bold ${pct >= 100 ? 'text-emerald-300' : 'text-white/70'}`}>
+                {pct >= 100 ? '✓ All done!' : `${Math.round(pct)}%`}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Summary */}
+        {summary && (
+          <div className="px-5 py-3 bg-gradient-to-r from-violet-50 to-fuchsia-50 border-b border-violet-100 flex-shrink-0">
+            <p className="text-xs text-violet-800 leading-relaxed">{summary}</p>
+          </div>
+        )}
+
+        {/* Filter tabs */}
+        <div className="flex items-center gap-1 px-5 py-2 border-b border-slate-100 bg-slate-50 flex-shrink-0">
+          {([
+            { key: 'all' as const, label: 'All', count: totalCount },
+            { key: 'urgent' as const, label: '🔴 Urgent', count: urgentCount },
+            { key: 'done' as const, label: '✅ Done', count: doneCount },
+          ]).map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setFilter(tab.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                filter === tab.key
+                  ? 'bg-white text-slate-800 shadow-sm border border-slate-200'
+                  : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'
+              }`}
+            >
+              {tab.label} <span className="text-[10px] opacity-60">({tab.count})</span>
+            </button>
+          ))}
+          <div className="flex-1"/>
+          <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+            {([
+              { key: 'original' as const, label: 'Original' },
+              { key: 'ar' as const, label: 'Arabic' },
+            ]).map(option => (
+              <button
+                key={option.key}
+                onClick={() => setTaskLanguage(option.key)}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors ${
+                  taskLanguage === option.key ? 'bg-slate-900 text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {totalCount > 0 && (
+            <button
+              onClick={onClearAll}
+              className="text-[10px] text-slate-400 hover:text-rose-500 font-medium transition-colors"
+            >Clear all</button>
+          )}
+        </div>
+
+        {/* Task list */}
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+          {filtered.length === 0 && (
+            <div className="text-center py-12">
+              <div className="text-4xl mb-3">{filter === 'done' ? '🎯' : filter === 'urgent' ? '🎉' : '📋'}</div>
+              <div className="text-sm text-slate-500 font-medium">
+                {filter === 'done' ? 'No completed tasks yet' : filter === 'urgent' ? 'No urgent tasks — great job!' : 'No tasks yet. Analyze campaigns to generate tasks.'}
+              </div>
+            </div>
+          )}
+          {filtered.map(task => {
+            const isDone = task.done
+            const displayTask = localizedActionTask(task, taskLanguage)
+            const dir = taskTextDirection(displayTask)
+            return (
+              <div
+                key={task.id}
+                className={`group rounded-xl border p-3.5 transition-all duration-300 hover:shadow-md ${
+                  isDone
+                    ? 'bg-emerald-50/60 border-emerald-200/60 opacity-70'
+                    : task.priority <= 2
+                      ? 'bg-white border-rose-200 shadow-sm shadow-rose-100/50'
+                      : 'bg-white border-slate-200 shadow-sm'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  {/* Checkbox */}
+                  <button
+                    onClick={() => onToggleTask(task.id)}
+                    className={`flex-shrink-0 w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all duration-300 mt-0.5 ${
+                      isDone
+                        ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+                        : 'border-slate-300 hover:border-violet-400 hover:bg-violet-50 group-hover:border-violet-400'
+                    }`}
+                  >
+                    {isDone && (
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+                      </svg>
+                    )}
+                  </button>
+
+                  <div className="flex-1 min-w-0">
+                    {/* Top line: priority + category + urgency */}
+                    <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-black text-white ${
+                        task.priority <= 1 ? 'bg-rose-500' : task.priority <= 2 ? 'bg-amber-500' : task.priority <= 3 ? 'bg-blue-500' : 'bg-slate-400'
+                      }`}>P{task.priority}</span>
+                      <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${catColors[task.category] || 'bg-slate-500'}`}>
+                        {catIcons[task.category] || '📌'} {task.category?.replace('_',' ')}
+                      </span>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${urgencyColors[task.urgency] || urgencyColors.when_possible}`}>
+                        {urgencyLabels[task.urgency] || task.urgency}
+                      </span>
+                    </div>
+
+                    {/* Title */}
+                    <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`text-sm font-semibold leading-snug mb-2 ${dir === 'rtl' ? 'text-right' : 'text-left'} ${isDone ? 'line-through text-emerald-700' : 'text-slate-800'}`}>
+                      {displayTask.title}
+                    </div>
+
+                    {/* Description */}
+                    <div className="text-xs mb-2">
+                      <TaskDetailsBlock task={displayTask} isDone={isDone} includeCampaigns={false} />
+                    </div>
+
+                    {/* Campaigns tags + impact */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {(task.campaigns||[]).slice(0, 3).map((c, i) => (
+                        <span key={i} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium truncate max-w-[140px]" title={c}>{c}</span>
+                      ))}
+                      {(task.campaigns||[]).length > 3 && (
+                        <span className="text-[10px] text-slate-400">+{task.campaigns.length - 3} more</span>
+                      )}
+                    </div>
+                    {displayTask.expected_impact && (
+                      <div dir={dir} style={{ unicodeBidi: 'plaintext' }} className={`mt-1.5 text-[11px] italic ${dir === 'rtl' ? 'text-right' : 'text-left'} ${isDone ? 'text-emerald-500/60' : 'text-violet-600'}`}>
+                        📈 {displayTask.expected_impact}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <style jsx>{`
+        @keyframes slideInRight {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
+// -------- AI Campaign Analysis Modal --------
+function AnalysisModal({ open, onClose, result, checks, onCheckChange, saving, onSave, campaignKey }:{
+  open:boolean,
+  onClose:()=>void,
+  result:CampaignAnalysisResult|null,
+  checks: Record<string, boolean>,
+  onCheckChange: (key: string, val: boolean) => void,
+  saving: boolean,
+  onSave: () => void,
+  campaignKey: string|null,
+}){
+  const [openSections, setOpenSections] = useState<Record<string,boolean>>({ recommendations: true, scaling: true })
+  const toggle = (key:string) => setOpenSections(p => ({ ...p, [key]: !p[key] }))
+
+  if(!open || !result) return null
+
+  const verdictColors: Record<string,string> = {
+    kill: 'from-rose-500 to-red-600',
+    optimize: 'from-amber-400 to-orange-500',
+    scale: 'from-emerald-400 to-green-500',
+    scale_aggressively: 'from-emerald-500 to-teal-500',
+  }
+  const verdictLabels: Record<string,string> = {
+    kill: '🛑 Kill Campaign',
+    optimize: '⚡ Optimize',
+    scale: '🚀 Scale',
+    scale_aggressively: '🔥 Scale Aggressively',
+  }
+  const verdictBg: Record<string,string> = {
+    kill: 'bg-rose-500',
+    optimize: 'bg-amber-500',
+    scale: 'bg-emerald-500',
+    scale_aggressively: 'bg-teal-500',
+  }
+  const catIcons: Record<string,string> = {
+    creative: '🎨', targeting: '🎯', budget: '💰', pricing: '💵',
+    landing_page: '🌐', offer: '🎁', ad_copy: '✍️', product: '📦',
+  }
+  const catColors: Record<string,string> = {
+    creative: 'bg-pink-50 border-pink-200 text-pink-800',
+    targeting: 'bg-blue-50 border-blue-200 text-blue-800',
+    budget: 'bg-amber-50 border-amber-200 text-amber-800',
+    pricing: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+    landing_page: 'bg-indigo-50 border-indigo-200 text-indigo-800',
+    offer: 'bg-violet-50 border-violet-200 text-violet-800',
+    ad_copy: 'bg-cyan-50 border-cyan-200 text-cyan-800',
+    product: 'bg-orange-50 border-orange-200 text-orange-800',
+  }
+  const ov = result.overall_verdict||'optimize'
+  const cp = result.customer_profile||{}
+  const sp = result.scaling_plan||{}
+  const ca = result.creative_analysis||{}
+  const cu = result.customer_alignment||{}
+  const lpd = result.landing_page_diagnosis||{}
+
+  // Compute total checkable items and checked count
+  const checkableKeys: string[] = []
+  ;(result.recommendations||[]).forEach((_: any,i: number) => checkableKeys.push(`rec_${i}`))
+  ;(sp.next_steps||[]).forEach((_: any,i: number) => checkableKeys.push(`step_${i}`))
+  ;(ca.suggested_headlines||[]).forEach((_: any,i: number) => checkableKeys.push(`headline_${i}`))
+  ;(ca.new_creative_examples||[]).forEach((_: any,i: number) => checkableKeys.push(`creative_${i}`))
+  ;(cu.gaps||[]).forEach((_: any,i: number) => checkableKeys.push(`gap_${i}`))
+  ;(cu.opportunities||[]).forEach((_: any,i: number) => checkableKeys.push(`opp_${i}`))
+  const checkedCount = checkableKeys.filter(k => !!checks[k]).length
+  const totalCheckable = checkableKeys.length
+
+  // Checkmark component
+  const CheckBox = ({ checkKey }: { checkKey: string }) => {
+    const checked = !!checks[checkKey]
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); onCheckChange(checkKey, !checked) }}
+        className={`flex-shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-200 ${
+          checked
+            ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm shadow-emerald-200'
+            : 'border-slate-300 hover:border-emerald-400 hover:bg-emerald-50'
+        }`}
+        title={checked ? 'Mark as not done' : 'Mark as done'}
+      >
+        {checked && (
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>
+        )}
+      </button>
+    )
+  }
+
+  // Score ring component
+  const ScoreRing = ({ score, max=10, size=40, label }:{ score:number, max?:number, size?:number, label?:string }) => {
+    const pct = Math.min(100, (score/max)*100)
+    const color = score >= 7 ? '#10b981' : score >= 4 ? '#f59e0b' : '#ef4444'
+    const r = (size-6)/2
+    const circ = 2*Math.PI*r
+    const offset = circ - (pct/100)*circ
+    return (
+      <div className="flex flex-col items-center gap-1">
+        <svg width={size} height={size} className="transform -rotate-90">
+          <circle cx={size/2} cy={size/2} r={r} stroke="#e5e7eb" strokeWidth={4} fill="none"/>
+          <circle cx={size/2} cy={size/2} r={r} stroke={color} strokeWidth={4} fill="none"
+            strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition:'stroke-dashoffset 0.6s ease' }}/>
+        </svg>
+        <div className="absolute flex items-center justify-center" style={{ width:size, height:size }}>
+          <span className="text-xs font-bold" style={{ color }}>{score}</span>
+        </div>
+        {label && <span className="text-[9px] text-slate-500 font-medium">{label}</span>}
+      </div>
+    )
+  }
+
+  // Section accordion
+  const Section = ({ id, icon, title, badge, children, defaultOpen }:{ id:string, icon:string, title:string, badge?:React.ReactNode, children:React.ReactNode, defaultOpen?:boolean }) => {
+    const isOpen = openSections[id] ?? (defaultOpen || false)
+    return (
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => toggle(id)}
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors group"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base">{icon}</span>
+            <span className="text-sm font-semibold text-slate-800">{title}</span>
+            {badge}
+          </div>
+          <svg
+            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+        {isOpen && (
+          <div className="px-4 pb-4 border-t border-slate-100">
+            {children}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-black/50 backdrop-blur-sm overflow-y-auto py-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden" onClick={e=> e.stopPropagation()}>
+
+        {/* ── Header with verdict ── */}
+        <div className={`bg-gradient-to-r ${verdictColors[ov]||'from-slate-500 to-slate-600'} px-6 py-5 text-white relative overflow-hidden`}>
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_50%,rgba(255,255,255,0.1),transparent_70%)]"/>
+          <div className="relative flex items-center justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-3">
+                <div className="text-2xl font-bold tracking-tight">{verdictLabels[ov]||ov}</div>
+                {result.confidence_level && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-[11px] font-semibold backdrop-blur-sm">{result.confidence_level}</span>
+                )}
+                {totalCheckable > 0 && (
+                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold backdrop-blur-sm ${
+                    checkedCount === totalCheckable ? 'bg-emerald-400/30 text-emerald-100' :
+                    checkedCount > 0 ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70'
+                  }`}>
+                    {checkedCount === totalCheckable ? '✓ All done' : `${checkedCount}/${totalCheckable} done`}
+                  </span>
+                )}
+              </div>
+              {result.summary && <p className="mt-2.5 text-sm text-white/90 leading-relaxed max-w-xl">{result.summary}</p>}
+            </div>
+            <button onClick={onClose} className="text-white/80 hover:text-white text-xl font-bold w-9 h-9 flex items-center justify-center rounded-full hover:bg-white/20 transition-colors flex-shrink-0 ml-4">✕</button>
+          </div>
+
+          {/* Quick stats strip */}
+          {result.meta_inputs && (
+            <div className="relative mt-4 flex items-center gap-4 text-[11px] text-white/70">
+              {result.meta_inputs.spend != null && <span>💵 Spend: <b className="text-white">${Number(result.meta_inputs.spend).toFixed(2)}</b></span>}
+              {result.meta_inputs.purchases != null && <span>🛒 Purchases: <b className="text-white">{result.meta_inputs.purchases}</b></span>}
+              {result.meta_inputs.ctr != null && <span>👆 CTR: <b className="text-white">{Number(result.meta_inputs.ctr).toFixed(2)}%</b></span>}
+              {result.meta_inputs.cpp != null && <span>💰 CPP: <b className="text-white">${Number(result.meta_inputs.cpp).toFixed(2)}</b></span>}
+              {result.meta_inputs.campaign_age_days != null && <span>📅 Day <b className="text-white">{result.meta_inputs.campaign_age_days}</b></span>}
+            </div>
+          )}
+        </div>
+
+        {/* ── Body: collapsible sections ── */}
+        <div className="p-5 space-y-3 max-h-[65vh] overflow-y-auto bg-slate-50/50">
+
+          {/* Scaling Plan — always first and prominent */}
+          {sp && (sp.verdict || sp.next_steps) && (
+            <Section id="scaling" icon="🗺️" title={`Scaling Plan — ${sp.current_phase?.replace('_',' ')||'N/A'}`}
+              badge={<span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${verdictBg[ov]||'bg-slate-500'}`}>{ov.replace('_',' ').toUpperCase()}</span>}
+            >
+              <div className="mt-3 space-y-3">
+                {sp.verdict && <p className="text-sm text-slate-700 leading-relaxed bg-white rounded-lg p-3 border border-slate-100">{sp.verdict}</p>}
+                {sp.next_steps && sp.next_steps.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">Next Steps:</div>
+                    <div className="space-y-1.5">
+                      {sp.next_steps.map((s,i)=> {
+                        const ck = `step_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`flex items-start gap-2.5 rounded-lg px-3 py-2 border transition-all duration-200 ${
+                            done ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-100'
+                          }`}>
+                            <CheckBox checkKey={ck} />
+                            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">{i+1}</span>
+                            <span className={`text-xs leading-relaxed ${done ? 'text-emerald-700 line-through opacity-70' : 'text-slate-700'}`}>{s}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-4">
+                  {sp.budget_recommendation && (
+                    <div className="flex-1 bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">💰 Budget</div>
+                      <div className="text-xs text-slate-800">{sp.budget_recommendation}</div>
+                    </div>
+                  )}
+                  {sp.timeline && (
+                    <div className="flex-1 bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">⏱ Timeline</div>
+                      <div className="text-xs text-slate-800">{sp.timeline}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Section>
+          )}
+
+          {/* Landing Page Diagnosis */}
+          {lpd && (lpd.primary_issue || (lpd.evidence && lpd.evidence.length>0)) && (
+            <Section id="landing_diagnosis" icon="LP" title="Landing Page Diagnosis"
+              badge={lpd.primary_issue ? <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-700 ml-2">{String(lpd.primary_issue).replace(/_/g,' ')}</span> : undefined}
+            >
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  {lpd.primary_issue && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Primary issue</div>
+                      <div className="text-xs text-slate-800 capitalize">{String(lpd.primary_issue).replace(/_/g,' ')}</div>
+                    </div>
+                  )}
+                  {lpd.confidence && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Confidence</div>
+                      <div className="text-xs text-slate-800 capitalize">{lpd.confidence}</div>
+                    </div>
+                  )}
+                </div>
+                {lpd.evidence && lpd.evidence.length>0 && (
+                  <div className="bg-white rounded-lg p-3 border border-slate-100">
+                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-2">Evidence</div>
+                    <div className="space-y-1.5">{lpd.evidence.map((e:string,i:number) => <div key={i} className="text-xs text-slate-700 leading-relaxed">- {e}</div>)}</div>
+                  </div>
+                )}
+                {lpd.recommended_fixes && lpd.recommended_fixes.length>0 && (
+                  <div className="bg-indigo-50/60 rounded-lg p-3 border border-indigo-100">
+                    <div className="text-[10px] text-indigo-600 font-semibold uppercase tracking-wider mb-2">Recommended fixes</div>
+                    <div className="space-y-1.5">{lpd.recommended_fixes.map((f:string,i:number) => <div key={i} className="text-xs text-indigo-800 leading-relaxed">- {f}</div>)}</div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
+          {/* Recommendations */}
+          {result.recommendations && result.recommendations.length>0 && (
+            <Section id="recommendations" icon="📋" title="Recommendations"
+              badge={
+                <span className="text-[10px] text-slate-400 font-normal ml-1">
+                  {result.recommendations.length} items · {result.recommendations.filter((_: any,i: number)=> !!checks[`rec_${i}`]).length} done
+                </span>
+              }
+            >
+              <div className="mt-3 space-y-2">
+                {result.recommendations.map((r,i)=> {
+                  const ck = `rec_${i}`
+                  const done = !!checks[ck]
+                  return (
+                    <div key={i} className={`border rounded-xl p-3 transition-all duration-200 hover:shadow-sm ${
+                      done
+                        ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                        : (catColors[r.category]||'bg-slate-50 border-slate-200 text-slate-800')
+                    }`}>
+                      <div className="flex items-start gap-2.5">
+                        <CheckBox checkKey={ck} />
+                        <span className="text-base flex-shrink-0">{catIcons[r.category]||'📌'}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 text-[10px] font-bold border shadow-sm">P{r.priority}</span>
+                            <span className="text-[11px] font-bold uppercase tracking-wider opacity-80">{r.category.replace('_',' ')}</span>
+                            {done && <span className="text-[10px] text-emerald-600 font-semibold">✓ Implemented</span>}
+                          </div>
+                          <div className={`bg-white/50 rounded-lg p-2.5 space-y-1.5 ${done ? 'opacity-70' : ''}`}>
+                            <p className="text-xs leading-relaxed"><span className="font-semibold text-slate-600">📊 Finding:</span> {r.finding}</p>
+                            <p className={`text-xs leading-relaxed ${done ? 'line-through' : ''}`}><span className="font-semibold text-slate-600">✅ Action:</span> {r.recommendation}</p>
+                            {r.expected_impact && <p className="text-[11px] opacity-75 italic">📈 Expected: {r.expected_impact}</p>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </Section>
+          )}
+
+          {/* Creative Analysis */}
+          {ca && (ca.headline_score || ca.ad_copy_score) && (
+            <Section id="creative" icon="✍️" title="Creative Analysis"
+              badge={
+                <div className="flex items-center gap-2 ml-2">
+                  {ca.headline_score!=null && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.headline_score>=7? 'bg-emerald-100 text-emerald-700' : ca.headline_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>H: {ca.headline_score}/10</span>}
+                  {ca.ad_copy_score!=null && <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${ca.ad_copy_score>=7? 'bg-emerald-100 text-emerald-700' : ca.ad_copy_score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>C: {ca.ad_copy_score}/10</span>}
+                </div>
+              }
+            >
+              <div className="mt-3 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {ca.headline_score!=null && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-slate-700">Headline Score</span>
+                        <div className="relative">
+                          <ScoreRing score={ca.headline_score} />
+                        </div>
+                      </div>
+                      {ca.headline_feedback && <p className="text-[11px] text-slate-600 leading-relaxed">{ca.headline_feedback}</p>}
+                    </div>
+                  )}
+                  {ca.ad_copy_score!=null && (
+                    <div className="bg-white rounded-lg p-3 border border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-slate-700">Ad Copy Score</span>
+                        <div className="relative">
+                          <ScoreRing score={ca.ad_copy_score} />
+                        </div>
+                      </div>
+                      {ca.ad_copy_feedback && <p className="text-[11px] text-slate-600 leading-relaxed">{ca.ad_copy_feedback}</p>}
+                    </div>
+                  )}
+                </div>
+
+                {ca.suggested_headlines && ca.suggested_headlines.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Headlines</div>
+                    <div className="space-y-1.5">
+                      {ca.suggested_headlines.map((h,i)=> {
+                        const ck = `headline_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`text-xs rounded-lg px-3 py-2 border flex items-center gap-2 transition-all duration-200 ${
+                            done ? 'bg-emerald-50 border-emerald-200' : 'bg-gradient-to-r from-cyan-50 to-white border-cyan-100'
+                          }`}>
+                            <CheckBox checkKey={ck} />
+                            <span className="text-cyan-500 font-bold text-[10px]">H{i+1}</span>
+                            <span className={`text-slate-700 ${done ? 'line-through opacity-70' : ''}`}>{h}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                {ca.suggested_ad_copy && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">💡 Suggested Ad Copy</div>
+                    <div className="text-xs bg-gradient-to-r from-cyan-50 to-white rounded-lg px-3 py-2.5 border border-cyan-100 whitespace-pre-wrap text-slate-700 leading-relaxed">{ca.suggested_ad_copy}</div>
+                  </div>
+                )}
+                {ca.new_creative_examples && ca.new_creative_examples.length>0 && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2">New Creative Examples</div>
+                    <div className="space-y-2">
+                      {ca.new_creative_examples.slice(0,5).map((ex:any,i:number) => {
+                        const ck = `creative_${i}`
+                        const done = !!checks[ck]
+                        return (
+                          <div key={i} className={`rounded-lg border p-3 ${done ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-cyan-100'}`}>
+                            <div className="flex items-start gap-2.5">
+                              <CheckBox checkKey={ck} />
+                              <div className="flex-1 min-w-0 space-y-1.5">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[10px] font-bold text-cyan-600">C{i+1}</span>
+                                  {ex.concept_name && <span className="text-xs font-semibold text-slate-800">{ex.concept_name}</span>}
+                                  {ex.format && <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] font-semibold text-slate-600">{ex.format}</span>}
+                                </div>
+                                {ex.angle && <div className="text-[11px] text-slate-600"><b>Angle:</b> {ex.angle}</div>}
+                                {ex.hook && <div className="text-[11px] text-slate-600"><b>Hook:</b> {ex.hook}</div>}
+                                {ex.visual_direction && <div className="text-[11px] text-slate-600"><b>Visual:</b> {ex.visual_direction}</div>}
+                                {ex.primary_text && <div className="text-[11px] text-slate-700 whitespace-pre-wrap rounded bg-slate-50 border border-slate-100 px-2 py-1.5">{ex.primary_text}</div>}
+                                {ex.headline && <div className="text-[11px] text-slate-700"><b>Headline:</b> {ex.headline}</div>}
+                                {ex.why_it_should_work && <div className="text-[11px] italic text-violet-700">{ex.why_it_should_work}</div>}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
+          {/* Customer Profile */}
+          {cp && Object.keys(cp).length>0 && !cp.error && (
+            <Section id="customer" icon="👤" title="Target Customer Profile">
+              <div className="mt-3">
+                <div className="grid grid-cols-2 gap-2.5">
+                  {cp.target_gender && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Gender</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.target_gender}</div>
+                    </div>
+                  )}
+                  {cp.age_range && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Age Range</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.age_range}</div>
+                    </div>
+                  )}
+                  {cp.market_segment && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100 col-span-2">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Market Segment</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.market_segment}</div>
+                    </div>
+                  )}
+                  {cp.buyer_persona && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100 col-span-2">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Buyer Persona</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.buyer_persona}</div>
+                    </div>
+                  )}
+                  {cp.price_sensitivity && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Price Sensitivity</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5 capitalize">{cp.price_sensitivity}</div>
+                    </div>
+                  )}
+                  {cp.purchase_channel_preference && (
+                    <div className="bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Channel</div>
+                      <div className="text-xs font-semibold text-slate-800 mt-0.5">{cp.purchase_channel_preference}</div>
+                    </div>
+                  )}
+                </div>
+                {cp.psychographics && (
+                  <div className="mt-3 space-y-2">
+                    {cp.psychographics.pain_points && cp.psychographics.pain_points.length>0 && (
+                      <div className="bg-rose-50/50 rounded-lg px-3 py-2 border border-rose-100">
+                        <div className="text-[10px] text-rose-500 font-semibold uppercase tracking-wider mb-1">Pain Points</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.pain_points.map((p:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-rose-100 text-rose-700">{p}</span>)}</div>
+                      </div>
+                    )}
+                    {cp.psychographics.buying_triggers && cp.psychographics.buying_triggers.length>0 && (
+                      <div className="bg-emerald-50/50 rounded-lg px-3 py-2 border border-emerald-100">
+                        <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">Buying Triggers</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.buying_triggers.map((t:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-emerald-100 text-emerald-700">{t}</span>)}</div>
+                      </div>
+                    )}
+                    {cp.psychographics.values && cp.psychographics.values.length>0 && (
+                      <div className="bg-violet-50/50 rounded-lg px-3 py-2 border border-violet-100">
+                        <div className="text-[10px] text-violet-600 font-semibold uppercase tracking-wider mb-1">Core Values</div>
+                        <div className="flex flex-wrap gap-1.5">{cp.psychographics.values.map((v:string,i:number) => <span key={i} className="text-[11px] bg-white rounded-full px-2.5 py-0.5 border border-violet-100 text-violet-700">{v}</span>)}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {cp.competing_alternatives && cp.competing_alternatives.length>0 && (
+                  <div className="mt-2 bg-white rounded-lg px-3 py-2 border border-slate-100">
+                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Competing Alternatives</div>
+                    <div className="flex flex-wrap gap-1.5">{cp.competing_alternatives.map((a:string,i:number) => <span key={i} className="text-[11px] bg-slate-100 rounded-full px-2.5 py-0.5 text-slate-700">{a}</span>)}</div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
+          {/* Customer Alignment */}
+          {cu && cu.score!=null && (
+            <Section id="alignment" icon="🎯" title="Customer Alignment"
+              badge={<span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ml-2 ${cu.score>=7? 'bg-emerald-100 text-emerald-700' : cu.score>=4? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{cu.score}/10</span>}
+            >
+              <div className="mt-3 space-y-3">
+                {cu.gaps && cu.gaps.length>0 && (
+                  <div className="bg-rose-50/50 rounded-lg px-3 py-2.5 border border-rose-100">
+                    <div className="text-[10px] text-rose-500 font-semibold uppercase tracking-wider mb-1.5">⚠️ Gaps</div>
+                    <div className="space-y-1.5">{cu.gaps.map((g,i)=> {
+                      const ck = `gap_${i}`
+                      const done = !!checks[ck]
+                      return (
+                        <div key={i} className={`text-xs flex items-start gap-2 transition-all duration-200 ${done ? 'text-emerald-600' : 'text-rose-700'}`}>
+                          <CheckBox checkKey={ck} />
+                          <span className={done ? 'line-through opacity-70' : ''}>{g}</span>
+                        </div>
+                      )
+                    })}</div>
+                  </div>
+                )}
+                {cu.opportunities && cu.opportunities.length>0 && (
+                  <div className="bg-emerald-50/50 rounded-lg px-3 py-2.5 border border-emerald-100">
+                    <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1.5">🌟 Opportunities</div>
+                    <div className="space-y-1.5">{cu.opportunities.map((o,i)=> {
+                      const ck = `opp_${i}`
+                      const done = !!checks[ck]
+                      return (
+                        <div key={i} className={`text-xs flex items-start gap-2 transition-all duration-200 ${done ? 'text-slate-500' : 'text-emerald-700'}`}>
+                          <CheckBox checkKey={ck} />
+                          <span className={done ? 'line-through opacity-70' : ''}>{o}</span>
+                        </div>
+                      )
+                    })}</div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+        </div>
+
+        {/* Footer with Save Progress */}
+        <div className="px-6 py-3 bg-white border-t border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {totalCheckable > 0 && (
+              <>
+                {/* Progress bar */}
+                <div className="flex items-center gap-2">
+                  <div className="w-24 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-500 transition-all duration-500"
+                      style={{ width: `${totalCheckable > 0 ? (checkedCount / totalCheckable) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-medium">{checkedCount}/{totalCheckable}</span>
+                </div>
+                <button
+                  onClick={onSave}
+                  disabled={saving}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    saving
+                      ? 'bg-slate-100 text-slate-400 cursor-wait'
+                      : 'bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white shadow-sm hover:shadow'
+                  }`}
+                >
+                  {saving ? 'Saving…' : '💾 Save Progress'}
+                </button>
+              </>
+            )}
+          </div>
+          <button onClick={onClose} className="px-6 py-2 rounded-xl bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white text-sm font-semibold transition-all shadow-sm hover:shadow">Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}

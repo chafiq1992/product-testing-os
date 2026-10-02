@@ -97,6 +97,30 @@ def test_live_model_catalog_filters_specialized_models_and_redacts_failures(monk
     config._model_cache.clear()
 
 
+
+def test_rejected_openai_key_has_actionable_message_without_provider_secrets(monkeypatch):
+    import httpx
+    from openai import AuthenticationError
+    config._model_cache.clear()
+    sdk = Mock()
+    sdk.models.list.side_effect = AuthenticationError("Rejected sk-private-value", response=httpx.Response(401, request=httpx.Request("GET", "https://api.openai.com/v1/models")), body={"error": {"code": "invalid_api_key"}})
+    monkeypatch.setattr(config, "get_client", lambda: sdk)
+    catalog = config.model_catalog(True)
+    assert "401" in catalog["error"] and "Google Secret Manager" in catalog["error"]
+    assert "sk-private-value" not in json.dumps(catalog)
+    assert all(not model["available"] for model in catalog["models"])
+    config._model_cache.clear()
+
+
+def test_missing_openai_key_identifies_server_configuration(monkeypatch):
+    config._model_cache.clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ADS_ANALYZER_OPENAI_SECRET_VERSION", raising=False)
+    monkeypatch.setattr(config, "get_client", Mock(side_effect=RuntimeError("missing key")))
+    assert "key is missing" in config.model_catalog(True)["error"]
+    config._model_cache.clear()
+
+
 def base_report():
     return {"overall_verdict": "scale", "product_signal": "potential_winner", "confidence_level": "high", "summary": "A promising campaign.",
             "warnings": [], "data_gaps": [], "funnel_stages": [{"stage": stage, "status": "unknown", "evidence": [], "hypothesis": "Unknown", "suggested_test": "Measure"} for stage in ["delivery", "hook", "creative", "ad_cta", "landing_page", "offer", "checkout", "fulfillment", "tracking"]],
