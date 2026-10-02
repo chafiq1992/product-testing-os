@@ -10,6 +10,7 @@ import hmac
 import json
 import logging
 import secrets
+from pathlib import Path
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
@@ -27,9 +28,11 @@ from app import db
 from app.integrations import shopify_client as shopify
 from app.shopify_store_registry import build_store_registry
 from app.system_health_routes import _get_admin
+from app.affiliate_marketplace import collection_memberships, discount_for, paginate, present_product, variant_cost
 
 router = APIRouter(prefix="/api/affiliates", tags=["affiliates"])
 log = logging.getLogger(__name__)
+CUSTOMER_TAGS_QUERY = (Path(__file__).parent / "graphql" / "affiliate_customer_tags.graphql").read_text(encoding="utf-8")
 
 
 class Seller(db.Base):
@@ -93,7 +96,41 @@ class ProductCost(db.Base):
     updated_by = Column(String)
 
 
-for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost):
+class OrderTerms(db.Base):
+    __tablename__ = "affiliate_order_terms"
+    order_id = Column(String, primary_key=True)
+    delivery_fee_cents = Column(Integer, nullable=False)
+    customer_id = Column(String)
+
+
+class ProductMark(db.Base):
+    __tablename__ = "affiliate_product_marks"
+    seller_id = Column(String, primary_key=True)
+    store = Column(String, primary_key=True)
+    product_id = Column(String, primary_key=True)
+
+
+class Customer(db.Base):
+    __tablename__ = "affiliate_customers"
+    id = Column(String, primary_key=True)
+    seller_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    city = Column(String, nullable=False)
+    country = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("seller_id", "phone"),)
+
+
+class CustomerLink(db.Base):
+    __tablename__ = "affiliate_customer_shopify_links"
+    customer_id = Column(String, primary_key=True)
+    store = Column(String, primary_key=True)
+    shopify_id = Column(String, nullable=False)
+
+
+for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink):
     table.__table__.create(db.engine, checkfirst=True)
 
 
@@ -208,10 +245,23 @@ def read_shopify(store, path):
         raise HTTPException(502, "The store could not be reached. Check its connection and API permissions.")
 
 
+def pricing_settings():
+    saved = db.get_app_setting(None, "affiliate_marketplace_pricing") or {}
+    return {"discount_percent": saved.get("discount_percent", 35), "rules": saved.get("rules", []),
+            "delivery_fees": saved.get("delivery_fees", {"MAD": 33})}
+
+
+def pricing_memberships(store, settings):
+    try:
+        return collection_memberships(read_shopify, store, settings)
+    except Exception:
+        log.exception("Affiliate collection pricing could not be verified")
+        raise HTTPException(502, "Collection pricing could not be verified. Try again after refreshing the Marketplace.")
+
+
 def catalog(access=None):
     products, stores, warnings = [], [], []
-    with db.SessionLocal() as session:
-        costs = {(c.store, c.variant_id): c for c in session.query(ProductCost).all()}
+    settings = pricing_settings()
     for connection in connected_stores():
         label = connection["label"]
         allowed = None if access is None else access.get(label, [])
@@ -224,24 +274,18 @@ def catalog(access=None):
             if currency not in {"MAD", "USD", "EUR", "GBP", "CAD", "AED", "SAR"}:
                 raise ValueError("Unsupported settlement currency")
             store_products, since = [], 0
+            memberships = pricing_memberships(label, settings)
             while True:
                 params = {"limit": 250, "since_id": since, "status": "active",
-                          "fields": "id,title,vendor,handle,status,variants,images,product_type"}
+                          "fields": "id,title,vendor,handle,status,variants,images,options,product_type,tags,created_at,body_html"}
                 page = read_shopify(label, "/products.json?" + urlencode(params)).get("products", [])
                 if not page:
                     break
                 for product in page:
                     if allowed is not None and product.get("vendor") not in allowed:
                         continue
-                    store_products.append({"id": str(product["id"]), "store": label, "currency": currency,
-                        "title": product["title"], "vendor": product.get("vendor", ""),
-                        "image": next((im.get("src") for im in product.get("images", []) if im.get("src")), None),
-                        "url": f"https://{connection['shop']}/products/{product.get('handle', '')}",
-                        "variants": [{"id": str(v["id"]), "title": v.get("title", "Default"),
-                            "price": v.get("price", "0"), "inventory_quantity": v.get("inventory_quantity", 0),
-                            "unit_cost": costs[(label, str(v["id"]))].unit_cost_cents / 100 if (label, str(v["id"])) in costs and costs[(label, str(v["id"]))].currency == currency else None,
-                            "available": v.get("inventory_management") is None or v.get("inventory_policy") == "continue" or int(v.get("inventory_quantity") or 0) > 0}
-                            for v in product.get("variants", [])]})
+                    store_products.append(present_product(product, label, currency,
+                        discount_for(product["id"], label, settings, memberships)))
                 next_id = max(int(p["id"]) for p in page)
                 if next_id <= since:
                     raise ValueError("Invalid catalog pagination")
@@ -254,20 +298,62 @@ def catalog(access=None):
         except Exception:
             log.exception("Affiliate catalog unavailable for %s", label)
             warnings.append(f"Could not load {label}; check its connection and product permissions.")
-    return {"products": products, "stores": stores, "warnings": warnings}
+    return {"products": products, "stores": stores, "warnings": warnings, "pricing": settings}
 
 
 @router.get("/products")
 def products(seller=Depends(active_seller)):
     data = catalog(seller["access"])
+    with db.SessionLocal() as session:
+        marks = {(m.store, m.product_id) for m in session.query(ProductMark).filter_by(seller_id=seller["id"]).all()}
+    for product in data["products"]:
+        product["marked"] = (product["store"], product["id"]) in marks
+    data["warnings"] = ["Some products are temporarily unavailable. Try refreshing the Marketplace." for _ in data["warnings"]]
+    data.pop("stores", None)
+    data["pricing"] = {"delivery_fees": data["pricing"]["delivery_fees"]}
+    # Store keys are used internally for order routing; vendor names are admin-only.
+    for product in data["products"]:
+        product.pop("vendor", None)
     return {"data": data}
+
+
+class MarkUpdate(BaseModel):
+    store: str
+    product_id: str = Field(pattern=r"^\d+$")
+    marked: bool
+
+
+@router.put("/marks")
+def mark_product(body: MarkUpdate, seller=Depends(active_seller)):
+    if body.marked:
+        if not seller["access"].get(body.store):
+            raise HTTPException(403, "Product is not available to this seller")
+        product = read_shopify(body.store, f"/products/{body.product_id}.json").get("product", {})
+        if product.get("status") != "active" or product.get("vendor") not in seller["access"].get(body.store, []):
+            raise HTTPException(403, "Product is not available to this seller")
+    with db.SessionLocal() as session:
+        key = (seller["id"], body.store, body.product_id)
+        row = session.get(ProductMark, key)
+        if body.marked and not row:
+            session.add(ProductMark(seller_id=seller["id"], store=body.store, product_id=body.product_id))
+        elif not body.marked and row:
+            session.delete(row)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()  # An identical concurrent mark is already saved.
+    return {"data": {"marked": body.marked}}
 
 
 def cents(value):
     return int((Decimal(str(value or 0)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def order_view(row):
+def order_view(row, delivery_fee_cents=None):
+    if delivery_fee_cents is None:
+        with db.SessionLocal() as session:
+            terms = session.get(OrderTerms, row.id)
+            delivery_fee_cents = terms.delivery_fee_cents if terms else 0
     snap, delivery = json.loads(row.snapshot), json.loads(row.delivery)
     tags = {t.strip().lower() for t in str(snap.get("tags") or "").split(",")}
     fulfillment = snap.get("fulfillments") or []
@@ -289,7 +375,7 @@ def order_view(row):
         # Partial deliveries may collect less than the original Shopify total.
         non_product_total = max(0, cents(snap.get("total_price")) - subtotal)
         eligible_subtotal = min(eligible_subtotal, max(0, cents(delivery["cash_amount"]) - non_product_total))
-    expected = max(0, eligible_subtotal - row.cost_cents)
+    expected = max(0, eligible_subtotal - row.cost_cents - delivery_fee_cents)
     settled = status == "delivered" and (delivery.get("cash_collected") is True or financial in {"paid", "partially_refunded"} or "delivered" in tags)
     if delivery.get("settlement_pending"):
         settled = False
@@ -303,7 +389,7 @@ def order_view(row):
             "status": status, "financial_status": financial, "customer": shipping.get("name", ""),
             "items": [{"title": li.get("title"), "quantity": li.get("quantity")} for li in snap.get("line_items", [])],
             "tracking_number": delivery.get("tracking_number") or next((f.get("tracking_number") for f in reversed(fulfillment) if f.get("tracking_number")), None),
-            "cost": row.cost_cents / 100, "delivery_status": delivery.get("raw_status"),
+            "cost": row.cost_cents / 100, "delivery_fee": delivery_fee_cents / 100, "delivery_status": delivery.get("raw_status"),
             "status_source": "delivery_app" if delivery else "shopify", "delivery_updated_at": delivery.get("updated_at"),
             "synced_at": row.synced_at.isoformat() if row.synced_at else None, "created_at": row.created_at.isoformat()}
 
@@ -324,7 +410,118 @@ class NewOrder(BaseModel):
     city: str = Field(min_length=2, max_length=100)
     country: str = Field(default="MA", pattern=r"^[A-Z]{2}$")
     note: str = Field(default="", max_length=1000)
+    customer_id: str | None = None
     items: list[OrderLine] = Field(min_length=1, max_length=50)
+
+
+class CustomerInput(BaseModel):
+    customer_name: str = Field(min_length=2, max_length=120)
+    customer_phone: str = Field(min_length=6, max_length=40)
+    address: str = Field(min_length=3, max_length=250)
+    city: str = Field(min_length=2, max_length=100)
+    country: str = Field(default="MA", pattern=r"^[A-Z]{2}$")
+
+
+def normalized_phone(phone, country="MA"):
+    import re
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("00"): digits = digits[2:]
+    if country == "MA":
+        if len(digits) == 10 and digits.startswith("0"): digits = "212" + digits[1:]
+        elif len(digits) == 9 and digits[0] in "567": digits = "212" + digits
+    if not 8 <= len(digits) <= 15:
+        raise HTTPException(422, "Enter a valid customer phone number with its country code")
+    return "+" + digits
+
+
+def customer_view(row):
+    return {"id": row.id, "customer_name": row.name, "customer_phone": row.phone,
+            "address": row.address, "city": row.city, "country": row.country,
+            "created_at": row.created_at.isoformat()}
+
+
+def save_customer(body, seller_id):
+    phone = normalized_phone(body.customer_phone, body.country)
+    with db.SessionLocal() as session:
+        if getattr(body, "customer_id", None):
+            chosen = session.get(Customer, body.customer_id)
+            if not chosen or chosen.seller_id != seller_id:
+                raise HTTPException(403, "Customer does not belong to your account")
+        row = session.query(Customer).filter_by(seller_id=seller_id, phone=phone).first()
+        if not row:
+            row = Customer(id=uuid4().hex, seller_id=seller_id, phone=phone)
+            session.add(row)
+        row.name, row.address, row.city, row.country = body.customer_name.strip(), body.address.strip(), body.city.strip(), body.country
+        if not all((row.name, row.address, row.city)):
+            raise HTTPException(422, "Customer name and address are required")
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            row = session.query(Customer).filter_by(seller_id=seller_id, phone=phone).one()
+        return customer_view(row)
+
+
+def shopify_customer(store, customer, seller_id):
+    tag = f"affiliate_seller:{seller_id}"
+    try:
+        with db.SessionLocal() as session:
+            link = session.get(CustomerLink, (customer["id"], store))
+        if link:
+            existing = read_shopify(store, f"/customers/{link.shopify_id}.json").get("customer", {})
+        else:
+            existing = {}
+        if not existing or not existing.get("phone") or normalized_phone(existing["phone"], customer["country"]) != customer["customer_phone"]:
+            response = read_shopify(store, "/customers/search.json?" + urlencode({"query": f"phone:{customer['customer_phone']}", "limit": 100}))
+            matches = [row for row in response.get("customers", []) if row.get("phone") and normalized_phone(row["phone"], customer["country"]) == customer["customer_phone"]]
+            if len(matches) > 1:
+                raise HTTPException(409, "Customer phone matches multiple Shopify records; an administrator must resolve it")
+            existing = matches[0] if matches else {}
+        if existing:
+            tags = {t.strip() for t in str(existing.get("tags", "")).split(",") if t.strip()}
+            if tag not in tags:
+                # Atomic additions preserve other affiliates' tags during concurrent orders.
+                result = shopify._gql_store(store, CUSTOMER_TAGS_QUERY, {"id": f"gid://shopify/Customer/{existing['id']}", "tags": ["affiliate", tag]}).get("tagsAdd", {})
+                if result.get("userErrors") or not result.get("node", {}).get("id"):
+                    raise ValueError("Shopify customer tags were not confirmed")
+            cid = str(existing["id"])
+        else:
+            first, _, last = customer["customer_name"].partition(" ")
+            created = shopify._rest_post_store(store, "/customers.json", {"customer": {
+                "first_name": first, "last_name": last, "phone": customer["customer_phone"],
+                "tags": f"affiliate,{tag}", "send_email_invite": False,
+                "addresses": [{"first_name": first, "last_name": last, "phone": customer["customer_phone"],
+                    "address1": customer["address"], "city": customer["city"], "country_code": customer["country"]}]}}).get("customer", {})
+            if not created.get("id"): raise ValueError("Shopify returned no customer")
+            cid = str(created["id"])
+        with db.SessionLocal() as session:
+            if not session.get(CustomerLink, (customer["id"], store)):
+                session.add(CustomerLink(customer_id=customer["id"], store=store, shopify_id=cid))
+                try: session.commit()
+                except IntegrityError: session.rollback()
+        return cid
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("Affiliate customer sync failed")
+        raise HTTPException(502, "Customer could not be synced. Check Shopify customer permissions, then try again; no order was submitted.")
+
+
+@router.get("/customers")
+def customers(seller=Depends(active_seller)):
+    with db.SessionLocal() as session:
+        own = [customer_view(c) for c in session.query(Customer).filter_by(seller_id=seller["id"]).order_by(Customer.created_at.desc()).all()]
+        rows = session.query(SellerOrder, OrderTerms).join(OrderTerms, SellerOrder.id == OrderTerms.order_id).filter(SellerOrder.seller_id == seller["id"]).all()
+    for customer in own:
+        orders = [order_view(order, terms.delivery_fee_cents) for order, terms in rows if terms.customer_id == customer["id"]]
+        customer["orders"] = orders
+        customer["orders_count"] = len(orders)
+    return {"data": own}
+
+
+@router.post("/customers")
+def create_customer(body: CustomerInput, seller=Depends(active_seller)):
+    return {"data": save_customer(body, seller["id"])}
 
 
 @router.post("/orders")
@@ -345,6 +542,12 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
     if currency not in {"MAD", "USD", "EUR", "GBP", "CAD", "AED", "SAR"}:
         raise HTTPException(422, "Store currency is not supported for settlement")
     quantities, selected, prices = {}, {}, {}
+    settings = pricing_settings()
+    if currency not in settings["delivery_fees"]:
+        raise HTTPException(422, "An administrator must configure a delivery fee for this currency")
+    fee = cents(settings["delivery_fees"][currency])
+    memberships = pricing_memberships(body.store, settings)
+    approved_costs = {}
     for item in body.items:
         product = selected.get(item.product_id)
         if product is None:
@@ -355,12 +558,23 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         variant = next((v for v in product.get("variants", []) if str(v["id"]) == item.variant_id), None)
         if not variant:
             raise HTTPException(422, "Variant does not belong to this product")
+        cost = variant_cost(variant, discount_for(item.product_id, body.store, settings, memberships))
+        if cost is None:
+            raise HTTPException(422, "Product must have a valid Shopify selling price")
+        approved_costs[item.variant_id] = cost
         if item.variant_id in prices and prices[item.variant_id] != cents(item.sale_price):
             raise HTTPException(422, "Use one sale price per variant")
         prices[item.variant_id] = cents(item.sale_price)
         quantities[item.variant_id] = quantities.get(item.variant_id, 0) + item.quantity
-        if variant.get("inventory_management") and variant.get("inventory_policy") != "continue" and quantities[item.variant_id] > int(variant.get("inventory_quantity") or 0):
+        if variant.get("inventory_management") and quantities[item.variant_id] > int(variant.get("inventory_quantity") or 0):
             raise HTTPException(409, "Insufficient stock for the selected variant")
+    total_cost = sum(approved_costs[item.variant_id] * item.quantity for item in body.items)
+    if any(cents(item.sale_price) <= approved_costs[item.variant_id] for item in body.items):
+        raise HTTPException(422, "Sale price must be above the affiliate product cost")
+    if sum(cents(item.sale_price) * item.quantity for item in body.items) <= total_cost + fee:
+        raise HTTPException(422, "Order total must cover product costs and the delivery fee to earn profit")
+    customer = save_customer(body, seller["id"])
+    cid = shopify_customer(body.store, customer, seller["id"])
     oid = uuid4().hex
     with db.SessionLocal() as session:
         # Serialize with seller approval changes; never trust stale browser access.
@@ -369,18 +583,11 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         current_access = json.loads(current.access)
         if current.status != "approved" or any(p.get("vendor") not in current_access.get(body.store, []) for p in selected.values()):
             raise HTTPException(403, "Seller access has changed; refresh your account")
-        total_cost = 0
-        for item in body.items:
-            cost = session.get(ProductCost, (body.store, item.variant_id))
-            if not cost or cost.product_id != item.product_id or cost.currency != currency:
-                raise HTTPException(422, "The administrator must set a product cost before it can be sold")
-            if cents(item.sale_price) <= cost.unit_cost_cents:
-                raise HTTPException(422, "Sale price must be above the approved product cost")
-            total_cost += cost.unit_cost_cents * item.quantity
         row = SellerOrder(id=oid, seller_id=seller["id"], request_id=body.request_id, fingerprint=fingerprint,
                           store=body.store, currency=currency, cost_cents=total_cost, state="submitting",
                           snapshot=json.dumps({"submission": body.model_dump(mode="json")}))
         session.add(row)
+        session.add(OrderTerms(order_id=oid, delivery_fee_cents=fee, customer_id=customer["id"]))
         try:
             session.commit()
         except IntegrityError:
@@ -393,6 +600,7 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         snapshot = shopify._rest_post_store(body.store, "/orders.json", {"order": {
             "line_items": [{"variant_id": int(vid), "quantity": qty, "price": str(Decimal(prices[vid]) / 100)} for vid, qty in quantities.items()],
             "shipping_address": address, "billing_address": address, "phone": body.customer_phone.strip(),
+            "customer": {"id": int(cid)},
             "tags": f"affiliate,affiliate_seller:{seller['id']},affiliate_request:{body.request_id}",
             "note": body.note, "financial_status": "pending", "inventory_behaviour": "decrement_obeying_policy",
             "send_receipt": False, "send_fulfillment_receipt": False}}).get("order")
@@ -480,7 +688,8 @@ def payout_view(row):
 
 def dashboard(seller_id):
     with db.SessionLocal() as session:
-        orders = [order_view(row) for row in session.query(SellerOrder).filter_by(seller_id=seller_id).order_by(SellerOrder.created_at.desc()).all()]
+        fees = {terms.order_id: terms.delivery_fee_cents for terms in session.query(OrderTerms).join(SellerOrder, SellerOrder.id == OrderTerms.order_id).filter(SellerOrder.seller_id == seller_id).all()}
+        orders = [order_view(row, fees.get(row.id, 0)) for row in session.query(SellerOrder).filter_by(seller_id=seller_id).order_by(SellerOrder.created_at.desc()).all()]
         payouts = [payout_view(row) for row in session.query(Payout).filter_by(seller_id=seller_id).order_by(Payout.created_at.desc()).all()]
     analytics = {}
     for currency in sorted({o["currency"] for o in orders} | {p["currency"] for p in payouts}):
@@ -517,7 +726,8 @@ def lock_seller(session, sid):
 
 
 def balance(session, sid, currency, excluding=None):
-    earned = sum(cents(order_view(o)["profit"]) for o in session.query(SellerOrder).filter_by(seller_id=sid, currency=currency).all())
+    fees = {terms.order_id: terms.delivery_fee_cents for terms in session.query(OrderTerms).join(SellerOrder, SellerOrder.id == OrderTerms.order_id).filter(SellerOrder.seller_id == sid).all()}
+    earned = sum(cents(order_view(o, fees.get(o.id, 0))["profit"]) for o in session.query(SellerOrder).filter_by(seller_id=sid, currency=currency).all())
     committed = sum(p.amount_cents for p in session.query(Payout).filter_by(seller_id=sid, currency=currency).all()
                     if p.id != excluding and p.status in {"pending", "approved", "paid"})
     return earned - committed
@@ -590,6 +800,62 @@ def admin_catalog(admin=Depends(require_admin)):
     return {"data": catalog()}
 
 
+def collection_index(store):
+    result = []
+    for resource in ("custom_collections", "smart_collections"):
+        for row in paginate(read_shopify, store, resource, {"fields": "id,title"}):
+            result.append({"store": store, "id": str(row["id"]), "title": row["title"]})
+    return result
+
+
+class CollectionPriceRule(BaseModel):
+    store: str = Field(min_length=1, max_length=63)
+    collection_id: str = Field(pattern=r"^\d+$")
+    discount_percent: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
+
+
+class PricingUpdate(BaseModel):
+    discount_percent: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
+    rules: list[CollectionPriceRule] = Field(default_factory=list, max_length=50)
+    delivery_fees: dict[str, Decimal] = Field(default_factory=lambda: {"MAD": Decimal(33)})
+
+
+@router.get("/admin/pricing")
+def get_pricing(admin=Depends(require_admin)):
+    collections, warnings = [], []
+    for connection in connected_stores():
+        try:
+            collections.extend(collection_index(connection["label"]))
+        except Exception:
+            warnings.append(f"Could not load collections for {connection['label']}.")
+    return {"data": {"settings": pricing_settings(), "collections": collections, "warnings": warnings}}
+
+
+@router.put("/admin/pricing")
+def set_pricing(body: PricingUpdate, admin=Depends(require_admin)):
+    if not body.delivery_fees or any(currency not in {"MAD", "USD", "EUR", "GBP", "CAD", "AED", "SAR"}
+            or not fee.is_finite() or fee < 0 or fee > 100000 or fee.as_tuple().exponent < -2
+            for currency, fee in body.delivery_fees.items()):
+        raise HTTPException(422, "Set non-negative delivery fees with at most two decimal places")
+    valid_stores = {s["label"] for s in connected_stores()}
+    if any(rule.store not in valid_stores for rule in body.rules):
+        raise HTTPException(422, "Collection rules require a connected store")
+    if len({(r.store, r.collection_id) for r in body.rules}) != len(body.rules):
+        raise HTTPException(422, "Use one rule per collection")
+    for store in {r.store for r in body.rules}:
+        try:
+            ids = {collection["id"] for collection in collection_index(store)}
+        except Exception:
+            log.exception("Affiliate pricing collections could not be verified")
+            raise HTTPException(502, "Collections could not be verified. Refresh and try again.")
+        if any(r.collection_id not in ids for r in body.rules if r.store == store):
+            raise HTTPException(422, "Collection does not belong to the selected store")
+    settings = body.model_dump(mode="json")
+    settings["updated_by"] = admin.get("sub")
+    db.set_app_setting(None, "affiliate_marketplace_pricing", settings)
+    return {"data": {"settings": settings}}
+
+
 class SellerReview(BaseModel):
     status: Literal["approved", "rejected", "suspended", "pending"]
     access: dict[str, list[str]]
@@ -621,20 +887,7 @@ class CostUpdate(BaseModel):
 
 @router.put("/admin/costs")
 def set_cost(body: CostUpdate, admin=Depends(require_admin)):
-    if body.store not in {s["label"] for s in connected_stores()}:
-        raise HTTPException(422, "Store must be connected")
-    product = read_shopify(body.store, f"/products/{body.product_id}.json").get("product", {})
-    if not any(str(v["id"]) == body.variant_id for v in product.get("variants", [])):
-        raise HTTPException(422, "Variant does not belong to this product")
-    currency = read_shopify(body.store, "/shop.json")["shop"]["currency"]
-    with db.SessionLocal() as session:
-        row = session.get(ProductCost, (body.store, body.variant_id))
-        if not row:
-            row = ProductCost(store=body.store, variant_id=body.variant_id, product_id=body.product_id)
-            session.add(row)
-        row.unit_cost_cents, row.currency, row.updated_by = cents(body.unit_cost), currency, admin.get("sub")
-        session.commit()
-    return {"data": {"unit_cost": float(body.unit_cost), "currency": currency}}
+    raise HTTPException(409, "Product costs now use percentage pricing. Update Marketplace pricing rules instead.")
 
 
 @router.post("/admin/sellers/{sid}/sync")

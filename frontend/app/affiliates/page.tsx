@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import AffiliateMarketplace from "@/components/AffiliateMarketplace";
+import AffiliateCustomers from "@/components/AffiliateCustomers";
 import {
   BarChart3,
   Package,
@@ -10,7 +12,6 @@ import {
   LogOut,
   RefreshCw,
   ArrowUpRight,
-  Search,
   Plus,
   X,
   CheckCircle2,
@@ -25,12 +26,13 @@ import {
   secondary,
   AffiliateProduct,
   CartLine,
+  AffiliateCustomer,
 } from "@/lib/affiliates";
 
 type Tab = "overview" | "products" | "orders" | "payouts";
 const tabs = [
   { id: "overview", label: "Overview", icon: BarChart3 },
-  { id: "products", label: "Product catalog", icon: Package },
+  { id: "products", label: "Marketplace", icon: Package },
   { id: "orders", label: "My orders", icon: ShoppingBag },
   { id: "payouts", label: "Payouts", icon: Wallet },
 ] as const;
@@ -54,12 +56,16 @@ export default function AffiliatePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [search, setSearch] = useState("");
-  const [store, setStore] = useState("");
-  const [vendor, setVendor] = useState("");
   const [currency, setCurrency] = useState("MAD");
   const [orderStatus, setOrderStatus] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [customers, setCustomers] = useState<AffiliateCustomer[]>([]);
+  const [customerId, setCustomerId] = useState("");
+  const [choosingProducts, setChoosingProducts] = useState(false);
+  const [showCustomers, setShowCustomers] = useState(false);
+  const [pricing, setPricing] = useState<{
+    delivery_fees: Record<string, number | string>;
+  }>({ delivery_fees: { MAD: 33 } });
   const [customer, setCustomer] = useState({
     customer_name: "",
     customer_phone: "",
@@ -92,10 +98,33 @@ export default function AffiliatePage() {
       if (current.status === "approved") {
         const result = await affiliateApi("/dashboard");
         setData(result);
+        setCustomers(await affiliateApi("/customers"));
         if (withProducts) {
           const catalog = await affiliateApi("/products");
           setProducts(catalog.products);
           setCatalogWarnings(catalog.warnings);
+          setPricing(catalog.pricing);
+          setCart((previous) =>
+            previous.map((line) => {
+              const product = catalog.products.find(
+                (p: AffiliateProduct) =>
+                  p.id === line.product.id && p.store === line.product.store,
+              );
+              const variant = product?.variants.find(
+                (v: any) => v.id === line.variant.id,
+              );
+              return product && variant
+                ? { ...line, product, variant }
+                : {
+                    ...line,
+                    variant: {
+                      ...line.variant,
+                      available: false,
+                      inventory_quantity: 0,
+                    },
+                  };
+            }),
+          );
         }
       }
     } catch (err: any) {
@@ -122,13 +151,72 @@ export default function AffiliatePage() {
   useEffect(() => {
     if (!seller) return;
     const interval = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible")
+        void refresh(tab === "products" || choosingProducts || cart.length > 0);
     }, 60000);
     return () => clearInterval(interval);
-  }, [seller?.id, refresh]);
+  }, [seller?.id, tab, choosingProducts, cart.length, refresh]);
+  useEffect(() => {
+    if (
+      seller?.status === "approved" &&
+      (tab === "products" || choosingProducts)
+    )
+      void refresh(true);
+  }, [tab, choosingProducts, seller?.id, refresh]);
+  const submissionKey = JSON.stringify({
+    customer,
+    customerId,
+    items: cart.map((line) => [
+      line.product.store,
+      line.product.id,
+      line.variant.id,
+      line.quantity,
+      line.sale_price,
+    ]),
+  });
   useEffect(() => {
     requestId.current = crypto.randomUUID();
-  }, [cart, customer]);
+  }, [submissionKey]);
+
+  async function markProduct(product: AffiliateProduct) {
+    try {
+      const result = await affiliateApi(
+        "/marks",
+        {
+          store: product.store,
+          product_id: product.id,
+          marked: !product.marked,
+        },
+        "PUT",
+      );
+      setProducts((previous) =>
+        previous.map((p) =>
+          p.id === product.id && p.store === product.store
+            ? { ...p, marked: result.marked }
+            : p,
+        ),
+      );
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
+  function startOrder(saved?: AffiliateCustomer) {
+    setTab("orders");
+    setShowCustomers(false);
+    setChoosingProducts(!cart.length);
+    setNotice("");
+    if (saved) {
+      setCustomerId(saved.id);
+      setCustomer({
+        customer_name: saved.customer_name,
+        customer_phone: saved.customer_phone,
+        address: saved.address,
+        city: saved.city,
+        country: saved.country,
+        note: "",
+      });
+    }
+  }
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "instant" });
   }, [tab]);
@@ -171,7 +259,23 @@ export default function AffiliatePage() {
     setData(empty);
     setProducts([]);
     setCart([]);
+    setCustomers([]);
+    setCustomerId("");
+    setCustomer({
+      customer_name: "",
+      customer_phone: "",
+      address: "",
+      city: "",
+      country: "MA",
+      note: "",
+    });
+    setPayout({ amount: "", destination: "" });
+    setTab("overview");
+    setCurrency("MAD");
+    setChoosingProducts(false);
+    setShowCustomers(false);
     setError("");
+    setNotice("");
   }
 
   function addLine(
@@ -187,8 +291,19 @@ export default function AffiliatePage() {
     }
     if (cart.length && cart[0].product.store !== product.store) {
       setError(
-        "Submit your current order before adding products from another store.",
+        "These products need separate orders. Submit your current order first.",
       );
+      return;
+    }
+    const existing = cart.find(
+      (line) =>
+        line.product.store === product.store && line.variant.id === variant.id,
+    );
+    if (
+      variant.inventory_quantity !== null &&
+      (existing?.quantity || 0) + 1 > variant.inventory_quantity
+    ) {
+      setError("There is not enough stock to add another item.");
       return;
     }
     setCart((previous) => {
@@ -206,8 +321,12 @@ export default function AffiliatePage() {
         : [...previous, { product, variant, quantity: 1, sale_price: price }];
     });
     setError("");
-    setNotice("Product added. Open My orders to enter customer details.");
+    setNotice("Product added. Enter customer details to create the order.");
+    setChoosingProducts(false);
+    setShowCustomers(false);
+    setCurrency(product.currency);
     setTab("orders");
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
 
   async function submitOrder(event: React.FormEvent) {
@@ -219,6 +338,7 @@ export default function AffiliatePage() {
     try {
       await affiliateApi("/orders", {
         ...customer,
+        customer_id: customerId || undefined,
         store: cart[0].product.store,
         request_id: requestId.current,
         items: cart.map((line) => ({
@@ -229,6 +349,7 @@ export default function AffiliatePage() {
         })),
       });
       setCart([]);
+      setCustomerId("");
       setCustomer({
         customer_name: "",
         customer_phone: "",
@@ -238,12 +359,12 @@ export default function AffiliatePage() {
         note: "",
       });
       setNotice(
-        "Order created in the connected store. Delivery status will update here.",
+        "Order created. Your customer was saved and delivery status will update here.",
       );
-      await refresh();
+      await refresh(true);
     } catch (err: any) {
       setError(err.message);
-      await refresh();
+      await refresh(true);
     } finally {
       setBusy(false);
     }
@@ -322,13 +443,13 @@ export default function AffiliatePage() {
                 Make your first sale.
               </h1>
               <p className="mt-5 max-w-md text-slate-600">
-                Discover products from approved vendors across our stores. Set
-                your selling price, submit customer orders, and follow your
-                earnings from delivery to payout.
+                Discover products in the Marketplace. Set your selling price,
+                submit customer orders, and follow your earnings from delivery
+                to payout.
               </p>
               <div className="mt-8 space-y-4 text-sm text-slate-600">
                 {[
-                  "Products and stock from connected stores",
+                  "Products, sizes and stock in one Marketplace",
                   "Your sale price, your margin",
                   "Delivery tracking and reviewed payouts",
                 ].map((text) => (
@@ -443,12 +564,6 @@ export default function AffiliatePage() {
       </main>
     );
 
-  const filteredProducts = products.filter(
-    (p) =>
-      (!store || p.store === store) &&
-      (!vendor || p.vendor === vendor) &&
-      `${p.title} ${p.vendor}`.toLowerCase().includes(search.toLowerCase()),
-  );
   const currencies = Array.from(
     new Set([
       "MAD",
@@ -459,6 +574,15 @@ export default function AffiliatePage() {
   const orders = data.orders.filter(
     (o: any) =>
       o.currency === currency && (!orderStatus || o.status === orderStatus),
+  );
+  const cartCurrency = cart[0]?.product.currency || currency;
+  const deliveryFee = Number(pricing.delivery_fees[cartCurrency] ?? NaN);
+  const grossMargin = cart.reduce(
+    (sum, line) =>
+      sum +
+      (Number(line.sale_price) - Number(line.variant.unit_cost)) *
+        line.quantity,
+    0,
   );
   const today = new Date();
   const trend = Array.from({ length: 14 }, (_, i) => {
@@ -552,7 +676,9 @@ export default function AffiliatePage() {
               disabled={loading}
               onClick={() => {
                 setError("");
-                void refresh(tab === "products");
+                void refresh(
+                  tab === "products" || choosingProducts || cart.length > 0,
+                );
               }}
               className={secondary}
             >
@@ -589,16 +715,25 @@ export default function AffiliatePage() {
                     Your products. Your price. Your progress.
                   </h2>
                   <p className="mt-2 text-sm text-emerald-100">
-                    Explore the catalog and turn a customer conversation into an
-                    order.
+                    Explore the Marketplace and turn a customer conversation
+                    into an order.
                   </p>
                 </div>
-                <button
-                  onClick={() => setTab("products")}
-                  className="flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-emerald-900"
-                >
-                  Explore products <ArrowUpRight size={18} />
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => startOrder()}
+                    className="flex min-h-11 items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-white"
+                  >
+                    <Plus size={18} />
+                    Create order
+                  </button>
+                  <button
+                    onClick={() => setTab("products")}
+                    className="flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-emerald-900"
+                  >
+                    Explore Marketplace <ArrowUpRight size={18} />
+                  </button>
+                </div>
               </section>
               <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
                 {[
@@ -610,7 +745,7 @@ export default function AffiliatePage() {
                   {
                     label: "Earned profit",
                     value: money(status.profit, currency),
-                    note: "After product cost; before marketing expenses",
+                    note: "After product cost and delivery; before marketing expenses",
                   },
                   {
                     label: "Available for payout",
@@ -714,301 +849,368 @@ export default function AffiliatePage() {
                   {w}
                 </p>
               ))}
-              <div className="mb-6 flex flex-wrap gap-3">
-                <div className="relative min-w-0 basis-full sm:min-w-60 sm:flex-1">
-                  <Search
-                    className="absolute left-3 top-3 text-slate-400"
-                    size={17}
-                  />
-                  <input
-                    aria-label="Search products"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search products or vendors"
-                    className={`${field} pl-10`}
-                  />
-                </div>
-                <select
-                  aria-label="Filter store"
-                  value={store}
-                  onChange={(e) => {
-                    setStore(e.target.value);
-                    setVendor("");
-                  }}
-                  className={`${field} sm:w-auto sm:max-w-xs`}
-                >
-                  <option value="">All stores</option>
-                  {Array.from(new Set(products.map((p) => p.store))).map(
-                    (s) => (
-                      <option key={s}>{s}</option>
-                    ),
-                  )}
-                </select>
-                <select
-                  aria-label="Filter vendor"
-                  value={vendor}
-                  onChange={(e) => setVendor(e.target.value)}
-                  className={`${field} sm:w-auto sm:max-w-xs`}
-                >
-                  <option value="">All approved vendors</option>
-                  {Array.from(
-                    new Set(
-                      products
-                        .filter((p) => !store || p.store === store)
-                        .map((p) => p.vendor),
-                    ),
-                  ).map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-              </div>
-              <p className="mb-4 text-sm text-slate-500">
-                {filteredProducts.length} products available to your account.
-                Choose your price above the listed cost.
-              </p>
               {loading && !products.length ? (
-                <p>Loading connected stores…</p>
-              ) : !filteredProducts.length ? (
-                <Empty
-                  title="No products available"
-                  text="Your administrator can connect stores, approve vendor access, and set product costs."
-                />
+                <p>Loading Marketplace…</p>
               ) : (
-                <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                  {filteredProducts.map((product) => (
-                    <ProductCard
-                      key={`${product.store}:${product.id}`}
-                      product={product}
-                      add={addLine}
-                    />
-                  ))}
-                </div>
+                <AffiliateMarketplace
+                  products={products}
+                  mark={markProduct}
+                  add={addLine}
+                />
               )}
             </>
           )}
           {tab === "orders" && (
             <>
-              {cart.length > 0 && (
-                <form
-                  onSubmit={submitOrder}
-                  className="mb-7 rounded-2xl border bg-white p-4 sm:p-6"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <h2 className="min-w-0 break-words text-lg font-bold">
-                      Create customer order · {cart[0].product.store}
-                    </h2>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setCart([])}
-                      aria-label="Clear order"
-                      className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl hover:bg-slate-50"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                  <div className="my-5 space-y-3">
-                    {cart.map((line, i) => (
-                      <div
-                        key={`${line.product.id}:${line.variant.id}`}
-                        className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 p-4"
-                      >
-                        <div className="min-w-0 basis-full sm:min-w-48 sm:flex-1">
-                          <p className="text-sm font-semibold">
-                            {line.product.title}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {line.variant.title} · Cost{" "}
-                            {money(
-                              line.variant.unit_cost || 0,
-                              line.product.currency,
-                            )}
-                          </p>
-                        </div>
-                        <label className="text-xs">
-                          Quantity
-                          <input
-                            disabled={busy}
-                            type="number"
-                            inputMode="numeric"
-                            min="1"
-                            max="100"
-                            required
-                            value={line.quantity}
-                            onChange={(e) =>
-                              setCart(
-                                cart.map((l, j) =>
-                                  j === i
-                                    ? { ...l, quantity: Number(e.target.value) }
-                                    : l,
-                                ),
-                              )
-                            }
-                            className={`${field} mt-1 max-w-24`}
-                          />
-                        </label>
-                        <label className="text-xs">
-                          Sale price ({line.product.currency})
-                          <input
-                            disabled={busy}
-                            required
-                            type="number"
-                            inputMode="decimal"
-                            step="0.01"
-                            min={Number(line.variant.unit_cost) + 0.01}
-                            value={line.sale_price}
-                            onChange={(e) =>
-                              setCart(
-                                cart.map((l, j) =>
-                                  j === i
-                                    ? { ...l, sale_price: e.target.value }
-                                    : l,
-                                ),
-                              )
-                            }
-                            className={`${field} mt-1 max-w-32`}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() =>
-                            setCart(cart.filter((_, j) => j !== i))
-                          }
-                          aria-label={`Remove ${line.product.title}`}
-                          className="flex min-h-11 min-w-11 items-center justify-center rounded-xl hover:bg-slate-200"
-                        >
-                          <X size={17} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {(
-                      [
-                        "customer_name",
-                        "customer_phone",
-                        "address",
-                        "city",
-                      ] as const
-                    ).map((key) => (
-                      <label
-                        key={key}
-                        className="text-sm font-medium capitalize"
-                      >
-                        {key.replace("customer_", "").replaceAll("_", " ")}
-                        <input
-                          disabled={busy}
-                          required
-                          type={key === "customer_phone" ? "tel" : "text"}
-                          autoComplete={
-                            {
-                              customer_name: "name",
-                              customer_phone: "tel",
-                              address: "street-address",
-                              city: "address-level2",
-                            }[key]
-                          }
-                          value={customer[key]}
-                          onChange={(e) =>
-                            setCustomer({ ...customer, [key]: e.target.value })
-                          }
-                          className={`${field} mt-1`}
-                        />
-                      </label>
-                    ))}
-                    <label className="text-sm font-medium">
-                      Country code
-                      <input
-                        disabled={busy}
-                        pattern="[A-Z]{2}"
-                        maxLength={2}
-                        autoComplete="country"
-                        required
-                        value={customer.country}
-                        onChange={(e) =>
-                          setCustomer({
-                            ...customer,
-                            country: e.target.value.toUpperCase(),
-                          })
-                        }
-                        className={`${field} mt-1`}
-                      />
-                    </label>
-                    <label className="text-sm font-medium">
-                      Order note
-                      <input
-                        disabled={busy}
-                        value={customer.note}
-                        onChange={(e) =>
-                          setCustomer({ ...customer, note: e.target.value })
-                        }
-                        className={`${field} mt-1`}
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                      <p className="font-bold">
-                        Order total{" "}
-                        {money(
-                          cart.reduce(
-                            (sum, l) => sum + Number(l.sale_price) * l.quantity,
-                            0,
-                          ),
-                          cart[0].product.currency,
-                        )}
-                      </p>
-                      <p className="text-sm text-emerald-700">
-                        Expected profit{" "}
-                        {money(
-                          cart.reduce(
-                            (sum, l) =>
-                              sum +
-                              (Number(l.sale_price) -
-                                Number(l.variant.unit_cost)) *
-                                l.quantity,
-                            0,
-                          ),
-                          cart[0].product.currency,
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      disabled={busy}
-                      className={`${button} w-full sm:w-auto`}
-                    >
-                      {busy ? "Submitting…" : "Submit order"}
-                    </button>
-                  </div>
-                </form>
-              )}
-              <div className="mb-5 flex flex-wrap justify-between gap-3">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-slate-500">
-                  Live statuses refresh every minute while this page is open.
+                  Create an order or reuse a customer from your list.
                 </p>
-                <div className="flex w-full flex-wrap gap-3 sm:w-auto">
-                  <select
-                    aria-label="Filter order status"
-                    value={orderStatus}
-                    onChange={(e) => setOrderStatus(e.target.value)}
-                    className={`${field} flex-1 sm:w-auto`}
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => startOrder()} className={button}>
+                    <Plus size={16} />
+                    Create order
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowCustomers(!showCustomers);
+                      setChoosingProducts(false);
+                    }}
+                    aria-pressed={showCustomers}
+                    className={secondary}
                   >
-                    <option value="">All statuses</option>
-                    {Array.from(
-                      new Set(data.orders.map((o: any) => o.status)),
-                    ).map((s) => (
-                      <option key={String(s)} value={String(s)}>
-                        {String(s).replaceAll("_", " ")}
-                      </option>
-                    ))}
-                  </select>
-                  <button onClick={() => setTab("products")} className={button}>
-                    <Plus size={16} /> Add products
+                    Customers ({customers.length})
                   </button>
                 </div>
               </div>
-              <OrderTable orders={orders} />
+              {showCustomers ? (
+                <AffiliateCustomers
+                  customers={customers}
+                  useCustomer={startOrder}
+                />
+              ) : (
+                <>
+                  {choosingProducts && (
+                    <section className="mb-6 rounded-2xl border bg-white p-3 sm:p-4">
+                      <div className="mb-3 flex flex-wrap justify-between gap-2">
+                        <h2 className="font-bold">
+                          Choose products for your order
+                        </h2>
+                        <button
+                          onClick={() => setChoosingProducts(false)}
+                          className={secondary}
+                        >
+                          Back to orders
+                        </button>
+                      </div>
+                      <AffiliateMarketplace
+                        products={products}
+                        mark={markProduct}
+                        add={addLine}
+                        selecting
+                      />
+                    </section>
+                  )}
+                  {cart.length > 0 && (
+                    <form
+                      onSubmit={submitOrder}
+                      className="mb-7 rounded-2xl border bg-white p-4 sm:p-6"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <h2 className="min-w-0 break-words text-lg font-bold">
+                          Create customer order
+                        </h2>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setCart([])}
+                          aria-label="Clear order"
+                          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl hover:bg-slate-50"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                      <div className="my-5 space-y-3">
+                        {cart.map((line, i) => (
+                          <div
+                            key={`${line.product.id}:${line.variant.id}`}
+                            className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 p-4"
+                          >
+                            <div className="min-w-0 basis-full sm:min-w-48 sm:flex-1">
+                              <p className="text-sm font-semibold">
+                                {line.product.title}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {line.variant.title} · Cost{" "}
+                                {money(
+                                  line.variant.unit_cost || 0,
+                                  line.product.currency,
+                                )}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500">
+                                Recommended selling price{" "}
+                                {money(
+                                  line.variant.price,
+                                  line.product.currency,
+                                )}
+                              </p>
+                            </div>
+                            <label className="text-xs">
+                              Quantity
+                              <input
+                                disabled={busy}
+                                type="number"
+                                inputMode="numeric"
+                                min="1"
+                                max={Math.min(
+                                  100,
+                                  line.variant.inventory_quantity ?? 100,
+                                )}
+                                required
+                                value={line.quantity}
+                                onChange={(e) =>
+                                  setCart(
+                                    cart.map((l, j) =>
+                                      j === i
+                                        ? {
+                                            ...l,
+                                            quantity: Number(e.target.value),
+                                          }
+                                        : l,
+                                    ),
+                                  )
+                                }
+                                className={`${field} mt-1 max-w-24`}
+                              />
+                            </label>
+                            <label className="text-xs">
+                              Sale price ({line.product.currency})
+                              <input
+                                disabled={busy}
+                                required
+                                type="number"
+                                inputMode="decimal"
+                                step="0.01"
+                                min={Number(line.variant.unit_cost) + 0.01}
+                                value={line.sale_price}
+                                onChange={(e) =>
+                                  setCart(
+                                    cart.map((l, j) =>
+                                      j === i
+                                        ? { ...l, sale_price: e.target.value }
+                                        : l,
+                                    ),
+                                  )
+                                }
+                                className={`${field} mt-1 max-w-32`}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                setCart(cart.filter((_, j) => j !== i))
+                              }
+                              aria-label={`Remove ${line.product.title}`}
+                              className="flex min-h-11 min-w-11 items-center justify-center rounded-xl hover:bg-slate-200"
+                            >
+                              <X size={17} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <label className="mb-4 block text-sm font-medium">
+                        Saved customer
+                        <select
+                          aria-label="Use saved customer"
+                          value={customerId}
+                          onChange={(e) => {
+                            const saved = customers.find(
+                              (c) => c.id === e.target.value,
+                            );
+                            if (saved) startOrder(saved);
+                            else setCustomerId("");
+                          }}
+                          className={`${field} mt-1`}
+                        >
+                          <option value="">New customer</option>
+                          {customers.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.customer_name} · {c.customer_phone}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        {(
+                          [
+                            "customer_name",
+                            "customer_phone",
+                            "address",
+                            "city",
+                          ] as const
+                        ).map((key) => (
+                          <label
+                            key={key}
+                            className="text-sm font-medium capitalize"
+                          >
+                            {key.replace("customer_", "").replaceAll("_", " ")}
+                            <input
+                              disabled={busy}
+                              required
+                              type={key === "customer_phone" ? "tel" : "text"}
+                              autoComplete={
+                                {
+                                  customer_name: "name",
+                                  customer_phone: "tel",
+                                  address: "street-address",
+                                  city: "address-level2",
+                                }[key]
+                              }
+                              value={customer[key]}
+                              onChange={(e) => {
+                                setCustomer({
+                                  ...customer,
+                                  [key]: e.target.value,
+                                });
+                                if (key === "customer_phone") setCustomerId("");
+                              }}
+                              className={`${field} mt-1`}
+                            />
+                          </label>
+                        ))}
+                        <label className="text-sm font-medium">
+                          Country code
+                          <input
+                            disabled={busy}
+                            pattern="[A-Z]{2}"
+                            maxLength={2}
+                            autoComplete="country"
+                            required
+                            value={customer.country}
+                            onChange={(e) =>
+                              setCustomer({
+                                ...customer,
+                                country: e.target.value.toUpperCase(),
+                              })
+                            }
+                            className={`${field} mt-1`}
+                          />
+                        </label>
+                        <label className="text-sm font-medium">
+                          Order note
+                          <input
+                            disabled={busy}
+                            value={customer.note}
+                            onChange={(e) =>
+                              setCustomer({ ...customer, note: e.target.value })
+                            }
+                            className={`${field} mt-1`}
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                          <p className="font-bold">
+                            Order total{" "}
+                            {money(
+                              cart.reduce(
+                                (sum, l) =>
+                                  sum + Number(l.sale_price) * l.quantity,
+                                0,
+                              ),
+                              cart[0].product.currency,
+                            )}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">
+                            Product costs{" "}
+                            {money(
+                              cart.reduce(
+                                (sum, l) =>
+                                  sum +
+                                  Number(l.variant.unit_cost) * l.quantity,
+                                0,
+                              ),
+                              cartCurrency,
+                            )}
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Delivery deducted{" "}
+                            {Number.isFinite(deliveryFee)
+                              ? money(deliveryFee, cartCurrency)
+                              : "not configured"}
+                          </p>
+                          <p className="mt-1 text-sm text-emerald-700">
+                            Expected profit{" "}
+                            {money(
+                              Math.max(0, grossMargin - (deliveryFee || 0)),
+                              cart[0].product.currency,
+                            )}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Available for payout after delivery and collection.
+                          </p>
+                          {(!Number.isFinite(deliveryFee) ||
+                            grossMargin <= deliveryFee) && (
+                            <p className="mt-2 text-xs text-amber-800">
+                              {Number.isFinite(deliveryFee)
+                                ? "Increase the selling price or quantity to cover the delivery fee."
+                                : "Ask your administrator to configure this currency’s delivery fee."}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          disabled={
+                            busy ||
+                            !Number.isFinite(deliveryFee) ||
+                            grossMargin <= deliveryFee ||
+                            cart.some(
+                              (line) =>
+                                !line.variant.available ||
+                                (line.variant.inventory_quantity !== null &&
+                                  line.quantity >
+                                    line.variant.inventory_quantity),
+                            )
+                          }
+                          className={`${button} w-full sm:w-auto`}
+                        >
+                          {busy ? "Submitting…" : "Submit order"}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                  <div className="mb-5 flex flex-wrap justify-between gap-3">
+                    <p className="text-sm text-slate-500">
+                      Live statuses refresh every minute while this page is
+                      open.
+                    </p>
+                    <div className="flex w-full flex-wrap gap-3 sm:w-auto">
+                      <select
+                        aria-label="Filter order status"
+                        value={orderStatus}
+                        onChange={(e) => setOrderStatus(e.target.value)}
+                        className={`${field} flex-1 sm:w-auto`}
+                      >
+                        <option value="">All statuses</option>
+                        {Array.from(
+                          new Set(data.orders.map((o: any) => o.status)),
+                        ).map((s) => (
+                          <option key={String(s)} value={String(s)}>
+                            {String(s).replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => setChoosingProducts(true)}
+                        className={button}
+                      >
+                        <Plus size={16} /> Add products
+                      </button>
+                    </div>
+                  </div>
+                  <OrderTable orders={orders} />
+                </>
+              )}
             </>
           )}
           {tab === "payouts" && (
@@ -1103,7 +1305,7 @@ export default function AffiliatePage() {
           >
             <Icon size={21} />
             {id === "products"
-              ? "Products"
+              ? "Marketplace"
               : id === "orders"
                 ? "Orders"
                 : label}
@@ -1122,105 +1324,6 @@ export default function AffiliatePage() {
   );
 }
 
-function ProductCard({
-  product,
-  add,
-}: {
-  product: AffiliateProduct;
-  add: (product: AffiliateProduct, variant: string, price: string) => void;
-}) {
-  const [variantId, setVariantId] = useState(product.variants[0]?.id || "");
-  const variant = product.variants.find((v) => v.id === variantId);
-  const [price, setPrice] = useState(product.variants[0]?.price || "");
-  return (
-    <article className="overflow-hidden rounded-2xl border bg-white">
-      <div className="relative flex h-56 items-center justify-center bg-slate-100">
-        {product.image ? (
-          <img
-            src={product.image}
-            alt={product.title}
-            className="h-full w-full object-contain"
-            loading="lazy"
-          />
-        ) : (
-          <Package size={45} className="text-slate-300" />
-        )}
-        <span className="absolute left-3 top-3 rounded-lg bg-white/95 px-2.5 py-1 text-xs font-semibold">
-          {product.store}
-        </span>
-      </div>
-      <div className="p-5">
-        <p className="text-xs text-slate-500">{product.vendor}</p>
-        <h2 className="mt-1 break-words font-bold" title={product.title}>
-          {product.title}
-        </h2>
-        <select
-          aria-label={`Variant for ${product.title}`}
-          value={variantId}
-          onChange={(e) => {
-            setVariantId(e.target.value);
-            setPrice(
-              product.variants.find((v) => v.id === e.target.value)?.price ||
-                "",
-            );
-          }}
-          className={`${field} mt-4`}
-        >
-          {product.variants.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.title}
-              {!v.available ? " · Out of stock" : ""}
-            </option>
-          ))}
-        </select>
-        <div className="my-4 flex justify-between text-sm">
-          <span className="text-slate-500">Product cost</span>
-          <strong>
-            {variant?.unit_cost === null
-              ? "Awaiting admin cost"
-              : money(variant?.unit_cost || 0, product.currency)}
-          </strong>
-        </div>
-        <label className="block text-xs text-slate-500">
-          Your sale price ({product.currency})
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.01"
-            min={Number(variant?.unit_cost) + 0.01}
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            className={`${field} mt-1`}
-          />
-        </label>
-        <p className="mt-2 text-xs text-emerald-700">
-          Expected profit{" "}
-          {money(
-            Math.max(0, Number(price) - Number(variant?.unit_cost)),
-            product.currency,
-          )}{" "}
-          / unit
-        </p>
-        <button
-          disabled={!variant?.available || variant.unit_cost === null}
-          onClick={() => add(product, variantId, price)}
-          className={`${button} mt-4 w-full`}
-        >
-          <Plus size={16} /> Add to order
-        </button>
-        <a
-          href={product.url}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-3 flex min-h-11 items-center justify-center text-center text-xs text-slate-500"
-        >
-          View store product ↗
-        </a>
-      </div>
-    </article>
-  );
-}
-
 function Empty({ title, text }: { title: string; text: string }) {
   return (
     <div className="rounded-2xl border border-dashed bg-white p-6 text-center sm:p-12">
@@ -1234,7 +1337,7 @@ function OrderTable({ orders }: { orders: any[] }) {
   return !orders.length ? (
     <Empty
       title="No orders yet"
-      text="Choose a product from the catalog to create a customer order."
+      text="Choose a product from the Marketplace to create a customer order."
     />
   ) : (
     <>
@@ -1248,7 +1351,7 @@ function OrderTable({ orders }: { orders: any[] }) {
               <div className="min-w-0">
                 <h2 className="break-words font-bold">{o.name}</h2>
                 <p className="mt-1 break-words text-xs text-slate-500">
-                  {o.store} · {new Date(o.created_at).toLocaleDateString()}
+                  {new Date(o.created_at).toLocaleDateString()}
                 </p>
               </div>
               <OrderStatus order={o} />
@@ -1295,7 +1398,7 @@ function OrderTable({ orders }: { orders: any[] }) {
           <thead className="border-b bg-slate-50 text-xs text-slate-500">
             <tr>
               {[
-                "Order / store",
+                "Order",
                 "Customer / products",
                 "Delivery status",
                 "Sale",
@@ -1314,7 +1417,7 @@ function OrderTable({ orders }: { orders: any[] }) {
                 <td className="p-4">
                   <p className="font-semibold">{o.name}</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {o.store} · {new Date(o.created_at).toLocaleDateString()}
+                    {new Date(o.created_at).toLocaleDateString()}
                   </p>
                 </td>
                 <td className="p-4">

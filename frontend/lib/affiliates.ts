@@ -45,17 +45,38 @@ export type Variant = {
   price: string;
   unit_cost: number | null;
   available: boolean;
-  inventory_quantity: number;
+  inventory_quantity: number | null;
+  color: string;
+  size: string;
+  image?: string;
+  options: string[];
 };
 export type AffiliateProduct = {
   id: string;
   store: string;
   currency: string;
   title: string;
-  vendor: string;
+  vendor?: string;
   image?: string;
-  url: string;
+  images: string[];
+  description: string;
+  category: string;
+  created_at: string;
+  discount_percent: number;
+  marked?: boolean;
+  inventory_quantity: number;
+  inventory_tracked: boolean;
   variants: Variant[];
+};
+export type AffiliateCustomer = {
+  id: string;
+  customer_name: string;
+  customer_phone: string;
+  address: string;
+  city: string;
+  country: string;
+  orders_count: number;
+  orders: any[];
 };
 export type CartLine = {
   product: AffiliateProduct;

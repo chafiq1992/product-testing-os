@@ -39,6 +39,9 @@ def test_seller_sessions_work_through_operator_gate_without_staff_access(market,
     assert approved.status_code == 200, approved.text
     cost(fixture_client)
     assert client.get('/api/affiliates/products', headers=headers).status_code == 200
+    assert client.get('/api/affiliates/customers', headers=headers).status_code == 200
+    assert client.put('/api/affiliates/marks', headers=headers,
+        json={'store': 'alpha', 'product_id': '10', 'marked': True}).status_code == 200
     assert client.get('/api/affiliates/dashboard', headers=headers).status_code == 200
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code == 200
     deliver(remote)
@@ -73,18 +76,25 @@ def test_staff_token_passes_gate_and_affiliate_admin_verification(market, monkey
 @pytest.fixture
 def market(monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost):
+    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink):
         model.__table__.create(engine)
     monkeypatch.setattr(db, 'SessionLocal', sessionmaker(engine, expire_on_commit=False))
-    monkeypatch.setattr(db, 'get_app_setting', lambda *args: {})
+    settings = {'affiliate_marketplace_pricing': {'discount_percent': 50, 'rules': [], 'delivery_fees': {'MAD': 0}}}
+    monkeypatch.setattr(db, 'get_app_setting', lambda store, key: settings.get(key, {}))
+    monkeypatch.setattr(db, 'set_app_setting', lambda store, key, value: settings.update({key: value}))
     connections = [{'label': 'alpha', 'shop': 'alpha.myshopify.com', 'connected': True}, {'label': 'beta', 'shop': 'beta.myshopify.com', 'connected': True}]
     monkeypatch.setattr(a, 'build_store_registry', lambda _: connections)
     monkeypatch.setattr(a, '_get_admin', lambda request: {'sub': 'admin@example.com'} if request.headers.get('authorization') == 'Bearer admin' else None)
     product = {'id': 10, 'title': 'Shoe', 'vendor': 'Vendor A', 'status': 'active', 'handle': 'shoe', 'images': [],
-               'variants': [{'id': 20, 'title': '40', 'price': '150', 'inventory_management': 'shopify', 'inventory_policy': 'deny', 'inventory_quantity': 10}]}
+               'variants': [{'id': 20, 'title': '40', 'price': '200', 'inventory_management': 'shopify', 'inventory_policy': 'deny', 'inventory_quantity': 10}]}
     remote = {}
+    remote_customers = {}
     writes = []
     def read(store, path):
+        if path.startswith('/customers/search.json'): return {'customers': list(remote_customers.values())}
+        if path.startswith('/customers/'): return {'customer': remote_customers[path.split('/')[2].split('.')[0]]}
+        if path.startswith('/custom_collections.json'): return {'custom_collections': [{'id': 99, 'title': 'Summer'}]}
+        if path.startswith('/smart_collections.json'): return {'smart_collections': []}
         if path == '/shop.json': return {'shop': {'currency': 'MAD'}}
         if path.startswith('/products/'): return {'product': product}
         if path.startswith('/products.json'): return {'products': [product, {**product, 'id': 11, 'vendor': 'Private vendor'}]}
@@ -93,13 +103,25 @@ def market(monkeypatch):
         if path.startswith('/orders/'): return {'order': remote[store, path.split('/')[2].split('.')[0]]}
         raise AssertionError(path)
     def post(store, path, payload):
+        if path == '/customers.json':
+            cid = str(900 + len(remote_customers))
+            customer = {**payload['customer'], 'id': int(cid)}
+            remote_customers[cid] = customer
+            return {'customer': customer}
         writes.append((store, payload))
+        subtotal = sum(a.cents(item['price']) * item['quantity'] for item in payload['order']['line_items']) / 100
         order = {**payload['order'], 'id': 100 + len(writes), 'name': '#1001', 'currency': 'MAD',
-                 'subtotal_price': '240', 'total_price': '240', 'fulfillments': [], 'refunds': []}
+                 'subtotal_price': str(subtotal), 'total_price': str(subtotal), 'fulfillments': [], 'refunds': []}
         remote[store, str(order['id'])] = order
         return {'order': order}
     monkeypatch.setattr(a, 'read_shopify', read)
     monkeypatch.setattr(a.shopify, '_rest_post_store', post)
+    def gql(store, query, variables):
+        cid = variables['id'].split('/')[-1]
+        customer = remote_customers[cid]
+        customer['tags'] = ','.join(sorted(set(customer['tags'].split(',')) | set(variables['tags'])))
+        return {'tagsAdd': {'node': {'id': variables['id']}, 'userErrors': []}}
+    monkeypatch.setattr(a.shopify, '_gql_store', gql)
     app = FastAPI(); app.include_router(a.router)
     client = TestClient(app)
     yield client, remote, writes, product
@@ -121,7 +143,8 @@ def account(client, username='seller', approved=True):
 
 
 def cost(client, amount=100):
-    response = client.put('/api/affiliates/admin/costs', headers=ADMIN, json={'store': 'alpha', 'product_id': '10', 'variant_id': '20', 'unit_cost': amount})
+    response = client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': round((1 - amount / 200) * 100, 2), 'rules': [], 'delivery_fees': {'MAD': 0}})
     assert response.status_code == 200, response.text
 
 
@@ -165,7 +188,8 @@ def test_catalog_limits_exact_store_vendor_and_shows_admin_cost(market):
     client, _, _, _ = market
     _, headers = account(client); cost(client)
     products = client.get('/api/affiliates/products', headers=headers).json()['data']['products']
-    assert [(p['store'], p['vendor']) for p in products] == [('alpha', 'Vendor A')]
+    assert [p['store'] for p in products] == ['alpha']
+    assert all('vendor' not in p for p in products)
     assert products[0]['variants'][0]['unit_cost'] == 100
 
 
@@ -183,10 +207,12 @@ def test_cross_store_vendor_variant_and_stock_tampering_are_rejected(market):
     assert not writes
 
 
-def test_sale_price_must_exceed_cost_and_cost_must_exist(market):
-    client, _, writes, _ = market
+def test_sale_price_must_exceed_cost_and_shopify_price_must_exist(market):
+    client, _, writes, product = market
     _, headers = account(client)
+    product['variants'][0]['price'] = '0'
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code == 422
+    product['variants'][0]['price'] = '200'
     cost(client, 120)
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code == 422
     assert not writes
@@ -275,8 +301,9 @@ def test_uncertain_submission_is_not_retried_and_can_be_reconciled(market, monke
     _, headers = account(client); cost(client)
     original = a.shopify._rest_post_store
     def timeout(*args):
-        original(*args)
-        raise TimeoutError('response lost')
+        result = original(*args)
+        if args[1] == '/orders.json': raise TimeoutError('response lost')
+        return result
     monkeypatch.setattr(a.shopify, '_rest_post_store', timeout)
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code == 502
     assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code == 409
@@ -326,3 +353,188 @@ def test_pending_cod_price_review_blocks_settlement_even_if_shopify_is_paid(mark
     a.sync_orders(sid, force=True)
     result = a.dashboard(sid)['analytics']['MAD']
     assert result['profit'] == 0 and result['available'] == 0 and result['pending_profit'] == 40
+
+
+def test_default_35_percent_cost_and_33_delivery_fee_are_snapshotted(market, monkeypatch):
+    client, remote, writes, product = market
+    # No saved pricing is the production default.
+    original_get = db.get_app_setting
+    monkeypatch.setattr(db, 'get_app_setting', lambda store, key: {} if key == 'affiliate_marketplace_pricing' else original_get(store, key))
+    sid, headers = account(client)
+    product['variants'][0]['price'] = '199'
+    listing = client.get('/api/affiliates/products', headers=headers).json()['data']['products'][0]
+    assert listing['variants'][0]['unit_cost'] == 129.35
+    assert listing['variants'][0]['price'] == '199'
+    order = create(client, headers, items=[{'product_id': '10', 'variant_id': '20', 'quantity': 1, 'sale_price': '199'}])
+    assert order['delivery_fee'] == 33 and order['pending_profit'] == 36.65 and order['profit'] == 0
+    assert 'shipping_lines' not in writes[0][1]['order']  # Fee is deducted from profit.
+    assert writes[0][1]['order']['customer']['id'] == 900
+    monkeypatch.setattr(db, 'get_app_setting', original_get)
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN, json={'discount_percent': 10, 'delivery_fees': {'MAD': 99}}).status_code == 200
+    deliver(remote)
+    a.sync_orders(sid, force=True)
+    delivered = a.dashboard(sid)['orders'][0]
+    assert delivered['cost'] == 129.35 and delivered['delivery_fee'] == 33 and delivered['profit'] == 36.65
+    assert client.post('/api/affiliates/payouts', headers=headers, json={'amount': 36.66, 'currency': 'MAD', 'destination': 'QA bank'}).status_code == 409
+
+
+def test_delivery_fee_is_once_per_order_and_partial_collection_caps_profit(market):
+    client, remote, _, _ = market
+    sid, headers = account(client)
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN, json={'discount_percent': 35, 'delivery_fees': {'MAD': 33}}).status_code == 200
+    order = create(client, headers, items=[{'product_id': '10', 'variant_id': '20', 'quantity': 3, 'sale_price': '200'}])
+    assert order['cost'] == 390 and order['pending_profit'] == 177
+    with db.SessionLocal() as session:
+        row = session.get(a.SellerOrder, order['id'])
+        row.delivery = json.dumps({'status': 'delivered', 'cash_collected': True, 'cash_amount': 500})
+        session.commit()
+    assert a.dashboard(sid)['orders'][0]['profit'] == 77
+
+
+def test_collection_pricing_is_scoped_validated_and_cannot_fail_open(market, monkeypatch):
+    client, _, _, product = market
+    _, headers = account(client)
+    rule = {'store': 'alpha', 'collection_id': '99', 'discount_percent': 20}
+    response = client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'rules': [rule], 'delivery_fees': {'MAD': 33}})
+    assert response.status_code == 200, response.text
+    listing = client.get('/api/affiliates/products', headers=headers).json()['data']['products'][0]
+    assert listing['variants'][0]['unit_cost'] == 160 and listing['discount_percent'] == 20
+    unknown = {**rule, 'collection_id': '555'}
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'rules': [unknown]}).status_code == 422
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'rules': [rule, rule]}).status_code == 422
+    original_read = a.read_shopify
+    def unavailable(store, path):
+        if 'collection_id=' in path: raise TimeoutError('Collection could not be read')
+        return original_read(store, path)
+    monkeypatch.setattr(a, 'read_shopify', unavailable)
+    listing = client.get('/api/affiliates/products', headers=headers).json()['data']
+    assert listing['products'] == [] and listing['warnings']
+    assert client.post('/api/affiliates/orders', headers=headers, json=new_order()).status_code != 200
+
+
+def test_marketplace_option_positions_stock_and_safe_description(market):
+    client, _, _, product = market
+    _, headers = account(client)
+    product.update({'product_type': 'Unisex enfants', 'created_at': '2026-10-02T10:00:00Z',
+        'body_html': '<p>Comfortable shoes</p><script>unsafe()</script><p>Every day</p>',
+        'images': [{'id': 1, 'src': 'https://example.test/red.jpg'}, {'id': 2, 'src': 'https://example.test/blue.jpg'}],
+        'options': [{'name': 'Taille', 'position': 1}, {'name': 'Couleur', 'position': 2}],
+        'variants': [{**product['variants'][0], 'option1': '40', 'option2': 'Red', 'image_id': 1},
+            {**product['variants'][0], 'id': 21, 'option1': '41', 'option2': 'Blue', 'inventory_quantity': 0, 'inventory_policy': 'continue'}]})
+    listing = client.get('/api/affiliates/products', headers=headers).json()['data']['products'][0]
+    assert listing['category'] == 'unisex_kids' and len(listing['images']) == 2
+    assert listing['description'] == 'Comfortable shoes\nEvery day'
+    assert listing['variants'][0]['color'] == 'Red' and listing['variants'][0]['size'] == '40'
+    assert listing['variants'][0]['image'] == 'https://example.test/red.jpg'
+    assert listing['variants'][1]['available'] is False and listing['inventory_quantity'] == 10
+    assert client.post('/api/affiliates/orders', headers=headers, json=new_order(items=[{'product_id': '10', 'variant_id': '21', 'quantity': 1, 'sale_price': '200'}])).status_code == 409
+
+
+@pytest.mark.parametrize('text, expected', [('Women shoes', 'women'), ('Men', 'men'), ('Filles', 'girls'), ('Garçons', 'kids'), ('Unisex adult', 'unisex_adult'), ('Unisex kids', 'unisex_kids')])
+def test_product_type_categories(text, expected):
+    from app.affiliate_marketplace import product_category
+    assert product_category({'product_type': text}) == expected
+
+
+def test_marked_products_persist_and_are_isolated(market):
+    client, _, _, product = market
+    _, first = account(client)
+    _, second = account(client, username='seller_two')
+    body = {'store': 'alpha', 'product_id': '10', 'marked': True}
+    assert client.put('/api/affiliates/marks', headers=first, json=body).status_code == 200
+    assert client.get('/api/affiliates/products', headers=first).json()['data']['products'][0]['marked'] is True
+    assert client.get('/api/affiliates/products', headers=second).json()['data']['products'][0]['marked'] is False
+    assert client.put('/api/affiliates/marks', headers=second, json={**body, 'store': 'beta'}).status_code == 403
+    assert client.put('/api/affiliates/marks', headers=first, json={**body, 'marked': False}).status_code == 200
+    assert client.get('/api/affiliates/products', headers=first).json()['data']['products'][0]['marked'] is False
+
+
+def test_customer_list_reuse_shopify_tags_and_seller_isolation(market, monkeypatch):
+    client, _, _, _ = market
+    first_id, first = account(client)
+    second_id, second = account(client, username='seller_two')
+    original_post = a.shopify._rest_post_store
+    created_customers, updated_customers = [], []
+    def post(store, path, payload):
+        if path == '/customers.json': created_customers.append(payload['customer'])
+        return original_post(store, path, payload)
+    original_gql = a.shopify._gql_store
+    def gql(store, query, variables):
+        updated_customers.append(variables)
+        return original_gql(store, query, variables)
+    monkeypatch.setattr(a.shopify, '_rest_post_store', post)
+    monkeypatch.setattr(a.shopify, '_gql_store', gql)
+    create(client, first)
+    customers = client.get('/api/affiliates/customers', headers=first).json()['data']
+    assert len(customers) == 1 and customers[0]['orders_count'] == 1
+    assert client.get('/api/affiliates/customers', headers=second).json()['data'] == []
+    assert created_customers[0]['tags'] == f'affiliate,affiliate_seller:{first_id}'
+    assert created_customers[0]['send_email_invite'] is False
+    assert client.post('/api/affiliates/orders', headers=second, json=new_order(customer_id=customers[0]['id'])).status_code == 403
+    create(client, first, request_id='another-order-001', customer_id=customers[0]['id'])
+    assert len(created_customers) == 1
+    assert client.get('/api/affiliates/customers', headers=first).json()['data'][0]['orders_count'] == 2
+    create(client, second, customer_name='Own customer details')
+    assert len(created_customers) == 1
+    assert f'affiliate_seller:{second_id}' in updated_customers[0]['tags']
+    assert f'affiliate_seller:{first_id}' in created_customers[0]['tags']
+    assert set(updated_customers[0]) == {'id', 'tags'}  # Existing Shopify personal details are untouched.
+    assert client.get('/api/affiliates/customers', headers=second).json()['data'][0]['customer_name'] == 'Own customer details'
+
+
+def test_delivery_fee_and_underpriced_orders_are_validated(market):
+    client, _, writes, _ = market
+    _, headers = account(client)
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'delivery_fees': {'MAD': -1}}).status_code == 422
+    assert client.put('/api/affiliates/admin/pricing', headers=headers,
+        json={'discount_percent': 35, 'delivery_fees': {'MAD': 33}}).status_code == 401
+    assert client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'delivery_fees': {'MAD': 33}}).status_code == 200
+    # Selling above unit cost alone is insufficient to cover delivery.
+    assert client.post('/api/affiliates/orders', headers=headers,
+        json=new_order(items=[{'product_id': '10', 'variant_id': '20', 'quantity': 1, 'sale_price': '150'}])).status_code == 422
+    assert not writes
+
+
+def test_customer_permission_failure_blocks_order_before_shopify_write(market, monkeypatch):
+    client, _, writes, _ = market
+    _, headers = account(client)
+    original_read = a.read_shopify
+    def missing_permission(store, path):
+        if path.startswith('/customers/'): raise PermissionError('Missing read_customers')
+        return original_read(store, path)
+    monkeypatch.setattr(a, 'read_shopify', missing_permission)
+    response = client.post('/api/affiliates/orders', headers=headers, json=new_order())
+    assert response.status_code == 502 and 'no order was submitted' in response.json()['detail']
+    assert not writes
+    with db.SessionLocal() as session:
+        assert session.query(a.SellerOrder).count() == 0
+
+
+def test_failed_atomic_customer_tags_block_order_and_preserve_existing_customer(market, monkeypatch):
+    client, _, writes, _ = market
+    _, first = account(client)
+    _, second = account(client, username='seller_two')
+    create(client, first)
+    monkeypatch.setattr(a.shopify, '_gql_store', lambda *args: {'tagsAdd': {'node': None, 'userErrors': [{'message': 'Permission denied'}]}})
+    response = client.post('/api/affiliates/orders', headers=second, json=new_order())
+    assert response.status_code == 502 and len(writes) == 1
+    assert client.get('/api/affiliates/customers', headers=first).json()['data'][0]['orders_count'] == 1
+
+
+def test_failed_collection_validation_preserves_admin_settings(market, monkeypatch):
+    client, _, _, _ = market
+    initial = client.get('/api/affiliates/admin/pricing', headers=ADMIN).json()['data']['settings']
+    original_read = a.read_shopify
+    def failed_collections(store, path):
+        if path.startswith('/custom_collections.json'): raise TimeoutError('Connection unavailable')
+        return original_read(store, path)
+    monkeypatch.setattr(a, 'read_shopify', failed_collections)
+    response = client.put('/api/affiliates/admin/pricing', headers=ADMIN,
+        json={'discount_percent': 35, 'rules': [{'store': 'alpha', 'collection_id': '99', 'discount_percent': 25}]})
+    assert response.status_code == 502
+    assert a.pricing_settings() == initial

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import AffiliatePricing from "@/components/AffiliatePricing";
 import { systemHealthLogin, systemHealthMe } from "@/lib/api";
 import {
   affiliateApi,
@@ -8,7 +9,6 @@ import {
   field,
   button,
   secondary,
-  AffiliateProduct,
 } from "@/lib/affiliates";
 
 export default function AffiliateAdmin() {
@@ -25,7 +25,6 @@ export default function AffiliateAdmin() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<any>(null);
   const [review, setReview] = useState<any>({ status: "pending", access: {} });
   const [references, setReferences] = useState<Record<string, string>>({});
@@ -194,7 +193,7 @@ export default function AffiliateAdmin() {
           </p>
           <h2 className="mt-1 text-xl font-bold">Seller administration</h2>
           <p className="mt-2 text-sm text-slate-500">
-            Approve sellers, assign Shopify vendors, set costs, and review
+            Approve sellers, assign Shopify vendors, set pricing, and review
             payouts.
           </p>
         </div>
@@ -317,7 +316,7 @@ export default function AffiliateAdmin() {
                 "sellers",
                 `Sellers (${data.sellers.filter((s: any) => s.status === "pending").length} pending)`,
               ],
-              ["costs", "Product costs"],
+              ["pricing", "Marketplace pricing"],
               [
                 "payouts",
                 `Payouts (${payouts.filter((p: any) => p.status === "pending").length} pending)`,
@@ -327,8 +326,6 @@ export default function AffiliateAdmin() {
                 key={id}
                 onClick={() => {
                   setTab(id);
-                  if (id === "costs" && !catalog.products.length)
-                    void loadCatalog();
                 }}
                 className={tab === id ? button : secondary}
               >
@@ -566,93 +563,7 @@ export default function AffiliateAdmin() {
               )}
             </>
           )}
-          {tab === "costs" && (
-            <>
-              <p className="mb-4 text-sm text-slate-500">
-                Set the seller's cost for each variant. Sellers choose a higher
-                sale price. Existing orders keep their original cost.
-              </p>
-              <div className="mb-4 flex gap-3">
-                <input
-                  aria-label="Search product costs"
-                  placeholder="Search title, store, or vendor"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className={field}
-                />
-                <button
-                  disabled={busy}
-                  onClick={loadCatalog}
-                  className={secondary}
-                >
-                  Refresh catalog
-                </button>
-              </div>
-              {catalog.warnings.map((w: string) => (
-                <p key={w} className="mb-3 text-xs text-amber-800">
-                  {w}
-                </p>
-              ))}
-              {busy && !catalog.products.length ? (
-                <p>Loading stores…</p>
-              ) : !catalog.products.length ? (
-                <p className="text-sm text-slate-500">
-                  No connected-store products available.
-                </p>
-              ) : (
-                <div className="space-y-4">
-                  {catalog.products
-                    .filter((p: AffiliateProduct) =>
-                      `${p.title} ${p.vendor} ${p.store}`
-                        .toLowerCase()
-                        .includes(search.toLowerCase()),
-                    )
-                    .map((product: AffiliateProduct) => (
-                      <div
-                        key={`${product.store}:${product.id}`}
-                        className="rounded-xl border p-4"
-                      >
-                        <h3 className="text-sm font-bold">{product.title}</h3>
-                        <p className="mb-3 mt-1 text-xs text-slate-500">
-                          {product.store} · {product.vendor} ·{" "}
-                          {product.currency}
-                        </p>
-                        <div className="space-y-2">
-                          {product.variants.map((v) => (
-                            <CostEditor
-                              key={`${v.id}:${v.unit_cost}`}
-                              product={product}
-                              variant={v}
-                              saved={(cost: number) => {
-                                setNotice("Product cost saved.");
-                                setCatalog((previous: any) => ({
-                                  ...previous,
-                                  products: previous.products.map(
-                                    (p: AffiliateProduct) =>
-                                      p.id === product.id &&
-                                      p.store === product.store
-                                        ? {
-                                            ...p,
-                                            variants: p.variants.map((item) =>
-                                              item.id === v.id
-                                                ? { ...item, unit_cost: cost }
-                                                : item,
-                                            ),
-                                          }
-                                        : p,
-                                  ),
-                                }));
-                              }}
-                              onError={setError}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </>
-          )}
+          {tab === "pricing" && <AffiliatePricing />}
           {tab === "payouts" && (
             <>
               {!payouts.length ? (
@@ -740,72 +651,6 @@ export default function AffiliateAdmin() {
         </>
       )}
     </section>
-  );
-}
-
-function CostEditor({
-  product,
-  variant,
-  saved,
-  onError,
-}: {
-  product: AffiliateProduct;
-  variant: AffiliateProduct["variants"][number];
-  saved: (cost: number) => void;
-  onError: (message: string) => void;
-}) {
-  const [cost, setCost] = useState(
-    variant.unit_cost === null ? "" : String(variant.unit_cost),
-  );
-  const [busy, setBusy] = useState(false);
-  async function save(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    try {
-      await affiliateApi(
-        "/admin/costs",
-        {
-          store: product.store,
-          product_id: product.id,
-          variant_id: variant.id,
-          unit_cost: cost,
-        },
-        "PUT",
-        true,
-      );
-      saved(Number(cost));
-    } catch (err: any) {
-      onError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <form
-      onSubmit={save}
-      className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"
-    >
-      <span className="min-w-40 flex-1 text-sm">{variant.title}</span>
-      <span className="text-xs text-slate-500">
-        Store price {money(variant.price, product.currency)}
-      </span>
-      <label className="text-xs">
-        Seller cost
-        <input
-          required
-          type="number"
-          min="0"
-          step="0.01"
-          aria-label={`Cost for ${product.title} ${variant.title}`}
-          value={cost}
-          onChange={(e) => setCost(e.target.value)}
-          className={`${field} mt-1 max-w-32`}
-        />
-      </label>
-      <button disabled={busy} className={secondary}>
-        Save cost
-      </button>
-    </form>
   );
 }
 
