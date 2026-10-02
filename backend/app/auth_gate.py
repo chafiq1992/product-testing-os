@@ -84,6 +84,16 @@ SELF_VERIFIED_PATHS = frozenset({
     "/api/shopify/oauth/callback",
     "/api/connections/meta/callback",
     "/api/social-agent/scheduler/tick",
+    # Seller login/application and handlers that verify seller bearer sessions.
+    # Administrative affiliate routes remain behind the operator gate.
+    "/api/affiliates/apply",
+    "/api/affiliates/login",
+    "/api/affiliates/logout",
+    "/api/affiliates/me",
+    "/api/affiliates/products",
+    "/api/affiliates/orders",
+    "/api/affiliates/dashboard",
+    "/api/affiliates/payouts",
 })
 # The confirmation team has its own agent/admin tokens, checked in every
 # handler under this prefix; its members are not operators.

@@ -1,0 +1,71 @@
+export const affiliateBase = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+
+export async function affiliateApi(
+  path: string,
+  body?: unknown,
+  method = body === undefined ? "GET" : "POST",
+  admin = false,
+) {
+  const token =
+    typeof window === "undefined"
+      ? ""
+      : localStorage.getItem(
+          admin ? "ptos_system_admin_token" : "ptos_affiliate_token",
+        ) || "";
+  const response = await fetch(`${affiliateBase}/api/affiliates${path}`, {
+    method,
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error)
+    throw new Error(
+      typeof result.detail === "string"
+        ? result.detail
+        : result.error || `Request failed (${response.status})`,
+    );
+  return result.data;
+}
+
+export function money(value: number | string, currency = "MAD") {
+  return new Intl.NumberFormat("en", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
+export type Variant = {
+  id: string;
+  title: string;
+  price: string;
+  unit_cost: number | null;
+  available: boolean;
+  inventory_quantity: number;
+};
+export type AffiliateProduct = {
+  id: string;
+  store: string;
+  currency: string;
+  title: string;
+  vendor: string;
+  image?: string;
+  url: string;
+  variants: Variant[];
+};
+export type CartLine = {
+  product: AffiliateProduct;
+  variant: Variant;
+  quantity: number;
+  sale_price: string;
+};
+export const field =
+  "min-h-11 w-full min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-base outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 md:text-sm";
+export const button =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-40";
+export const secondary =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-40";

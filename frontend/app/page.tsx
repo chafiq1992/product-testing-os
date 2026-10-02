@@ -100,6 +100,7 @@ export default function HomePage(){
           <Link href="/wholesale" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white">
             Wholesale
           </Link>
+          <Link href="/affiliates" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white">Seller hub</Link>
           <Link href="/system-health" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white">
             System Health
           </Link>

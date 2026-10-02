@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
+import AffiliateDeliveryConnection from "@/components/AffiliateDeliveryConnection"
 import { ArrowRight, CheckCircle2, Facebook, RefreshCw, ShieldCheck, Store, Users } from "lucide-react"
 import { systemHealthLogin, systemHealthMe } from "@/lib/api"
 import { useShopifyStores } from "@/lib/shopifyStores"
@@ -160,6 +161,7 @@ export default function ConnectionsPage() {
             <div className="p-5 sm:p-6"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Your stores</h3><span className="text-xs font-semibold text-slate-500">{connectedShops} connected / {stores.length} total</span></div><div className="max-h-80 space-y-2 overflow-auto pr-1">{stores.map(item => <div key={item.label} className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-3 ${item.label === store ? "border-emerald-300 bg-emerald-50/50" : "bg-slate-50"}`}><div className="min-w-0"><p className="flex items-center gap-1.5 truncate text-sm font-semibold">{item.label}{item.connected && <CheckCircle2 className="h-4 w-4 text-emerald-600" />}</p><p className="truncate text-xs text-slate-500">{item.shop || "No shop connected"}</p></div><Link href={`/shopify-connect?store=${encodeURIComponent(item.label)}`} className="shrink-0 text-xs font-semibold text-emerald-800 hover:underline">{item.connected ? "Manage" : "Connect"}</Link></div>)}</div></div>
           </section>
         </div>
+        <AffiliateDeliveryConnection />
         <section className="mt-6 rounded-2xl border bg-white p-5 shadow-sm sm:p-6"><h2 className="font-bold">More advertising channels</h2><p className="mt-1 text-sm text-slate-500">These connections are planned for a later release.</p><div className="mt-4 grid gap-3 sm:grid-cols-2">{["Google Ads", "TikTok Ads"].map(name => <div key={name} className="flex items-center justify-between rounded-lg border px-4 py-3"><span className="text-sm font-semibold">{name}</span><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">Coming soon</span></div>)}</div></section>
       </>}
       {!authorized && error && <p role="alert" className="mt-4 max-w-md rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</p>}

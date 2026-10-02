@@ -8,7 +8,7 @@ import axios from 'axios'
 // asks for it. Pages used by people who are not operators keep their own login:
 // wholesale vendors, the confirmation team and its admins.
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-const OWN_LOGIN = [/^\/wholesale\/?$/, /^\/confirmation(\/|$)/, /^\/confirmation-admin(\/|$)/, /^\/legal(\/|$)/]
+const OWN_LOGIN = [/^\/affiliates\/?$/, /^\/wholesale\/?$/, /^\/confirmation(\/|$)/, /^\/confirmation-admin(\/|$)/, /^\/legal(\/|$)/]
 const ADMIN_TOKEN_KEY = 'ptos_system_admin_token'
 
 function hasOwnLogin(path: string) {

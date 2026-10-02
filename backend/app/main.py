@@ -11423,6 +11423,8 @@ async def api_marketing_media_buyer(req: MarketingMediaBuyerRequest):
 
 from app.wholesale_batches import router as wholesale_batches_router, recover_batches
 app.include_router(wholesale_batches_router)
+from app.affiliates import router as affiliates_router
+app.include_router(affiliates_router)
 
 
 @app.on_event("startup")
