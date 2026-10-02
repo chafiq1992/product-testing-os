@@ -73,9 +73,13 @@ See [OpenAI streaming responses](https://developers.openai.com/api/docs/guides/s
 
 The output-token limit covers both reasoning and the visible report. High
 reasoning can exhaust that budget before producing a complete JSON report.
-Token cutoffs identify the configured limit; at the 16,000-token settings cap,
+New configurations default to a 32,000-token budget with Medium reasoning;
+existing saved settings are preserved. Token cutoffs identify the configured
+limit; at the 32,000-token settings cap,
 the error recommends reducing reasoning or selecting another model rather than
 offering an unavailable budget increase. Incomplete reports are never saved.
+The report prompt limits repeated explanations and prioritizes five actions,
+two creative concepts and short evidence lists while retaining all nine stages.
 See [OpenAI reasoning token budgets](https://developers.openai.com/api/docs/guides/reasoning).
 
 First-screen and lower-page capture results are independent. Buying-section

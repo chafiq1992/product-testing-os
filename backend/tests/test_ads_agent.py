@@ -78,7 +78,7 @@ def test_settings_are_store_scoped_and_keys_never_enter_settings(monkeypatch):
         config.save_settings("irrakids", config.AnalyzerSettings(model="gpt-5-not-available"))
 
 
-@pytest.mark.parametrize("value", [{"min_purchases": 0}, {"max_output_tokens": 100}, {"min_spend": float("nan")}, {"instructions": "x" * 6001}, {"enabled": "true"}])
+@pytest.mark.parametrize("value", [{"min_purchases": 0}, {"max_output_tokens": 100}, {"max_output_tokens": 33000}, {"min_spend": float("nan")}, {"instructions": "x" * 6001}, {"enabled": "true"}])
 def test_invalid_settings_are_rejected(value):
     with pytest.raises(ValueError):
         config.AnalyzerSettings.model_validate(value)
@@ -150,7 +150,7 @@ def test_selected_model_schema_images_and_sample_safeguards(monkeypatch):
     sdk.with_options.return_value = sdk
     sdk.responses.stream.return_value = nullcontext(FakeResponseStream(SimpleNamespace(status="completed", output_text=json.dumps(base_report()))))
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
-    settings = config.AnalyzerSettings(model="gpt-6-astra", reasoning_effort="high", target_cpa=20.0)
+    settings = config.AnalyzerSettings(model="gpt-6-astra", reasoning_effort="high", target_cpa=20.0, max_output_tokens=8000)
     result = reports.build_report(settings=settings, campaign_metrics={"spend": 100, "purchases": 2, "currency": "USD"}, ad_creatives=[], product_info={}, customer_profile={}, clarity_insights={}, previous_analysis_context=None, visual_evidence=[], image_data_urls=[])
     assert result["overall_verdict"] == "hold" and result["product_signal"] == "inconclusive"
     assert result["confidence_level"] == "low" and not result["visual_findings"]

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app import db
 
 LATEST_MODELS = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna")
-MAX_ANALYSIS_OUTPUT_TOKENS = 16000
+MAX_ANALYSIS_OUTPUT_TOKENS = 32000
 _model_cache: dict = {}
 _model_lock = threading.Lock()
 
@@ -22,7 +22,7 @@ class AnalyzerSettings(BaseModel):
     enabled: bool = True
     model: str = Field(default=LATEST_MODELS[0], pattern=r"^[a-zA-Z0-9._:-]{1,100}$")
     reasoning_effort: Literal["low", "medium", "high"] = "medium"
-    max_output_tokens: int = Field(default=8000, ge=3000, le=MAX_ANALYSIS_OUTPUT_TOKENS)
+    max_output_tokens: int = Field(default=32000, ge=3000, le=MAX_ANALYSIS_OUTPUT_TOKENS)
     profiler_enabled: bool = True
     reviewer_enabled: bool = False
     reviewer_model: str = Field(default=LATEST_MODELS[0], pattern=r"^[a-zA-Z0-9._:-]{1,100}$")
