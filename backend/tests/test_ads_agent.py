@@ -122,6 +122,19 @@ def test_missing_openai_key_identifies_server_configuration(monkeypatch):
     config._model_cache.clear()
 
 
+
+class FakeResponseStream:
+    def __init__(self, response):
+        self.response = response
+
+    def __iter__(self):
+        event_type = "response." + self.response.status
+        yield SimpleNamespace(type=event_type, response=self.response)
+
+    def get_final_response(self):
+        return self.response
+
+
 def base_report():
     return {"overall_verdict": "scale", "product_signal": "potential_winner", "confidence_level": "high", "summary": "A promising campaign.",
             "warnings": [], "data_gaps": [], "funnel_stages": [{"stage": stage, "status": "unknown", "evidence": [], "hypothesis": "Unknown", "suggested_test": "Measure"} for stage in ["delivery", "hook", "creative", "ad_cta", "landing_page", "offer", "checkout", "fulfillment", "tracking"]],
@@ -135,7 +148,7 @@ def base_report():
 def test_selected_model_schema_images_and_sample_safeguards(monkeypatch):
     sdk = Mock()
     sdk.with_options.return_value = sdk
-    sdk.responses.stream.return_value = nullcontext(SimpleNamespace(get_final_response=lambda: SimpleNamespace(status="completed", output_text=json.dumps(base_report()))))
+    sdk.responses.stream.return_value = nullcontext(FakeResponseStream(SimpleNamespace(status="completed", output_text=json.dumps(base_report()))))
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
     settings = config.AnalyzerSettings(model="gpt-6-astra", reasoning_effort="high", target_cpa=20.0)
     result = reports.build_report(settings=settings, campaign_metrics={"spend": 100, "purchases": 2, "currency": "USD"}, ad_creatives=[], product_info={}, customer_profile={}, clarity_insights={}, previous_analysis_context=None, visual_evidence=[], image_data_urls=[])
@@ -151,7 +164,7 @@ def test_selected_model_schema_images_and_sample_safeguards(monkeypatch):
 def test_independent_reviewer_blocks_unsupported_winner(monkeypatch):
     sdk = Mock()
     sdk.with_options.return_value = sdk
-    sdk.responses.stream.side_effect = [nullcontext(SimpleNamespace(get_final_response=lambda value=value: SimpleNamespace(status="completed", output_text=json.dumps(value)))) for value in (base_report(), {"decision_supported": False, "summary": "Attribution is missing", "concerns": ["No confirmed margin"]})]
+    sdk.responses.stream.side_effect = [nullcontext(FakeResponseStream(SimpleNamespace(status="completed", output_text=json.dumps(value)))) for value in (base_report(), {"decision_supported": False, "summary": "Attribution is missing", "concerns": ["No confirmed margin"]})]
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
     result = reports.build_report(settings=config.AnalyzerSettings(reviewer_enabled=True, reviewer_model="gpt-6-astra", target_cpa=20.0), campaign_metrics={"spend": 100, "purchases": 20, "currency": "USD"}, ad_creatives=[], product_info={}, customer_profile={}, clarity_insights={}, previous_analysis_context=None, visual_evidence=[], image_data_urls=[])
     assert sdk.responses.stream.call_args.kwargs["model"] == "gpt-6-astra"
@@ -162,9 +175,9 @@ def test_independent_reviewer_blocks_unsupported_winner(monkeypatch):
 def test_incomplete_response_never_becomes_a_saved_report(monkeypatch):
     sdk = Mock()
     sdk.with_options.return_value = sdk
-    sdk.responses.stream.return_value = nullcontext(SimpleNamespace(get_final_response=lambda: SimpleNamespace(status="incomplete", output_text='{}')))
+    sdk.responses.stream.return_value = nullcontext(FakeResponseStream(SimpleNamespace(status="incomplete", output_text='{}')))
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
-    with pytest.raises(RuntimeError, match="did not finish"):
+    with pytest.raises(RuntimeError, match="incomplete analysis"):
         reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings())
 
 
@@ -319,11 +332,24 @@ def test_stream_without_completed_event_closes_and_never_returns_partial_report(
     @contextmanager
     def interrupted(**kwargs):
         try:
-            yield SimpleNamespace(get_final_response=Mock(side_effect=RuntimeError("Didn't receive a response.completed event")))
+            yield iter([SimpleNamespace(type="response.output_text.delta", delta='{"partial":')])
         finally:
             closed.append(True)
     sdk.responses.stream.side_effect = interrupted
     monkeypatch.setattr(reports, "get_client", lambda: sdk)
-    with pytest.raises(reports.AnalyzerResponseError, match="did not finish"):
+    with pytest.raises(reports.AnalyzerResponseError, match="connection ended"):
         reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings())
     assert closed == [True]
+
+
+def test_stream_token_cutoff_identifies_configured_budget_before_sdk_finalization(monkeypatch):
+    sdk = Mock()
+    sdk.with_options.return_value = sdk
+    terminal = SimpleNamespace(status="incomplete", incomplete_details=SimpleNamespace(reason="max_output_tokens"))
+    stream = FakeResponseStream(terminal)
+    stream.get_final_response = Mock(side_effect=RuntimeError("SDK has no completed response"))
+    sdk.responses.stream.return_value = nullcontext(stream)
+    monkeypatch.setattr(reports, "get_client", lambda: sdk)
+    with pytest.raises(reports.AnalyzerResponseError, match="8,000-token output limit"):
+        reports.structured_response(reports.AdsReport, instructions="test", content=[], model="gpt-6.1-sol", settings=config.AnalyzerSettings(reasoning_effort="high"))
+    stream.get_final_response.assert_not_called()

@@ -164,6 +164,21 @@ def structured_response(contract, *, instructions: str, content: list, model: st
     # Stream the long report so the HTTP response starts before reasoning ends.
     # Avoid replaying expensive inference automatically after a timeout.
     with get_client().with_options(timeout=600, max_retries=0).responses.stream(**kwargs) as stream:
+        terminal = None
+        for event in stream:
+            if event.type in ("response.completed", "response.incomplete", "response.failed"):
+                terminal = event.response
+            elif event.type == "error":
+                raise AnalyzerResponseError("OpenAI interrupted the analysis stream. Retry the analysis.")
+        if terminal is not None and terminal.status == "incomplete":
+            reason = getattr(getattr(terminal, "incomplete_details", None), "reason", None)
+            if reason == "max_output_tokens":
+                raise AnalyzerResponseError(f"OpenAI reached the {settings.max_output_tokens:,}-token output limit before finishing the report. Increase the output token limit or lower reasoning depth in AI agent settings.")
+            raise AnalyzerResponseError("OpenAI returned an incomplete analysis. Retry the analysis.")
+        if terminal is not None and terminal.status == "failed":
+            raise AnalyzerResponseError("OpenAI could not finish the analysis stream. Retry the analysis.")
+        if terminal is None:
+            raise AnalyzerResponseError("The OpenAI connection ended before the completed report arrived. Retry the analysis.")
         try:
             response = stream.get_final_response()
         except RuntimeError as error:
