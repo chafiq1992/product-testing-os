@@ -61,6 +61,8 @@ test("every static seller interface phrase has an Arabic translation", () => {
     "components/AffiliateMarketplace.tsx",
     "components/AffiliateModal.tsx",
     "components/AffiliateOrderDetails.tsx",
+    "components/AffiliateOrderTracking.tsx",
+    "components/AffiliateOrderCancellation.tsx",
     "components/AffiliateOrderEditor.tsx",
     "components/AffiliateReceipt.tsx",
     "components/AffiliatePayoutRequest.tsx",

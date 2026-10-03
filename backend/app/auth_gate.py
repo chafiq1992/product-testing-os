@@ -99,6 +99,7 @@ SELF_VERIFIED_PATHS = frozenset({
     "/api/affiliates/marks",
     "/api/affiliates/cities",
     "/api/affiliates/order-details",
+    "/api/affiliates/order-cancellation",
 })
 # The confirmation team has its own agent/admin tokens, checked in every
 # handler under this prefix; its members are not operators.

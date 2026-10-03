@@ -42,6 +42,8 @@ def test_seller_sessions_work_through_operator_gate_without_staff_access(market,
     assert client.get('/api/affiliates/products', headers=headers).status_code == 200
     assert client.get('/api/affiliates/customers', headers=headers).status_code == 200
     assert client.get('/api/affiliates/bank-accounts', headers=headers).status_code == 200
+    assert client.post('/api/affiliates/order-cancellation', headers=headers,
+        json={'order_id': 'missing-order', 'note': 'Cancellation gate QA'}).status_code == 404
     assert client.put('/api/affiliates/bank-accounts', headers=headers, json={'accounts': [{'bank':'cih','rib':'123456789012345678901234'}]}).status_code == 200
     assert client.put('/api/affiliates/marks', headers=headers,
         json={'store': 'alpha', 'product_id': '10', 'marked': True}).status_code == 200
@@ -79,7 +81,7 @@ def test_staff_token_passes_gate_and_affiliate_admin_verification(market, monkey
 @pytest.fixture
 def market(monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink, a.OrderReceipt, a.BankAccount, a.PayoutMethod):
+    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink, a.OrderReceipt, a.BankAccount, a.PayoutMethod, a.OrderCancellation):
         model.__table__.create(engine)
     monkeypatch.setattr(db, 'SessionLocal', sessionmaker(engine, expire_on_commit=False))
     settings = {'affiliate_marketplace_pricing': {'discount_percent': 50, 'rules': [], 'delivery_fees': {'MAD': 0}}}
@@ -107,6 +109,12 @@ def market(monkeypatch):
         if path.startswith('/orders/'): return {'order': remote[store, path.split('/')[2].split('.')[0]]}
         raise AssertionError(path)
     def post(store, path, payload):
+        if path.endswith('/cancel.json'):
+            order = remote[store, path.split('/')[2]]
+            assert not a.order_has_shipped(order)
+            assert payload['amount'] == '0.00' and payload['email'] is False
+            order.update({'cancelled_at': datetime.utcnow().isoformat(), 'cancel_reason': payload['reason']})
+            return {'order': order}
         if path == '/customers.json':
             cid = str(900 + len(remote_customers))
             customer = {**payload['customer'], 'id': int(cid)}
@@ -123,10 +131,17 @@ def market(monkeypatch):
     monkeypatch.setattr(a.shopify, '_rest_post_store', post)
     def gql(store, query, variables):
         cid = variables['id'].split('/')[-1]
+        if 'orderUpdate' in query:
+            order = remote[store, cid]
+            order['note'] = variables['input']['note']
+            order['tags'] = ','.join(sorted(set(order['tags'].split(',')) | set(variables['tags'])))
+            return {'orderUpdate': {'order': {'id': variables['id'], 'note': order['note']}, 'userErrors': []},
+                'tagsAdd': {'node': {'id': variables['id']}, 'userErrors': []}}
         customer = remote_customers[cid]
         customer['tags'] = ','.join(sorted(set(customer['tags'].split(',')) | set(variables['tags'])))
         return {'tagsAdd': {'node': {'id': variables['id']}, 'userErrors': []}}
     monkeypatch.setattr(a.shopify, '_gql_store', gql)
+    monkeypatch.setattr(a.shopify, '_gql_store_once', lambda *args, **kwargs: gql(*args))
     app = FastAPI(); app.include_router(a.router)
     client = TestClient(app)
     yield client, remote, writes, product
@@ -166,6 +181,193 @@ def create(client, headers, **changes):
 
 def deliver(remote, store='alpha', oid='101', **changes):
     remote[store, oid].update({'financial_status': 'paid', 'fulfillments': [{'shipment_status': 'delivered', 'tracking_number': 'T1'}], **changes})
+
+
+def cancel(client, headers, order, note='Customer requested cancellation'):
+    return client.post('/api/affiliates/order-cancellation', headers=headers, json={'order_id': order['id'], 'note': note})
+
+
+@pytest.mark.parametrize('note', ['', '   ', '\n\t', 'x' * 1001])
+def test_cancellation_requires_valid_note_before_remote_writes(market, note):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    assert cancel(client, headers, order, note).status_code == 422
+    assert not remote['alpha', '101'].get('cancelled_at')
+    with db.SessionLocal() as session:
+        assert session.query(a.OrderCancellation).count() == 0
+
+
+def test_unfulfilled_cancel_preserves_notes_tags_and_is_idempotent(market, monkeypatch):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    original = remote['alpha', '101']
+    original['note'] = 'Please call before arrival'
+    original['tags'] += ',VIP'
+    original_tags = set(original['tags'].split(','))
+    native = a.shopify._rest_post_store
+    calls = []
+    def counted(*args):
+        calls.append(args); return native(*args)
+    monkeypatch.setattr(a.shopify, '_rest_post_store', counted)
+    response = cancel(client, headers, order, '  Wrong address  ')
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    assert data['status'] == 'cancelled' and data['pending_profit'] == data['profit'] == 0
+    assert data['affiliate_cancelled'] and data['cancellation']['note_synced']
+    assert original['note'] == 'Please call before arrival\n\nAffiliate cancelled: Wrong address'
+    assert original_tags <= set(original['tags'].split(','))
+    assert 'Cancelled by affiliate' in original['tags']
+    assert cancel(client, headers, order).status_code == 200
+    assert len(calls) == 1
+    assert client.get('/api/affiliates/dashboard', headers=headers).json()['data']['orders'][0]['affiliate_cancelled']
+    # The shared customer receipt retains the original creation note, not internal audit notes.
+    receipt = client.get('/api/affiliates/order-details', headers=headers, params={'order_id': order['id']}).json()['data']['receipt']
+    assert 'Affiliate cancelled' not in receipt['note']
+    with db.SessionLocal() as session:
+        session.delete(session.get(a.OrderReceipt, order['id']))
+        session.commit()
+    legacy = client.get('/api/affiliates/order-details', headers=headers, params={'order_id': order['id']}).json()['data']['receipt']
+    assert legacy['note'] == 'Please call before arrival'
+
+
+@pytest.mark.parametrize('changes', [
+    {'fulfillment_status': 'fulfilled'}, {'fulfillment_status': 'partial'},
+    {'fulfillments': [{'status': 'success', 'shipment_status': 'in_transit'}]},
+])
+def test_fulfilled_cancellation_only_marks_and_keeps_actual_tracking(market, monkeypatch, changes):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    remote['alpha', '101'].update(changes)
+    def forbidden(*_): raise AssertionError('Fulfilled orders must not be cancelled')
+    monkeypatch.setattr(a.shopify, '_rest_post_store', forbidden)
+    response = cancel(client, headers, order)
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    assert data['cancellation']['state'] == 'marked' and data['cancellation']['note_synced']
+    assert data['status'] != 'cancelled' and data['pending_profit'] == 40
+    assert not remote['alpha', '101'].get('cancelled_at')
+
+
+def test_cancellation_rechecks_fulfillment_after_note_write(market, monkeypatch):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    gql = a.shopify._gql_store_once
+    def fulfilled_during_write(*args, **kwargs):
+        result = gql(*args, **kwargs)
+        remote['alpha', '101']['fulfillment_status'] = 'fulfilled'
+        return result
+    monkeypatch.setattr(a.shopify, '_gql_store_once', fulfilled_during_write)
+    monkeypatch.setattr(a.shopify, '_rest_post_store', lambda *_: pytest.fail('Fulfillment race must not cancel'))
+    result = cancel(client, headers, order)
+    assert result.status_code == 200 and result.json()['data']['cancellation']['state'] == 'marked'
+
+
+@pytest.mark.parametrize('actual_cancelled', [False, True])
+def test_uncertain_cancellation_never_retries_native_write(market, monkeypatch, actual_cancelled):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    calls = []
+    def timeout(*args):
+        calls.append(args)
+        if actual_cancelled: remote['alpha', '101']['cancelled_at'] = datetime.utcnow().isoformat()
+        raise a.requests.Timeout('Synthetic timeout')
+    monkeypatch.setattr(a.shopify, '_rest_post_store', timeout)
+    response = cancel(client, headers, order)
+    assert response.status_code == (200 if actual_cancelled else 502)
+    again = cancel(client, headers, order)
+    assert again.status_code == (200 if actual_cancelled else 409)
+    assert len(calls) == 1
+    data = client.get('/api/affiliates/order-details', headers=headers, params={'order_id': order['id']}).json()['data']['order']
+    assert data['cancellation']['state'] == ('cancelled' if actual_cancelled else 'needs_review')
+    assert data['pending_profit'] == (0 if actual_cancelled else 40)
+
+
+def test_failed_note_write_never_cancels_or_claims_synced(market, monkeypatch):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    monkeypatch.setattr(a.shopify, '_gql_store_once', lambda *_, **__: {'orderUpdate': {'userErrors': [{'message': 'No access'}]}, 'tagsAdd': {'userErrors': []}})
+    monkeypatch.setattr(a.shopify, '_rest_post_store', lambda *_: pytest.fail('No cancel before note confirmation'))
+    assert cancel(client, headers, order).status_code == 502
+    with db.SessionLocal() as session:
+        row = session.get(a.OrderCancellation, order['id'])
+        assert row.state == 'needs_review' and not row.note_synced
+    assert not remote['alpha', '101'].get('cancelled_at')
+
+
+def test_manual_cancellation_reconciliation_uses_reads_only(market, monkeypatch):
+    client, remote, _, _ = market
+    sid, headers = account(client); cost(client)
+    order = create(client, headers)
+    monkeypatch.setattr(a.shopify, '_rest_post_store', lambda *_: (_ for _ in ()).throw(a.requests.Timeout('Synthetic timeout')))
+    assert cancel(client, headers, order).status_code == 502
+    remote['alpha', '101']['cancelled_at'] = datetime.utcnow().isoformat()
+    result = client.post(f'/api/affiliates/admin/sellers/{sid}/sync', headers=ADMIN)
+    assert result.status_code == 200
+    data = result.json()['data']['orders'][0]
+    assert data['cancellation']['state'] == 'cancelled' and data['cancellation']['note_synced']
+    assert cancel(client, headers, order).status_code == 200
+
+
+def test_cancellation_note_timeout_uses_no_retrying_graphql_helper(market, monkeypatch):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    calls = []
+    gql = a.shopify._gql_store_once
+    def timeout_after_note(*args, **kwargs):
+        calls.append(args)
+        gql(*args, **kwargs)
+        raise a.requests.Timeout('Synthetic note write timeout')
+    monkeypatch.setattr(a.shopify, '_gql_store_once', timeout_after_note)
+    monkeypatch.setattr(a.shopify, '_gql_store', lambda *_: pytest.fail('Cancellation must use the single-attempt helper'))
+    monkeypatch.setattr(a.shopify, '_rest_post_store', lambda *_: pytest.fail('Uncertain note response must not cancel'))
+    assert cancel(client, headers, order).status_code == 502
+    assert cancel(client, headers, order).status_code == 409
+    assert len(calls) == 1 and not remote['alpha', '101'].get('cancelled_at')
+
+
+def test_cancellation_and_details_enforce_seller_ownership_before_network(market, monkeypatch):
+    client, _, _, _ = market
+    _, owner = account(client); cost(client)
+    order = create(client, owner)
+    _, stranger = account(client, username='stranger')
+    monkeypatch.setattr(a, 'read_shopify', lambda *_: pytest.fail('Unauthorized order must not call Shopify'))
+    assert cancel(client, stranger, order).status_code == 404
+    assert cancel(client, {}, order).status_code == 401
+    assert client.get('/api/affiliates/order-details', headers=stranger, params={'order_id': order['id'], 'refresh': True}).status_code == 404
+    _, pending = account(client, username='pending', approved=False)
+    assert cancel(client, pending, order).status_code == 403
+
+
+def test_delivery_stage_is_separate_from_affiliate_cancel_and_fulfillment(market, monkeypatch):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client)
+    order = create(client, headers)
+    remote['alpha', '101']['fulfillment_status'] = 'fulfilled'
+    with db.SessionLocal() as session:
+        row = session.get(a.SellerOrder, order['id'])
+        row.delivery = json.dumps({'status': 'out_for_delivery', 'raw_status': 'Mise en distribution', 'tracking_number': 'QA-T1', 'updated_at': '2026-10-03T10:00:00Z'})
+        session.commit()
+    monkeypatch.setattr(a.shopify, '_rest_post_store', lambda *_: pytest.fail('In delivery order must not cancel'))
+    assert cancel(client, headers, order).status_code == 200
+    data = client.get('/api/affiliates/order-details', headers=headers, params={'order_id': order['id'], 'refresh': True}).json()['data']['order']
+    assert data['status'] == 'out_for_delivery' and data['delivery_status'] == 'Mise en distribution'
+    assert data['fulfillment_status'] == 'fulfilled' and data['tracking_number'] == 'QA-T1'
+    assert data['status_source'] == 'delivery_app' and not data['can_cancel_in_shopify']
+    assert data['affiliate_cancelled'] and data['pending_profit'] == 40
+    deliver(remote)
+    with db.SessionLocal() as session:
+        row = session.get(a.SellerOrder, order['id'])
+        row.delivery = json.dumps({'status': 'delivered', 'raw_status': 'Livré', 'cash_collected': True})
+        session.commit()
+    data = client.get('/api/affiliates/order-details', headers=headers, params={'order_id': order['id'], 'refresh': True}).json()['data']['order']
+    assert data['profit_earned'] and data['profit'] == 40 and data['affiliate_cancelled']
 
 
 def test_pending_sellers_and_anonymous_admin_are_blocked(market):

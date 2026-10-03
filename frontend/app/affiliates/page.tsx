@@ -11,6 +11,7 @@ import AffiliateMarketplace from "@/components/AffiliateMarketplace";
 import AffiliateModal from "@/components/AffiliateModal";
 import AffiliateOrderEditor from "@/components/AffiliateOrderEditor";
 import AffiliateOrderDetails from "@/components/AffiliateOrderDetails";
+import AffiliateOrderTracking from "@/components/AffiliateOrderTracking";
 import AffiliateCustomers from "@/components/AffiliateCustomers";
 import {
   BarChart3,
@@ -73,6 +74,7 @@ function AffiliateWorkspace() {
   const [notice, setNotice] = useState("");
   const [currency, setCurrency] = useState("MAD");
   const [orderStatus, setOrderStatus] = useState("");
+  const [orderGroup, setOrderGroup] = useState("all");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customers, setCustomers] = useState<AffiliateCustomer[]>([]);
   const [customerId, setCustomerId] = useState("");
@@ -349,6 +351,8 @@ function AffiliateWorkspace() {
     productsUpdatedAt.current = 0;
     setEditingOrder(false);
     setSelectedOrder("");
+    setOrderGroup("all");
+    setOrderStatus("");
     setCreatedOrder("");
     setCities([]);
     localStorage.removeItem("ptos_affiliate_token");
@@ -672,7 +676,9 @@ function AffiliateWorkspace() {
   );
   const orders = data.orders.filter(
     (o: any) =>
-      o.currency === currency && (!orderStatus || o.status === orderStatus),
+      o.currency === currency &&
+      (!orderStatus || o.status === orderStatus) &&
+      (orderGroup !== "affiliate_cancelled" || o.affiliate_cancelled),
   );
   const cartCurrency = cart[0]?.product.currency || currency;
   const deliveryFee = Number(pricing.delivery_fees[cartCurrency] ?? NaN);
@@ -1091,6 +1097,28 @@ function AffiliateWorkspace() {
                   )}
                   {!editingOrder && (
                     <>
+                      <div
+                        role="group"
+                        aria-label={t("Order groups")}
+                        className="mb-4 grid grid-cols-2 gap-2"
+                      >
+                        {[
+                          ["all", "All orders"],
+                          ["affiliate_cancelled", "Cancelled by affiliate"],
+                        ].map(([value, label]) => (
+                          <button
+                            key={value}
+                            aria-pressed={orderGroup === value}
+                            onClick={() => {
+                              setOrderGroup(value);
+                              setOrderStatus("");
+                            }}
+                            className={`${secondary} min-w-0 whitespace-normal text-sm ${orderGroup === value ? "border-emerald-600 bg-emerald-50 text-emerald-800" : ""}`}
+                          >
+                            {t(label)}
+                          </button>
+                        ))}
+                      </div>
                       <div className="mb-5 flex flex-wrap justify-between gap-3">
                         <p className="text-sm text-slate-500">
                           {t(
@@ -1176,6 +1204,7 @@ function AffiliateWorkspace() {
       {selectedOrder && (
         <AffiliateOrderDetails
           id={selectedOrder}
+          changed={() => refresh()}
           close={() => setSelectedOrder("")}
         />
       )}
@@ -1303,12 +1332,9 @@ function OrderTable({
             >
               {t("View details & receipt")}
             </button>
-            <p className="mt-4 break-words text-xs text-slate-500">
-              {o.status_source === "delivery_app"
-                ? t("Delivery app")
-                : t("Shopify")}
-              {o.tracking_number ? ` · ${o.tracking_number}` : ""}
-            </p>
+            <div className="mt-4">
+              <AffiliateOrderTracking order={o} compact />
+            </div>
             <p className="mt-1 text-xs text-slate-400">
               {t("Updated: ")}
               {t(lastSync(o.synced_at, language))}
@@ -1362,12 +1388,9 @@ function OrderTable({
                 </td>
                 <td className="p-4">
                   <OrderStatus order={o} />
-                  <p className="mt-2 text-xs text-slate-500">
-                    {o.status_source === "delivery_app"
-                      ? t("Delivery app")
-                      : t("Shopify")}
-                    {o.tracking_number ? ` · ${o.tracking_number}` : ""}
-                  </p>
+                  <div className="mt-2 max-w-72">
+                    <AffiliateOrderTracking order={o} compact />
+                  </div>
                 </td>
                 <td className="p-4">{money(o.total, o.currency, language)}</td>
                 <td className="p-4 font-bold text-emerald-700">
@@ -1404,7 +1427,9 @@ function OrderStatus({ order: o }: { order: any }) {
     >
       {t(
         o.state === "created"
-          ? o.delivery_status || o.status.replaceAll("_", " ")
+          ? o.status === "cancelled"
+            ? "cancelled"
+            : o.delivery_status || o.status.replaceAll("_", " ")
           : o.state.replaceAll("_", " "),
       )}
     </span>

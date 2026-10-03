@@ -1,0 +1,10 @@
+mutation AffiliateCancellationNote($input: OrderInput!, $id: ID!, $tags: [String!]!) {
+  orderUpdate(input: $input) {
+    order { id note }
+    userErrors { field message }
+  }
+  tagsAdd(id: $id, tags: $tags) {
+    node { id }
+    userErrors { field message }
+  }
+}

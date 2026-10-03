@@ -36,6 +36,7 @@ from app import affiliate_catalog_cache as catalog_cache
 router = APIRouter(prefix="/api/affiliates", tags=["affiliates"])
 log = logging.getLogger(__name__)
 CUSTOMER_TAGS_QUERY = (Path(__file__).parent / "graphql" / "affiliate_customer_tags.graphql").read_text(encoding="utf-8")
+CANCELLATION_NOTE_QUERY = (Path(__file__).parent / "graphql" / "affiliate_order_cancellation_note.graphql").read_text(encoding="utf-8")
 
 
 class Seller(db.Base):
@@ -156,7 +157,16 @@ class OrderReceipt(db.Base):
     data = Column(Text, nullable=False)
 
 
-for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink, OrderReceipt, BankAccount, PayoutMethod):
+class OrderCancellation(db.Base):
+    __tablename__ = "affiliate_order_cancellations"
+    order_id = Column(String, primary_key=True)
+    note = Column(Text, nullable=False)
+    state = Column(String, nullable=False, default="processing")
+    note_synced = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink, OrderReceipt, BankAccount, PayoutMethod, OrderCancellation):
     table.__table__.create(db.engine, checkfirst=True)
 
 
@@ -372,7 +382,10 @@ def cents(value):
     return int((Decimal(str(value or 0)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def order_view(row, delivery_fee_cents=None):
+def order_view(row, delivery_fee_cents=None, cancellation=None, lookup_cancellation=True):
+    if lookup_cancellation and cancellation is None:
+        with db.SessionLocal() as session:
+            cancellation = session.get(OrderCancellation, row.id)
     if delivery_fee_cents is None:
         with db.SessionLocal() as session:
             terms = session.get(OrderTerms, row.id)
@@ -410,6 +423,11 @@ def order_view(row, delivery_fee_cents=None):
             "net_sales": eligible_subtotal / 100 if settled else 0,
             "profit": expected / 100 if settled else 0, "profit_earned": settled, "pending_profit": expected / 100 if not settled and row.state == "created" else 0,
             "status": status, "financial_status": financial, "customer": shipping.get("name", ""),
+            "fulfillment_status": snap.get("fulfillment_status") or "unfulfilled",
+            "can_cancel_in_shopify": not snap.get("cancelled_at") and not order_has_shipped(snap, delivery),
+            "affiliate_cancelled": cancellation is not None,
+            "cancellation": {"note": cancellation.note, "state": "cancelled" if snap.get("cancelled_at") else cancellation.state,
+                "note_synced": bool(cancellation.note_synced), "created_at": cancellation.created_at.isoformat()} if cancellation else None,
             "items": [{"title": li.get("title"), "quantity": li.get("quantity")} for li in snap.get("line_items", [])],
             "tracking_number": delivery.get("tracking_number") or next((f.get("tracking_number") for f in reversed(fulfillment) if f.get("tracking_number")), None),
             "cost": row.cost_cents / 100, "delivery_fee": delivery_fee_cents / 100, "delivery_status": delivery.get("raw_status"),
@@ -571,17 +589,27 @@ def seller_cities(seller=Depends(active_seller)):
 
 
 @router.get('/order-details')
-def order_details(order_id: str, seller=Depends(active_seller)):
+def order_details(order_id: str, refresh: bool = False, seller=Depends(active_seller)):
     with db.SessionLocal() as session:
         row = session.get(SellerOrder, order_id)
         if not row or row.seller_id != seller['id']:
             raise HTTPException(404, 'Order not found')
+    warnings = sync_orders(seller['id'], force=refresh, order_id=order_id)
+    with db.SessionLocal() as session:
+        row = session.get(SellerOrder, order_id)
         stored = session.get(OrderReceipt, order_id)
         snap = json.loads(row.snapshot)
+        cancellation = session.get(OrderCancellation, order_id)
+        receipt_note = snap.get('note') or ''
+        if cancellation:
+            marker = 'Affiliate cancelled: ' + cancellation.note
+            receipt_note = receipt_note.split('\n\n' + marker, 1)[0]
+            if receipt_note.startswith(marker):
+                receipt_note = ''
         shipping = snap.get('shipping_address') or {}
         receipt = json.loads(stored.data) if stored else {
             'customer_name': shipping.get('name', ''), 'customer_phone': shipping.get('phone') or snap.get('phone', ''),
-            'city': shipping.get('city', ''), 'address': shipping.get('address1', ''), 'note': snap.get('note', ''),
+            'city': shipping.get('city', ''), 'address': shipping.get('address1', ''), 'note': receipt_note,
             'currency': row.currency, 'total': float(snap.get('total_price') or 0),
             'items': [{'title': li.get('title', ''), 'variant': li.get('variant_title', ''), 'quantity': li.get('quantity', 0),
                 'unit_price': float(li.get('price') or 0), 'total': float(li.get('price') or 0) * int(li.get('quantity') or 0)}
@@ -591,7 +619,96 @@ def order_details(order_id: str, seller=Depends(active_seller)):
             terms = session.get(OrderTerms, order_id)
             receipt['delivery_fee'] = (terms.delivery_fee_cents if terms else 0) / 100
         receipt['delivery_included'] = True
-        return {'data': {'order': order_view(row), 'receipt': receipt}}
+        return {'data': {'order': order_view(row, cancellation=cancellation, lookup_cancellation=False), 'receipt': receipt, 'warnings': warnings}}
+
+
+def order_has_shipped(snapshot, delivery=None):
+    # Even partial fulfillment must stay active. Cancellation intent is separate.
+    return (snapshot.get('fulfillment_status') in {'fulfilled', 'partial', 'partially_fulfilled'}
+        or any(f.get('status') not in {'cancelled', 'failure', 'error'} for f in snapshot.get('fulfillments', []))
+        or (delivery or {}).get('status') in {'in_transit', 'out_for_delivery', 'delivered', 'returned'})
+
+
+class CancellationRequest(BaseModel):
+    order_id: str = Field(min_length=1, max_length=64)
+    note: str = Field(min_length=1, max_length=1000)
+
+
+@router.post('/order-cancellation')
+def cancel_order(body: CancellationRequest, seller=Depends(active_seller)):
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(422, 'A cancellation note is required')
+    with db.SessionLocal() as session:
+        lock_seller(session, seller['id'])
+        row = session.get(SellerOrder, body.order_id)
+        if not row or row.seller_id != seller['id']:
+            raise HTTPException(404, 'Order not found')
+        if row.state != 'created' or not row.shopify_id:
+            raise HTTPException(409, 'Only confirmed orders can be cancelled')
+        prior = session.get(OrderCancellation, row.id)
+        if prior:
+            if prior.state in {'cancelled', 'marked'}:
+                return {'data': order_view(row, cancellation=prior)}
+            raise HTTPException(409, 'Cancellation needs administrator reconciliation; do not resubmit')
+        session.add(OrderCancellation(order_id=row.id, note=note))
+        store, oid, currency, local_delivery = row.store, row.shopify_id, row.currency, json.loads(row.delivery)
+        session.commit()
+    path = f'/orders/{oid}.json'
+    snapshot, note_synced, outcome = None, False, 'needs_review'
+    try:
+        snapshot = read_shopify(store, path)['order']
+        marker = 'Affiliate cancelled: ' + note
+        existing = snapshot.get('note') or ''
+        combined = existing if marker in existing.split('\n\n') else existing + '\n\n' + marker if existing else marker
+        gid = f'gid://shopify/Order/{oid}'
+        result = shopify._gql_store_once(store, CANCELLATION_NOTE_QUERY,
+            {'input': {'id': gid, 'note': combined}, 'id': gid, 'tags': ['Cancelled by affiliate']}, timeout=20)
+        if any(not result.get(key) or result[key].get('userErrors') for key in ('orderUpdate', 'tagsAdd')):
+            raise ValueError('Shopify rejected the cancellation note or tag')
+        # Confirm both writes and recheck fulfillment immediately before cancelling.
+        snapshot = read_shopify(store, path)['order']
+        tags = {tag.strip() for tag in str(snapshot.get('tags') or '').split(',')}
+        note_synced = marker in (snapshot.get('note') or '') and 'Cancelled by affiliate' in tags
+        if not note_synced:
+            raise ValueError('Shopify cancellation note was not confirmed')
+        if snapshot.get('cancelled_at'):
+            outcome = 'cancelled'
+        elif order_has_shipped(snapshot, local_delivery):
+            outcome = 'marked'
+        else:
+            # This COD workflow records cancellation without triggering a refund.
+            # Never retry writes: a timeout can follow a successful cancellation.
+            result = shopify._rest_post_store(store, f'/orders/{oid}/cancel.json',
+                {'reason': 'customer', 'email': False, 'amount': '0.00', 'currency': currency, 'restock': True})
+            snapshot = result.get('order') or read_shopify(store, path)['order']
+            if not snapshot.get('cancelled_at'):
+                raise ValueError('Shopify cancellation was not confirmed')
+            outcome = 'cancelled'
+    except Exception:
+        log.exception('Affiliate cancellation requires reconciliation for %s', body.order_id)
+        # A read can safely resolve a write timeout or a fulfillment race.
+        try:
+            snapshot = read_shopify(store, path)['order']
+            tags = {tag.strip() for tag in str(snapshot.get('tags') or '').split(',')}
+            note_synced = ('Affiliate cancelled: ' + note) in (snapshot.get('note') or '') and 'Cancelled by affiliate' in tags
+            if note_synced and snapshot.get('cancelled_at'):
+                outcome = 'cancelled'
+            elif note_synced and order_has_shipped(snapshot, local_delivery):
+                outcome = 'marked'
+        except Exception:
+            pass
+    with db.SessionLocal() as session:
+        row = session.get(SellerOrder, body.order_id)
+        cancellation = session.get(OrderCancellation, body.order_id)
+        cancellation.state, cancellation.note_synced = outcome, int(note_synced)
+        if snapshot:
+            row.snapshot = json.dumps(snapshot)
+        session.commit()
+        data = order_view(row, cancellation=cancellation)
+    if outcome == 'needs_review':
+        raise HTTPException(502, 'Cancellation needs administrator reconciliation; do not resubmit')
+    return {'data': data}
 
 
 @router.post("/customers")
@@ -748,12 +865,13 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         raise HTTPException(502, "Shopify submission could not be confirmed. The administrator must reconcile it before another attempt.")
 
 
-def sync_orders(seller_id, force=False):
+def sync_orders(seller_id, force=False, order_id=None):
     warnings = []
     config = db.get_app_setting(None, "affiliate_delivery_connection") or {}
     shops = {s["label"]: s["shop"] for s in build_store_registry(db)}
     with db.SessionLocal() as session:
-        rows = session.query(SellerOrder).filter_by(seller_id=seller_id, state="created").all()
+        query = session.query(SellerOrder).filter_by(seller_id=seller_id, state="created")
+        rows = query.filter_by(id=order_id).all() if order_id else query.all()
     if not force:
         cutoff = datetime.utcnow() - timedelta(seconds=30)
         rows = [row for row in rows if not row.synced_at or row.synced_at < cutoff]
@@ -800,6 +918,16 @@ def sync_orders(seller_id, force=False):
             row = session.get(SellerOrder, detached.id)
             if detached.id in snapshots:
                 row.snapshot = json.dumps(snapshots[detached.id])
+                cancellation = session.get(OrderCancellation, row.id)
+                if cancellation and cancellation.state in {'processing', 'needs_review'}:
+                    snapshot = snapshots[detached.id]
+                    tags = {tag.strip() for tag in str(snapshot.get('tags') or '').split(',')}
+                    confirmed = ('Affiliate cancelled: ' + cancellation.note) in (snapshot.get('note') or '') and 'Cancelled by affiliate' in tags
+                    cancellation.note_synced = int(confirmed)
+                    if confirmed and snapshot.get('cancelled_at'):
+                        cancellation.state = 'cancelled'
+                    elif confirmed and order_has_shipped(snapshot, deliveries.get(row.id) or json.loads(row.delivery)):
+                        cancellation.state = 'marked'
                 if not config.get("base_url") or detached.id in deliveries or not json.loads(row.delivery):
                     row.synced_at = datetime.utcnow()
             if detached.id in deliveries:
@@ -818,7 +946,8 @@ def payout_view(row, details=None):
 def dashboard(seller_id):
     with db.SessionLocal() as session:
         fees = {terms.order_id: terms.delivery_fee_cents for terms in session.query(OrderTerms).join(SellerOrder, SellerOrder.id == OrderTerms.order_id).filter(SellerOrder.seller_id == seller_id).all()}
-        orders = [order_view(row, fees.get(row.id, 0)) for row in session.query(SellerOrder).filter_by(seller_id=seller_id).order_by(SellerOrder.created_at.desc()).all()]
+        cancellations = {c.order_id: c for c in session.query(OrderCancellation).join(SellerOrder, SellerOrder.id == OrderCancellation.order_id).filter(SellerOrder.seller_id == seller_id).all()}
+        orders = [order_view(row, fees.get(row.id, 0), cancellations.get(row.id), lookup_cancellation=False) for row in session.query(SellerOrder).filter_by(seller_id=seller_id).order_by(SellerOrder.created_at.desc()).all()]
         methods = {method.payout_id: method for method in session.query(PayoutMethod).join(Payout, Payout.id == PayoutMethod.payout_id).filter(Payout.seller_id == seller_id).all()}
         payouts = [payout_view(row, methods.get(row.id)) for row in session.query(Payout).filter_by(seller_id=seller_id).order_by(Payout.created_at.desc()).all()]
     analytics = {}

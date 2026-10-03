@@ -33,7 +33,8 @@ pattern. They are additive: `affiliate_sellers`, `affiliate_sessions`,
 `affiliate_orders`, `affiliate_product_costs`, `affiliate_payouts`,
 `affiliate_order_terms`, `affiliate_product_marks`, `affiliate_customers`, and
 `affiliate_customer_shopify_links`, plus `affiliate_order_receipts`,
-`affiliate_bank_accounts` and `affiliate_payout_methods`. Legacy product-cost records remain for audit;
+`affiliate_bank_accounts`, `affiliate_payout_methods` and
+`affiliate_order_cancellations`. Legacy product-cost records remain for audit;
 new orders use percentage pricing. Use the
 production database connection, not a local SQLite file, in deployed instances.
 
@@ -154,6 +155,33 @@ plus numeric Shopify order ID, excludes return-only parcels and refuses ambiguou
 matches. It returns delivery state, original French status, tracking number,
 collected COD amount and source update time; it excludes customer details.
 
+Order cards and details display Shopify fulfillment separately from the delivery
+app's operational status, including Expédié and Mise en distribution, and show
+the tracking number. Unfulfilled orders explicitly await Shopify fulfillment;
+fulfilled orders with no matching parcel await delivery handoff. Details refresh
+every minute while visible and have a forced Refresh tracking button. Missing
+refreshes preserve the last known status with a warning; they do not invent
+delivery events or a historical timeline.
+
+### Affiliate cancellation
+
+Sellers cancel their own confirmed orders from order details with a required
+note (up to 1,000 characters). The server appends `Affiliate cancelled: <note>`
+to the existing Shopify note and adds `Cancelled by affiliate` without replacing
+other tags. It confirms these writes and rechecks fulfillment before cancelling
+an unfulfilled COD order with no automatic refund. Fulfilled or partially
+fulfilled orders and parcels already in transit stay active; only cancellation
+intent is recorded. Their delivery tracking and earnings continue to reflect
+the actual delivery outcome. Confirmed native cancellation makes profit zero.
+
+Orders include All orders and Cancelled by affiliate filters. Administration has
+a corresponding cancellation tab with seller, original status, note and sync
+result. The shared receipt stays based on its original snapshot and excludes
+the internal cancellation reason. Cancellation writes are never automatically
+retried after an uncertain response. The request is stored for administrator
+review; after correcting the note/tag and cancellation or fulfillment in Shopify,
+Refresh order status reconciles the confirmed result using reads only.
+
 Its authenticated GET `/api/integrations/affiliate-tracking/cities` returns only
 approved, active Moroccan cities with an active route through a connected partner
 or the delivery app's own drivers. Provider capability catalogs alone do not
@@ -252,10 +280,16 @@ Additional checks cover cached catalog authorization, progressive pagination,
 active routing cities, immutable seller-owned receipts and explicit Shopify
 rejections, the 40-character order-tag limit, original submission IDs in note
 attributes, idempotent retries, and immutable receipt color/size/delivery totals.
-The affiliate, operator-gate and Shopify-registry regression suites pass 85 tests.
+The affiliate, operator-gate and Shopify-registry regression suites pass 101 tests.
 New checks cover both bank accounts, RIB validation/normalization, seller isolation,
 immutable payout destinations after account edits/deletion, cash payouts, exact
 available-balance limits/reservations, and expected-to-earned profit transitions.
+Cancellation checks cover required notes, seller ownership, retained Shopify
+notes/tags, fulfilled and partially fulfilled protection, fulfillment changes
+during note writes, uncertain responses with no repeated cancellation, private
+receipt notes and read-only administrator reconciliation. Phone QA covers
+cancellation filters and details at 320–430px in all three languages, including
+live-stage changes from shipped through distribution to delivered and profit.
 `node --test frontend/tests/affiliate-translations.test.cjs` checks dynamic
 messages, preservation of customer/product data, and static seller-label coverage.
 Mobile browser QA covers the complete multiple-product order flow, English/French/

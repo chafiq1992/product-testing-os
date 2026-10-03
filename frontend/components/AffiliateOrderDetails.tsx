@@ -4,6 +4,8 @@ import { CheckCircle2 } from "lucide-react";
 import AffiliateModal from "@/components/AffiliateModal";
 import AffiliateReceipt from "@/components/AffiliateReceipt";
 import AffiliateConfetti from "@/components/AffiliateConfetti";
+import AffiliateOrderTracking from "@/components/AffiliateOrderTracking";
+import AffiliateOrderCancellation from "@/components/AffiliateOrderCancellation";
 import { affiliateApi, money, secondary } from "@/lib/affiliates";
 import { useAffiliateLocale } from "@/lib/affiliate-locale";
 
@@ -11,10 +13,12 @@ export default function AffiliateOrderDetails({
   id,
   close,
   celebrate = false,
+  changed,
 }: {
   id: string;
   close: () => void;
   celebrate?: boolean;
+  changed?: () => Promise<void>;
 }) {
   const { t, language } = useAffiliateLocale();
   const [data, setData] = useState<any>(null),
@@ -23,15 +27,23 @@ export default function AffiliateOrderDetails({
   useEffect(() => {
     let active = true;
     setError("");
-    affiliateApi(`/order-details?order_id=${encodeURIComponent(id)}`)
-      .then((value) => {
-        if (active) setData(value);
-      })
-      .catch((error) => {
-        if (active) setError(error.message);
-      });
+    const load = (refresh = false) =>
+      affiliateApi(
+        `/order-details?order_id=${encodeURIComponent(id)}&refresh=${refresh}`,
+      )
+        .then((value) => {
+          if (active) setData(value);
+        })
+        .catch((error) => {
+          if (active) setError(error.message);
+        });
+    load(attempt > 0);
+    const timer = setInterval(() => {
+      if (!document.hidden) load(true);
+    }, 60000);
     return () => {
       active = false;
+      clearInterval(timer);
     };
   }, [id, attempt]);
   return (
@@ -69,17 +81,22 @@ export default function AffiliateOrderDetails({
       {data && (
         <div className="min-w-0 space-y-4">
           {!celebrate && (
-            <div className="min-w-0 break-words">
-              <p className="font-semibold">
-                {t(
-                  data.order.delivery_status ||
-                    data.order.status.replaceAll("_", " "),
-                )}
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                {data.order.tracking_number || t("Tracking pending")}
-              </p>
-            </div>
+            <>
+              <AffiliateOrderTracking order={data.order} />
+              <button
+                className={`${secondary} w-full`}
+                onClick={() => setAttempt((value) => value + 1)}
+              >
+                {t("Refresh tracking")}
+              </button>
+              {data.warnings?.length > 0 && (
+                <p role="status" className="text-sm text-amber-800">
+                  {t(
+                    "Tracking could not be fully refreshed. The last known status is shown.",
+                  )}
+                </p>
+              )}
+            </>
           )}
           <AffiliateReceipt
             receipt={data.receipt}
@@ -115,6 +132,18 @@ export default function AffiliateOrderDetails({
                 )}
               </p>
             </section>
+          )}
+          {!celebrate && (
+            <AffiliateOrderCancellation
+              order={data.order}
+              changed={async () => {
+                const value = await affiliateApi(
+                  `/order-details?order_id=${encodeURIComponent(id)}&refresh=true`,
+                );
+                setData(value);
+                if (changed) await changed();
+              }}
+            />
           )}
         </div>
       )}

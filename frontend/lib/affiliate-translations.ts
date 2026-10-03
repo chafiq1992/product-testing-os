@@ -22,6 +22,80 @@ const englishDeliveryStates: Record<string, string> = {
 // English source phrases are stable keys. Placeholders also match existing
 // composed messages, preserving names, amounts and product data unchanged.
 const rows: [string, string, string][] = [
+  ["All orders", "Toutes les commandes", "جميع الطلبات"],
+  ["Order groups", "Groupes de commandes", "مجموعات الطلبات"],
+  ["Cancelled by affiliate", "Annulée par l’affilié", "ألغاه المسوّق"],
+  ["Order tracking", "Suivi de commande", "تتبع الطلب"],
+  ["Shopify fulfillment", "Préparation Shopify", "تجهيز Shopify"],
+  ["Tracking number", "Numéro de suivi", "رقم التتبع"],
+  ["Status source", "Source du statut", "مصدر الحالة"],
+  ["Delivery update", "Mise à jour de livraison", "تحديث التوصيل"],
+  ["Refresh tracking", "Actualiser le suivi", "تحديث التتبع"],
+  [
+    "Awaiting Shopify fulfillment",
+    "En attente de préparation Shopify",
+    "بانتظار تجهيز الطلب في Shopify",
+  ],
+  [
+    "Awaiting delivery app handoff",
+    "En attente de réception par l’application de livraison",
+    "بانتظار استلام تطبيق التوصيل للطلب",
+  ],
+  [
+    "Tracking could not be fully refreshed. The last known status is shown.",
+    "Le suivi n’a pas pu être entièrement actualisé. Le dernier statut connu est affiché.",
+    "تعذر تحديث التتبع بالكامل. تظهر آخر حالة معروفة.",
+  ],
+  ["Cancel order", "Annuler la commande", "إلغاء الطلب"],
+  ["Cancellation note", "Motif d’annulation", "سبب الإلغاء"],
+  ["Confirm cancellation", "Confirmer l’annulation", "تأكيد الإلغاء"],
+  ["Keep order", "Conserver la commande", "الاحتفاظ بالطلب"],
+  ["Saving…", "Enregistrement…", "جارٍ الحفظ…"],
+  [
+    "The order was cancelled in Shopify.",
+    "La commande a été annulée dans Shopify.",
+    "تم إلغاء الطلب في Shopify.",
+  ],
+  [
+    "This fulfilled order stays active. Your cancellation note is recorded in Shopify.",
+    "Cette commande expédiée reste active. Votre motif d’annulation est enregistré dans Shopify.",
+    "يبقى الطلب المشحون نشطًا. تم تسجيل سبب الإلغاء في Shopify.",
+  ],
+  [
+    "Note saved in Shopify",
+    "Motif enregistré dans Shopify",
+    "تم حفظ السبب في Shopify",
+  ],
+  [
+    "Shopify note awaiting confirmation",
+    "En attente de confirmation du motif dans Shopify",
+    "بانتظار تأكيد حفظ السبب في Shopify",
+  ],
+  [
+    "Orders that have not been fulfilled can be cancelled. A cancellation note is required.",
+    "Les commandes non expédiées peuvent être annulées. Un motif est obligatoire.",
+    "يمكن إلغاء الطلبات التي لم تُشحن بعد. يجب كتابة سبب الإلغاء.",
+  ],
+  [
+    "This order has been fulfilled. It will stay active and be marked Cancelled by affiliate.",
+    "Cette commande a été expédiée. Elle restera active et sera marquée Annulée par l’affilié.",
+    "تم شحن هذا الطلب. سيبقى نشطًا مع وضع علامة ألغاه المسوّق.",
+  ],
+  [
+    "Cancellation needs administrator reconciliation; do not resubmit",
+    "L’annulation doit être vérifiée par l’administrateur. Ne renvoyez pas la demande.",
+    "يجب أن يتحقق المسؤول من الإلغاء. لا ترسل الطلب مرة أخرى.",
+  ],
+  [
+    "A cancellation note is required",
+    "Un motif d’annulation est obligatoire",
+    "يجب كتابة سبب الإلغاء",
+  ],
+  [
+    "Only confirmed orders can be cancelled",
+    "Seules les commandes confirmées peuvent être annulées",
+    "يمكن إلغاء الطلبات المؤكدة فقط",
+  ],
   ["Product cost", "Coût du produit", "تكلفة المنتج"],
   ["Amount", "Montant", "المبلغ"],
   ["Expected profit", "Bénéfice prévu", "الربح المتوقع"],

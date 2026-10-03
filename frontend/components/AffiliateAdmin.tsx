@@ -166,6 +166,15 @@ export default function AffiliateAdmin() {
   const payouts = data.sellers.flatMap((seller: any) =>
     seller.payouts.map((p: any) => ({ ...p, seller_name: seller.name })),
   );
+  const cancellations = data.sellers.flatMap((seller: any) =>
+    seller.orders
+      .filter((order: any) => order.affiliate_cancelled)
+      .map((order: any) => ({
+        ...order,
+        seller_id: seller.id,
+        seller_name: seller.name,
+      })),
+  );
   const total = data.sellers.reduce(
     (sum: any, seller: any) => {
       const a = seller.analytics[currency] || {};
@@ -317,6 +326,10 @@ export default function AffiliateAdmin() {
                 `Sellers (${data.sellers.filter((s: any) => s.status === "pending").length} pending)`,
               ],
               ["pricing", "Marketplace pricing"],
+              [
+                "cancellations",
+                `Cancelled by affiliate (${cancellations.length})`,
+              ],
               [
                 "payouts",
                 `Payouts (${payouts.filter((p: any) => p.status === "pending").length} pending)`,
@@ -562,6 +575,78 @@ export default function AffiliateAdmin() {
                 </form>
               )}
             </>
+          )}
+          {tab === "cancellations" && (
+            <div className="space-y-3">
+              {!cancellations.length && (
+                <p className="rounded-xl bg-slate-50 p-5 text-sm text-slate-500">
+                  No affiliate cancellation requests.
+                </p>
+              )}
+              {cancellations.map((order: any) => (
+                <article
+                  key={order.id}
+                  className="min-w-0 space-y-2 rounded-xl border p-4 text-sm"
+                >
+                  <h3 className="break-words font-bold">
+                    {order.name} · {order.seller_name}
+                  </h3>
+                  <p className="break-words text-slate-600">
+                    {order.store} · Shopify fulfillment:{" "}
+                    {order.fulfillment_status} · Delivery:{" "}
+                    {order.status === "cancelled"
+                      ? "cancelled"
+                      : order.delivery_status || order.status}
+                  </p>
+                  <p className="whitespace-pre-wrap break-words">
+                    Affiliate cancelled: {order.cancellation.note}
+                  </p>
+                  <p className="font-medium text-amber-800">
+                    {order.cancellation.state === "cancelled"
+                      ? "Cancelled in Shopify"
+                      : order.cancellation.state === "marked"
+                        ? "Fulfilled order remains active; cancellation intent recorded"
+                        : "Administrator review required"}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {order.cancellation.note_synced
+                      ? "Note and tag confirmed in Shopify"
+                      : "Shopify note/tag not confirmed"}
+                  </p>
+                  {["processing", "needs_review"].includes(
+                    order.cancellation.state,
+                  ) && (
+                    <p className="text-xs text-slate-600">
+                      Check the order in Shopify. Confirm the note and Cancelled
+                      by affiliate tag; cancel manually only if it has not been
+                      fulfilled. Refresh after resolving it.
+                    </p>
+                  )}
+                  <button
+                    disabled={busy}
+                    className={secondary}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await affiliateApi(
+                          `/admin/sellers/${order.seller_id}/sync`,
+                          {},
+                          "POST",
+                          true,
+                        );
+                        await load();
+                      } catch (error: any) {
+                        setError(error.message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Refresh order status
+                  </button>
+                </article>
+              ))}
+            </div>
           )}
           {tab === "pricing" && <AffiliatePricing />}
           {tab === "payouts" && (
