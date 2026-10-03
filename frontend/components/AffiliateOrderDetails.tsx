@@ -89,22 +89,27 @@ export default function AffiliateOrderDetails({
             <section className="rounded-xl bg-emerald-50 p-4 text-sm">
               <h3 className="font-bold">{t("Your earnings")}</h3>
               <p className="mt-2">
-                {t("Product costs:")}{" "}
+                {t("Product cost")}:{" "}
                 {money(data.order.cost, data.order.currency, language)}
               </p>
               <p>
                 {t("Delivery deducted:")}{" "}
                 {money(data.order.delivery_fee, data.order.currency, language)}
               </p>
-              <p className="mt-2 font-semibold">
+              <p className="mt-3 rounded-lg bg-white p-3 text-lg font-bold text-emerald-800">
                 {t(
-                  data.order.profit > 0
-                    ? "Earned profit"
-                    : "Your expected profit",
+                  data.order.profit_earned ||
+                    ["cancelled", "returned", "failed"].includes(
+                      data.order.status,
+                    )
+                    ? "Profit"
+                    : "Expected profit",
                 )}
                 :{" "}
                 {money(
-                  data.order.profit || data.order.pending_profit,
+                  data.order.profit_earned
+                    ? data.order.profit
+                    : data.order.pending_profit,
                   data.order.currency,
                   language,
                 )}

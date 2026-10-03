@@ -6,6 +6,7 @@ import {
   AffiliateLanguageSwitch,
   useAffiliateLocale,
 } from "@/lib/affiliate-locale";
+import AffiliatePayoutRequest from "@/components/AffiliatePayoutRequest";
 import AffiliateMarketplace from "@/components/AffiliateMarketplace";
 import AffiliateModal from "@/components/AffiliateModal";
 import AffiliateOrderEditor from "@/components/AffiliateOrderEditor";
@@ -98,7 +99,6 @@ function AffiliateWorkspace() {
     country: "MA",
     note: "",
   });
-  const [payout, setPayout] = useState({ amount: "", destination: "" });
   const requestId = useRef<string>("");
   const refreshRunning = useRef(false);
   const status = data.analytics[currency] || {
@@ -366,7 +366,6 @@ function AffiliateWorkspace() {
       country: "MA",
       note: "",
     });
-    setPayout({ amount: "", destination: "" });
     setTab("overview");
     setCurrency("MAD");
     setChoosingProducts(false);
@@ -463,22 +462,6 @@ function AffiliateWorkspace() {
     } catch (err: any) {
       setError(err.message);
       await refresh(true);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function requestPayout(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await affiliateApi("/payouts", { ...payout, currency });
-      setPayout({ amount: "", destination: "" });
-      setNotice("Payout requested. Your administrator will review it.");
-      await refresh();
-    } catch (err: any) {
-      setError(err.message);
     } finally {
       setBusy(false);
     }
@@ -1168,54 +1151,12 @@ function AffiliateWorkspace() {
                   </section>
                 ))}
               </div>
-              <form
-                onSubmit={requestPayout}
-                className="mb-6 rounded-2xl border bg-white p-4 sm:p-6"
-              >
-                <h2 className="font-bold">{t("Request a payout")}</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {t(
-                    "Available earnings come from delivered, collected orders. Approval reserves the amount; paid payouts include an administrator's transfer reference.",
-                  )}
-                </p>
-                <div className="mt-5 grid items-end gap-4 md:grid-cols-[1fr_2fr_auto]">
-                  <label className="text-sm">
-                    {t("Amount (")}
-                    {currency})
-                    <input
-                      required
-                      type="number"
-                      inputMode="decimal"
-                      min="0.01"
-                      max={Math.max(0, status.available)}
-                      step="0.01"
-                      value={payout.amount}
-                      onChange={(e) =>
-                        setPayout({ ...payout, amount: e.target.value })
-                      }
-                      className={`${field} mt-1`}
-                    />
-                  </label>
-                  <label className="text-sm">
-                    {t("Bank account / payout details")}
-                    <input
-                      required
-                      minLength={5}
-                      value={payout.destination}
-                      onChange={(e) =>
-                        setPayout({ ...payout, destination: e.target.value })
-                      }
-                      className={`${field} mt-1`}
-                    />
-                  </label>
-                  <button
-                    disabled={busy || status.available <= 0}
-                    className={button}
-                  >
-                    {t("Request payout")}
-                  </button>
-                </div>
-              </form>
+              <AffiliatePayoutRequest
+                available={Number(status.available)}
+                currency={currency}
+                requested={() => refresh()}
+              />
+              <h2 className="mb-3 font-bold">{t("Payout history")}</h2>
               <PayoutTable
                 payouts={data.payouts.filter(
                   (p: any) => p.currency === currency,
@@ -1339,16 +1280,21 @@ function OrderTable({
                 </dd>
               </div>
               <div className="min-w-0">
-                <dt className="text-xs text-slate-500">{t("Earned profit")}</dt>
-                <dd className="mt-1 break-words font-semibold text-emerald-700">
-                  {money(o.profit, o.currency, language)}
+                <dt className="text-xs text-slate-500">
+                  {t(
+                    o.profit_earned ||
+                      ["cancelled", "returned", "failed"].includes(o.status)
+                      ? "Profit"
+                      : "Expected profit",
+                  )}
+                </dt>
+                <dd className="mt-1 break-words text-lg font-bold text-emerald-700">
+                  {money(
+                    o.profit_earned ? o.profit : o.pending_profit,
+                    o.currency,
+                    language,
+                  )}
                 </dd>
-                {o.pending_profit > 0 && (
-                  <dd className="mt-1 break-words text-xs text-slate-500">
-                    {money(o.pending_profit, o.currency, language)}
-                    {t(" expected")}
-                  </dd>
-                )}
               </div>
             </dl>
             <button
@@ -1424,14 +1370,20 @@ function OrderTable({
                   </p>
                 </td>
                 <td className="p-4">{money(o.total, o.currency, language)}</td>
-                <td className="p-4 font-semibold text-emerald-700">
-                  {money(o.profit, o.currency, language)}
-                  {o.pending_profit > 0 && (
-                    <p className="mt-1 text-xs font-normal text-slate-400">
-                      {money(o.pending_profit, o.currency, language)}
-                      {t(" expected")}
-                    </p>
+                <td className="p-4 font-bold text-emerald-700">
+                  {money(
+                    o.profit_earned ? o.profit : o.pending_profit,
+                    o.currency,
+                    language,
                   )}
+                  <p className="mt-1 text-xs font-normal text-slate-500">
+                    {t(
+                      o.profit_earned ||
+                        ["cancelled", "returned", "failed"].includes(o.status)
+                        ? "Profit"
+                        : "Expected profit",
+                    )}
+                  </p>
                 </td>
                 <td className="p-4 text-xs text-slate-500">
                   {t(lastSync(o.synced_at, language))}
@@ -1501,7 +1453,7 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
               <div>
                 <dt className="text-xs text-slate-500">{t("Destination")}</dt>
                 <dd className="mt-1 break-words [overflow-wrap:anywhere]">
-                  {p.destination}
+                  {p.method === "cash" ? t("Cash") : p.destination}
                 </dd>
               </div>
               <div>
@@ -1544,7 +1496,7 @@ function PayoutTable({ payouts }: { payouts: any[] }) {
                 </td>
                 <td className="p-4 capitalize">{t(p.status)}</td>
                 <td className="max-w-xs break-words p-4 text-xs">
-                  {p.destination}
+                  {p.method === "cash" ? t("Cash") : p.destination}
                 </td>
                 <td className="p-4 text-xs">{p.reference || "—"}</td>
               </tr>

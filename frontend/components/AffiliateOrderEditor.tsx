@@ -124,8 +124,12 @@ export default function AffiliateOrderEditor({
                 <p className="mt-1 text-xs text-slate-500">
                   {line.variant.title}
                 </p>
+                <p className="mt-1 rounded-lg bg-emerald-50 px-2 py-1 text-sm font-bold text-emerald-900">
+                  {t("Product cost")}:{" "}
+                  {money(line.variant.unit_cost || 0, currency, language)}
+                </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  {t("Recommended ")}
+                  {t("Recommended selling price")}{" "}
                   {money(line.variant.price, currency, language)}
                 </p>
               </div>
@@ -205,8 +209,8 @@ export default function AffiliateOrderEditor({
             <span>{t("Order total")}</span>
             <span>{money(total, currency, language)}</span>
           </div>
-          <div className="mt-2 flex justify-between gap-3 text-emerald-800">
-            <span>{t("Your expected profit")}</span>
+          <div className="mt-2 flex flex-wrap justify-between gap-3 text-lg font-bold text-emerald-800">
+            <span>{t("Expected profit")}</span>
             <span>{money(Math.max(0, profit || 0), currency, language)}</span>
           </div>
           <p className="mt-2 text-xs text-slate-500">

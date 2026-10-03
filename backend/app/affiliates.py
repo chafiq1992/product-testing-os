@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -98,6 +99,23 @@ class ProductCost(db.Base):
     updated_by = Column(String)
 
 
+class BankAccount(db.Base):
+    __tablename__ = "affiliate_bank_accounts"
+    id = Column(String, primary_key=True)
+    seller_id = Column(String, nullable=False, index=True)
+    bank = Column(String, nullable=False)
+    rib = Column(String(24), nullable=False)
+    __table_args__ = (UniqueConstraint("seller_id", "bank"),)
+
+
+class PayoutMethod(db.Base):
+    __tablename__ = "affiliate_payout_methods"
+    payout_id = Column(String, primary_key=True)
+    method = Column(String, nullable=False)
+    bank = Column(String)
+    rib = Column(String(24))
+
+
 class OrderTerms(db.Base):
     __tablename__ = "affiliate_order_terms"
     order_id = Column(String, primary_key=True)
@@ -138,7 +156,7 @@ class OrderReceipt(db.Base):
     data = Column(Text, nullable=False)
 
 
-for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink, OrderReceipt):
+for table in (Seller, SellerSession, SellerOrder, Payout, ProductCost, OrderTerms, ProductMark, Customer, CustomerLink, OrderReceipt, BankAccount, PayoutMethod):
     table.__table__.create(db.engine, checkfirst=True)
 
 
@@ -390,7 +408,7 @@ def order_view(row, delivery_fee_cents=None):
     return {"id": row.id, "store": row.store, "shopify_id": row.shopify_id, "name": snap.get("name") or row.id[:8],
             "state": row.state, "currency": row.currency, "total": cents(snap.get("total_price")) / 100,
             "net_sales": eligible_subtotal / 100 if settled else 0,
-            "profit": expected / 100 if settled else 0, "pending_profit": expected / 100 if not settled and row.state == "created" else 0,
+            "profit": expected / 100 if settled else 0, "profit_earned": settled, "pending_profit": expected / 100 if not settled and row.state == "created" else 0,
             "status": status, "financial_status": financial, "customer": shipping.get("name", ""),
             "items": [{"title": li.get("title"), "quantity": li.get("quantity")} for li in snap.get("line_items", [])],
             "tracking_number": delivery.get("tracking_number") or next((f.get("tracking_number") for f in reversed(fulfillment) if f.get("tracking_number")), None),
@@ -790,16 +808,19 @@ def sync_orders(seller_id, force=False):
     return warnings
 
 
-def payout_view(row):
+def payout_view(row, details=None):
     return {"id": row.id, "currency": row.currency, "amount": row.amount_cents / 100, "status": row.status,
-            "destination": row.destination, "reference": row.reference, "created_at": row.created_at.isoformat()}
+            "destination": row.destination, "method": details.method if details else "legacy",
+            "bank": details.bank if details else None, "rib": details.rib if details else None,
+            "reference": row.reference, "created_at": row.created_at.isoformat()}
 
 
 def dashboard(seller_id):
     with db.SessionLocal() as session:
         fees = {terms.order_id: terms.delivery_fee_cents for terms in session.query(OrderTerms).join(SellerOrder, SellerOrder.id == OrderTerms.order_id).filter(SellerOrder.seller_id == seller_id).all()}
         orders = [order_view(row, fees.get(row.id, 0)) for row in session.query(SellerOrder).filter_by(seller_id=seller_id).order_by(SellerOrder.created_at.desc()).all()]
-        payouts = [payout_view(row) for row in session.query(Payout).filter_by(seller_id=seller_id).order_by(Payout.created_at.desc()).all()]
+        methods = {method.payout_id: method for method in session.query(PayoutMethod).join(Payout, Payout.id == PayoutMethod.payout_id).filter(Payout.seller_id == seller_id).all()}
+        payouts = [payout_view(row, methods.get(row.id)) for row in session.query(Payout).filter_by(seller_id=seller_id).order_by(Payout.created_at.desc()).all()]
     analytics = {}
     for currency in sorted({o["currency"] for o in orders} | {p["currency"] for p in payouts}):
         own = [o for o in orders if o["currency"] == currency]
@@ -822,7 +843,54 @@ def seller_dashboard(seller=Depends(active_seller)):
 class PayoutRequest(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    destination: str = Field(min_length=5, max_length=500)
+    destination: str | None = Field(default=None, min_length=5, max_length=500)
+    method: Literal["bank", "cash"] | None = None
+    account_id: str | None = Field(default=None, max_length=64)
+
+
+class BankAccountInput(BaseModel):
+    bank: Literal["cih", "attijari"]
+    rib: str = Field(min_length=24, max_length=60)
+
+
+class BankAccountsInput(BaseModel):
+    accounts: list[BankAccountInput] = Field(max_length=2)
+
+
+def bank_accounts_view(session, sid):
+    return [{"id": row.id, "bank": row.bank, "rib": row.rib} for row in session.query(BankAccount).filter_by(seller_id=sid).order_by(BankAccount.bank).all()]
+
+
+@router.get("/bank-accounts")
+def get_bank_accounts(seller=Depends(active_seller)):
+    with db.SessionLocal() as session:
+        return {"data": bank_accounts_view(session, seller["id"])}
+
+
+@router.put("/bank-accounts")
+def save_bank_accounts(body: BankAccountsInput, seller=Depends(active_seller)):
+    accounts = {}
+    for account in body.accounts:
+        rib = re.sub(r"[\s-]", "", account.rib)
+        if not re.fullmatch(r"[0-9]{24}", rib):
+            raise HTTPException(422, "RIB must contain exactly 24 digits")
+        if account.bank in accounts:
+            raise HTTPException(422, "Save only one account per bank")
+        accounts[account.bank] = rib
+    with db.SessionLocal() as session:
+        if lock_seller(session, seller["id"]).status != "approved":
+            raise HTTPException(403, "Seller account is not approved")
+        existing = {row.bank: row for row in session.query(BankAccount).filter_by(seller_id=seller["id"]).all()}
+        for bank, row in existing.items():
+            if bank not in accounts:
+                session.delete(row)
+        for bank, rib in accounts.items():
+            if bank in existing:
+                existing[bank].rib = rib
+            else:
+                session.add(BankAccount(id=uuid4().hex, seller_id=seller["id"], bank=bank, rib=rib))
+        session.commit()
+        return {"data": bank_accounts_view(session, seller["id"])}
 
 
 def lock_seller(session, sid):
@@ -852,10 +920,24 @@ def request_payout(body: PayoutRequest, seller=Depends(active_seller)):
         amount = cents(body.amount)
         if amount > balance(session, seller["id"], body.currency):
             raise HTTPException(409, "Amount exceeds available delivered-order earnings")
-        row = Payout(id=uuid4().hex, seller_id=seller["id"], currency=body.currency, amount_cents=amount, destination=body.destination.strip())
+        account = None
+        if body.method == "bank":
+            account = session.get(BankAccount, body.account_id) if body.account_id else None
+            if not account or account.seller_id != seller["id"]:
+                raise HTTPException(422, "Choose a saved bank account belonging to you")
+            destination = ("CIH" if account.bank == "cih" else "Attijariwafa bank") + " · " + account.rib
+        elif body.method == "cash":
+            destination = "Cash"
+        elif body.destination and body.destination.strip():
+            destination = body.destination.strip()
+        else:
+            raise HTTPException(422, "Choose bank transfer or cash")
+        row = Payout(id=uuid4().hex, seller_id=seller["id"], currency=body.currency, amount_cents=amount, destination=destination)
         session.add(row)
+        details = PayoutMethod(payout_id=row.id, method=body.method or "legacy", bank=account.bank if account else None, rib=account.rib if account else None)
+        session.add(details)
         session.commit()
-        return {"data": payout_view(row)}
+        return {"data": payout_view(row, details)}
 
 
 @router.get("/admin")
@@ -1030,7 +1112,7 @@ def review_payout(pid: str, body: PayoutReview, admin=Depends(require_admin)):
         seller = lock_seller(session, sid)
         row = session.get(Payout, pid)
         if row.status == body.status:
-            return {"data": payout_view(row)}
+            return {"data": payout_view(row, session.get(PayoutMethod, row.id))}
         transitions = {"pending": {"approved", "rejected"}, "approved": {"paid", "rejected"}}
         if body.status not in transitions.get(row.status, set()):
             raise HTTPException(409, "Invalid payout status transition")
@@ -1041,7 +1123,7 @@ def review_payout(pid: str, body: PayoutReview, admin=Depends(require_admin)):
             raise HTTPException(422, "Payment transfer reference is required")
         row.status, row.reference, row.reviewed_by = body.status, body.reference.strip() or None, admin.get("sub")
         session.commit()
-        return {"data": payout_view(row)}
+        return {"data": payout_view(row, session.get(PayoutMethod, row.id))}
 
 
 

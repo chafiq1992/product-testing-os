@@ -94,6 +94,7 @@ SELF_VERIFIED_PATHS = frozenset({
     "/api/affiliates/orders",
     "/api/affiliates/dashboard",
     "/api/affiliates/payouts",
+    "/api/affiliates/bank-accounts",
     "/api/affiliates/customers",
     "/api/affiliates/marks",
     "/api/affiliates/cities",

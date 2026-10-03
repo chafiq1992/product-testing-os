@@ -332,20 +332,24 @@ export default function AffiliateMarketplace({
                       )}
                     </div>
                   )}
+                  <div className="rounded-lg bg-emerald-50 px-2 py-1.5 text-emerald-900">
+                    <p className="text-[10px] font-medium">
+                      {t("Product cost")}
+                    </p>
+                    <p className="break-words text-lg font-bold">
+                      {Number.isFinite(cost)
+                        ? money(cost, product.currency, language)
+                        : t("unavailable")}
+                    </p>
+                  </div>
                   <div>
                     <p className="text-[10px] text-slate-500">
                       {t("Recommended selling price")}
                     </p>
-                    <p className="break-words text-sm font-bold">
+                    <p className="break-words text-xs text-slate-600">
                       {money(minimumPrice(product), product.currency, language)}
                     </p>
                   </div>
-                  <p className="break-words text-[11px] text-emerald-800">
-                    {t("Your cost")}{" "}
-                    {Number.isFinite(cost)
-                      ? money(cost, product.currency, language)
-                      : t("unavailable")}
-                  </p>
                   <p className="text-[10px] text-slate-500">
                     {product.inventory_tracked
                       ? t(`${product.inventory_quantity} available`)
@@ -466,17 +470,23 @@ function ProductDetails({
           >
             {product.title}
           </h2>
-          <p className="mt-4 text-xs text-slate-500">
+          <div className="mt-4 rounded-xl bg-emerald-50 p-3 text-emerald-900">
+            <p className="text-xs font-medium">{t("Product cost")}</p>
+            <p className="text-3xl font-bold">
+              {variant?.unit_cost == null
+                ? t("unavailable")
+                : money(variant.unit_cost, product.currency, language)}
+            </p>
+            <p className="mt-1 text-xs">
+              {product.discount_percent}
+              {t("% off")}
+            </p>
+          </div>
+          <p className="mt-3 text-xs text-slate-500">
             {t("Recommended selling price")}
           </p>
-          <p className="text-2xl font-bold">
+          <p className="text-sm text-slate-600">
             {money(variant?.price || 0, product.currency, language)}
-          </p>
-          <p className="mt-1 text-sm text-emerald-800">
-            {t("Your cost ")}
-            {money(variant?.unit_cost || 0, product.currency, language)} ·{" "}
-            {product.discount_percent}
-            {t("% off")}
           </p>
           {!!colors.length && (
             <fieldset className="mt-5">

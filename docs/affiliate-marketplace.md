@@ -32,7 +32,8 @@ The new tables follow this repository's existing `create(checkfirst=True)`
 pattern. They are additive: `affiliate_sellers`, `affiliate_sessions`,
 `affiliate_orders`, `affiliate_product_costs`, `affiliate_payouts`,
 `affiliate_order_terms`, `affiliate_product_marks`, `affiliate_customers`, and
-`affiliate_customer_shopify_links`, plus `affiliate_order_receipts`. Legacy product-cost records remain for audit;
+`affiliate_customer_shopify_links`, plus `affiliate_order_receipts`,
+`affiliate_bank_accounts` and `affiliate_payout_methods`. Legacy product-cost records remain for audit;
 new orders use percentage pricing. Use the
 production database connection, not a local SQLite file, in deployed instances.
 
@@ -66,8 +67,10 @@ Currencies are tracked separately and never summed into one balance.
 
 ## Marketplace and customers
 
-The seller Marketplace hides store and vendor names. Cards show images, original
-recommended prices, discounted costs, color/size swatches and stock. Filters use
+The seller Marketplace hides store and vendor names. Cards show images, discounted
+**Product cost** as the larger highlighted price, with the smaller recommended
+selling price below it, plus color/size swatches and stock. Product details and
+selected order products use the same cost-first presentation. Filters use
 available sizes and Men, Women, Kids, Boys, Girls, Unisex kids/adult, or Other. Categories
 come from Shopify product type and tags, with title fallback; unclassified items
 remain under Other. Sorting supports newest, quantity, and price in either
@@ -176,6 +179,28 @@ delivered; earnings unlock when that staff review is resolved.
 
 Delivered and collected orders earn payout-eligible profit. Pending and approved
 payout requests reserve funds immediately under a database transaction lock.
+Order entry and pending-order cards highlight **Expected profit**; after delivery
+and collection their highlighted amount becomes **Profit**. Zero-profit settled
+orders are identified by the server's `profit_earned` flag rather than a positive
+amount. Returned/cancelled/failed orders show zero profit. Delivery settlement
+reviews keep earnings pending until collection is confirmed.
+
+The Payouts tab lets sellers save one CIH RIB, one Attijariwafa RIB, or both.
+RIB values stay strings to preserve leading zeroes; optional spaces/hyphens are
+normalized and the server requires 24 digits. This validates format only, not bank
+ownership. Bank-account records are seller-scoped; account IDs from another seller
+are rejected. Saving an empty bank field removes that account. Requested payouts
+keep an immutable bank/RIB snapshot even if saved accounts are later edited or
+deleted. The two new tables are additive and require no alterations to existing
+order or payout tables.
+
+For each request the seller enters an amount, selects bank transfer and a saved
+account, or chooses cash. The form disables amounts above **Available** and the
+server independently refreshes statuses and checks the balance while holding the
+seller transaction lock. Expected earnings, pending/approved reservations and paid
+amounts cannot be withdrawn again. Previous requests, destination, status and
+transfer references appear below the form. Existing requests with free-text
+destinations retain their history; the API accepts that legacy request format.
 Approval rechecks current earnings. Marking a payout paid requires a transfer
 reference and a prior approved state. Transfers are made outside this dashboard;
 the dashboard records and tracks them. Subsequent returns/refunds may make the
@@ -227,7 +252,10 @@ Additional checks cover cached catalog authorization, progressive pagination,
 active routing cities, immutable seller-owned receipts and explicit Shopify
 rejections, the 40-character order-tag limit, original submission IDs in note
 attributes, idempotent retries, and immutable receipt color/size/delivery totals.
-The affiliate, operator-gate and Shopify-registry regression suites pass 81 tests.
+The affiliate, operator-gate and Shopify-registry regression suites pass 85 tests.
+New checks cover both bank accounts, RIB validation/normalization, seller isolation,
+immutable payout destinations after account edits/deletion, cash payouts, exact
+available-balance limits/reservations, and expected-to-earned profit transitions.
 `node --test frontend/tests/affiliate-translations.test.cjs` checks dynamic
 messages, preservation of customer/product data, and static seller-label coverage.
 Mobile browser QA covers the complete multiple-product order flow, English/French/

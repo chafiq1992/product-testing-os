@@ -22,6 +22,69 @@ const englishDeliveryStates: Record<string, string> = {
 // English source phrases are stable keys. Placeholders also match existing
 // composed messages, preserving names, amounts and product data unchanged.
 const rows: [string, string, string][] = [
+  ["Product cost", "Coût du produit", "تكلفة المنتج"],
+  ["Amount", "Montant", "المبلغ"],
+  ["Expected profit", "Bénéfice prévu", "الربح المتوقع"],
+  ["Bank accounts", "Comptes bancaires", "الحسابات البنكية"],
+  [
+    "Save a CIH account, an Attijari account, or both. Leave a field empty to remove that account.",
+    "Enregistrez un compte CIH, Attijari ou les deux. Laissez un champ vide pour supprimer ce compte.",
+    "احفظ حسابًا في CIH أو التجاري وفا بنك أو كليهما. اترك الحقل فارغًا لحذف الحساب.",
+  ],
+  ["RIB", "RIB", "رقم الحساب البنكي RIB"],
+  ["24 digits", "24 chiffres", "24 رقمًا"],
+  ["Reload bank accounts", "Recharger les comptes", "إعادة تحميل الحسابات"],
+  ["Save bank accounts", "Enregistrer les comptes", "حفظ الحسابات البنكية"],
+  [
+    "Bank accounts saved.",
+    "Comptes bancaires enregistrés.",
+    "تم حفظ الحسابات البنكية.",
+  ],
+  [
+    "Check your RIB carefully. Saving validates the format, not ownership of the bank account.",
+    "Vérifiez votre RIB. L’enregistrement vérifie le format, pas le titulaire du compte.",
+    "تحقق من رقم RIB بعناية. الحفظ يتحقق من الصيغة ولا يؤكد ملكية الحساب.",
+  ],
+  [
+    "Only available earnings from delivered, collected orders can be requested. Pending earnings and reserved payouts are excluded.",
+    "Seuls les gains disponibles des commandes livrées et encaissées peuvent être demandés. Les gains en attente et les versements réservés sont exclus.",
+    "يمكن سحب الأرباح المتاحة فقط من الطلبات المسلّمة والمحصّلة. الأرباح المعلقة والسحوبات المحجوزة غير متاحة للسحب.",
+  ],
+  ["Payout method", "Mode de versement", "طريقة السحب"],
+  ["Bank transfer", "Virement bancaire", "تحويل بنكي"],
+  ["Cash", "Espèces", "نقدًا"],
+  ["Bank account", "Compte bancaire", "الحساب البنكي"],
+  [
+    "Choose a saved bank account",
+    "Choisissez un compte enregistré",
+    "اختر حسابًا بنكيًا محفوظًا",
+  ],
+  [
+    "Save a bank account above or choose cash.",
+    "Enregistrez un compte ci-dessus ou choisissez les espèces.",
+    "احفظ حسابًا بنكيًا أعلاه أو اختر السحب نقدًا.",
+  ],
+  ["Payout history", "Historique des versements", "سجل السحوبات"],
+  [
+    "RIB must contain exactly 24 digits",
+    "Le RIB doit contenir exactement 24 chiffres",
+    "يجب أن يتكون رقم RIB من 24 رقمًا بالضبط",
+  ],
+  [
+    "Save only one account per bank",
+    "Enregistrez un seul compte par banque",
+    "احفظ حسابًا واحدًا لكل بنك",
+  ],
+  [
+    "Choose a saved bank account belonging to you",
+    "Choisissez un compte enregistré vous appartenant",
+    "اختر حسابًا بنكيًا محفوظًا يخصك",
+  ],
+  [
+    "Choose bank transfer or cash",
+    "Choisissez un virement ou les espèces",
+    "اختر التحويل البنكي أو النقد",
+  ],
   [
     "Seller sign in required",
     "Connexion vendeur requise",

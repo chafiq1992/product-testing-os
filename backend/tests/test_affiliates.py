@@ -41,6 +41,8 @@ def test_seller_sessions_work_through_operator_gate_without_staff_access(market,
     cost(fixture_client)
     assert client.get('/api/affiliates/products', headers=headers).status_code == 200
     assert client.get('/api/affiliates/customers', headers=headers).status_code == 200
+    assert client.get('/api/affiliates/bank-accounts', headers=headers).status_code == 200
+    assert client.put('/api/affiliates/bank-accounts', headers=headers, json={'accounts': [{'bank':'cih','rib':'123456789012345678901234'}]}).status_code == 200
     assert client.put('/api/affiliates/marks', headers=headers,
         json={'store': 'alpha', 'product_id': '10', 'marked': True}).status_code == 200
     assert client.get('/api/affiliates/dashboard', headers=headers).status_code == 200
@@ -77,7 +79,7 @@ def test_staff_token_passes_gate_and_affiliate_admin_verification(market, monkey
 @pytest.fixture
 def market(monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink, a.OrderReceipt):
+    for model in (a.Seller, a.SellerSession, a.SellerOrder, a.Payout, a.ProductCost, a.OrderTerms, a.ProductMark, a.Customer, a.CustomerLink, a.OrderReceipt, a.BankAccount, a.PayoutMethod):
         model.__table__.create(engine)
     monkeypatch.setattr(db, 'SessionLocal', sessionmaker(engine, expire_on_commit=False))
     settings = {'affiliate_marketplace_pricing': {'discount_percent': 50, 'rules': [], 'delivery_fees': {'MAD': 0}}}
@@ -689,3 +691,74 @@ def test_delivery_city_bridge_rejects_html_or_unconfigured_connection(market, mo
         def json(self): raise ValueError('HTML is not JSON')
     monkeypatch.setattr(a.requests,'get',lambda *args,**kwargs:Response())
     assert client.get('/api/affiliates/cities',headers=headers).status_code==502
+
+
+def test_saved_bank_accounts_are_validated_and_seller_scoped(market):
+    client, _, _, _ = market
+    _, headers = account(client)
+    _, other = account(client, 'otherbank')
+    rib = '123456789012345678901234'
+    saved = client.put('/api/affiliates/bank-accounts', headers=headers, json={'accounts':[{'bank':'cih','rib':rib},{'bank':'attijari','rib':'987654321098765432109876'}]})
+    assert saved.status_code == 200, saved.text
+    assert len(saved.json()['data']) == 2
+    assert client.get('/api/affiliates/bank-accounts', headers=other).json()['data'] == []
+    assert client.get('/api/affiliates/bank-accounts').status_code == 401
+    for payload in [
+        [{'bank':'cih','rib':'x'*24}],
+        [{'bank':'cih','rib':'1'*23}],
+        [{'bank':'unknown','rib':rib}],
+        [{'bank':'cih','rib':rib},{'bank':'cih','rib':rib}],
+    ]:
+        assert client.put('/api/affiliates/bank-accounts', headers=headers, json={'accounts':payload}).status_code == 422
+    assert len(client.get('/api/affiliates/bank-accounts',headers=headers).json()['data']) == 2
+    result=client.put('/api/affiliates/bank-accounts',headers=headers,json={'accounts':[{'bank':'cih','rib':'123456 789012 345678 901234'}]})
+    assert result.status_code == 200 and result.json()['data'][0]['rib'] == rib
+    assert len(result.json()['data']) == 1
+
+
+def test_bank_payout_snapshot_survives_account_edit_and_deletion(market):
+    client, remote, _, _ = market
+    _, headers = account(client); cost(client); create(client,headers); deliver(remote)
+    rib='123456789012345678901234'
+    bank=client.put('/api/affiliates/bank-accounts',headers=headers,json={'accounts':[{'bank':'cih','rib':rib}]}).json()['data'][0]
+    payout=client.post('/api/affiliates/payouts',headers=headers,json={'amount':10,'currency':'MAD','method':'bank','account_id':bank['id']})
+    assert payout.status_code == 200, payout.text
+    row=payout.json()['data']
+    assert row['method']=='bank' and row['bank']=='cih' and row['rib']==rib
+    assert client.put('/api/affiliates/bank-accounts',headers=headers,json={'accounts':[{'bank':'cih','rib':'987654321098765432109876'}]}).status_code==200
+    assert client.put('/api/affiliates/bank-accounts',headers=headers,json={'accounts':[]}).status_code==200
+    history=client.get('/api/affiliates/dashboard',headers=headers).json()['data']['payouts'][0]
+    assert history['rib']==rib and history['destination']==row['destination']
+    assert client.post('/api/affiliates/payouts',headers=headers,json={'amount':1,'currency':'MAD','method':'bank','account_id':bank['id']}).status_code==422
+
+
+def test_payout_rejects_foreign_accounts_and_only_spends_available_earnings(market):
+    client, remote, _, _ = market
+    _, headers=account(client); _, other=account(client,'foreignbank'); cost(client); create(client,headers)
+    body={'amount':10,'currency':'MAD','method':'cash'}
+    # Expected earnings exist, but delivery has not completed.
+    assert client.post('/api/affiliates/payouts',headers=headers,json=body).status_code==409
+    deliver(remote)
+    foreign=client.put('/api/affiliates/bank-accounts',headers=other,json={'accounts':[{'bank':'cih','rib':'123456789012345678901234'}]}).json()['data'][0]
+    assert client.post('/api/affiliates/payouts',headers=headers,json={**body,'method':'bank','account_id':foreign['id']}).status_code==422
+    assert client.post('/api/affiliates/payouts',headers=headers,json={**body,'amount':40.01}).status_code==409
+    first=client.post('/api/affiliates/payouts',headers=headers,json={**body,'amount':30})
+    assert first.status_code==200 and first.json()['data']['destination']=='Cash'
+    assert client.post('/api/affiliates/payouts',headers=headers,json={**body,'amount':10.01}).status_code==409
+    last=client.post('/api/affiliates/payouts',headers=headers,json=body)
+    assert last.status_code==200
+    dash=client.get('/api/affiliates/dashboard',headers=headers).json()['data']
+    assert dash['analytics']['MAD']['available']==0 and dash['analytics']['MAD']['reserved']==40
+    assert client.post('/api/affiliates/payouts',headers=headers,json={**body,'amount':0.01}).status_code==409
+    assert client.post('/api/affiliates/payouts',headers=headers,json={**body,'amount':0}).status_code==422
+
+
+def test_expected_profit_becomes_earned_only_after_delivery_collection(market):
+    client, remote, _, _=market
+    _,headers=account(client);cost(client);create(client,headers)
+    before=client.get('/api/affiliates/dashboard',headers=headers).json()['data']['orders'][0]
+    assert before['profit_earned'] is False and before['pending_profit']==40 and before['profit']==0
+    deliver(remote)
+    a.sync_orders(client.get('/api/affiliates/me',headers=headers).json()['data']['id'],force=True)
+    after=client.get('/api/affiliates/dashboard',headers=headers).json()['data']['orders'][0]
+    assert after['profit_earned'] is True and after['profit']==40 and after['pending_profit']==0

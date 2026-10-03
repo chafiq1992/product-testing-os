@@ -63,6 +63,7 @@ test("every static seller interface phrase has an Arabic translation", () => {
     "components/AffiliateOrderDetails.tsx",
     "components/AffiliateOrderEditor.tsx",
     "components/AffiliateReceipt.tsx",
+    "components/AffiliatePayoutRequest.tsx",
     "lib/affiliate-locale.tsx",
   ];
   const missing = new Set();
