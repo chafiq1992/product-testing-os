@@ -592,7 +592,7 @@ def _processed_window_iso(store: str | None, processed_min_date: str, processed_
         return (f"{processed_min_date}T00:00:00", f"{processed_max_date}T23:59:59")
 
 
-def get_shop_timezone(store: str | None = None) -> str:
+def get_shop_timezone(store: str | None = None, *, strict: bool = False) -> str:
     override = _REPORTING_TZ.get()
     if override:
         return override
@@ -601,9 +601,20 @@ def get_shop_timezone(store: str | None = None) -> str:
         tz = ((data or {}).get("shop") or {}).get("iana_timezone") or ((data or {}).get("shop") or {}).get("timezone")
         if isinstance(tz, str) and tz.strip():
             return tz.strip()
+        if strict:
+            raise RuntimeError('Shopify did not return the store timezone')
     except Exception:
-        pass
+        if strict:
+            raise
     return "UTC"
+
+
+def _order_search_date_filter(field: str, store: str | None, start: str, end: str) -> str:
+    # A date-only Shopify search is not the shop/reporting timezone day. Use
+    # explicit UTC timestamps, just as the REST order scans do.
+    lower, upper = _processed_window_iso(store, start, end)
+    return f'({field}:>="{lower}" AND {field}:<="{upper}")'
+
 
 def _rest_put_store(store: str | None, path: str, payload: dict):
     cfg = _get_store_config(store)
@@ -1180,12 +1191,10 @@ def count_orders_by_product_or_variant_processed_batch(
 def count_orders_total_processed(processed_min_date: str, processed_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count total unique orders within a processed_at date range (YYYY-MM-DD).
 
-    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    Includes all order statuses when include_closed=True, matching Admin's total.
     """
     try:
-        query = (
-            f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
-        )
+        query = _order_search_date_filter('processed_at', store, processed_min_date, processed_max_date)
         if not include_closed:
             query = f"{query} status:open"
         gql = """
@@ -1196,13 +1205,15 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
           }
         }
         """
-        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        data = _gql_store_once(store, gql, {"query": query, "limit": None}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
         count_obj = (data or {}).get("ordersCount") or {}
+        if count_obj.get("count") is None or str(count_obj.get("precision") or '').upper() != 'EXACT':
+            raise RuntimeError('Shopify did not return an exact order count')
         return int(count_obj.get("count") or 0)
     except Exception as e:
         _perf_log.warning("orders_count.graphql_failed store=%s field=processed err=%s", store, e)
         if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
-            return 0
+            raise
 
     from urllib.parse import urlencode
     base_path = "/orders.json"
@@ -1250,8 +1261,6 @@ def count_orders_total_processed(processed_min_date: str, processed_max_date: st
         orders = (data or {}).get("orders") or []
         for o in orders:
             try:
-                if o.get("cancelled_at"):
-                    continue
                 total += 1
             except Exception:
                 continue
@@ -1449,7 +1458,7 @@ def _utm_orders_cache_key(processed_min_date: str, processed_max_date: str, incl
     closed = "all" if include_closed else "open"
     tz = _REPORTING_TZ.get()
     suffix = f":tz={tz}" if tz else ""
-    return f"shopify_utm_orders_v5:{processed_min_date}:{processed_max_date}:{closed}{suffix}"
+    return f"shopify_utm_orders_v6:{processed_min_date}:{processed_max_date}:{closed}{suffix}"
 
 
 def _get_utm_orders_cache(store: str | None, processed_min_date: str, processed_max_date: str, include_closed: bool) -> list[dict] | None:
@@ -1558,7 +1567,7 @@ def list_orders_with_utms_processed_graphql(processed_min_date: str, processed_m
         remaining_pages -= page_limit
 
     def _fetch_day(day: str, page_limit: int) -> tuple[str, int, list[dict]]:
-        query = f'(processed_at:>="{day}" AND processed_at:<="{day}")'
+        query = _order_search_date_filter('processed_at', store, day, day)
         if not include_closed:
             query = f"{query} status:open"
         after = None
@@ -1946,12 +1955,10 @@ def get_order_product_ids(order_ids: list[str], *, store: str | None = None) -> 
 def count_orders_total_created(created_min_date: str, created_max_date: str, *, store: str | None = None, include_closed: bool = False) -> int:
     """Count total unique orders within a created_at date range (YYYY-MM-DD).
 
-    Excludes cancelled orders. Uses page_info pagination and respects include_closed via status=any.
+    Includes all order statuses when include_closed=True, matching Admin's total.
     """
     try:
-        query = (
-            f'(created_at:>="{created_min_date}" AND created_at:<="{created_max_date}")'
-        )
+        query = _order_search_date_filter('created_at', store, created_min_date, created_max_date)
         if not include_closed:
             query = f"{query} status:open"
         gql = """
@@ -1962,25 +1969,19 @@ def count_orders_total_created(created_min_date: str, created_max_date: str, *, 
           }
         }
         """
-        data = _gql_store_once(store, gql, {"query": query, "limit": 10000}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
+        data = _gql_store_once(store, gql, {"query": query, "limit": None}, timeout=max(3, int(os.getenv("PTOS_ORDERS_COUNT_TIMEOUT_S", "12") or "12")))
         count_obj = (data or {}).get("ordersCount") or {}
+        if count_obj.get("count") is None or str(count_obj.get("precision") or '').upper() != 'EXACT':
+            raise RuntimeError('Shopify did not return an exact order count')
         return int(count_obj.get("count") or 0)
     except Exception as e:
         _perf_log.warning("orders_count.graphql_failed store=%s field=created err=%s", store, e)
         if os.getenv("PTOS_ORDERS_TOTAL_REST_FALLBACK", "").strip().lower() not in {"1", "true", "yes", "on"}:
-            return 0
+            raise
 
     from urllib.parse import urlencode
     base_path = "/orders.json"
-    # Build inclusive day bounds
-    try:
-        y1, m1, d1 = [int(x) for x in (created_min_date or "").split("-")]
-        y2, m2, d2 = [int(x) for x in (created_max_date or "").split("-")]
-        created_min = f"{y1:04d}-{m1:02d}-{d1:02d}T00:00:00"
-        created_max = f"{y2:04d}-{m2:02d}-{d2:02d}T23:59:59"
-    except Exception:
-        created_min = f"{created_min_date}T00:00:00"
-        created_max = f"{created_max_date}T23:59:59"
+    created_min, created_max = _processed_window_iso(store, created_min_date, created_max_date)
     params = {
         "status": ("any" if include_closed else "open"),
         "limit": 250,
@@ -2003,8 +2004,6 @@ def count_orders_total_created(created_min_date: str, created_max_date: str, *, 
         orders = (data or {}).get("orders") or []
         for o in orders:
             try:
-                if o.get("cancelled_at"):
-                    continue
                 total += 1
             except Exception:
                 continue
@@ -3114,7 +3113,7 @@ def _count_orders_by_product_search(
         return 0
     query = (
         f'product_id:"{ident}" '
-        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}")'
+        f'{_order_search_date_filter("processed_at", store, processed_min_date, processed_max_date)}'
     )
     gql = """
     query OrdersForProduct($query: String!, $first: Int!, $after: String) {
@@ -3183,7 +3182,7 @@ def count_paid_orders_by_product_search(
         return 0
     query = (
         f'product_id:"{ident}" '
-        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
+        f'{_order_search_date_filter("processed_at", store, processed_min_date, processed_max_date)} '
         '(financial_status:"paid" OR financial_status:"partially_paid" OR tag:"DELIVERED")'
     )
     gql = """
@@ -3330,7 +3329,7 @@ def count_fulfilled_and_paid_orders_by_product_search(
 
     base_query = (
         f'product_id:"{ident}" '
-        f'(processed_at:>="{processed_min_date}" AND processed_at:<="{processed_max_date}") '
+        f'{_order_search_date_filter("processed_at", store, processed_min_date, processed_max_date)} '
         '-status:"cancelled" fulfillment_status:"fulfilled"'
     )
     fulfilled_query = base_query

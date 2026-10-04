@@ -502,6 +502,8 @@ export default function AdsManagementPage(){
   const [perfMetrics, setPerfMetrics] = useState<Array<{ date:string, spend:number, purchases:number, cpp?:number|null, ctr?:number|null, add_to_cart:number }>>([])
   const [perfOrders, setPerfOrders] = useState<number[]>([])
   const [storeOrdersTotal, setStoreOrdersTotal] = useState<number|null>(null)
+  const [storeOrdersError, setStoreOrdersError] = useState<string>('')
+  const [storeOrderCounts, setStoreOrderCounts] = useState<Record<string, { count: number, timezone?: string, start?: string, end?: string }>>({})
   const [profitMode, setProfitMode] = useState<boolean>(false)
   const [profitProductCosts, setProfitProductCosts] = useState<Record<string, string>>({})
   const [profitCostSaving, setProfitCostSaving] = useState<Record<string, boolean>>({})
@@ -849,6 +851,28 @@ export default function AdsManagementPage(){
   function effectiveYmdRange(preset: string){
     if(preset==='custom' && customStart && customEnd) return { start: customStart, end: customEnd }
     return computeRange(preset)
+  }
+
+  async function loadStoreOrderTotals(stores: string[], start: string, end: string, preset: string, token: number){
+    setStoreOrdersTotal(null)
+    setStoreOrdersError('')
+    setStoreOrderCounts({})
+    const uniqueStores = Array.from(new Set(stores))
+    const results = await Promise.allSettled(uniqueStores.map(async st => {
+      const response = await shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed', timezone_mode: 'shop', date_preset: preset })
+      if(response.error || typeof response.data?.count !== 'number') throw new Error(st)
+      return { store: st, ...response.data, count: response.data.count }
+    }))
+    if(token !== ordersSeqToken.current) return
+    const counts: typeof storeOrderCounts = {}
+    const failed: string[] = []
+    results.forEach((result, index) => {
+      if(result.status === 'fulfilled') counts[result.value.store] = result.value
+      else failed.push(uniqueStores[index])
+    })
+    setStoreOrderCounts(counts)
+    if(failed.length) setStoreOrdersError(`Could not load ${failed.join(', ')}. Retry to get the full total.`)
+    else setStoreOrdersTotal(Object.values(counts).reduce((sum, value) => sum + value.count, 0))
   }
 
   function performanceOrderStores(rowStore?: string | null): Array<string | undefined>{
@@ -1543,6 +1567,8 @@ export default function AdsManagementPage(){
       setProductBriefs({})
       setManualCounts({})
       setStoreOrdersTotal(null)
+      setStoreOrdersError('')
+      setStoreOrderCounts({})
       setExpanded({})
       setCollectionOrders({})
       setChildrenError({})
@@ -1605,24 +1631,7 @@ export default function AdsManagementPage(){
       // Fire store-total in background for each store (skip in focused search mode:
       // an all-time store total is a heavy query and isn't shown for a single campaign)
       if(!profitOnly && !focusMatch){
-        ;(async()=>{
-          try{
-            const totals = await Promise.allSettled(
-              (storeList.length ? storeList : ['irrakids']).map(st =>
-                shopifyOrdersCountTotal({ start, end, store: st, include_closed: true, date_field: 'processed' })
-              )
-            )
-            if(ordersToken !== ordersSeqToken.current) return
-            let sum = 0
-            for(const t of totals){
-              if(t.status === 'fulfilled') sum += Number(((t.value as any)?.data||{}).count||0)
-            }
-            setStoreOrdersTotal(sum)
-          }catch{
-            if(ordersToken !== ordersSeqToken.current) return
-            setStoreOrdersTotal(0)
-          }
-        })()
+        void loadStoreOrderTotals(storeList.length ? storeList : ['irrakids'], start, end, effPreset, ordersToken)
       }
 
       if(profitOnly){
@@ -3030,7 +3039,7 @@ export default function AdsManagementPage(){
           {reportingTz && (
             <>
               <span className="text-slate-300">/</span>
-              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 ring-1 ring-blue-600/15" title="Dates for Meta spend and Shopify orders both follow the Meta ad account's timezone, so 'today' is the same day everywhere.">
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 font-semibold text-blue-700 ring-1 ring-blue-600/15" title="Ad spend and product rows use the Meta account timezone. The Shopify orders card uses each store's local day to match Shopify Admin.">
                 <Clock className="h-3 w-3"/>Meta time · {reportingTz.replace(/_/g, ' ')} · {timeZoneClock(reportingTz)}
               </span>
             </>
@@ -3053,21 +3062,21 @@ export default function AdsManagementPage(){
             ]} />
           </KpiTile>
 
-          {!profitMode && (()=>{
-            const share = storeOrdersTotal ? Math.min(1, tableOrdersTotal / Math.max(1, storeOrdersTotal)) : 0
-            return (
+          {!profitMode && !searchFocusLabel && (
               <KpiTile
                 label="Shopify orders"
-                value={fmtInt(tableOrdersTotal)}
-                sub={storeOrdersTotal!=null ? `of ${fmtInt(storeOrdersTotal)} store` : 'store total…'}
-                hint={storeOrdersTotal ? `${Math.round(share*100)}% from ads` : undefined}
+                value={storeOrdersTotal == null ? (storeOrdersError ? '—' : '…') : fmtInt(storeOrdersTotal)}
+                sub="unique store orders"
+                hint="Shopify time"
               >
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100" title={`${Math.round(share*100)}% of store orders come from products in this table`}>
-                  <div className="h-full rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${share*100}%` }} />
-                </div>
+                {storeOrdersError ? <div className="text-[11px] text-amber-700" role="alert">{storeOrdersError} <button className="font-semibold underline" onClick={() => { const range = effectiveYmdRange(datePreset); void loadStoreOrderTotals(selectedStores.length ? selectedStores : [store], range.start, range.end, datePreset, ordersSeqToken.current) }}>Retry</button></div> :
+                  <div className="flex flex-wrap gap-x-2 text-[10px] text-slate-500">{Object.entries(storeOrderCounts).map(([st, result]) => <span key={st} title={`${st}: ${result.start} to ${result.end} · ${result.timezone}`}><span className="font-medium">{st}</span> {fmtInt(result.count)}</span>)}</div>}
               </KpiTile>
-            )
-          })()}
+          )}
+
+          {!profitMode && <KpiTile label="Product orders" value={fmtInt(tableOrdersTotal)} sub="product matches" hint="Meta time">
+            <p className="text-[10px] text-slate-500" title="One order containing multiple products can count in multiple product rows. These counts include all sales of the mapped products and do not prove ad attribution.">Counts can overlap across products</p>
+          </KpiTile>}
 
           {!profitMode && (
             <KpiTile

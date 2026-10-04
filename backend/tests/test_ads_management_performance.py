@@ -301,6 +301,7 @@ def test_paid_product_order_count_uses_one_exact_server_side_count(monkeypatch):
         return {"ordersCount": {"count": 37, "precision": "EXACT"}}
 
     monkeypatch.setattr(shopify_client, "_gql_store_once", fake_gql)
+    monkeypatch.setattr(shopify_client, "get_shop_timezone", lambda *_: 'UTC')
 
     count = shopify_client.count_paid_orders_by_product_search(
         "123",
@@ -314,7 +315,8 @@ def test_paid_product_order_count_uses_one_exact_server_side_count(monkeypatch):
     query, variables, timeout = calls[0]
     assert "ordersCount" in query
     assert 'product_id:"123"' in variables["query"]
-    assert 'processed_at:>="2026-07-01"' in variables["query"]
+    assert 'processed_at:>="2026-07-01T00:00:00+00:00"' in variables["query"]
+    assert 'processed_at:<="2026-07-14T23:59:59.999000+00:00"' in variables["query"]
     assert 'financial_status:"paid"' in variables["query"]
     assert 'financial_status:"partially_paid"' in variables["query"]
     assert 'tag:"DELIVERED"' in variables["query"]

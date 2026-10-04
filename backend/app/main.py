@@ -8,8 +8,9 @@ from starlette.responses import RedirectResponse
 from pydantic import BaseModel, PrivateAttr
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
-from datetime import datetime
-from app.integrations.shopify_client import ThreadPoolExecutor, reporting_timezone_scope, current_reporting_timezone, normalize_timezone_name
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from app.integrations.shopify_client import ThreadPoolExecutor, reporting_timezone_scope, current_reporting_timezone, normalize_timezone_name, get_shop_timezone
 import json, os
 import base64, hmac, hashlib
 from pathlib import Path
@@ -1733,7 +1734,7 @@ def _ads_product_cache_key(kind: str, product_id: str) -> str:
 
 
 def _ads_orders_cache_key(product_id: str, start: str, end: str, include_closed: bool, date_field: str) -> str:
-    return _cache_key("ads_mgmt_product_orders", {
+    return _cache_key("ads_mgmt_product_orders_v2", {
         "product_id": str(product_id or "").strip(),
         "start": start,
         "end": end,
@@ -2138,6 +2139,24 @@ class OrdersTotalCountRequest(BaseModel):
     store: Optional[str] = None
     include_closed: Optional[bool] = None
     date_field: Optional[str] = None  # 'processed' | 'created'
+    timezone_mode: str = 'reporting'  # 'shop' matches Shopify Admin day boundaries
+    date_preset: Optional[str] = None
+
+
+def _store_order_count_dates(start: str, end: str, preset: str | None, timezone: str) -> tuple[str, str]:
+    today = datetime.now(ZoneInfo(timezone)).date()
+    if preset == 'today':
+        return today.isoformat(), today.isoformat()
+    if preset == 'yesterday':
+        day = (today - timedelta(days=1)).isoformat()
+        return day, day
+    lengths = {f'last_{days}d_incl_today': days for days in range(3, 8)}
+    if preset in lengths:
+        return (today - timedelta(days=lengths[preset] - 1)).isoformat(), today.isoformat()
+    if preset == 'maximum':
+        return (today - timedelta(days=3 * 365)).isoformat(), today.isoformat()
+    # Custom ranges keep the selected dates, interpreted in each shop's timezone.
+    return start, end
 
 
 @app.post("/api/shopify/orders_count_total")
@@ -2149,24 +2168,29 @@ async def api_orders_count_total(req: OrdersTotalCountRequest):
         include_closed = bool(req.include_closed) if req.include_closed is not None else False
         df = (req.date_field or "processed").lower()
         store = _canonical_store_label(req.store)
-        key = _cache_key("shopify_orders_count_total", {"store": store or None, "start": s_date, "end": e_date, "include_closed": include_closed, "date_field": df})
+        with reporting_timezone_scope(None if req.timezone_mode == 'shop' else current_reporting_timezone()):
+            timezone = await run_in_threadpool(get_shop_timezone, store, strict=req.timezone_mode == 'shop')
+            if req.timezone_mode == 'shop':
+                s_date, e_date = _store_order_count_dates(s_date, e_date, req.date_preset, timezone)
+            key = _cache_key("shopify_orders_count_total_v2", {"store": store or None, "start": s_date, "end": e_date, "timezone": timezone, "include_closed": include_closed, "date_field": df})
 
-        async def _compute():
-            if df == "created":
-                return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=store, include_closed=include_closed)
-            return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=store, include_closed=include_closed)
+            async def _compute():
+                with reporting_timezone_scope(timezone):
+                    if df == "created":
+                        return await run_in_threadpool(count_orders_total_created, s_date, e_date, store=store, include_closed=include_closed)
+                    return await run_in_threadpool(count_orders_total_processed, s_date, e_date, store=store, include_closed=include_closed)
 
-        cnt = await asyncio.wait_for(_cached(key, 60, _compute), timeout=28)
-        return {"data": {"count": int(cnt or 0)}}
+            cnt = await asyncio.wait_for(_cached(key, 30, _compute), timeout=28)
+        return {"data": {"count": int(cnt), "timezone": timezone, "start": s_date, "end": e_date}}
     except asyncio.TimeoutError:
         shopify_logger.warning(
             "shopify.orders_count_total timeout store=%s elapsed_ms=%s",
             getattr(req, "store", None),
             int((time.perf_counter() - started) * 1000),
         )
-        return {"error": "shopify_orders_total_timeout", "data": {"count": 0}}
+        return {"error": "shopify_orders_total_timeout", "data": {"count": None}}
     except Exception as e:
-        return {"error": str(e), "data": {"count": 0}}
+        return {"error": str(e), "data": {"count": None}}
 
 
 class CollectionProductsRequest(BaseModel):
@@ -6009,7 +6033,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         # Product and collection campaigns use exactly the same attribution.
         # Reuse the product cache, not the former strict collection-signature cache.
         connection_store = meta_store or store or (store_list or [None])[0]
-        key = _cache_key("meta_campaign_adset_orders_v11", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "meta_store": connection_store, "mapping_kind": "product"})
+        key = _cache_key("meta_campaign_adset_orders_v12", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "meta_store": connection_store, "mapping_kind": "product"})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -6242,7 +6266,7 @@ async def api_campaign_collection_orders(campaign_id: str, collection_id: str, s
         if not campaign_id.isdigit() or not collection_id.isdigit():
             raise ValueError("A numeric campaign ID and collection ID are required")
         store = _canonical_store_label(store)
-        key = _cache_key("meta_campaign_collection_orders_v1", {
+        key = _cache_key("meta_campaign_collection_orders_v2", {
             "campaign_id": campaign_id, "collection_id": collection_id,
             "start": start, "end": end, "store": store,
         })

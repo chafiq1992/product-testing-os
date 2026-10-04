@@ -925,12 +925,12 @@ export async function shopifyOrdersCountByCollection(payload:{ collection_id: st
 }
 
 // Shopify: count total orders for store over a time range
-export async function shopifyOrdersCountTotal(payload:{ start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created' }){
+export async function shopifyOrdersCountTotal(payload:{ start: string, end: string, store?: string, include_closed?: boolean, date_field?: 'processed'|'created', timezone_mode?: 'shop'|'reporting', date_preset?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore(), include_closed: payload.include_closed ?? true, date_field: payload.date_field }
   const url = `${base}/api/shopify/orders_count_total`
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
     const {data} = await axios.post(url, body)
-    return data as { data: { count: number }, error?: string }
+    return data as { data: { count: number|null, timezone?: string, start?: string, end?: string }, error?: string }
   })
 }
 
