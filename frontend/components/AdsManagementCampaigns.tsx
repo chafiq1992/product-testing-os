@@ -579,7 +579,7 @@ export default function AdsManagementPage(){
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
-  const [invHover, setInvHover] = useState<{ pid: string }|null>(null)
+  const [invHover, setInvHover] = useState<{ pid: string, anchor: HTMLElement }|null>(null)
   const pageHeaderRef = useRef<HTMLElement>(null)
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
@@ -763,7 +763,8 @@ export default function AdsManagementPage(){
     const next = isValidTimeZone(tz) ? String(tz) : ''
     reportingTzRef.current = next
     setReportingTzState(next)
-    // Every Shopify request from this page uses the same day boundaries as Meta
+    // Product-row Shopify requests share the Meta day. The store totals card
+    // explicitly requests each Shopify store's own timezone instead.
     if(next) axios.defaults.headers.common[REPORTING_TZ_HEADER] = next
     else delete axios.defaults.headers.common[REPORTING_TZ_HEADER]
   }
@@ -2817,7 +2818,7 @@ export default function AdsManagementPage(){
   return (
     <div className="min-h-screen w-full bg-slate-50 font-[Inter,ui-sans-serif,system-ui,-apple-system,'Segoe_UI',Roboto,sans-serif] text-slate-800 antialiased">
       {invHover && <ProductInventoryPanel productId={invHover.pid} data={variantInventoryCache[invHover.pid]} loading={!!variantInventoryLoading[invHover.pid]}
-        top={pageHeaderRef.current?.offsetHeight || 110} onClose={() => setInvHover(null)} />}
+        anchor={invHover.anchor} onClose={() => setInvHover(null)} />}
       <header ref={pageHeaderRef} className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         {/* Brand row */}
         <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
@@ -3545,10 +3546,10 @@ export default function AdsManagementPage(){
                             <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
                               <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                                 onMouseEnter={(e) => {
-                                  setInvHover({ pid })
+                                  setInvHover({ pid, anchor: e.currentTarget })
                                   loadVariantInventory(pid)
                                 }}
-                                data-inventory-trigger onClick={() => { setInvHover({ pid }); void loadVariantInventory(pid) }}
+                                data-inventory-trigger onClick={e => { setInvHover({ pid, anchor: e.currentTarget }); void loadVariantInventory(pid) }}
                               >
                                 {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
@@ -3982,11 +3983,11 @@ export default function AdsManagementPage(){
                             <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                               onMouseEnter={(e) => {
                                 if(pidSelf){
-                                  setInvHover({ pid: pidSelf })
+                                  setInvHover({ pid: pidSelf, anchor: e.currentTarget })
                                   loadVariantInventory(pidSelf)
                                 }
                               }}
-                              data-inventory-trigger onClick={() => { if(pidSelf){ setInvHover({ pid: pidSelf }); void loadVariantInventory(pidSelf) } }}
+                              data-inventory-trigger onClick={e => { if(pidSelf){ setInvHover({ pid: pidSelf, anchor: e.currentTarget }); void loadVariantInventory(pidSelf) } }}
                             >
                               {inv===null || inv===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
