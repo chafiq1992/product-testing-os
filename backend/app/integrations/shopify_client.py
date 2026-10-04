@@ -1890,11 +1890,9 @@ def list_orders_with_utms_processed_multi(processed_min_date: str, processed_max
     def _for_store(st: str | None) -> list[dict]:
         try:
             orders = list_orders_with_utms_processed(processed_min_date, processed_max_date, store=st, include_closed=include_closed)
-            for o in (orders or []):
-                o["store"] = st or "default"
-            return orders
-        except Exception:
-            return []
+            return [{**order, "store": st or "default"} for order in (orders or [])]
+        except Exception as exc:
+            raise RuntimeError(f"Could not load UTM orders for {st or 'default'}") from exc
 
     if len(store_list) <= 1:
         out.extend(_for_store(store_list[0] if store_list else None))

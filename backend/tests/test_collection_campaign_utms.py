@@ -85,7 +85,7 @@ def api(monkeypatch):
     monkeypatch.setattr(main, "_cached", no_cache)
     monkeypatch.setattr(main.db, "get_app_setting", lambda *_: None)
     monkeypatch.setattr(main.db, "set_app_setting", lambda *_: None)
-    monkeypatch.setattr(main, "list_adsets_with_insights", lambda *_: [
+    monkeypatch.setattr(main, "list_campaign_adsets", lambda *_: [
         {"adset_id": "222", "name": "Blue audience AdSet"},
         {"adset_id": "333", "name": "Red audience AdSet"},
     ])

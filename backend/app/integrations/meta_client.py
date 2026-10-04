@@ -371,7 +371,19 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
     return res
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+def list_campaign_adsets(campaign_id: str) -> list[dict]:
+    """Read every ad set without loading spend insights needed only by the UI."""
+    if not _active_token():
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    rows = _list_graph_edge_all(f"{campaign_id}/adsets", {
+        "fields": "id,name,effective_status,configured_status", "limit": 100,
+    })
+    return [{
+        "adset_id": str(row["id"]), "name": row.get("name"),
+        "status": str(row.get("effective_status") or row.get("configured_status") or "").upper(),
+    } for row in rows if row.get("id")]
+
+
 def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", since: str | None = None, until: str | None = None) -> list[dict]:
     """Return ad sets for a campaign with insights and current status.
 
@@ -383,25 +395,10 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
     """
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    # Fetch ad set list and statuses
-    status_map: dict[str, str] = {}
-    adsets_meta: dict[str, dict] = {}
-    sres = _get(
-        f"{campaign_id}/adsets",
-        {"fields": "id,name,effective_status,configured_status", "limit": 500},
-    )
-    srows = (sres or {}).get("data") or []
-    for a in (srows or []):
-        aid = str((a or {}).get("id") or "")
-        if not aid:
-            continue
-        adsets_meta[aid] = {"name": (a or {}).get("name")}
-        eff = (a or {}).get("effective_status") or (a or {}).get("configured_status")
-        status_map[aid] = str(eff or "").upper()
+    adsets = list_campaign_adsets(campaign_id)
 
-    out: list[dict] = []
-    # For each ad set, query insights directly
-    for aid, meta in adsets_meta.items():
+    def _with_insights(meta: dict) -> dict:
+        aid = meta["adset_id"]
         iparams: dict = {
             "level": "adset",
             "fields": "spend,actions,ctr,cpp",
@@ -411,12 +408,14 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             iparams["time_range"] = json.dumps({"since": since, "until": until})
         else:
             iparams["date_preset"] = date_preset or "last_7d"
+        insight_error = None
         try:
             ires = _get(f"{aid}/insights", iparams)
             irows = (ires or {}).get("data") or []
             # Aggregate first row (Meta returns single row for range)
             r = irows[0] if irows else {}
-        except Exception:
+        except Exception as exc:
+            insight_error = str(exc)
             r = {}
         name = meta.get("name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
@@ -436,7 +435,7 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             "offsite_conversion.fb_pixel_add_to_cart",
         ])
         eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
-        out.append({
+        return {
             "adset_id": aid,
             "name": name,
             "spend": round(spend, 2),
@@ -444,25 +443,29 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             "cpp": round(eff_cpp, 2) if eff_cpp is not None else None,
             "ctr": round(ctr, 3) if ctr is not None else None,
             "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
-            "status": (status_map.get(aid) or "").upper() if aid else None,
-        })
-    return out
+            "status": meta["status"],
+            **({"insights_error": insight_error} if insight_error else {}),
+        }
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(adsets)))) as executor:
+        futures = [executor.submit(copy_context().run, _with_insights, row) for row in adsets]
+        return [future.result() for future in futures]
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def list_ads_for_adsets(adset_ids: list[str]) -> dict[str, list[str]]:
     """Return mapping of adset_id -> list of ad ids under that ad set."""
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    out: dict[str, list[str]] = {}
-    for aid in (adset_ids or []):
-        try:
-            res = _get(f"{aid}/ads", {"fields": "id,name", "limit": 500})
-            rows = (res or {}).get("data") or []
-            out[str(aid)] = [str((r or {}).get("id") or "") for r in rows if (r or {}).get("id")]
-        except Exception:
-            out[str(aid)] = []
-    return out
+    def _ids(aid: str) -> list[str]:
+        rows = _list_graph_edge_all(f"{aid}/ads", {"fields": "id", "limit": 100})
+        return [str(row["id"]) for row in rows if row.get("id")]
+
+    from concurrent.futures import ThreadPoolExecutor
+    ids = list(dict.fromkeys(adset_ids or []))
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(ids)))) as executor:
+        futures = {aid: executor.submit(copy_context().run, _ids, aid) for aid in ids}
+        return {str(aid): future.result() for aid, future in futures.items()}
 
 
 _META_TRACKING_KEYS = {

@@ -49,6 +49,7 @@ from app.integrations.meta_client import get_campaign_summary
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope, get_ad_account_timezone
 from app.meta_connection import router as _meta_connection_router, reporting_token, _return_origin
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
+from app.integrations.meta_client import list_campaign_adsets
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
@@ -5974,13 +5975,15 @@ async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = No
             return await run_in_threadpool(_run_with_meta_connection, reporting_token(store), list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
 
         items = await _cached(key, 30, _compute)
+        if any(row.get("insights_error") for row in items):
+            _API_CACHE.pop(key, None)
         return {"data": items}
     except Exception as e:
         return {"error": str(e), "data": []}
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
-async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, mapping_kind: str | None = None):
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, mapping_kind: str | None = None, meta_store: str | None = None):
     """Attribute Shopify orders to ad sets by matching UTM parameters.
 
     Dual-strategy attribution:
@@ -6005,7 +6008,8 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
 
         # Product and collection campaigns use exactly the same attribution.
         # Reuse the product cache, not the former strict collection-signature cache.
-        key = _cache_key("meta_campaign_adset_orders_v10", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "mapping_kind": "product"})
+        connection_store = meta_store or store or (store_list or [None])[0]
+        key = _cache_key("meta_campaign_adset_orders_v11", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "meta_store": connection_store, "mapping_kind": "product"})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -6020,34 +6024,40 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         async def _compute():
             import asyncio
 
-            # 1) List ad sets for campaign and their ads — run in parallel
-            async def _fetch_adsets():
-                try:
-                    return await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, reporting_token(store or (store_list or [None])[0]), list_adsets_with_insights, campaign_id, "last_7d"), timeout=10)
-                except Exception:
-                    return []
-
             async def _fetch_orders():
-                try:
-                    if store_list and len(store_list) > 1:
-                        return await asyncio.wait_for(
-                            run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True),
-                            timeout=240,
-                        )
-                    single = store_list[0] if store_list else store
+                if store_list and len(store_list) > 1:
                     return await asyncio.wait_for(
-                        run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True),
+                        run_in_threadpool(list_orders_with_utms_processed_multi, start, end, stores=store_list, include_closed=True),
                         timeout=240,
                     )
-                except Exception:
-                    return []
+                single = store_list[0] if store_list else store
+                return await asyncio.wait_for(
+                    run_in_threadpool(list_orders_with_utms_processed, start, end, store=single, include_closed=True),
+                    timeout=240,
+                )
 
-            # Pipeline dependent work: start the expensive Shopify scan and Meta
-            # ad-set lookup together, then overlap the ad reverse-map request with
-            # the still-running order scan.
-            adsets_task = asyncio.create_task(_fetch_adsets())
+            async def _fetch_meta():
+                token = reporting_token(connection_store)
+                adsets = await asyncio.wait_for(run_in_threadpool(
+                    _run_with_meta_connection, token, list_campaign_adsets, campaign_id,
+                ), timeout=90)
+                ids = [str(row["adset_id"]) for row in adsets if row.get("adset_id")]
+                ads = await asyncio.wait_for(run_in_threadpool(
+                    _run_with_meta_connection, token, list_ads_for_adsets, ids,
+                ), timeout=120) if ids else {}
+                return adsets, ads
+
+            # Attribution needs identities, not spend insights. Failed provider
+            # reads must never produce cached zero orders or incomplete mappings.
+            meta_task = asyncio.create_task(_fetch_meta())
             orders_task = asyncio.create_task(_fetch_orders())
-            adsets = await adsets_task
+            try:
+                (adsets, ads_by_adset), orders = await asyncio.gather(meta_task, orders_task)
+            finally:
+                for task in (meta_task, orders_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(meta_task, orders_task, return_exceptions=True)
 
             adset_ids = [str((a or {}).get("adset_id") or "") for a in (adsets or []) if (a or {}).get("adset_id")]
 
@@ -6059,18 +6069,6 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                 if aid and name:
                     adset_name_to_id[name.lower()] = aid
 
-            # Fetch ads for ad-set reverse mapping (ad_id -> adset_id)
-            async def _fetch_ads_by_adset():
-                if not adset_ids:
-                    return {}
-                try:
-                    ids = await asyncio.wait_for(run_in_threadpool(_run_with_meta_connection, reporting_token(store or (store_list or [None])[0]), list_ads_for_adsets, adset_ids), timeout=8)
-                    return ids or {}
-                except Exception:
-                    return {}
-
-            ads_task = asyncio.create_task(_fetch_ads_by_adset())
-            orders, ads_by_adset = await asyncio.gather(orders_task, ads_task)
             ad_to_adset: dict[str, str] = {}
             for aid, ad_ids in (ads_by_adset or {}).items():
                 for ad in (ad_ids or []):

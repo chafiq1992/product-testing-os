@@ -8,6 +8,9 @@ import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronD
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
+import StickyCampaignTable from '@/components/StickyCampaignTable'
+import CampaignLifeDays from '@/components/CampaignLifeDays'
+import ProductInventoryPanel from '@/components/ProductInventoryPanel'
 import { PLATFORM_META, type PlatformKey } from '@/components/brand/PlatformIcons'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
@@ -485,6 +488,9 @@ export default function AdsManagementPage(){
   const [adsetsByCampaign, setAdsetsByCampaign] = useState<Record<string, MetaAdsetRow[]>>({})
   const [adsetOrdersByCampaign, setAdsetOrdersByCampaign] = useState<Record<string, Record<string, AdsetOrdersInfo>>>({})
   const [adsetOrdersLoading, setAdsetOrdersLoading] = useState<Record<string, boolean>>({})
+  const [adsetsError, setAdsetsError] = useState<Record<string, string>>({})
+  const [adsetOrdersError, setAdsetOrdersError] = useState<Record<string, string>>({})
+  const detailRequests = useRef(new Map<string, Promise<void>>())
   const [adsetOrdersExpanded, setAdsetOrdersExpanded] = useState<Record<string, boolean>>({})
   const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
   const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
@@ -571,7 +577,8 @@ export default function AdsManagementPage(){
   const searchRef = useRef<HTMLInputElement>(null)
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
-  const [invHover, setInvHover] = useState<{ pid: string, rect?: DOMRect }|null>(null)
+  const [invHover, setInvHover] = useState<{ pid: string }|null>(null)
+  const pageHeaderRef = useRef<HTMLElement>(null)
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
 
@@ -1545,6 +1552,8 @@ export default function AdsManagementPage(){
       setAdsetsByCampaign({})
       setAdsetOrdersByCampaign({})
       setAdsetOrdersLoading({})
+      setAdsetsError({})
+      setAdsetOrdersError({})
       setAdsetOrdersExpanded({})
       setProductHydrating({})
       setVisibleProductIds({})
@@ -1777,6 +1786,62 @@ export default function AdsManagementPage(){
     }catch{}
   }
 
+  async function loadCampaignDetails(row: MetaCampaignRow, rowKey: string, force = false){
+    const cid = String(row.campaign_id || '')
+    if(!cid) return
+    const epoch = loadSeqToken.current
+    const mapping = manualIds[rowKey]
+    const metaStore = (row as any)._store || mapping?.store || store
+    const orderStore = mapping?.store || metaStore
+    const range = datePreset === 'custom' && customStart && customEnd ? { start: customStart, end: customEnd } : computeRange(datePreset)
+    const metaRange = metaRangeParams(datePreset)
+    async function run<T>(kind: string, request: () => Promise<{ data?: T, error?: string }>, save: (data: T) => void,
+      setBusy: React.Dispatch<React.SetStateAction<Record<string, boolean>>>, setError: React.Dispatch<React.SetStateAction<Record<string, string>>>){
+      const key = `${epoch}:${cid}:${kind}`
+      const existing = detailRequests.current.get(key)
+      if(existing) return existing
+      const current = () => epoch === loadSeqToken.current
+      const work = (async () => {
+        setBusy(prev => ({ ...prev, [cid]: true }))
+        setError(prev => ({ ...prev, [cid]: '' }))
+        try{
+          let data: T | undefined
+          for(let attempt = 0; attempt < 2; attempt++){
+            try{
+              const response = await request()
+              if(response.error) throw new Error(response.error)
+              if(response.data == null) throw new Error('The server returned no data. Please retry.')
+              data = response.data
+              break
+            }catch(error){
+              if(attempt === 1 || !current()) throw error
+              await new Promise(resolve => setTimeout(resolve, 600))
+            }
+          }
+          if(current() && data !== undefined) save(data)
+        }catch(error: any){
+          if(current()) setError(prev => ({ ...prev, [cid]: String(error?.message || error) }))
+        }finally{
+          if(current()) setBusy(prev => ({ ...prev, [cid]: false }))
+          detailRequests.current.delete(key)
+        }
+      })()
+      detailRequests.current.set(key, work)
+      return work
+    }
+    await Promise.all([
+      force || !adsetsByCampaign[cid] || adsetsError[cid] ? run('adsets',
+        () => fetchCampaignAdsets(cid, metaRange.datePreset, metaRange.range, metaStore),
+        data => {
+          setAdsetsByCampaign(prev => ({ ...prev, [cid]: data }))
+          if(data.some(row => row.insights_error)) setAdsetsError(prev => ({ ...prev, [cid]: 'Some Meta spend insights could not be loaded.' }))
+        }, setAdsetsLoading, setAdsetsError) : Promise.resolve(),
+      force || !adsetOrdersByCampaign[cid] || adsetOrdersError[cid] ? run('orders',
+        () => fetchCampaignAdsetOrders(cid, range, orderStore, mapping?.kind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mapping?.kind, metaStore),
+        data => setAdsetOrdersByCampaign(prev => ({ ...prev, [cid]: data })), setAdsetOrdersLoading, setAdsetOrdersError) : Promise.resolve(),
+    ])
+  }
+
   function renderLifeDays(rows: MetaCampaignRow[]){
     const campaigns = (rows || []).filter(Boolean)
     if(campaigns.length === 0) return <span className="text-slate-400">—</span>
@@ -1790,48 +1855,12 @@ export default function AdsManagementPage(){
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const totalDays = Math.max(1, Math.floor((today.getTime() - start.getTime()) / 86400000) + 1)
-    const visibleDays = Math.min(22, totalDays)
-    const points = Array.from({ length: visibleDays }, (_, index) => {
-      const dayNumber = totalDays - index
-      const date = new Date(start)
-      date.setDate(start.getDate() + dayNumber - 1)
-      const day = localDateKey(date)
-      let actions = 0
-      let notes = 0
-      for(const campaign of campaigns){
-        const key = String(campaign.campaign_id || campaign.name || '')
-        const counts = lifeActivityForDay(campaignMeta[key], day)
-        actions += counts.actions
-        notes += counts.notes
-      }
-      return { day, dayNumber, actions, notes }
-    })
-    return (
-      <div className="flex items-start gap-2" title={`${totalDays} campaign days`}>
-        <span className="shrink-0 rounded-md bg-violet-50 px-1.5 py-0.5 text-xs font-bold text-violet-700">Day {totalDays}</span>
-        <div className="flex max-w-[330px] flex-wrap gap-0.5 py-1">
-          {points.map(point => {
-            const changed = point.actions > 0
-            const hasNotes = point.notes > 0
-            const isLatest = point.dayNumber === totalDays
-            return (
-              <button
-                key={point.day}
-                type="button"
-                onClick={()=> openLifeDay(point.day, campaigns)}
-                className={`relative h-5 min-w-5 shrink-0 rounded-full px-0.5 text-center text-[10px] font-bold leading-5 text-white transition-transform hover:scale-125 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1 ${
-                  changed ? 'bg-orange-500' : 'bg-emerald-500'
-                } ${hasNotes ? "ring-2 ring-blue-500 ring-offset-1 after:absolute after:-right-0.5 after:-top-0.5 after:h-1.5 after:w-1.5 after:rounded-full after:bg-blue-600 after:ring-1 after:ring-white after:content-['']" : ''} ${
-                  isLatest ? 'scale-110 outline outline-2 outline-violet-600 outline-offset-1' : ''
-                }`}
-                title={`Day ${point.dayNumber} · ${point.day} · ${point.actions} actions · ${point.notes} notes`}
-                aria-label={`Open day ${point.dayNumber}, ${point.actions} actions and ${point.notes} notes`}
-              >{point.dayNumber}</button>
-            )
-          })}
-        </div>
-      </div>
-    )
+    return <CampaignLifeDays start={start} totalDays={totalDays}
+      activity={day => campaigns.reduce((sum, campaign) => {
+        const counts = lifeActivityForDay(campaignMeta[String(campaign.campaign_id || campaign.name || '')], day)
+        return { actions: sum.actions + counts.actions, notes: sum.notes + counts.notes }
+      }, { actions: 0, notes: 0 })}
+      onOpen={day => void openLifeDay(day, campaigns)} />
   }
 
   // The reporting-timezone header belongs to this page only
@@ -2490,75 +2519,6 @@ export default function AdsManagementPage(){
     finally{ setVariantInventoryLoading(prev => ({ ...prev, [pid]: false })) }
   }
 
-  function InventoryTooltip(){
-    if(!invHover || !invHover.rect) return null
-    const pid = invHover.pid
-    // Cache entries are normalized in loadVariantInventory; no need to re-sort on every render
-    const data = variantInventoryCache[pid] || null
-    const loading = variantInventoryLoading[pid]
-    const rect = invHover.rect
-    const alertVariants = data
-      ? data.colors.reduce((count, color) => count + data.sizes.reduce((inner, size) => {
-          const row = data.matrix[color] || {}
-          return inner + (Object.prototype.hasOwnProperty.call(row, size) && Number(row[size]) <= 0 ? 1 : 0)
-        }, 0), 0)
-      : 0
-    // Position tooltip below the hovered element
-    const top = rect.bottom + 4
-    const left = Math.max(4, rect.left - 60)
-    return (
-      <div
-        className="fixed z-[999] bg-white border border-slate-200 rounded-lg shadow-xl p-2 text-xs"
-        style={{ top, left, maxWidth: '420px', maxHeight: '320px', overflowY: 'auto' }}
-        onMouseEnter={() => {}} // keep tooltip visible
-        onMouseLeave={() => setInvHover(null)}
-      >
-        {loading && <div className="text-slate-400 py-2 px-3">Loading variants…</div>}
-        {!loading && !data && <div className="text-slate-400 py-2 px-3">No data</div>}
-        {!loading && data && data.sizes.length === 0 && <div className="text-slate-400 py-2 px-3">No variants</div>}
-        {!loading && data && data.sizes.length > 0 && (
-          <>
-          {alertVariants > 0 && (
-            <div className="mb-2 rounded-md bg-rose-50 px-2 py-1 font-semibold text-rose-700">
-              {alertVariants} {alertVariants === 1 ? 'variant needs' : 'variants need'} attention (0 or negative)
-            </div>
-          )}
-          <table className="border-collapse w-full">
-            <thead>
-              <tr>
-                <th className="px-1.5 py-1 text-left text-slate-500 font-medium border-b border-slate-100" style={{minWidth:'44px'}}></th>
-                {data.sizes.map(s => (
-                  <th key={s} className="px-1.5 py-1 text-center text-slate-600 font-semibold border-b border-slate-100 whitespace-nowrap" style={{minWidth:'28px'}}>{s}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.colors.map(color => (
-                <tr key={color} className="border-b border-slate-50 last:border-b-0">
-                  <td className="px-1.5 py-0.5 text-slate-600 font-medium whitespace-nowrap">{color}</td>
-                  {data.sizes.map(size => {
-                    const row = data.matrix[color] || {}
-                    const hasVariant = Object.prototype.hasOwnProperty.call(row, size)
-                    const qty = hasVariant ? Number(row[size]) : null
-                    const bg = hasVariant && Number(qty) <= 0
-                      ? 'bg-rose-600 text-white ring-1 ring-rose-700'
-                      : 'bg-slate-100 text-slate-700'
-                    return (
-                      <td key={size} className="px-1.5 py-0.5 text-center">
-                        <span className={`inline-block min-w-[22px] px-1 py-0.5 rounded text-[10px] font-bold ${bg}`}>{hasVariant ? qty : '—'}</span>
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </>
-        )}
-      </div>
-    )
-  }
-
   const profitSummary = useMemo(()=>{
     return Object.entries(profitResults).reduce((summary, [productId, result])=>{
       const availableItems = Math.max(0, Number(productBriefs[productId]?.total_available || 0))
@@ -2758,10 +2718,98 @@ export default function AdsManagementPage(){
   const incompleteActionTasks = actionTasks.filter(t => !t.done).length
   const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
 
+  const tableHeader = (
+            <thead className="border-b border-slate-200 bg-slate-50/80">
+              <tr className="text-left text-xs uppercase tracking-wide text-slate-600 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-bold">
+                <th className="px-2 py-2.5 font-semibold w-6"></th>
+                <th className="px-2 py-2.5 font-semibold w-[80px]"></th>
+                <th className="w-[290px] max-w-[290px] px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>Campaign</span>
+                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                <th className="px-2 py-2.5 font-semibold">
+                  <span>Status</span>
+                </th>
+                <th className="px-2 py-2.5 font-semibold">
+                  <span>Owner</span>
+                </th>
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>Spend</span>
+                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                {!profitMode && (
+                  <>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>Purch</span>
+                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>CPP</span>
+                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>CTR</span>
+                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>ATC</span>
+                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                  </>
+                )}
+                <th className="px-2 py-2.5 font-semibold">
+                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>{profitMode ? 'Paid' : 'Orders'}</span>
+                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                <th className="px-2 py-2.5 font-semibold text-right">
+                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                    <span>{profitMode ? 'Ad CPP' : 'tCPP'}</span>
+                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                  </button>
+                </th>
+                {profitMode && (
+                  <th className="min-w-[145px] px-2 py-2.5 font-semibold text-right">Inventory cost value</th>
+                )}
+                {!profitMode && (
+                  <>
+                    <th className="px-2 py-2.5 font-semibold text-right">
+                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>Inv</span>
+                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                      <span className="mx-0.5 text-slate-300">/</span>
+                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
+                        <span>0v</span>
+                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
+                      </button>
+                    </th>
+                    <th className="w-[360px] max-w-[360px] px-2 py-2.5 font-semibold">Life days</th>
+                  </>
+                )}
+                <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
+              </tr>
+            </thead>
+  )
+
   return (
     <div className="min-h-screen w-full bg-slate-50 font-[Inter,ui-sans-serif,system-ui,-apple-system,'Segoe_UI',Roboto,sans-serif] text-slate-800 antialiased">
-      <InventoryTooltip />
-      <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
+      {invHover && <ProductInventoryPanel productId={invHover.pid} data={variantInventoryCache[invHover.pid]} loading={!!variantInventoryLoading[invHover.pid]}
+        top={pageHeaderRef.current?.offsetHeight || 110} onClose={() => setInvHover(null)} />}
+      <header ref={pageHeaderRef} className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         {/* Brand row */}
         <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
           <Link href="/" className="flex shrink-0 items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" aria-label="True Manager home">
@@ -3279,92 +3327,8 @@ export default function AdsManagementPage(){
             )}
           </div>
         </div>
-        <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white shadow-sm">
-          <table className="min-w-full text-[13px] text-slate-800">
-            <thead className="border-b border-slate-200 bg-slate-50/80">
-              <tr className="text-left text-xs uppercase tracking-wide text-slate-600 [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:py-2.5 [&>th]:font-bold">
-                <th className="px-2 py-2.5 font-semibold w-6"></th>
-                <th className="px-2 py-2.5 font-semibold w-[80px]"></th>
-                <th className="w-[290px] max-w-[290px] px-2 py-2.5 font-semibold">
-                  <button onClick={()=>toggleSort('campaign')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                    <span>Campaign</span>
-                    {sortKey==='campaign'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                  </button>
-                </th>
-                <th className="px-2 py-2.5 font-semibold">
-                  <span>Status</span>
-                </th>
-                <th className="px-2 py-2.5 font-semibold">
-                  <span>Owner</span>
-                </th>
-                <th className="px-2 py-2.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                    <span>Spend</span>
-                    {sortKey==='spend'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                  </button>
-                </th>
-                {!profitMode && (
-                  <>
-                    <th className="px-2 py-2.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('purchases')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>Purch</span>
-                        {sortKey==='purchases'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                    </th>
-                    <th className="px-2 py-2.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>CPP</span>
-                        {sortKey==='cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                    </th>
-                    <th className="px-2 py-2.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('ctr')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>CTR</span>
-                        {sortKey==='ctr'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                    </th>
-                    <th className="px-2 py-2.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('add_to_cart')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>ATC</span>
-                        {sortKey==='add_to_cart'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                    </th>
-                  </>
-                )}
-                <th className="px-2 py-2.5 font-semibold">
-                  <button onClick={()=>toggleSort('shopify_orders')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                    <span>{profitMode ? 'Paid' : 'Orders'}</span>
-                    {sortKey==='shopify_orders'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                  </button>
-                </th>
-                <th className="px-2 py-2.5 font-semibold text-right">
-                  <button onClick={()=>toggleSort('true_cpp')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                    <span>{profitMode ? 'Ad CPP' : 'tCPP'}</span>
-                    {sortKey==='true_cpp'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                  </button>
-                </th>
-                {profitMode && (
-                  <th className="min-w-[145px] px-2 py-2.5 font-semibold text-right">Inventory cost value</th>
-                )}
-                {!profitMode && (
-                  <>
-                    <th className="px-2 py-2.5 font-semibold text-right">
-                      <button onClick={()=>toggleSort('inventory')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>Inv</span>
-                        {sortKey==='inventory'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                      <span className="mx-0.5 text-slate-300">/</span>
-                      <button onClick={()=>toggleSort('zero_variant')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
-                        <span>0v</span>
-                        {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
-                      </button>
-                    </th>
-                    <th className="w-[360px] max-w-[360px] px-2 py-2.5 font-semibold">Life days</th>
-                  </>
-                )}
-                <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
-              </tr>
-            </thead>
+        <StickyCampaignTable header={tableHeader} pageHeader={pageHeaderRef}>
+
             <tbody>
               {loading && (
                 <tr>
@@ -3572,11 +3536,10 @@ export default function AdsManagementPage(){
                             <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
                               <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                                 onMouseEnter={(e) => {
-                                  const rect = e.currentTarget.getBoundingClientRect()
-                                  setInvHover({ pid, rect })
+                                  setInvHover({ pid })
                                   loadVariantInventory(pid)
                                 }}
-                                onMouseLeave={() => setInvHover(null)}
+                                data-inventory-trigger onClick={() => { setInvHover({ pid }); void loadVariantInventory(pid) }}
                               >
                                 {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
@@ -3731,39 +3694,7 @@ export default function AdsManagementPage(){
                               setExpanded(prev=> ({ ...prev, [String(rowKey)]: open }))
                               if(open) void loadCollectionChildren(rowKey, collectionMapping.id, collectionMapping.store || (c as any)._store || store)
                             }
-                            if(open && !adsetsByCampaign[cid] && !adsetsLoading[cid]){
-                              setAdsetsLoading(prev=> ({ ...prev, [cid]: true }))
-                              ;(async()=>{
-                                try{
-                                  const m = metaRangeParams(datePreset)
-                                  const res = await fetchCampaignAdsets(cid, m.datePreset, m.range)
-                                  const items = ((res as any)?.data)||[]
-                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: items }))
-                                }catch{
-                                  setAdsetsByCampaign(prev=> ({ ...prev, [cid]: [] }))
-                                }finally{
-                                  setAdsetsLoading(prev=> ({ ...prev, [cid]: false }))
-                                }
-                              })()
-                            }
-                            // UTM attribution is independent of the visible Meta ad-set request.
-                            // Start both immediately so expanding a campaign waits only for the slower one.
-                            if(open && !adsetOrdersByCampaign[cid] && !adsetOrdersLoading[cid]){
-                              ;(async()=>{
-                                try{
-                                  const rng = (datePreset==='custom' && customStart && customEnd)? { start: customStart, end: customEnd } : computeRange(datePreset)
-                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: true }))
-                                  const rowStore = manualIds[String(rowKey)]?.store || (c as any)._store || store
-                                  const mappingKind = ((manualIds as any)[String(rowKey)]?.kind) as ('product'|'collection'|undefined)
-                                  const ord = await fetchCampaignAdsetOrders(cid, rng, rowStore, mappingKind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mappingKind)
-                                  if((ord as any)?.error) throw new Error(String((ord as any).error))
-                                  const mapping = ((ord as any)?.data)||{}
-                                  setAdsetOrdersByCampaign(prev=> ({ ...prev, [cid]: mapping }))
-                                }catch{} finally{
-                                  setAdsetOrdersLoading(prev=> ({ ...prev, [cid]: false }))
-                                }
-                              })()
-                            }
+                            if(open) void loadCampaignDetails(c, String(rowKey))
                           }}
                           className={`${UI.icon} h-6 w-6`}
                           title={adsetsExpanded[String(c.campaign_id||'')] ? 'Hide ad sets' : 'Show ad sets'}
@@ -4042,12 +3973,11 @@ export default function AdsManagementPage(){
                             <div className="flex items-center justify-end gap-0.5 cursor-pointer"
                               onMouseEnter={(e) => {
                                 if(pidSelf){
-                                  const rect = e.currentTarget.getBoundingClientRect()
-                                  setInvHover({ pid: pidSelf, rect })
+                                  setInvHover({ pid: pidSelf })
                                   loadVariantInventory(pidSelf)
                                 }
                               }}
-                              onMouseLeave={() => setInvHover(null)}
+                              data-inventory-trigger onClick={() => { if(pidSelf){ setInvHover({ pid: pidSelf }); void loadVariantInventory(pidSelf) } }}
                             >
                               {inv===null || inv===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
@@ -4169,6 +4099,13 @@ export default function AdsManagementPage(){
                       return (
                         <tr className="border-b last:border-b-0">
                           <td className="px-2 py-2 bg-slate-50" colSpan={colSpan}>
+                            <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+                              <span className="font-semibold text-slate-700">Ad sets and UTM orders</span>
+                              <button disabled={loadingAdsets || !!adsetOrdersLoading[cid]} onClick={() => void loadCampaignDetails(c, String(rk), true)} className="rounded border bg-white px-2 py-1 font-semibold text-blue-700 disabled:opacity-50">{adsetsError[cid] || adsetOrdersError[cid] ? 'Retry' : 'Refresh details'}</button>
+                            </div>
+                            {adsetsError[cid] && <p role="alert" className="mb-2 text-xs text-amber-700">Could not load all ad-set data. {adsetsError[cid]}</p>}
+                            {adsetOrdersError[cid] && <p role="alert" className="mb-2 text-xs text-amber-700">Could not load UTM orders. {adsetOrdersError[cid]}</p>}
+                            {adsetOrdersLoading[cid] && <p role="status" className="mb-2 text-xs text-slate-500">Loading Shopify UTM orders…</p>}
                             {loadingAdsets ? (
                               <div className="text-xs text-slate-500">Loading ad sets…</div>
                             ) : (
@@ -4189,10 +4126,10 @@ export default function AdsManagementPage(){
                                     const aactive = ast==='ACTIVE'
                                     const acolor = aactive? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20' : 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-500/15'
                                     const aid = String(a.adset_id||'')
-                                    const ordersInfo = ((adsetOrdersByCampaign[cid]||{})[aid])
+                                    const ordersInfo = !adsetOrdersError[cid] ? ((adsetOrdersByCampaign[cid]||{})[aid]) : undefined
                                     const ordersLoaded = !!ordersInfo
                                     const utmOrders = Number(ordersInfo?.count || 0)
-                                    const utmTrueCpp = adsetUtmTrueCpp(Number(a.spend || 0), ordersInfo)
+                                    const utmTrueCpp = a.insights_error ? null : adsetUtmTrueCpp(Number(a.spend || 0), ordersInfo)
                                     const hasOrders = !!ordersInfo && (ordersInfo.count||0)>0
                                     return (
                                       <Fragment key={aid||a.name}>
@@ -4214,11 +4151,11 @@ export default function AdsManagementPage(){
                                             <span className="text-[10px] text-amber-600">orders unavailable</span>
                                           )}
                                         </div>
-                                        <div className="text-right">${(a.spend||0).toFixed(2)}</div>
-                                        <div className="text-right">{a.purchases||0}</div>
-                                        <div className="text-right">{a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
-                                        <div className="text-right">{a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
-                                        <div className="text-right">{ordersLoaded ? utmOrders : <span className="text-slate-400">…</span>}</div>
+                                        <div className="text-right">{a.insights_error ? '—' : `$${(a.spend||0).toFixed(2)}`}</div>
+                                        <div className="text-right">{a.insights_error ? '—' : a.purchases||0}</div>
+                                        <div className="text-right">{!a.insights_error && a.cpp!=null? `$${a.cpp.toFixed(2)}` : '—'}</div>
+                                        <div className="text-right">{!a.insights_error && a.ctr!=null? `${(a.ctr*1).toFixed(2)}%` : '—'}</div>
+                                        <div className="text-right">{ordersLoaded ? utmOrders : <span className="text-slate-400">{adsetOrdersLoading[cid] ? '…' : '—'}</span>}</div>
                                         <div className={`text-right font-semibold ${utmTrueCpp==null ? 'text-slate-400' : utmTrueCpp < 3 ? 'text-emerald-600' : utmTrueCpp < 5 ? 'text-amber-600' : 'text-rose-600'}`}>
                                           {utmTrueCpp!=null ? `$${utmTrueCpp.toFixed(2)}` : '-'}
                                         </div>
@@ -4301,7 +4238,7 @@ export default function AdsManagementPage(){
                                   {/* Campaign-level orders (matched by utm_campaign but not attributable to a specific ad set) */}
                                   {(()=>{
                                     const campOrders = ((adsetOrdersByCampaign[cid]||{})['__campaign__'])
-                                    if(!campOrders || (campOrders.count||0)===0) return null
+                                    if(adsetOrdersError[cid] || !campOrders || (campOrders.count||0)===0) return null
                                     const campExpKey = `__camp_${cid}`
                                     return (
                                       <Fragment>
@@ -4345,7 +4282,7 @@ export default function AdsManagementPage(){
                                       </Fragment>
                                     )
                                   })()}
-                                  {adsets.length===0 && (
+                                  {adsets.length===0 && !adsetsError[cid] && adsetsByCampaign[cid] && (
                                     <div className="px-2 py-2 text-slate-500 border-t">No ad sets found.</div>
                                   )}
                                 </div>
@@ -4381,8 +4318,7 @@ export default function AdsManagementPage(){
                 )
               })}
             </tbody>
-          </table>
-        </div>
+        </StickyCampaignTable>
       </main>
       <PerformanceModal open={perfOpen} onClose={()=> setPerfOpen(false)} loading={perfLoading} campaign={perfCampaign} days={perfMetrics} orders={perfOrders} />
       <AnalysisModal
