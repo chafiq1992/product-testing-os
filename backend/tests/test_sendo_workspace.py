@@ -172,3 +172,82 @@ def test_admin_connections_requires_the_shared_signature(client):
     resp = client.get("/api/sendo/admin/connections", params={"workspaces": "m7,irrakids"},
                       headers={"X-Sendo-Timestamp": ts, "X-Sendo-Signature": sig})
     assert list(resp.json()["data"]) == ["m7"]
+
+
+# ── True Manager ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def manager_client(monkeypatch):
+    monkeypatch.setenv("SENDO_EMBED_SERVICES", "true_profit,true_manager")
+    monkeypatch.setattr(sendo_workspace, "sync_shopify_store", lambda ws, mid: {"connected": False})
+    app = FastAPI()
+    app.add_middleware(auth_gate.AuthGateMiddleware)
+    app.include_router(sendo_workspace.router)
+
+    async def echo(request: Request):
+        return {"workspace": current_workspace()}
+
+    for method, path in [("GET", "/api/meta/campaigns/{cid}/adsets/orders"), ("POST", "/api/meta/campaigns/{cid}/status"),
+                         ("POST", "/api/ads-management/bundle"), ("GET", "/api/profit_campaign_cards"),
+                         ("GET", "/api/profit_costs"), ("POST", "/api/campaign/analyze"),
+                         ("GET", "/api/ads-management/agent/reports")]:
+        app.add_api_route(path, echo, methods=[method])
+    return TestClient(app)
+
+
+def _service_session(client, svc):
+    resp = client.post("/api/sendo/session", json={"launch": _launch(svc=svc)})
+    assert resp.status_code == 200, resp.text
+    return {"X-Workspace-Token": resp.json()["data"]["token"]}
+
+
+def test_true_manager_session_reaches_its_routes_only(manager_client):
+    headers = _service_session(manager_client, "true_manager")
+    ok = manager_client.get("/api/meta/campaigns/1/adsets/orders", params={"store": "m7", "start": "a", "end": "b"}, headers=headers)
+    assert ok.json() == {"workspace": "m7"}
+    assert manager_client.post("/api/meta/campaigns/1/status", json={"store": "m7", "status": "PAUSED"}, headers=headers).status_code == 200
+    assert manager_client.post("/api/ads-management/bundle", json={"store": "m7"}, headers=headers).status_code == 200
+    # Shared routes work for either service; True Profit's own cards do not.
+    assert manager_client.get("/api/profit_costs", params={"store": "m7"}, headers=headers).status_code == 200
+    assert manager_client.get("/api/profit_campaign_cards", params={"store": "m7"}, headers=headers).status_code == 403
+
+
+def test_true_profit_session_cannot_use_true_manager_routes(manager_client):
+    headers = _service_session(manager_client, "true_profit")
+    assert manager_client.post("/api/ads-management/bundle", json={"store": "m7"}, headers=headers).status_code == 403
+    assert manager_client.get("/api/profit_campaign_cards", params={"store": "m7"}, headers=headers).status_code == 200
+
+
+def test_meta_store_is_pinned_like_store(manager_client):
+    headers = _service_session(manager_client, "true_manager")
+    resp = manager_client.get("/api/meta/campaigns/1/adsets/orders",
+                              params={"store": "m7", "meta_store": "irrakids", "start": "a", "end": "b"}, headers=headers)
+    assert resp.status_code == 403
+
+
+def test_ai_routes_stay_operator_only(manager_client):
+    headers = _service_session(manager_client, "true_manager")
+    assert manager_client.post("/api/campaign/analyze", json={"store": "m7"}, headers=headers).status_code == 403
+    assert manager_client.get("/api/ads-management/agent/reports", params={"store": "m7"}, headers=headers).status_code == 403
+
+
+def test_true_manager_launch_needs_the_service_enabled(monkeypatch):
+    monkeypatch.setenv("SENDO_EMBED_SERVICES", "true_profit")
+    assert sendo_workspace.verify_launch_token(_launch(svc="true_manager")) is None
+    monkeypatch.setenv("SENDO_EMBED_SERVICES", "true_profit,true_manager")
+    assert sendo_workspace.verify_launch_token(_launch(svc="true_manager"))["svc"] == "true_manager"
+
+
+def test_ad_account_timezone_answers_only_for_the_workspace_accounts(monkeypatch):
+    import asyncio
+    from app import main
+
+    label = f"m{int(time.time() * 1000) % 10**9 + 2}"
+    db.set_app_setting(label, "meta_oauth", {"access_token": "merchant-token", "accounts": [{"id": "act_555"}]})
+    db.set_app_setting(None, "meta_ad_account_tz:999", {"id": "999", "timezone_name": "Africa/Casablanca", "ts": time.time()})
+    with workspace_scope(label):
+        foreign = asyncio.run(main.api_ad_account_timezone(ad_account="999", store=label))
+    assert foreign == {"data": {}}
+    outside = asyncio.run(main.api_ad_account_timezone(ad_account="999", store="irrakids"))
+    assert outside["data"]["timezone_name"] == "Africa/Casablanca"

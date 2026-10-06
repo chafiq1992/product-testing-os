@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { embeddedSession, embeddedWorkspace } from './sendoEmbed'
 
 export type ShopifyStore = {
   label: string
@@ -37,14 +38,25 @@ function withCurrentStore(stores: ShopifyStore[], currentStore?: string): Shopif
   return result
 }
 
+// Embedded for a Sendo merchant: the merchant's own workspace is the only
+// store, and the operator store registry is never requested.
+function workspaceStores(): ShopifyStore[] | null {
+  const workspace = embeddedWorkspace()
+  if (!workspace) return null
+  const shopify = embeddedSession()?.connections?.shopify
+  return [{ label: workspace, shop: shopify?.shop || null, connected: !!shopify?.connected }]
+}
+
 export function useShopifyStores(currentStore?: string) {
-  const [stores, setStores] = useState<ShopifyStore[]>(() => withCurrentStore(FALLBACK_SHOPIFY_STORES, currentStore))
+  const [stores, setStores] = useState<ShopifyStore[]>(() => workspaceStores() || withCurrentStore(FALLBACK_SHOPIFY_STORES, currentStore))
   const [registry, setRegistry] = useState<StoreRegistryData>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || ""
 
   const refresh = useCallback(async () => {
+    const own = workspaceStores()
+    if (own) { setStores(own); setLoading(false); return }
     try {
       setLoading(true)
       setError(null)

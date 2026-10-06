@@ -19,3 +19,6 @@ Pillow>=11.1.0,<13
 playwright>=1.55.0,<2
 google-auth>=2.35.0,<3
 openai-chatkit==1.0.0
+# Time zone data for zoneinfo; the Dockerfile sets PYTHONTZPATH="" so this is
+# the only source. 2026c+ has Morocco's permanent UTC+0 from 2026-09-20.
+tzdata==2026.5

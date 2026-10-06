@@ -659,7 +659,7 @@ export async function fetchAdsManagementBundle(payload: {
   profit_only?: boolean,
 }){
   const url = `${base}/api/ads-management/bundle`
-  const body = { ...payload }
+  const body = { ...payload, store: payload.store ?? selectedStore() }
   return __dedupe(`POST ${url} ${__stableStringify(body)}`, async ()=>{
     const {data} = await axios.post(url, body, { timeout: 60000 })
     return data as { data?: AdsManagementBundle, error?: string }

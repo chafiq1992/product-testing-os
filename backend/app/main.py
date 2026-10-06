@@ -48,7 +48,8 @@ from app.integrations.meta_client import list_saved_audiences
 from app.integrations.meta_client import list_active_campaigns_with_insights
 from app.integrations.meta_client import get_campaign_summary
 from app.integrations.meta_client import get_ad_account_info, set_campaign_status, list_adsets_with_insights, set_adset_status, campaign_daily_insights, list_ad_accounts, meta_access_token_scope, get_ad_account_timezone
-from app.meta_connection import router as _meta_connection_router, reporting_token, _return_origin
+from app.meta_connection import router as _meta_connection_router, reporting_token, connected_token, _return_origin
+from app.tenant_context import current_workspace
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import list_campaign_adsets
 from app.integrations.meta_client import create_draft_image_campaign
@@ -5943,6 +5944,10 @@ async def api_ad_account_timezone(ad_account: str | None = None, store: str | No
             conf = db.get_app_setting(store, "meta_ad_account")
             acct = _normalize_ad_acct_id(((conf or {}).get("id") if isinstance(conf, dict) else None))
         if not acct:
+            return {"data": {}}
+        # The timezone cache below is shared by account id across stores. A Sendo
+        # workspace may only ask about accounts its own Meta connection holds.
+        if current_workspace() and not connected_token(store, acct):
             return {"data": {}}
         setting_key = f"meta_ad_account_tz:{acct}"
         try:

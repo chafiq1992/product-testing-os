@@ -130,35 +130,78 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # only for their own store. "where" says where the handler reads the store
 # from: a handler reading `req.store` from a JSON body would act on the global
 # (store=None) settings if the store rode only in the query string, so the
-# store must be in the place the handler actually reads it.
-WORKSPACE_ROUTES: tuple[tuple[str, re.Pattern, str], ...] = tuple(
-    (method, re.compile(pattern), where)
-    for method, pattern, where in (
-        ("GET", r"^/api/sendo/me$", "query"),
-        ("POST", r"^/api/sendo/sync-stores$", "query"),
-        ("GET", r"^/api/connections/meta/status$", "query"),
-        ("POST", r"^/api/connections/meta/start$", "body"),
-        ("GET", r"^/api/meta/campaigns$", "query"),
-        ("GET", r"^/api/meta/ad_account$", "query"),
-        ("POST", r"^/api/meta/ad_account$", "body"),
-        ("GET", r"^/api/meta/ad_accounts$", "query"),
-        ("GET", r"^/api/campaign_mappings$", "query"),
-        ("POST", r"^/api/shopify/products_brief$", "body"),
-        ("GET", r"^/api/exchange/usd_to_mad$", "query"),
-        ("POST", r"^/api/exchange/usd_to_mad$", "body"),
-        ("GET", r"^/api/profit_costs$", "query"),
-        ("POST", r"^/api/profit_costs$", "body"),
-        ("GET", r"^/api/profit_campaign_cards$", "query"),
-        ("POST", r"^/api/profit_campaign_cards/calculate$", "body"),
-        ("DELETE", r"^/api/profit_campaign_cards/[^/]+$", "query"),
+# store must be in the place the handler actually reads it. "services" lists
+# which launched service may use the route, so True Profit alone does not
+# open True Manager's routes. Each handler here was audited for env-credential
+# fallbacks, store=None defaults and cross-store caches before being listed.
+#
+# Not listed on purpose: the AI analysis routes (/api/campaign/analyze*,
+# /api/campaign/generate_action_tasks*, /api/ads-management/agent/*) spend the
+# operator's model budget, and /api/shopify/stores is the operator registry.
+_BOTH = ("true_profit", "true_manager")
+_PROFIT = ("true_profit",)
+_MANAGER = ("true_manager",)
+WORKSPACE_ROUTES: tuple[tuple[str, re.Pattern, str, tuple[str, ...]], ...] = tuple(
+    (method, re.compile(pattern), where, services)
+    for method, pattern, where, services in (
+        ("GET", r"^/api/sendo/me$", "query", _BOTH),
+        ("POST", r"^/api/sendo/sync-stores$", "query", _BOTH),
+        ("GET", r"^/api/connections/meta/status$", "query", _BOTH),
+        ("POST", r"^/api/connections/meta/start$", "body", _BOTH),
+        # Meta: read through the workspace's own connection (reporting_token).
+        ("GET", r"^/api/meta/campaigns$", "query", _BOTH),
+        ("GET", r"^/api/meta/ad_account$", "query", _BOTH),
+        ("POST", r"^/api/meta/ad_account$", "body", _BOTH),
+        ("GET", r"^/api/meta/ad_accounts$", "query", _BOTH),
+        ("GET", r"^/api/meta/ad_account_timezone$", "query", _MANAGER),
+        ("GET", r"^/api/meta/campaigns/[^/]+/adsets$", "query", _MANAGER),
+        ("GET", r"^/api/meta/campaigns/[^/]+/adsets/orders$", "query", _MANAGER),
+        ("GET", r"^/api/meta/campaigns/[^/]+/collection/orders$", "query", _MANAGER),
+        ("GET", r"^/api/meta/campaigns/[^/]+/performance$", "query", _MANAGER),
+        ("POST", r"^/api/meta/campaigns/[^/]+/status$", "body", _MANAGER),
+        ("POST", r"^/api/meta/adsets/[^/]+/status$", "body", _MANAGER),
+        # Per-store records in this app's database.
+        ("GET", r"^/api/campaign_mappings$", "query", _BOTH),
+        ("POST", r"^/api/campaign_mappings$", "body", _MANAGER),
+        ("GET", r"^/api/campaign_meta$", "query", _MANAGER),
+        ("GET", r"^/api/campaign_meta/[^/]+$", "query", _MANAGER),
+        ("POST", r"^/api/campaign_meta$", "body", _MANAGER),
+        ("POST", r"^/api/campaign_meta/timeline$", "body", _MANAGER),
+        ("GET", r"^/api/campaign/analysis_checks/[^/]+$", "query", _MANAGER),
+        ("POST", r"^/api/campaign/analysis_checks$", "body", _MANAGER),
+        ("GET", r"^/api/campaign/action_tasks$", "query", _MANAGER),
+        ("POST", r"^/api/campaign/action_tasks/save$", "body", _MANAGER),
+        ("DELETE", r"^/api/campaign/action_tasks$", "query", _MANAGER),
+        ("GET", r"^/api/exchange/usd_to_mad$", "query", _BOTH),
+        ("POST", r"^/api/exchange/usd_to_mad$", "body", _BOTH),
+        ("GET", r"^/api/profit_costs$", "query", _BOTH),
+        ("POST", r"^/api/profit_costs$", "body", _BOTH),
+        ("GET", r"^/api/profit_campaign_cards$", "query", _PROFIT),
+        ("POST", r"^/api/profit_campaign_cards/calculate$", "body", _PROFIT),
+        ("DELETE", r"^/api/profit_campaign_cards/[^/]+$", "query", _PROFIT),
+        # Shopify: read through the workspace's synced store only.
+        ("POST", r"^/api/shopify/products_brief$", "body", _BOTH),
+        ("POST", r"^/api/shopify/product_variants_inventory$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/collection_products$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/orders_count_by_title$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/orders_count_paid_by_title$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/orders_delivery_rate_by_title$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/orders_count_total$", "body", _MANAGER),
+        ("POST", r"^/api/shopify/orders_count_by_collection$", "body", _MANAGER),
+        ("POST", r"^/api/ads-management/bundle$", "body", _MANAGER),
+        ("POST", r"^/api/ads-management/shopify-hydrate$", "body", _MANAGER),
+        ("POST", r"^/api/ads-management/utm-orders/warm$", "body", _MANAGER),
     )
 )
 WORKSPACE_HEADER = "x-workspace-token"
+# Every parameter that names a store. meta_store picks whose Meta connection
+# a handler reads, so it is pinned exactly like store and stores.
+STORE_KEYS = ("store", "stores", "meta_store")
 
 
-def workspace_route(method: str, path: str) -> Optional[str]:
-    for allowed_method, pattern, where in WORKSPACE_ROUTES:
-        if method == allowed_method and pattern.match(path):
+def workspace_route(method: str, path: str, service: str | None = None) -> Optional[str]:
+    for allowed_method, pattern, where, services in WORKSPACE_ROUTES:
+        if method == allowed_method and pattern.match(path) and (service is None or service in services):
             return where
     return None
 
@@ -538,11 +581,11 @@ class AuthGateMiddleware:
     async def _workspace(self, scope, receive, send, method: str, path: str, session: dict):
         """A Sendo merchant: allowed routes only, its own store only, no env credentials."""
         ws = str(session.get("sub") or "")
-        where = workspace_route(method, path)
+        where = workspace_route(method, path, str(session.get("svc") or ""))
         if not where:
             return await self._deny(scope, receive, send, 403, "forbidden")
         query = _query(scope)
-        query_store = [v for key in ("store", "stores") for raw in query.get(key, []) for v in _store_values(raw)]
+        query_store = [v for key in STORE_KEYS for raw in query.get(key, []) for v in _store_values(raw)]
         body_store: list[str] = []
         if method in _UNSAFE_METHODS:
             body, receive = await _buffer_body(receive)
@@ -553,7 +596,7 @@ class AuthGateMiddleware:
                     return await self._deny(scope, receive, send, 403, "forbidden")
                 if not isinstance(parsed, dict):
                     return await self._deny(scope, receive, send, 403, "forbidden")
-                body_store = [v for key in ("store", "stores") for v in _store_values(parsed.get(key))]
+                body_store = [v for key in STORE_KEYS for v in _store_values(parsed.get(key))]
         required = body_store if where == "body" else query_store
         if not required or any(v != ws for v in query_store + body_store):
             return await self._deny(scope, receive, send, 403, "forbidden")
