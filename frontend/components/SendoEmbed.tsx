@@ -100,7 +100,7 @@ export default function SendoEmbed({ title, children }: { title: string, childre
         <div className="mx-auto max-w-xl p-8 text-center text-[#183d32]">
           <h2 className="text-lg font-semibold">Connect your Meta ad account</h2>
           <p className="mt-2 text-sm text-[#67776e]">
-            {title} reads your campaigns and spend from Meta, then matches them with your orders to show the real profit of each campaign.
+            {title} reads your campaigns and spend from Meta, then matches them with your Shopify orders.
           </p>
           <button type="button" onClick={onConnectMeta} disabled={busy !== ''}
             className="mt-5 rounded-full bg-[#176a54] px-5 py-2 text-sm font-semibold text-white hover:bg-[#10543f] disabled:opacity-60">

@@ -388,7 +388,10 @@ function StackedBar({ segments, height = 8 }: { segments: Array<{ key: string, v
   )
 }
 
-export default function AdsManagementPage(){
+// `embedded`: shown to a Sendo merchant inside the delivery app (SendoEmbed).
+// One store (the merchant's workspace), no operator navigation, and no AI
+// analysis: those features spend the operator's model budget.
+export default function AdsManagementPage({ embedded = false }: { embedded?: boolean } = {}){
   const [items, setItems] = useState<MetaCampaignRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const loadSeqToken = useRef(0)
@@ -2723,7 +2726,9 @@ export default function AdsManagementPage(){
     ? `Product ${searchFocusProductId}`
     : searchFocusId ? (searchQuery || searchFocusId) : searchActive
 
-  const tableColSpan = profitMode ? 10 : 15
+  // Owners are the operator's own team (CAMPAIGN_OWNERS); a Sendo merchant has
+  // its own, so the embedded view drops the Owner column, filter and panel.
+  const tableColSpan = (profitMode ? 10 : 15) - (embedded ? 1 : 0)
 
   const incompleteActionTasks = actionTasks.filter(t => !t.done).length
   const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
@@ -2742,9 +2747,9 @@ export default function AdsManagementPage(){
                 <th className="px-2 py-2.5 font-semibold">
                   <span>Status</span>
                 </th>
-                <th className="px-2 py-2.5 font-semibold">
+                {!embedded && <th className="px-2 py-2.5 font-semibold">
                   <span>Owner</span>
-                </th>
+                </th>}
                 <th className="px-2 py-2.5 font-semibold text-right">
                   <button onClick={()=>toggleSort('spend')} className="inline-flex items-center gap-1 uppercase hover:text-slate-900">
                     <span>Spend</span>
@@ -2822,16 +2827,18 @@ export default function AdsManagementPage(){
       <header ref={pageHeaderRef} className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         {/* Brand row */}
         <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
-          <Link href="/" className="flex shrink-0 items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" aria-label="True Manager home">
+          {embedded
+            ? <TrueManagerLogo className="h-6 w-auto shrink-0 text-slate-900" markClassName="text-blue-600" />
+            : <Link href="/" className="flex shrink-0 items-center rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40" aria-label="True Manager home">
             <TrueManagerLogo className="h-6 w-auto text-slate-900" markClassName="text-blue-600" />
-          </Link>
+          </Link>}
           <span className="hidden h-5 w-px bg-slate-200 sm:block" />
           <div className="hidden items-center gap-1.5 text-sm sm:flex">
             <Megaphone className="h-4 w-4 text-slate-400" />
             <span className="font-medium text-slate-700">Ads Manager</span>
           </div>
           <div className="flex-1" />
-          <Link
+          {!embedded && <Link
             href={`/settings/connections?store=${encodeURIComponent(store)}`}
             className="group hidden items-center gap-1 rounded-full border border-slate-200 bg-white py-1 pl-1 pr-2.5 shadow-sm transition-colors hover:border-slate-300 md:flex"
             title="Manage connected platforms"
@@ -2852,7 +2859,7 @@ export default function AdsManagementPage(){
             <span className="ml-1 text-xs font-medium text-slate-500 group-hover:text-slate-800">
               {platformStatus.filter(p => p.connected).length}/{platformStatus.length} connected
             </span>
-          </Link>
+          </Link>}
           <span className="hidden h-5 w-px bg-slate-200 md:block" />
           <button
             onClick={()=> setActionTasksOpen(true)}
@@ -2868,12 +2875,12 @@ export default function AdsManagementPage(){
           <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading? 'animate-spin' : ''}`}/> <span className="hidden sm:inline">{loading? 'Updating…' : 'Refresh'}</span>
           </button>
-          <Link href="/" className={`${UI.btn} ${UI.secondary} px-2.5`} title="Home"><Home className="h-4 w-4"/></Link>
+          {!embedded && <Link href="/" className={`${UI.btn} ${UI.secondary} px-2.5`} title="Home"><Home className="h-4 w-4"/></Link>}
         </div>
         {/* Controls row */}
         <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-2 lg:px-6">
-          <Link href={`/ads-management/settings/?store=${encodeURIComponent(store)}`} className="shrink-0 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100">AI agent settings</Link>
-          <MultiCheckDropdown
+          {!embedded && <Link href={`/ads-management/settings/?store=${encodeURIComponent(store)}`} className="shrink-0 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-100">AI agent settings</Link>}
+          {!embedded && <MultiCheckDropdown
             label="Store"
             icon={<Store className="h-3.5 w-3.5 text-slate-400"/>}
             options={storeOptions}
@@ -2885,7 +2892,7 @@ export default function AdsManagementPage(){
               setDeliveryRateResults({})
               try{ localStorage.setItem('ptos_stores_multi', JSON.stringify(finalStores)); localStorage.setItem('ptos_store', finalStores[0]) }catch{}
             }}
-          />
+          />}
           <MultiCheckDropdown
             label="Accounts"
             icon={<Layers className="h-3.5 w-3.5 text-slate-400"/>}
@@ -2933,13 +2940,13 @@ export default function AdsManagementPage(){
               <span className="h-1.5 w-1.5 rounded-full bg-slate-400"/>Paused <span className="tabular-nums text-slate-400">{statusStats.paused}</span>
             </button>
           </div>
-          <div className={UI.seg} role="group" aria-label="Filter products by owner">
+          {!embedded && <div className={UI.seg} role="group" aria-label="Filter products by owner">
             <button onClick={()=> setOwnerFilter('')} aria-pressed={ownerFilter === ''} className={UI.segBtn(ownerFilter==='')}>Everyone</button>
             {CAMPAIGN_OWNERS.map(owner => (
               <button key={owner} onClick={()=> setOwnerFilter(owner)} aria-pressed={ownerFilter === owner} className={UI.segBtn(ownerFilter===owner)}>{owner}</button>
             ))}
             <button onClick={()=> setOwnerFilter('unassigned')} aria-pressed={ownerFilter === 'unassigned'} className={UI.segBtn(ownerFilter==='unassigned')}>Unassigned</button>
-          </div>
+          </div>}
           <label className={`inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg border px-2.5 text-[13px] font-medium shadow-sm transition-colors ${profitMode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
             <input
               type="checkbox"
@@ -2985,7 +2992,7 @@ export default function AdsManagementPage(){
             </label>
           )}
           <div className="flex-1" />
-          {(selectedCount > 0 || multiAnalysisLoading) && (
+          {!embedded && (selectedCount > 0 || multiAnalysisLoading) && (
             <button
               disabled={multiAnalysisLoading}
               onClick={analyzeSelectedCampaigns}
@@ -3012,7 +3019,7 @@ export default function AdsManagementPage(){
               Cancel
             </button>
           )}
-          {Object.keys(multiAnalysisResults).length > 0 && !multiAnalysisLoading && (
+          {!embedded && Object.keys(multiAnalysisResults).length > 0 && !multiAnalysisLoading && (
             <button
               disabled={actionTasksLoading}
               onClick={generateActionsFromAnalyses}
@@ -3033,8 +3040,10 @@ export default function AdsManagementPage(){
         {/* Context line */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] font-medium text-slate-600">
           <span className="font-semibold text-slate-900">{adAccountName || adAccount || 'No ad account'}</span>
-          <span className="text-slate-300">/</span>
-          <span>{selectedStores.join(', ') || '—'}</span>
+          {!embedded && <>
+            <span className="text-slate-300">/</span>
+            <span>{selectedStores.join(', ') || '—'}</span>
+          </>}
           <span className="text-slate-300">/</span>
           <span className="capitalize">{rangeLabel}</span>
           {reportingTz && (
@@ -3111,7 +3120,7 @@ export default function AdsManagementPage(){
             ]} />
           </KpiTile>
 
-          {!profitMode && (
+          {!profitMode && !embedded && (
             <div className="flex min-w-[300px] flex-[1.4] flex-col justify-between gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm">
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 <span>Owners</span>
@@ -3476,7 +3485,7 @@ export default function AdsManagementPage(){
                             {active===0 ? 'Paused' : paused===0 ? 'Active' : `${active} on · ${paused} off`}
                           </span>
                         </td>
-                        <td className="px-2 py-2">
+                        {!embedded && <td className="px-2 py-2">
                           {(()=>{
                             const owner = ownerOfKey(productOwnerKey(pid))
                             return (
@@ -3491,7 +3500,7 @@ export default function AdsManagementPage(){
                               </select>
                             )
                           })()}
-                        </td>
+                        </td>}
                         <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                           {profitMode ? (
                             <div>
@@ -3625,7 +3634,7 @@ export default function AdsManagementPage(){
                             className={`${UI.icon} text-blue-600`}
                           ><BarChart3 className="w-3.5 h-3.5"/></button>}
 
-                          {!profitMode && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${d.primary.name || `Product ${pid}`}`} aria-expanded={!!analysisPanels[`${(d.primary as any)._store || store}:${pid}`]} aria-controls={`ad-analysis-${`${(d.primary as any)._store || store}:${pid}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(d.primary as any)._store || store}:${pid}`]: !previous[`${(d.primary as any)._store || store}:${pid}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
+                          {!profitMode && !embedded && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${d.primary.name || `Product ${pid}`}`} aria-expanded={!!analysisPanels[`${(d.primary as any)._store || store}:${pid}`]} aria-controls={`ad-analysis-${`${(d.primary as any)._store || store}:${pid}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(d.primary as any)._store || store}:${pid}`]: !previous[`${(d.primary as any)._store || store}:${pid}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
                           </div>
                         </td>
                       </tr>
@@ -3911,7 +3920,7 @@ export default function AdsManagementPage(){
                         )
                       })()}
                     </td>
-                    <td className="px-2 py-2">
+                    {!embedded && <td className="px-2 py-2">
                       {!isChild && ownerProductId ? (
                         <select
                           value={ownerOfRow(c)}
@@ -3924,7 +3933,7 @@ export default function AdsManagementPage(){
                           {CAMPAIGN_OWNERS.map(owner => <option key={owner} value={owner}>{owner}</option>)}
                         </select>
                       ) : <span className="text-xs capitalize text-slate-500">{ownerOfRow(c) || '—'}</span>}
-                    </td>
+                    </td>}
                     <td className="px-2 py-2 text-right tabular-nums font-semibold text-slate-800">
                       {profitMode ? (
                         <div>
@@ -4082,7 +4091,7 @@ export default function AdsManagementPage(){
                         )
                       })()}
 
-                      {!profitMode && !isChild && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${c.name || rowKey}`} aria-expanded={!!analysisPanels[`${(c as any)._store || store}:${rowKey}`]} aria-controls={`ad-analysis-${`${(c as any)._store || store}:${rowKey}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(c as any)._store || store}:${rowKey}`]: !previous[`${(c as any)._store || store}:${rowKey}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
+                      {!profitMode && !isChild && !embedded && <button type="button" title="Analyze ads" aria-label={`Analyze ads for ${c.name || rowKey}`} aria-expanded={!!analysisPanels[`${(c as any)._store || store}:${rowKey}`]} aria-controls={`ad-analysis-${`${(c as any)._store || store}:${rowKey}`}`} onClick={() => setAnalysisPanels(previous => ({ ...previous, [`${(c as any)._store || store}:${rowKey}`]: !previous[`${(c as any)._store || store}:${rowKey}`] }))} className={`${UI.icon} text-violet-600`}><Sparkles className="w-3.5 h-3.5"/></button>}
                       </div>
                     </td>
                   </tr>

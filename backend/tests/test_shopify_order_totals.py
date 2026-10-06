@@ -14,8 +14,10 @@ def test_store_total_uses_full_local_day_and_unlimited_exact_count(monkeypatch, 
     with sc.reporting_timezone_scope(None):
         assert function('2026-10-04', '2026-10-04', store='irrakids', include_closed=True) == 41
     assert calls[0]['limit'] is None
-    assert f'{field}:>="2026-10-03T23:00:00+00:00"' in calls[0]['query']
-    assert f'{field}:<="2026-10-04T22:59:59.999000+00:00"' in calls[0]['query']
+    # Morocco is permanently UTC+0 since 2026-09-20 (IANA 2026c), so a Casablanca
+    # day in October is the UTC day. The old UTC+1 rule started it at 23:00.
+    assert f'{field}:>="2026-10-04T00:00:00+00:00"' in calls[0]['query']
+    assert f'{field}:<="2026-10-04T23:59:59.999000+00:00"' in calls[0]['query']
     assert 'status:open' not in calls[0]['query']
 
 

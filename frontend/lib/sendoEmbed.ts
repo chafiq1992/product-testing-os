@@ -9,7 +9,23 @@
 import axios from 'axios'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
-const SESSION_KEY = 'sendo_workspace_session'
+// Each embeddable page belongs to one service. Same-origin frames in one tab
+// share sessionStorage, so the session is stored per service: the True Profit
+// and True Manager frames must not overwrite each other's session.
+const PAGE_SERVICES: Array<[RegExp, string]> = [
+  [/^\/profit-calculator(\/|$)/, 'true_profit'],
+  [/^\/ads-management(\/|$)/, 'true_manager'],
+]
+
+export function pageService(): string | null {
+  if (typeof window === 'undefined') return null
+  const match = PAGE_SERVICES.find(([pattern]) => pattern.test(window.location.pathname))
+  return match ? match[1] : null
+}
+
+function sessionKey(): string {
+  return `sendo_workspace_session:${pageService() || 'unknown'}`
+}
 export const WORKSPACE_HEADER = 'X-Workspace-Token'
 
 export type SendoConnections = {
@@ -30,7 +46,7 @@ let active: SendoSession | null = null
 
 function readStored(): SendoSession | null {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY)
+    const raw = sessionStorage.getItem(sessionKey())
     if (!raw) return null
     const parsed = JSON.parse(raw) as SendoSession
     return parsed && parsed.token && parsed.expires_at * 1000 > Date.now() + 60_000 ? parsed : null
@@ -40,7 +56,7 @@ function readStored(): SendoSession | null {
 function activate(session: SendoSession) {
   active = session
   axios.defaults.headers.common[WORKSPACE_HEADER] = session.token
-  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(session)) } catch {}
+  try { sessionStorage.setItem(sessionKey(), JSON.stringify(session)) } catch {}
   // Some pages read the store from localStorage in their first render. The
   // frame's storage is partitioned from the top-level site, so this never
   // touches an operator's own selection.
@@ -78,6 +94,7 @@ export async function startEmbeddedSession(): Promise<SendoSession> {
     try { history.replaceState(null, '', window.location.pathname + window.location.search) } catch {}
     const { data } = await axios.post(`${API}/api/sendo/session`, { launch })
     if (!data?.data?.token) throw new Error(data?.error || 'launch_failed')
+    if (data.data.service !== pageService()) throw new Error('wrong_service')
     activate(data.data as SendoSession)
     return active as SendoSession
   }

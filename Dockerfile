@@ -29,7 +29,11 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080 \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    PYTHONTZPATH=""
+# PYTHONTZPATH="": read time zones only from the pinned tzdata package, never
+# the image's frozen /usr/share/zoneinfo. Morocco moved to permanent UTC+0 on
+# 2026-09-20 (IANA 2026c); the stale system copy still said UTC+1.
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 
