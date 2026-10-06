@@ -21,6 +21,7 @@ from app import db
 from app.integrations.meta_client import list_ad_accounts
 from app.shopify_store_registry import canonical_store_label
 from app.system_health_routes import _get_admin
+from app.tenant_context import current_workspace
 
 router = APIRouter(prefix="/api/connections/meta", tags=["connections"])
 
@@ -131,14 +132,30 @@ def _return_origin(value: str | None) -> str:
 
 
 def _return_url(origin: str, store: str, result: str) -> str:
+    if current_workspace_label(store):
+        # Sendo merchants connect from a popup over the embedded page; this page
+        # tells the embed the result and closes itself.
+        return f"{origin}/sendo-connected/?{urlencode({'result': result})}"
     return f"{origin}/settings/connections?{urlencode({'store': store, result: '1'})}"
+
+
+def current_workspace_label(store: str | None) -> bool:
+    from app.sendo_workspace import is_workspace_label
+    return is_workspace_label(store)
+
+
+def _authorized(request: Request, label: str | None) -> bool:
+    """System admins manage any store; a Sendo workspace only its own."""
+    if _get_admin(request):
+        return True
+    return bool(label) and current_workspace() == label
 
 
 @router.get("/status")
 def status(request: Request, store: str):
-    if not _get_admin(request):
-        return {"error": "unauthorized"}
     label = canonical_store_label(store)
+    if not _authorized(request, label):
+        return {"error": "unauthorized"}
     if not label:
         return {"error": "invalid_store"}
     return {"data": _public_record(label)}
@@ -146,9 +163,9 @@ def status(request: Request, store: str):
 
 @router.post("/start")
 def start(request: Request, body: StartRequest):
-    if not _get_admin(request):
-        return {"error": "unauthorized"}
     label = canonical_store_label(body.store)
+    if not _authorized(request, label):
+        return {"error": "unauthorized"}
     if not label:
         return {"error": "invalid_store"}
     app_id, app_secret = _credentials()

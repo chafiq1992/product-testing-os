@@ -6,6 +6,7 @@ from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
+from app.tenant_context import current_workspace
 load_dotenv()
 
 
@@ -58,7 +59,20 @@ _connection_token: ContextVar[str | None] = ContextVar("meta_connection_token", 
 
 
 def _active_token() -> str:
-    return _connection_token.get() or ACCESS
+    token = _connection_token.get()
+    if token:
+        return token
+    # A Sendo merchant workspace may only use its own connection. The env token
+    # belongs to the operator's stores, so falling back to it would show one
+    # merchant another business's ads.
+    if current_workspace():
+        raise RuntimeError("Connect your Meta ad account to see your campaigns.")
+    return ACCESS
+
+
+def _default_account() -> str:
+    """The env ad account is the operator's; a workspace must name its own."""
+    return "" if current_workspace() else AD_ACCOUNT_ID
 
 
 @contextmanager
@@ -255,7 +269,7 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
 def get_ad_account_info(ad_account_id: str | None = None) -> dict:
     """Fetch ad account basic info: id and name."""
-    acct = str(ad_account_id or AD_ACCOUNT_ID)
+    acct = str(ad_account_id or _default_account())
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     if not acct:
@@ -266,7 +280,7 @@ def get_ad_account_info(ad_account_id: str | None = None) -> dict:
 
 def get_ad_account_timezone(ad_account_id: str) -> dict:
     """Return the ad account's reporting timezone (Meta's day boundaries)."""
-    acct = str(ad_account_id or AD_ACCOUNT_ID or "").replace("act_", "")
+    acct = str(ad_account_id or _default_account() or "").replace("act_", "")
     if not acct:
         raise RuntimeError("Missing ad account id.")
     res = _get(f"act_{acct}", {"fields": "id,timezone_name,timezone_offset_hours_utc"})
@@ -745,9 +759,9 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     """
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    if not (ad_account_id or AD_ACCOUNT_ID):
-        raise RuntimeError("META_AD_ACCOUNT_ID is not set (numeric, without 'act_').")
-    acct = str(ad_account_id or AD_ACCOUNT_ID)
+    if not (ad_account_id or _default_account()):
+        raise RuntimeError("Choose an ad account first.")
+    acct = str(ad_account_id or _default_account())
 
     params: dict = {
         "level": "campaign",

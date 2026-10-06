@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from dotenv import load_dotenv
+from app.tenant_context import current_workspace
 load_dotenv()
 
 # -------- lightweight in-memory caches (per Cloud Run instance) --------
@@ -176,6 +177,40 @@ def _store_suffix(store: str | None) -> str:
     s = re.sub(r"[^A-Za-z0-9]", "_", s.upper())
     return f"_{s}"
 
+def _refuse_operator_store() -> None:
+    """The module-level SHOPIFY_* credentials are the operator's own store."""
+    if current_workspace():
+        raise RuntimeError("This Shopify call is not available in a Sendo workspace.")
+
+
+def _workspace_store_config(store: str | None) -> dict:
+    """A Sendo workspace reads only the store synced from the delivery app.
+
+    No env suffix, no base SHOPIFY_* fallback: either would hand a merchant the
+    operator's Shopify credentials.
+    """
+    workspace = current_workspace()
+    if _canonical_store_label(store) != workspace:
+        raise RuntimeError("Store does not belong to this workspace.")
+    from app import db as _db  # type: ignore
+    rec = _db.get_app_setting(workspace, "shopify_oauth") or {}
+    shop = _normalize_shop_domain(str(rec.get("shop") or "")) if isinstance(rec, dict) else ""
+    token = str(rec.get("access_token") or "") if isinstance(rec, dict) else ""
+    if not shop or not token:
+        raise RuntimeError("Connect your Shopify store in Sendo to see orders.")
+    version = os.getenv("SHOPIFY_API_VERSION", "2025-07")
+    return {
+        "SHOP": shop,
+        "TOKEN": token,
+        "API_KEY": "",
+        "PASSWORD": "",
+        "API_VERSION": version,
+        "GQL": f"https://{shop}/admin/api/{version}/graphql.json",
+        "BASE": f"https://{shop}/admin/api/{version}",
+        "HEADERS": {"Content-Type": "application/json", "X-Shopify-Access-Token": token},
+    }
+
+
 def _get_store_config(store: str | None) -> dict:
     """Resolve credentials and endpoints for the given store (env-suffixed values).
 
@@ -183,6 +218,12 @@ def _get_store_config(store: str | None) -> dict:
       - If store provided, read SHOPIFY_*_{STORE} vars; fallback to base SHOPIFY_* when missing
       - If no store provided, use base SHOPIFY_* values
     """
+    if current_workspace():
+        return _workspace_store_config(store)
+    if re.fullmatch(r"m[1-9][0-9]{0,9}", _canonical_store_label(store) or ""):
+        # A workspace label outside its own request context (a thread that lost
+        # it, a background job) must fail rather than fall back to env credentials.
+        raise RuntimeError("Sendo workspace stores are only reachable from that workspace.")
     # Optional DB-backed OAuth token store (for Dev Dashboard public apps).
     # This repo can persist per-store {shop, access_token} under AppSetting(store, "shopify_oauth").
     _db = None
@@ -369,6 +410,7 @@ query TranslatableResourcesByIds($resourceIds: [ID!]!, $first: Int!, $locale: St
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _gql(query: str, variables: dict):
+    _refuse_operator_store()
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
     # Choose auth: prefer Bearer token; else fallback to Basic auth with API key/password
@@ -397,6 +439,7 @@ def _gql(query: str, variables: dict):
 
 def _rest_post(path: str, payload: dict):
     """Minimal REST helper for endpoints not covered by GraphQL (e.g., product images)."""
+    _refuse_operator_store()
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
     base = f"https://{SHOP}/admin/api/{API_VERSION}"
@@ -414,6 +457,7 @@ def _rest_post(path: str, payload: dict):
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=0.5, max=8), retry=retry_if_exception_type(requests.exceptions.RequestException))
 def _rest_get(path: str):
+    _refuse_operator_store()
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
     base = f"https://{SHOP}/admin/api/{API_VERSION}"
@@ -430,6 +474,7 @@ def _rest_get(path: str):
 
 
 def _rest_put(path: str, payload: dict):
+    _refuse_operator_store()
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
     base = f"https://{SHOP}/admin/api/{API_VERSION}"
@@ -446,6 +491,7 @@ def _rest_put(path: str, payload: dict):
 
 
 def _rest_delete(path: str):
+    _refuse_operator_store()
     if not SHOP:
         raise RuntimeError("SHOPIFY_SHOP_DOMAIN is not set. Please configure SHOPIFY_SHOP_DOMAIN env var.")
     base = f"https://{SHOP}/admin/api/{API_VERSION}"

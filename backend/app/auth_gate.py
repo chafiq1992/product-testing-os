@@ -74,6 +74,8 @@ PUBLIC_PATHS = frozenset({
     "/api/confirmation/admin/login",
     "/api/wholesale/login",
     "/api/page-builder/widget.js",
+    # The credential is the delivery app's signed launch token in the body.
+    "/api/sendo/session",
 })
 
 # Routes that verify their own credential inside the handler. Listed
@@ -84,6 +86,8 @@ SELF_VERIFIED_PATHS = frozenset({
     "/api/shopify/oauth/callback",
     "/api/connections/meta/callback",
     "/api/social-agent/scheduler/tick",
+    # Server-to-server from the delivery app, HMAC-signed with the launch secret.
+    "/api/sendo/admin/connections",
     # Seller login/application and handlers that verify seller bearer sessions.
     # Administrative affiliate routes remain behind the operator gate.
     "/api/affiliates/apply",
@@ -121,6 +125,49 @@ _CHAT_BODY_IDENTITY = {
 }
 
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Sendo merchant workspaces (sendo_workspace.py) reach only these routes, and
+# only for their own store. "where" says where the handler reads the store
+# from: a handler reading `req.store` from a JSON body would act on the global
+# (store=None) settings if the store rode only in the query string, so the
+# store must be in the place the handler actually reads it.
+WORKSPACE_ROUTES: tuple[tuple[str, re.Pattern, str], ...] = tuple(
+    (method, re.compile(pattern), where)
+    for method, pattern, where in (
+        ("GET", r"^/api/sendo/me$", "query"),
+        ("POST", r"^/api/sendo/sync-stores$", "query"),
+        ("GET", r"^/api/connections/meta/status$", "query"),
+        ("POST", r"^/api/connections/meta/start$", "body"),
+        ("GET", r"^/api/meta/campaigns$", "query"),
+        ("GET", r"^/api/meta/ad_account$", "query"),
+        ("POST", r"^/api/meta/ad_account$", "body"),
+        ("GET", r"^/api/meta/ad_accounts$", "query"),
+        ("GET", r"^/api/campaign_mappings$", "query"),
+        ("POST", r"^/api/shopify/products_brief$", "body"),
+        ("GET", r"^/api/exchange/usd_to_mad$", "query"),
+        ("POST", r"^/api/exchange/usd_to_mad$", "body"),
+        ("GET", r"^/api/profit_costs$", "query"),
+        ("POST", r"^/api/profit_costs$", "body"),
+        ("GET", r"^/api/profit_campaign_cards$", "query"),
+        ("POST", r"^/api/profit_campaign_cards/calculate$", "body"),
+        ("DELETE", r"^/api/profit_campaign_cards/[^/]+$", "query"),
+    )
+)
+WORKSPACE_HEADER = "x-workspace-token"
+
+
+def workspace_route(method: str, path: str) -> Optional[str]:
+    for allowed_method, pattern, where in WORKSPACE_ROUTES:
+        if method == allowed_method and pattern.match(path):
+            return where
+    return None
+
+
+def _store_values(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else str(raw).split(",")
+    return [str(item).strip().lower() for item in items if str(item).strip()]
 
 
 def gate_enabled() -> bool:
@@ -373,8 +420,12 @@ def _cookies(headers: dict[str, str]) -> dict[str, str]:
 
 
 def resolve_principals(headers: dict[str, str]) -> dict[str, Any]:
-    """Every identity the request proves. Keys: operator, vendor, via_cookie."""
-    out: dict[str, Any] = {"operator": None, "vendor": None, "via_cookie": False}
+    """Every identity the request proves. Keys: operator, vendor, workspace, via_cookie."""
+    out: dict[str, Any] = {"operator": None, "vendor": None, "workspace": None, "via_cookie": False}
+    ws_token = (headers.get(WORKSPACE_HEADER) or "").strip()
+    if ws_token:
+        from app.sendo_workspace import verify_session_token  # local: avoid import cycles
+        out["workspace"] = verify_session_token(ws_token)
     auth = (headers.get("authorization") or "").strip()
     bearer = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
     for candidate in (bearer, (headers.get("x-system-admin-token") or "").strip()):
@@ -450,6 +501,8 @@ class AuthGateMiddleware:
         if kind == "operator":
             if operator:
                 return await self.app(scope, receive, send)
+            if who["workspace"]:
+                return await self._workspace(scope, receive, send, method, path, who["workspace"])
             return await self._deny(scope, receive, send, 401, "unauthorized")
 
         if operator:  # operators may act on any vendor and any chat account
@@ -481,6 +534,32 @@ class AuthGateMiddleware:
             if claimed != vid:
                 return await self._deny(scope, receive, send, 403, "forbidden")
         return await self.app(scope, receive, send)
+
+    async def _workspace(self, scope, receive, send, method: str, path: str, session: dict):
+        """A Sendo merchant: allowed routes only, its own store only, no env credentials."""
+        ws = str(session.get("sub") or "")
+        where = workspace_route(method, path)
+        if not where:
+            return await self._deny(scope, receive, send, 403, "forbidden")
+        query = _query(scope)
+        query_store = [v for key in ("store", "stores") for raw in query.get(key, []) for v in _store_values(raw)]
+        body_store: list[str] = []
+        if method in _UNSAFE_METHODS:
+            body, receive = await _buffer_body(receive)
+            if body.strip():
+                try:
+                    parsed = json.loads(body)
+                except Exception:
+                    return await self._deny(scope, receive, send, 403, "forbidden")
+                if not isinstance(parsed, dict):
+                    return await self._deny(scope, receive, send, 403, "forbidden")
+                body_store = [v for key in ("store", "stores") for v in _store_values(parsed.get(key))]
+        required = body_store if where == "body" else query_store
+        if not required or any(v != ws for v in query_store + body_store):
+            return await self._deny(scope, receive, send, 403, "forbidden")
+        from app.tenant_context import workspace_scope  # local: avoid import cycles
+        with workspace_scope(ws):
+            return await self.app(scope, receive, send)
 
     @staticmethod
     async def _deny(scope, receive, send, status: int, error: str):

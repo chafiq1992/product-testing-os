@@ -134,6 +134,42 @@ app.add_middleware(_HealthMiddleware)
 app.include_router(_system_health_router)
 app.include_router(_meta_connection_router)
 
+# Sendo merchant workspaces (delivery app add-on services). See sendo_workspace.py.
+from app import sendo_workspace as _sendo_workspace  # noqa: E402
+app.include_router(_sendo_workspace.router)
+
+
+class _SendoEmbedHeadersMiddleware:
+    """Let the delivery app frame the pages it embeds, and nothing else.
+
+    Caddy sends X-Frame-Options: SAMEORIGIN on every response; browsers ignore
+    it when a CSP frame-ancestors directive is present, so only these pages
+    become embeddable, and only by the configured Sendo origins.
+    """
+
+    EMBED_PATHS = ("/profit-calculator", "/ads-management")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path") or ""
+        if scope["type"] != "http" or not path.startswith(self.EMBED_PATHS) or "." in path.rsplit("/", 1)[-1]:
+            return await self.app(scope, receive, send)
+        ancestors = " ".join(["'self'", *_sendo_workspace.embed_origins()])
+
+        async def send_with_csp(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"content-security-policy"]
+                headers.append((b"content-security-policy", f"frame-ancestors {ancestors}".encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        return await self.app(scope, receive, send_with_csp)
+
+
+app.add_middleware(_SendoEmbedHeadersMiddleware)
+
 # Internal chat / inbox (vendor + agent DMs over WebSocket; no WhatsApp API)
 from app import chat as _chat  # noqa: E402
 app.include_router(_chat.router)
@@ -3883,9 +3919,12 @@ def _compute_profit_campaign_card_sync(*, store: str | None, ad_account: str | N
     rate = db.get_usd_to_mad_rate(store) or 10.0
     rate = float(rate)
 
-    # Meta: fetch single campaign summary (much faster than listing insights for all campaigns)
+    # Meta: fetch single campaign summary (much faster than listing insights for all campaigns).
+    # Read through the store's own connection, like the campaign list does; outside
+    # a token scope this used the env token whatever store was asked for.
     try:
-        row = get_campaign_summary(cid, since=s_date, until=e_date) or {}
+        with meta_access_token_scope(reporting_token(store, acct)):
+            row = get_campaign_summary(cid, since=s_date, until=e_date) or {}
     except Exception as e:
         # Unwrap tenacity RetryError to expose the underlying API error message
         try:

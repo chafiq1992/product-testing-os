@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import ShopifyStoreSelect from "@/components/ShopifyStoreSelect"
+import SendoEmbed from "@/components/SendoEmbed"
+import { embeddedWorkspace, isEmbedded } from "@/lib/sendoEmbed"
 import { ArrowUp, DollarSign, RefreshCw, Rocket, Save } from "lucide-react"
 import {
   fetchMetaCampaigns,
@@ -111,9 +113,19 @@ function extractNumericId(s?: string | null) {
 }
 
 export default function ProfitCalculatorPage() {
+  // Embedded for a Sendo merchant (lib/sendoEmbed.ts): open the workspace session
+  // before the calculator makes its first API call.
+  const [mode, setMode] = useState<"detect" | "embed" | "operator">("detect")
+  useEffect(() => { setMode(isEmbedded() ? "embed" : "operator") }, [])
+  if (mode === "detect") return null
+  if (mode === "embed") return <SendoEmbed title="True Profit"><ProfitCalculator embedded /></SendoEmbed>
+  return <ProfitCalculator embedded={false} />
+}
+
+function ProfitCalculator({ embedded }: { embedded: boolean }) {
   const [store, setStore] = useState<string>(() => {
     try {
-      return localStorage.getItem("ptos_store") || "irrakids"
+      return (embedded && embeddedWorkspace()) || localStorage.getItem("ptos_store") || "irrakids"
     } catch {
       return "irrakids"
     }
@@ -498,7 +510,7 @@ export default function ProfitCalculatorPage() {
           <h1 className="font-semibold text-lg">Profit calculator</h1>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <ShopifyStoreSelect
+          {!embedded && <ShopifyStoreSelect
             value={store}
             onChange={(v) => {
               setStore(v)
@@ -507,7 +519,7 @@ export default function ProfitCalculatorPage() {
               } catch {}
             }}
             className="rounded-xl border px-2 py-1 text-sm bg-white"
-          />
+          />}
 
           <div className="flex items-center gap-1">
             <select
@@ -585,9 +597,9 @@ export default function ProfitCalculatorPage() {
           <button onClick={loadList} className="rounded-xl font-semibold inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm disabled:opacity-60" disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {loading ? "Updating…" : "Refresh"}
           </button>
-          <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
+          {!embedded && <Link href="/" className="rounded-xl font-semibold inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white">
             Home
-          </Link>
+          </Link>}
         </div>
       </header>
 
@@ -601,7 +613,7 @@ export default function ProfitCalculatorPage() {
                 <div className="text-xs uppercase/relaxed opacity-80">Ad account</div>
                 <div className="text-lg font-semibold">{adAccountName || adAccount || "—"}</div>
                 <div className="text-xs opacity-80">
-                  Range: {datePreset === "custom" ? `${customStart || "—"} to ${customEnd || "—"}` : presetLabel(datePreset)} • Store: {store}
+                  Range: {datePreset === "custom" ? `${customStart || "—"} to ${customEnd || "—"}` : presetLabel(datePreset)}{embedded ? "" : ` • Store: ${store}`}
                 </div>
               </div>
               <div className="text-sm opacity-90 flex items-center gap-2">
