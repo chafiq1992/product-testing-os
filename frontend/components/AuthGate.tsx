@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
+import { isEmbedded } from '../lib/sendoEmbed'
 
 // Operator sign-in for every page that talks to the operator API.
 //
@@ -12,7 +13,8 @@ const OWN_LOGIN = [/^\/affiliates\/?$/, /^\/wholesale\/?$/, /^\/confirmation(\/|
 const ADMIN_TOKEN_KEY = 'ptos_system_admin_token'
 
 function hasOwnLogin(path: string) {
-  return OWN_LOGIN.some(re => re.test(path))
+  // Sendo merchants sign in through the delivery app's launch token (lib/sendoEmbed.ts).
+  return OWN_LOGIN.some(re => re.test(path)) || /^\/sendo-connected(\/|$)/.test(path) || isEmbedded()
 }
 
 function isGateDenial(status: number, body: any) {

@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { embeddedWorkspace } from './sendoEmbed'
 // When the frontend is served by FastAPI on the same domain we can use a relative URL.
 const base = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 
@@ -41,6 +42,9 @@ function normalizeStoreValue(value?: string | null): string | undefined {
 function selectedStore(){
   try{
     if(typeof window==='undefined') return undefined
+    // Embedded for a Sendo merchant: always and only that merchant's workspace.
+    const workspace = embeddedWorkspace()
+    if(workspace) return workspace
     // Check multi-store key first, fall back to legacy single key
     const multi = localStorage.getItem('ptos_stores_multi')
     if(multi){
