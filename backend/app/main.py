@@ -183,6 +183,13 @@ app.include_router(_social_agent_router)
 # Governed paid-ad launcher: Shopify + OpenAI Agents SDK + Meta Marketing API.
 from app.ad_launcher.routes import router as _ad_launcher_router  # noqa: E402
 app.include_router(_ad_launcher_router)
+
+# Ads dashboard: recent purchase orders (Shopify inventory transfers) and the
+# owner-level 5-day analyst. Both are operator-only and read-only toward Shopify and Meta.
+from app.purchase_orders import router as _purchase_orders_router  # noqa: E402
+from app.owner_analyzer import router as _owner_analyzer_router  # noqa: E402
+app.include_router(_purchase_orders_router)
+app.include_router(_owner_analyzer_router)
 # Background poller keeps the incident log up to date even when nobody is
 # watching the dashboard, so issues that occurred while the admin was away
 # are still visible (with first/last-seen timestamps) when they return.

@@ -3,14 +3,17 @@ import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'rea
 import Link from 'next/link'
 import ProductAdAnalysis from '@/components/ProductAdAnalysis'
 import axios from 'axios'
-import { fetchCampaignCollectionOrders, type CollectionCampaignOrders } from '@/lib/api'
-import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers } from 'lucide-react'
+import { fetchCampaignCollectionOrders, type CollectionCampaignOrders, purchaseOrdersRecent, type PurchaseOrder, type PurchaseOrdersData, ownerAnalysisStart, ownerAnalysisStatus, ownerAnalysisLatest, ownerAnalysisCancel, ownerAnalysisResults, type OwnerAnalysisJob, type OwnerProductReport } from '@/lib/api'
+import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers, Brain } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
 import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
 import StickyCampaignTable from '@/components/StickyCampaignTable'
 import CampaignLifeDays from '@/components/CampaignLifeDays'
 import ProductInventoryPanel from '@/components/ProductInventoryPanel'
+import AnchoredPopover from '@/components/AnchoredPopover'
+import PurchaseOrdersPanel, { PoStatusPill } from '@/components/PurchaseOrdersPanel'
+import OwnerAnalysisReport, { OwnerSignalIcon } from '@/components/OwnerAnalysisReport'
 import { PLATFORM_META, type PlatformKey } from '@/components/brand/PlatformIcons'
 
 const DEFAULT_STORE_OPTIONS = FALLBACK_SHOPIFY_STORES.map(store => ({ value: store.label, label: store.label }))
@@ -583,6 +586,18 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   const preSearchPresetRef = useRef<string>('')  // remember preset before search
   // Inventory hover tooltip state
   const [invHover, setInvHover] = useState<{ pid: string, anchor: HTMLElement }|null>(null)
+  // Purchase orders (Shopify inventory transfers) from the last 5 days, per selected store
+  const [poOpen, setPoOpen] = useState<{ pid: string, anchor: HTMLElement }|null>(null)
+  const [purchaseOrders, setPurchaseOrders] = useState<Record<string, PurchaseOrdersData>>({})
+  const [poLoading, setPoLoading] = useState<boolean>(false)
+  const [poError, setPoError] = useState<string>('')
+  const poSeq = useRef(0)
+  // Owner analyst: 5-day scale / fix decision for one owner's active products
+  const [ownerJob, setOwnerJob] = useState<(OwnerAnalysisJob & { job_id: string })|null>(null)
+  const [ownerJobError, setOwnerJobError] = useState<string>('')
+  const [ownerReports, setOwnerReports] = useState<Record<string, OwnerProductReport>>({})
+  const [ownerReportOpen, setOwnerReportOpen] = useState<OwnerProductReport|null>(null)
+  const ownerPollRef = useRef<number|null>(null)
   const pageHeaderRef = useRef<HTMLElement>(null)
   const [variantInventoryCache, setVariantInventoryCache] = useState<Record<string, VariantInventoryData>>({})
   const [variantInventoryLoading, setVariantInventoryLoading] = useState<Record<string, boolean>>({})
@@ -1876,6 +1891,203 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
       onOpen={day => void openLifeDay(day, campaigns)} />
   }
 
+  function toggleInventory(pid: string, anchor: HTMLElement){
+    if(invHover?.pid === pid && invHover.anchor === anchor){ setInvHover(null); return }
+    setPoOpen(null)
+    setInvHover({ pid, anchor })
+    void loadVariantInventory(pid)
+  }
+
+  // ---- Purchase orders (Shopify inventory transfers, last 5 days). Operator-only. ----
+  async function loadPurchaseOrders(storesToLoad: string[], refresh = false){
+    if(embedded || storesToLoad.length === 0) return
+    const seq = ++poSeq.current
+    setPoLoading(true)
+    const results = await Promise.allSettled(storesToLoad.map(st => purchaseOrdersRecent(st, 5, refresh)))
+    if(seq !== poSeq.current) return
+    const next: Record<string, PurchaseOrdersData> = {}
+    const errors: string[] = []
+    results.forEach((result, index) => {
+      const st = storesToLoad[index]
+      if(result.status !== 'fulfilled'){ errors.push(`${st}: purchase orders could not load`); return }
+      if(result.value?.data) next[st] = result.value.data
+      if(result.value?.error) errors.push(`${st}: ${result.value.error}`)
+    })
+    setPurchaseOrders(next)
+    setPoError(errors.join(' · '))
+    setPoLoading(false)
+  }
+
+  const purchaseOrderStoresKey = normalizeStoreList(selectedStores, storeOptions).join(',')
+  useEffect(()=>{
+    if(purchaseOrderStoresKey) void loadPurchaseOrders(purchaseOrderStoresKey.split(','))
+  }, [purchaseOrderStoresKey, embedded])
+
+  const purchaseOrdersByProduct = useMemo(()=>{
+    const map: Record<string, PurchaseOrder[]> = {}
+    for(const data of Object.values(purchaseOrders)){
+      for(const order of data.orders || []){
+        for(const product of order.products || []){
+          const pid = String(product.product_id || '')
+          if(!pid) continue
+          const list = (map[pid] ||= [])
+          if(!list.some(o => o.id === order.id)) list.push(order)
+        }
+      }
+    }
+    return map
+  }, [purchaseOrders])
+
+  const poWindow = useMemo(()=>{
+    const first = Object.values(purchaseOrders)[0]
+    return first ? { from: first.date_from, to: first.date_to } : null
+  }, [purchaseOrders])
+
+  function renderPurchaseOrdersCell(pid: string | null){
+    if(!pid) return <span className="text-slate-400">—</span>
+    const orders = purchaseOrdersByProduct[pid] || []
+    if(orders.length === 0){
+      if(poLoading) return <span className="inline-block h-3 w-10 animate-pulse rounded bg-amber-50" />
+      return <span className="text-slate-300" title={poError || 'No purchase orders in the last 5 days'}>—</span>
+    }
+    const openCount = orders.filter(o => o.status === 'open').length
+    const closedCount = orders.length - openCount
+    const isOpen = poOpen?.pid === pid
+    return (
+      <button
+        type="button"
+        onClick={(e)=> {
+          const anchor = e.currentTarget
+          if(isOpen && poOpen?.anchor === anchor){ setPoOpen(null); return }
+          setInvHover(null)
+          setPoOpen({ pid, anchor })
+        }}
+        aria-expanded={isOpen}
+        title={`${orders.length} purchase order${orders.length === 1 ? '' : 's'} in the last 5 days`}
+        className={`inline-flex flex-col items-end gap-0.5 rounded-md px-1 py-0.5 ${isOpen ? 'bg-amber-50 ring-1 ring-amber-300' : 'hover:bg-slate-100'}`}
+      >
+        {openCount > 0 && <PoStatusPill status="open" label={`${openCount} open`} />}
+        {closedCount > 0 && <PoStatusPill status="closed" label={`${closedCount} closed`} />}
+      </button>
+    )
+  }
+
+  // ---- Owner analyst: 5-day scale / fix decision for one owner's active products ----
+  const ownerProductsForAnalysis = useMemo(()=>{
+    const owner = ownerFilter
+    if(embedded || !owner || owner === 'unassigned') return []
+    const byPid: Record<string, { product_id: string, name: string, campaign_ids: string[], store?: string, stores: string[], meta_store?: string, ad_account?: string }> = {}
+    for(const row of (items || [])){
+      if(!isCampaignActive(row) || ownerOfRow(row) !== owner) continue
+      const pid = getProductIdForRow(row)
+      const cid = String(row.campaign_id || '')
+      if(!pid || !/^\d+$/.test(cid)) continue
+      const stores = storesForProduct(pid, false).map(st => normalizeStoreValue(st)).filter(Boolean) as string[]
+      const entry = (byPid[pid] ||= {
+        product_id: pid,
+        name: String(row.name || `Product ${pid}`),
+        campaign_ids: [],
+        store: stores[0] || store,
+        stores,
+        meta_store: normalizeStoreValue((row as any)._store) || store,
+        ad_account: String((row as any)._adAccount || '') || undefined,
+      })
+      if(!entry.campaign_ids.includes(cid) && entry.campaign_ids.length < 20) entry.campaign_ids.push(cid)
+    }
+    return Object.values(byPid)
+  }, [items, ownerFilter, campaignMeta, manualIds, selectedStores, storeOptions, embedded])
+
+  const ownerJobRunning = !!ownerJob && (ownerJob.status === 'pending' || ownerJob.status === 'running')
+
+  async function refreshOwnerReports(productIds: string[]){
+    if(embedded || !productIds.length) return
+    try{
+      const reports = await ownerAnalysisResults(productIds.map(pid => ({ product_id: pid, store: normalizeStoreValue(storesForProduct(pid, false)[0]) || store })))
+      setOwnerReports(prev => ({ ...prev, ...reports }))
+    }catch{}
+  }
+
+  function stopOwnerPolling(){
+    if(ownerPollRef.current != null){ window.clearTimeout(ownerPollRef.current); ownerPollRef.current = null }
+  }
+
+  function pollOwnerJob(jobId: string){
+    stopOwnerPolling()
+    let seen = new Set<string>()
+    const tick = async () => {
+      try{
+        const job = await ownerAnalysisStatus(jobId, store)
+        if(job.status === 'not_found'){ setOwnerJob(null); return }
+        setOwnerJob({ ...job, job_id: jobId })
+        const finished = Object.keys(job.results || {}).filter(pid => !seen.has(pid))
+        if(finished.length){
+          seen = new Set([...seen, ...finished])
+          void refreshOwnerReports(finished)
+        }
+        if(job.status === 'pending' || job.status === 'running'){
+          ownerPollRef.current = window.setTimeout(tick, 4000)
+        }else if(job.status === 'error'){
+          setOwnerJobError(job.error || 'The analysis stopped. Start it again.')
+        }
+      }catch{
+        ownerPollRef.current = window.setTimeout(tick, 6000)
+      }
+    }
+    void tick()
+  }
+
+  async function startOwnerAnalysis(){
+    const owner = ownerFilter
+    if(embedded || !owner || owner === 'unassigned' || ownerJobRunning) return
+    const products = ownerProductsForAnalysis.slice(0, 40)
+    if(products.length === 0){ setOwnerJobError(`No active campaigns with a product id for ${owner}.`); return }
+    setOwnerJobError('')
+    try{
+      const res = await ownerAnalysisStart({ store, owner, products })
+      if(res.error || !res.job_id){ setOwnerJobError(res.error || 'The analysis could not start.'); return }
+      setOwnerJob({ ...(res.data || { status: 'pending' }), job_id: res.job_id } as OwnerAnalysisJob & { job_id: string })
+      pollOwnerJob(res.job_id)
+    }catch(e: any){
+      setOwnerJobError(e?.message || 'The analysis could not start.')
+    }
+  }
+
+  async function cancelOwnerAnalysis(){
+    if(!ownerJob?.job_id) return
+    try{ await ownerAnalysisCancel(ownerJob.job_id, store) }catch{}
+    setOwnerJob(prev => prev ? { ...prev, cancel_requested: true } : prev)
+  }
+
+  // Restore an owner's running job after a reload.
+  useEffect(()=>{
+    stopOwnerPolling()
+    setOwnerJob(null)
+    setOwnerJobError('')
+    const owner = ownerFilter
+    if(embedded || !owner || owner === 'unassigned') return
+    let active = true
+    ownerAnalysisLatest(owner, store).then(job => {
+      if(!active || !job?.job_id) return
+      setOwnerJob({ ...job, job_id: job.job_id })
+      if(job.status === 'pending' || job.status === 'running') pollOwnerJob(job.job_id)
+    }).catch(()=>{})
+    return () => { active = false }
+  }, [ownerFilter, store, embedded])
+
+  useEffect(()=> () => stopOwnerPolling(), [])
+
+  // Saved signals for every product in the table (latest report per product).
+  const ownerReportIdsKey = useMemo(()=> Array.from(new Set((items || []).map(r => getProductIdForRow(r)).filter(Boolean) as string[])).sort().join(','), [items, manualIds])
+  useEffect(()=>{
+    if(ownerReportIdsKey) void refreshOwnerReports(ownerReportIdsKey.split(','))
+  }, [ownerReportIdsKey, embedded])
+
+  function renderOwnerSignal(pid: string | null){
+    const report = pid && !embedded ? ownerReports[pid] : undefined
+    if(!report) return null
+    return <OwnerSignalIcon report={report} onClick={()=> setOwnerReportOpen(report)} />
+  }
+
   // The reporting-timezone header belongs to this page only
   useEffect(()=> () => { delete axios.defaults.headers.common[REPORTING_TZ_HEADER] }, [])
   useEffect(()=>{ // initialize custom range defaults
@@ -2728,7 +2940,8 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
 
   // Owners are the operator's own team (CAMPAIGN_OWNERS); a Sendo merchant has
   // its own, so the embedded view drops the Owner column, filter and panel.
-  const tableColSpan = (profitMode ? 10 : 15) - (embedded ? 1 : 0)
+  // The PO column is operator-only, like the Owner column.
+  const tableColSpan = (profitMode ? 10 : 16) - (embedded ? (profitMode ? 1 : 2) : 0)
 
   const incompleteActionTasks = actionTasks.filter(t => !t.done).length
   const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
@@ -2812,7 +3025,10 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                         {sortKey==='zero_variant'? <SortArrow/> : <ArrowUpDown className="w-3 h-3 text-slate-300"/>}
                       </button>
                     </th>
-                    <th className="w-[360px] max-w-[360px] px-2 py-2.5 font-semibold">Life days</th>
+                    {!embedded && <th className="px-2 py-2.5 font-semibold text-right" title={poError || (poWindow ? `Purchase orders ${poWindow.from} → ${poWindow.to}` : 'Purchase orders, last 5 days')}>
+                      PO <span className="font-medium normal-case text-slate-400">5d</span>{poError && <span className="ml-0.5 text-rose-500">!</span>}
+                    </th>}
+                    <th className="w-[140px] px-2 py-2.5 font-semibold">Life days</th>
                   </>
                 )}
                 <th className="px-2 py-2.5 font-semibold text-right w-[70px]"></th>
@@ -2824,6 +3040,10 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     <div className="min-h-screen w-full bg-slate-50 font-[Inter,ui-sans-serif,system-ui,-apple-system,'Segoe_UI',Roboto,sans-serif] text-slate-800 antialiased">
       {invHover && <ProductInventoryPanel productId={invHover.pid} data={variantInventoryCache[invHover.pid]} loading={!!variantInventoryLoading[invHover.pid]}
         anchor={invHover.anchor} onClose={() => setInvHover(null)} />}
+      {poOpen && <AnchoredPopover anchor={poOpen.anchor} onClose={() => setPoOpen(null)} width={440} label="Purchase orders">
+        <PurchaseOrdersPanel orders={purchaseOrdersByProduct[poOpen.pid] || []} productId={poOpen.pid} dateFrom={poWindow?.from} dateTo={poWindow?.to} />
+      </AnchoredPopover>}
+      {ownerReportOpen && <OwnerAnalysisReport report={ownerReportOpen} onClose={() => setOwnerReportOpen(null)} />}
       <header ref={pageHeaderRef} className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         {/* Brand row */}
         <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
@@ -2872,7 +3092,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
               <span className="ml-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">{incompleteActionTasks}</span>
             )}
           </button>
-          <button onClick={()=>load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts })} className={`${UI.btn} ${UI.primary}`} disabled={loading}>
+          <button onClick={()=>{ load(undefined, { stores: selectedStores, adAccounts: selectedAdAccounts }); void loadPurchaseOrders(normalizeStoreList(selectedStores, storeOptions), true) }} className={`${UI.btn} ${UI.primary}`} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading? 'animate-spin' : ''}`}/> <span className="hidden sm:inline">{loading? 'Updating…' : 'Refresh'}</span>
           </button>
           {!embedded && <Link href="/" className={`${UI.btn} ${UI.secondary} px-2.5`} title="Home"><Home className="h-4 w-4"/></Link>}
@@ -2947,6 +3167,40 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
             ))}
             <button onClick={()=> setOwnerFilter('unassigned')} aria-pressed={ownerFilter === 'unassigned'} className={UI.segBtn(ownerFilter==='unassigned')}>Unassigned</button>
           </div>}
+          {!embedded && ownerFilter && ownerFilter !== 'unassigned' && (()=>{
+            const results = Object.values(ownerJob?.results || {})
+            const counts: Record<string, number> = { scale: 0, fix: 0, watch: 0 }
+            for(const r of results) counts[r.signal] = (counts[r.signal] || 0) + 1
+            const progress = ownerJob?.progress
+            return (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={ownerJobRunning || ownerProductsForAnalysis.length === 0}
+                  onClick={startOwnerAnalysis}
+                  title={`Analyze the last 5 days of ${ownerFilter}'s active campaigns: spend, CTR, add to cart, real orders, true CPP, ad sets, inventory, purchase orders and the Arabic landing page`}
+                  className={`${UI.btn} text-white disabled:cursor-not-allowed ${ownerJobRunning ? 'animate-pulse bg-violet-400' : 'bg-violet-600 hover:bg-violet-700 disabled:opacity-50'}`}
+                >
+                  <Brain className="h-4 w-4"/>
+                  {ownerJobRunning
+                    ? `Analyzing ${progress?.done || 0}/${progress?.total || ownerProductsForAnalysis.length}…`
+                    : <span>Analyze <span className="capitalize">{ownerFilter}</span> · {ownerProductsForAnalysis.length} active</span>}
+                </button>
+                {ownerJobRunning && (
+                  <button type="button" onClick={cancelOwnerAnalysis} disabled={!!ownerJob?.cancel_requested}
+                    title="Stop after the products already in progress" aria-label="Stop the owner analysis"
+                    className={`${UI.btn} bg-rose-600 px-2 text-white hover:bg-rose-700 disabled:opacity-50`}><X className="h-4 w-4"/></button>
+                )}
+                {results.length > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold" title="Results of the latest analysis">
+                    {counts.scale > 0 && <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-emerald-700">{counts.scale} scale</span>}
+                    {counts.fix > 0 && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-rose-700">{counts.fix} fix</span>}
+                    {counts.watch > 0 && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-amber-700">{counts.watch} watch</span>}
+                  </span>
+                )}
+              </div>
+            )
+          })()}
           <label className={`inline-flex h-8 cursor-pointer select-none items-center gap-2 rounded-lg border px-2.5 text-[13px] font-medium shadow-sm transition-colors ${profitMode ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>
             <input
               type="checkbox"
@@ -3035,6 +3289,11 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
       <main className="space-y-3 px-4 py-3 lg:px-6">
         {(error || ownerSaveError) && (
           <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-700">{error || ownerSaveError}</div>
+        )}
+        {!embedded && (ownerJobError || Object.keys(ownerJob?.failures || {}).length > 0) && (
+          <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-medium text-amber-800">
+            {ownerJobError || `The analyst could not finish ${Object.keys(ownerJob?.failures || {}).length} product(s): ${Object.entries(ownerJob?.failures || {}).slice(0, 3).map(([pid, msg]) => `#${pid} (${msg})`).join('; ')}`}
+          </div>
         )}
 
         {/* Context line */}
@@ -3426,6 +3685,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                               <span className="break-words text-sm font-semibold leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
                               <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500">
                                 <span>#{pid}</span>
+                                {renderOwnerSignal(pid)}
                                 <span className="rounded-full bg-white/80 px-1.5 py-px font-semibold text-slate-700 ring-1 ring-slate-900/10">{d.rows.length} campaigns</span>
                               </span>
                             </div>
@@ -3553,12 +3813,9 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                         {!profitMode && (
                           <>
                             <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
-                              <div className="flex items-center justify-end gap-0.5 cursor-pointer"
-                                onMouseEnter={(e) => {
-                                  setInvHover({ pid, anchor: e.currentTarget })
-                                  loadVariantInventory(pid)
-                                }}
-                                data-inventory-trigger onClick={e => { setInvHover({ pid, anchor: e.currentTarget }); void loadVariantInventory(pid) }}
+                              <button type="button" className={`inline-flex items-center justify-end gap-0.5 rounded-md px-0.5 py-0.5 ${invHover?.pid === pid ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-white/70'}`}
+                                title="Show inventory by size and color" aria-expanded={invHover?.pid === pid}
+                                data-inventory-trigger onClick={e => toggleInventory(pid, e.currentTarget)}
                               >
                                 {inv==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className="inline-flex items-center rounded px-1.5 py-px text-[13px] font-bold tabular-nums bg-white/80 text-slate-800 ring-1 ring-slate-900/10">{inv}</span>
@@ -3567,9 +3824,12 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                                 {zeros==null ? (hydratingBrief ? <span className="inline-block h-3 w-6 bg-rose-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>) : (
                                   <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${Number(zeros||0)>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{Number(zeros||0)}</span>
                                 )}
-                              </div>
+                              </button>
                             </td>
-                            <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
+                            {!embedded && <td className="px-2 py-2 text-right">
+                              {renderPurchaseOrdersCell(pid)}
+                            </td>}
+                            <td className="w-[140px] px-2 py-2">
                               {renderLifeDays(d.rows)}
                             </td>
                           </>
@@ -3721,7 +3981,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                         ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${adsetsExpanded[String(c.campaign_id||'')] ? 'rotate-90' : ''}`}/></button>}
                         <span className="min-w-0 flex-1">
                           <span className={`block break-words leading-snug ${isChild ? 'text-[13px] font-medium text-slate-700' : 'text-sm font-semibold text-slate-900'}`}>{c.name||'-'}</span>
-                          {!isChild && pidSelf && <span className="mt-0.5 block text-xs font-medium text-slate-500">#{pidSelf}</span>}
+                          {!isChild && pidSelf && <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"><span>#{pidSelf}</span>{renderOwnerSignal(pidSelf)}</span>}
                         </span>
                       </div>
                       {!profitMode && (()=>{
@@ -3989,14 +4249,9 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                       <>
                         <td className={`px-2 py-2 text-right ${hasInventoryAlert ? 'bg-rose-50/70' : ''}`}>
                           {hasAnyPid ? (
-                            <div className="flex items-center justify-end gap-0.5 cursor-pointer"
-                              onMouseEnter={(e) => {
-                                if(pidSelf){
-                                  setInvHover({ pid: pidSelf, anchor: e.currentTarget })
-                                  loadVariantInventory(pidSelf)
-                                }
-                              }}
-                              data-inventory-trigger onClick={e => { if(pidSelf){ setInvHover({ pid: pidSelf, anchor: e.currentTarget }); void loadVariantInventory(pidSelf) } }}
+                            <button type="button" className={`inline-flex items-center justify-end gap-0.5 rounded-md px-0.5 py-0.5 ${invHover?.pid === pidSelf ? 'bg-indigo-50 ring-1 ring-indigo-300' : 'hover:bg-white/70'}`}
+                              title="Show inventory by size and color" aria-expanded={invHover?.pid === pidSelf}
+                              data-inventory-trigger onClick={e => { if(pidSelf) toggleInventory(pidSelf, e.currentTarget) }}
                             >
                               {inv===null || inv===undefined ? (
                                 hydratingBrief ? <span className="inline-block h-3 w-6 bg-indigo-50 rounded animate-pulse" /> : <span className="text-slate-400">—</span>
@@ -4009,12 +4264,15 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                               ) : (
                                 <span className={`inline-flex items-center px-1.5 py-px rounded text-[13px] font-bold ${zeros>0? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{zeros}</span>
                               )}
-                            </div>
+                            </button>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="w-[360px] max-w-[360px] px-2 py-2 align-top">
+                        {!embedded && <td className="px-2 py-2 text-right">
+                          {isChild ? <span className="text-slate-300">—</span> : renderPurchaseOrdersCell(pidSelf || null)}
+                        </td>}
+                        <td className="w-[140px] px-2 py-2">
                           {renderLifeDays([c])}
                         </td>
                       </>

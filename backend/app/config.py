@@ -15,7 +15,7 @@ SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")  # Dev Dashboard 
 # permissions requested for the Irrakids integration.
 SHOPIFY_OAUTH_SCOPES = os.getenv(
     "SHOPIFY_OAUTH_SCOPES",
-    "read_orders,write_orders,read_all_orders,read_order_edits,write_order_edits,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_locations,read_customers,write_customers,read_files,write_files,read_publications,write_publications,read_themes,write_themes",
+    "read_orders,write_orders,read_all_orders,read_order_edits,write_order_edits,read_products,write_products,read_content,write_content,read_inventory,write_inventory,read_inventory_transfers,read_locations,read_customers,write_customers,read_files,write_files,read_publications,write_publications,read_themes,write_themes",
 )
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")

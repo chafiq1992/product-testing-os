@@ -1345,6 +1345,97 @@ export async function adsAgentReports(campaignKey: string, store?: string): Prom
 }
 export function analysisEvidenceUrl(path: string) { return path.startsWith('/uploads/ads-evidence-') ? `${base}${path}` : '' }
 
+// -------- Purchase orders (Shopify inventory transfers / Inventory Helper) --------
+export type PurchaseOrderProduct = {
+  product_id: string | null, title: string, image?: string | null, quantity: number,
+  sizes: string[], colors: string[], matrix: Record<string, Record<string, number>>,
+}
+export type PurchaseOrder = {
+  id: string, name: string, transfer_name?: string | null, created_at?: string | null,
+  status: 'open' | 'closed', status_label: string, total_items: number, total_crates: number,
+  destination?: string | null, received_items?: number | null, received_crates?: number | null,
+  products: PurchaseOrderProduct[], partial_lines?: boolean,
+}
+export type PurchaseOrdersData = {
+  store: string | null, date_from: string, date_to: string, source: string | null,
+  orders: PurchaseOrder[], by_product: Record<string, string[]>, errors: string[],
+}
+export async function purchaseOrdersRecent(store: string, days = 5, refresh = false): Promise<{ data?: PurchaseOrdersData | null, error?: string }>{
+  const { data } = await axios.get(`${base}/api/purchase-orders`, { params: { store, days, refresh }, timeout: 90000 })
+  return data
+}
+
+// -------- Owner analyst (5-day scale / fix decision per product) --------
+export type OwnerReportAction = { priority: number, title: string, detail: string, expected_effect: string }
+export type OwnerProductReport = {
+  signal: 'scale' | 'fix' | 'watch'
+  headline: string
+  summary: string
+  confidence: 'low' | 'medium' | 'high'
+  key_findings: string[]
+  ads_creative: OwnerReportAction[]
+  adsets: Array<{ adset_id: string, adset_name: string, action: 'scale' | 'keep' | 'reduce' | 'pause' | 'duplicate' | 'watch', reason: string }>
+  landing_page: OwnerReportAction[]
+  offer_and_pricing: OwnerReportAction[]
+  inventory: OwnerReportAction[]
+  scaling_plan: { method: string, steps: string[], budget_change: string, guardrails: string[] }
+  other_platforms: Array<{ platform: string, why: string, how: string }>
+  data_gaps: string[]
+  next_check: string
+  guardrail_notes?: string[]
+  product_id: string
+  product_name?: string
+  owner?: string
+  store?: string
+  date_range?: { start: string, end: string }
+  analyzed_at?: string
+  economics?: {
+    currency?: string | null, fx_note?: string,
+    daily: Array<{ date: string, spend_mad: number, link_ctr?: number | null, add_to_cart?: number | null, meta_purchases?: number | null, real_orders: number, true_cpp_mad?: number | null }>
+    totals: Record<string, number | null>
+    unit_economics: Record<string, number | string | null>
+    trend: Record<string, number | null>
+    inventory_cover: Record<string, number | null>
+  }
+  adsets_input?: Array<{ adset_id: string, name?: string, status?: string, days_active?: number | null, spend_5d_mad?: number, daily_spend_mad?: Record<string, number>, link_ctr?: number | null, add_to_cart?: number, meta_purchases?: number }>
+  landing_page_input?: { url?: string | null, lang?: string | null, title?: string | null }
+  visual_evidence?: Array<{ id: string, status: string, title?: string, url?: string, note?: string }>
+  input_data_gaps?: string[]
+  agent?: { model: string, reasoning_effort?: string }
+}
+export type OwnerAnalysisJob = {
+  status: 'pending' | 'running' | 'done' | 'cancelled' | 'error' | 'not_found'
+  owner?: string, store?: string, error?: string, job_id?: string
+  progress?: { done: number, total: number }
+  product_ids?: string[]
+  results?: Record<string, { signal: OwnerProductReport['signal'], headline: string, analyzed_at: string }>
+  failures?: Record<string, string>
+  cancel_requested?: boolean
+}
+export type OwnerAnalysisProductInput = { product_id: string, name?: string, campaign_ids: string[], store?: string, stores?: string[], meta_store?: string, ad_account?: string }
+export async function ownerAnalysisStart(payload: { store: string, owner: string, products: OwnerAnalysisProductInput[] }): Promise<{ job_id?: string, data?: OwnerAnalysisJob, error?: string }>{
+  const { data } = await axios.post(`${base}/api/ads-management/owner-analysis`, payload, { timeout: 20000 })
+  if(Array.isArray(data?.detail)) return { error: 'Some products could not be sent for analysis. Refresh and try again.' }
+  return data
+}
+export async function ownerAnalysisStatus(jobId: string, store: string): Promise<OwnerAnalysisJob>{
+  const { data } = await axios.get(`${base}/api/ads-management/owner-analysis/status/${encodeURIComponent(jobId)}`, { params: { store }, timeout: 15000 })
+  return data
+}
+export async function ownerAnalysisLatest(owner: string, store: string): Promise<OwnerAnalysisJob | null>{
+  const { data } = await axios.get(`${base}/api/ads-management/owner-analysis/latest`, { params: { owner, store }, timeout: 15000 })
+  return data?.data || null
+}
+export async function ownerAnalysisCancel(jobId: string, store: string){
+  const { data } = await axios.post(`${base}/api/ads-management/owner-analysis/cancel/${encodeURIComponent(jobId)}`, null, { params: { store }, timeout: 15000 })
+  return data as { data?: { cancel_requested: boolean }, error?: string }
+}
+export async function ownerAnalysisResults(items: Array<{ product_id: string, store?: string }>): Promise<Record<string, OwnerProductReport>>{
+  if(!items.length) return {}
+  const { data } = await axios.post(`${base}/api/ads-management/owner-analysis/results`, { items }, { timeout: 20000 })
+  return data?.data || {}
+}
+
 // -------- Campaign Analysis Checks (implementation checkmarks) --------
 export async function campaignAnalysisChecksSave(payload: { campaign_key: string, checks: Record<string, boolean>, store?: string }){
   const body = { ...payload, store: payload.store ?? selectedStore() }

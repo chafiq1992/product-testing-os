@@ -66,7 +66,7 @@ export default function ProductInventoryPanel({ productId, data, loading, anchor
       <div><h2 className="font-bold">Product inventory · #{productId}</h2><p className="mt-1 text-slate-500">Scroll to see every size and color.</p></div>
       <button onClick={onClose} className="rounded p-1 hover:bg-slate-100" aria-label="Close inventory"><X className="h-4 w-4" /></button>
     </div>
-    {loading ? <p className="p-4 text-slate-500">Loading variants…</p> : !data ? <p className="p-4 text-slate-500">Inventory unavailable. Hover over the inventory number to retry.</p> : !data.sizes.length ? <p className="p-4 text-slate-500">No variants.</p> : <>
+    {loading ? <p className="p-4 text-slate-500">Loading variants…</p> : !data ? <p className="p-4 text-slate-500">Inventory unavailable. Click the inventory number to retry.</p> : !data.sizes.length ? <p className="p-4 text-slate-500">No variants.</p> : <>
       {alerts > 0 && <p className="shrink-0 bg-rose-50 px-4 py-2 font-semibold text-rose-700">{alerts} variants need attention (0 or negative)</p>}
       <div className="min-h-0 overflow-auto overscroll-contain" tabIndex={0} aria-label="Sizes and colors inventory table">
         <table className="w-full border-separate border-spacing-0">
