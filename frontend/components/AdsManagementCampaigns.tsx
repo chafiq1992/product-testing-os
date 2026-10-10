@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'rea
 import Link from 'next/link'
 import ProductAdAnalysis from '@/components/ProductAdAnalysis'
 import axios from 'axios'
-import { fetchCampaignCollectionOrders, type CollectionCampaignOrders, purchaseOrdersRecent, type PurchaseOrder, type PurchaseOrdersData, ownerAnalysisStart, ownerAnalysisStatus, ownerAnalysisLatest, ownerAnalysisCancel, ownerAnalysisResults, type OwnerAnalysisJob, type OwnerProductReport } from '@/lib/api'
+import { fetchCampaignCollectionOrders, type CollectionCampaignOrders, purchaseOrdersRecent, type PurchaseOrder, type PurchaseOrdersData, ownerAnalysisStart, ownerAnalysisStatus, ownerAnalysisLatest, ownerAnalysisCancel, ownerAnalysisResults, type OwnerAnalysisJob, type OwnerProductReport, productOwnersResolve, productOwnerSave, type ProductOwnerInfo } from '@/lib/api'
 import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers, Brain } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
@@ -557,6 +557,10 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   const [ownerFilter, setOwnerFilter] = useState<CampaignOwnerFilter>('')
   const [statusFilter, setStatusFilter] = useState<CampaignStatusFilter>('all')
   const [ownerSaveError, setOwnerSaveError] = useState<string>('')
+  // Resolved product owners: Shopify vendor code (NR/CHF/AD-IL) first, then the saved choice.
+  const [productOwners, setProductOwners] = useState<Record<string, ProductOwnerInfo>>({})
+  const productOwnersSeq = useRef(0)
+  const ownerEditsRef = useRef<Record<string, number>>({})
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
@@ -637,7 +641,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     if(ownerFilter === 'unassigned') return base.filter(r => !ownerOfRow(r))
     if(ownerFilter) return base.filter(r => ownerOfRow(r) === ownerFilter)
     return base
-  }, [items, campaignMeta, ownerFilter, statusFilter, searchActive, searchFocusId, searchFocusProductId, manualIds, activeProductIds])
+  }, [items, campaignMeta, productOwners, ownerFilter, statusFilter, searchActive, searchFocusId, searchFocusProductId, manualIds, activeProductIds])
 
   // Counted per product (ungrouped campaigns count on their own), matching the table rows.
   const statusStats = useMemo(()=> {
@@ -727,7 +731,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
       stats[owner].trueCpp = stats[owner].orders > 0 ? stats[owner].spend / stats[owner].orders : null
     }
     return stats
-  }, [items, campaignMeta, shopifyCounts, manualCounts, manualIds])
+  }, [items, campaignMeta, productOwners, shopifyCounts, manualCounts, manualIds])
 
   function fmtCurrency(v:number){ try{ return v.toLocaleString(undefined, { style:'currency', currency:'USD', maximumFractionDigits:2 }) }catch{ return `$${(v||0).toFixed(2)}` } }
   function fmtInt(v:number){ try{ return Math.round(v||0).toLocaleString() }catch{ return String(Math.round(v||0)) } }
@@ -755,24 +759,42 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     return normalizeOwner((campaignMeta as any)[String(key||'')]?.owner)
   }
 
+  // Owner of a product, saved once per product (not per store). The old
+  // store-scoped campaign meta is only used until the owners have resolved.
+  function ownerOfProduct(productId: string): CampaignOwner|''{
+    const info = productOwners[productId]
+    return info ? normalizeOwner(info.owner) : ownerOfKey(productOwnerKey(productId))
+  }
+
   function ownerOfRow(row: MetaCampaignRow): CampaignOwner|''{
     const productId = getProductIdForRow(row)
-    return productId ? ownerOfKey(productOwnerKey(productId)) : ''
+    return productId ? ownerOfProduct(productId) : ''
+  }
+
+  function ownerLockedByVendor(productId: string): string | null{
+    const info = productOwners[productId]
+    return info?.source === 'vendor' ? String(info.vendor || 'vendor') : null
   }
 
   async function saveProductOwner(productId: string, owner: string){
+    if(!productId || ownerLockedByVendor(productId)) return
     const nextOwner = normalizeOwner(owner)
-    const productKey = productOwnerKey(productId)
-    if(!productId) return
-    const productStore = normalizeStoreValue(storesForProduct(productId, false)[0]) || store
+    const previous = productOwners[productId]
     setOwnerSaveError('')
-    const previous = campaignMeta[productKey]?.owner || ''
-    setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: nextOwner } }))
+    ownerEditsRef.current[productId] = Date.now()
+    setProductOwners(prev => ({ ...prev, [productId]: { vendor: prev[productId]?.vendor ?? null, owner: nextOwner, saved_owner: nextOwner, source: nextOwner ? 'saved' : null } }))
     try{
-      const result = await campaignMetaUpsert({ campaign_key: productKey, owner: nextOwner, store: productStore })
-      if((result as any)?.error) throw new Error((result as any).error)
+      const result = await productOwnerSave(productId, nextOwner)
+      if(result?.error || !result?.data) throw new Error(result?.error || 'Owner not saved')
+      const { product_id: _savedId, ...info } = result.data
+      setProductOwners(prev => ({ ...prev, [productId]: info }))
     }catch{
-      setCampaignMeta(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), owner: previous } }))
+      setProductOwners(prev => {
+        const next = { ...prev }
+        if(previous) next[productId] = previous
+        else delete next[productId]
+        return next
+      })
       setOwnerSaveError('The product owner could not be saved. Refresh and try again.')
     }
   }
@@ -1995,7 +2017,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
       if(!entry.campaign_ids.includes(cid) && entry.campaign_ids.length < 20) entry.campaign_ids.push(cid)
     }
     return Object.values(byPid)
-  }, [items, ownerFilter, campaignMeta, manualIds, selectedStores, storeOptions, embedded])
+  }, [items, ownerFilter, campaignMeta, productOwners, manualIds, selectedStores, storeOptions, embedded])
 
   const ownerJobRunning = !!ownerJob && (ownerJob.status === 'pending' || ownerJob.status === 'running')
 
@@ -2081,6 +2103,27 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   useEffect(()=>{
     if(ownerReportIdsKey) void refreshOwnerReports(ownerReportIdsKey.split(','))
   }, [ownerReportIdsKey, embedded])
+
+  // Resolve owners from the database and Shopify vendors (operator view only).
+  const ownerStoresKey = normalizeStoreList(selectedStores, storeOptions).join(',')
+  useEffect(()=>{
+    if(embedded || !ownerReportIdsKey) return
+    const seq = ++productOwnersSeq.current
+    const startedAt = Date.now()
+    productOwnersResolve(ownerReportIdsKey.split(','), ownerStoresKey ? ownerStoresKey.split(',') : [store]).then(res => {
+      if(seq !== productOwnersSeq.current || !res?.data) return
+      const resolved = res.data
+      setProductOwners(prev => {
+        const next = { ...prev }
+        for(const [pid, info] of Object.entries(resolved)){
+          // Keep a choice made while this request was in flight.
+          if((ownerEditsRef.current[pid] || 0) > startedAt) continue
+          next[pid] = info
+        }
+        return next
+      })
+    }).catch(()=>{})
+  }, [ownerReportIdsKey, ownerStoresKey, embedded])
 
   function renderOwnerSignal(pid: string | null){
     const report = pid && !embedded ? ownerReports[pid] : undefined
@@ -3747,13 +3790,15 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                         </td>
                         {!embedded && <td className="px-2 py-2">
                           {(()=>{
-                            const owner = ownerOfKey(productOwnerKey(pid))
+                            const owner = ownerOfProduct(pid)
+                            const vendorLock = ownerLockedByVendor(pid)
                             return (
                               <select
                                 value={owner}
+                                disabled={!!vendorLock}
                                 onChange={(e)=> saveProductOwner(pid, e.target.value)}
-                                className={`${UI.miniField} h-7 capitalize`}
-                                title="Owner for all campaigns in this product"
+                                className={`${UI.miniField} h-7 capitalize ${vendorLock ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`}
+                                title={vendorLock ? `Owner set by the Shopify vendor "${vendorLock}"` : 'Owner for all campaigns in this product'}
                               >
                                 <option value="">No owner</option>
                                 {CAMPAIGN_OWNERS.map(o => <option key={o} value={o}>{o}</option>)}
@@ -4184,10 +4229,11 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                       {!isChild && ownerProductId ? (
                         <select
                           value={ownerOfRow(c)}
+                          disabled={!!ownerLockedByVendor(ownerProductId)}
                           onChange={(event)=> saveProductOwner(ownerProductId, event.target.value)}
-                          className={`${UI.miniField} h-7 capitalize`}
+                          className={`${UI.miniField} h-7 capitalize ${ownerLockedByVendor(ownerProductId) ? 'cursor-not-allowed bg-slate-50 text-slate-500' : ''}`}
                           aria-label={`Owner for product ${ownerProductId}`}
-                          title="Owner for this product and all its campaigns"
+                          title={ownerLockedByVendor(ownerProductId) ? `Owner set by the Shopify vendor "${ownerLockedByVendor(ownerProductId)}"` : 'Owner for this product and all its campaigns'}
                         >
                           <option value="">No owner</option>
                           {CAMPAIGN_OWNERS.map(owner => <option key={owner} value={owner}>{owner}</option>)}

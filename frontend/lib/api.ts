@@ -1345,6 +1345,17 @@ export async function adsAgentReports(campaignKey: string, store?: string): Prom
 }
 export function analysisEvidenceUrl(path: string) { return path.startsWith('/uploads/ads-evidence-') ? `${base}${path}` : '' }
 
+// -------- Product owners (saved per product; Shopify vendor NR/CHF/AD-IL wins) --------
+export type ProductOwnerInfo = { owner: string, source: 'vendor' | 'saved' | null, vendor?: string | null, saved_owner?: string }
+export async function productOwnersResolve(productIds: string[], stores: string[]): Promise<{ data?: Record<string, ProductOwnerInfo>, errors?: string[], error?: string }>{
+  const { data } = await axios.post(`${base}/api/product-owners/resolve`, { product_ids: productIds, stores }, { timeout: 60000 })
+  return data
+}
+export async function productOwnerSave(productId: string, owner: string): Promise<{ data?: ProductOwnerInfo & { product_id: string }, error?: string }>{
+  const { data } = await axios.post(`${base}/api/product-owners`, { product_id: productId, owner }, { timeout: 20000 })
+  return data
+}
+
 // -------- Purchase orders (Shopify inventory transfers / Inventory Helper) --------
 export type PurchaseOrderProduct = {
   product_id: string | null, title: string, image?: string | null, quantity: number,
