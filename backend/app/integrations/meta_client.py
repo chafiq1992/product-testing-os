@@ -1,4 +1,11 @@
 import os, json, time, requests
+import hashlib
+import math
+from collections import OrderedDict
+from concurrent.futures import Future
+from copy import deepcopy
+from email.utils import parsedate_to_datetime
+from threading import RLock
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta
@@ -104,6 +111,107 @@ class MetaAPIError(RuntimeError):
         self.retryable = retryable
 
 
+class MetaRateLimitError(MetaAPIError):
+    def __init__(self, retry_after: int):
+        self.retry_after = max(1, int(retry_after))
+        super().__init__(
+            f"Meta has temporarily limited requests for this connection. Wait {self.retry_after} seconds before retrying.",
+            retryable=False,
+        )
+
+
+_DETAIL_LOCK = RLock()
+_DETAIL_CACHE: OrderedDict = OrderedDict()
+_DETAIL_INFLIGHT: dict = {}
+_META_COOLDOWNS: OrderedDict = OrderedDict()
+_DETAIL_CACHE_TTL = 300
+_DETAIL_CACHE_LIMIT = 512
+_DETAIL_INFLIGHT_LIMIT = 128
+
+
+def _connection_key() -> tuple:
+    # Never retain credentials in cache keys. Workspaces remain distinct even
+    # when an operator deliberately uses the same token for two connections.
+    return (current_workspace(), BASE, hashlib.sha256(_active_token().encode()).hexdigest())
+
+
+def meta_cache_identity() -> str:
+    """Opaque cache namespace shared by HTTP endpoint and integration caches."""
+    return hashlib.sha256(json.dumps(_connection_key(), separators=(",", ":")).encode()).hexdigest()
+
+
+def _check_meta_cooldown(key: tuple):
+    with _DETAIL_LOCK:
+        until = _META_COOLDOWNS.get(key, 0)
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            raise MetaRateLimitError(math.ceil(remaining))
+        _META_COOLDOWNS.pop(key, None)
+
+
+def _start_meta_cooldown(key: tuple, retry_after: int):
+    with _DETAIL_LOCK:
+        _META_COOLDOWNS[key] = max(_META_COOLDOWNS.get(key, 0), time.monotonic() + retry_after)
+        _META_COOLDOWNS.move_to_end(key)
+        while len(_META_COOLDOWNS) > _DETAIL_CACHE_LIMIT:
+            _META_COOLDOWNS.popitem(last=False)
+
+
+def invalidate_campaign_detail_cache(campaign_id: str | None = None):
+    """Invalidate this connection's metadata after a confirmed status write."""
+    scope = _connection_key()
+    cid = str(campaign_id) if campaign_id is not None else None
+    with _DETAIL_LOCK:
+        for key in list(_DETAIL_CACHE):
+            if key[:3] == scope and (cid is None or key[-1] == cid):
+                del _DETAIL_CACHE[key]
+        for key, flight in _DETAIL_INFLIGHT.items():
+            if key[:3] == scope and (cid is None or key[-1] == cid):
+                # A read started before the status change cannot repopulate
+                # the cache with the previous status after invalidation.
+                flight["invalidated"] = True
+
+
+def _cached_campaign_detail(kind: str, campaign_id: str, loader):
+    key = (*_connection_key(), kind, str(campaign_id))
+    now = time.monotonic()
+    with _DETAIL_LOCK:
+        cached = _DETAIL_CACHE.get(key)
+        if cached is not None and cached[0] > now:
+            _DETAIL_CACHE.move_to_end(key)
+            return deepcopy(cached[1])
+        _DETAIL_CACHE.pop(key, None)
+        flight = _DETAIL_INFLIGHT.get(key)
+        owner = flight is None
+        if owner:
+            # Bound outstanding state even when many different rows are open.
+            if len(_DETAIL_INFLIGHT) >= _DETAIL_INFLIGHT_LIMIT:
+                flight = None
+            else:
+                flight = {"future": Future(), "invalidated": False}
+                _DETAIL_INFLIGHT[key] = flight
+    if flight is None:
+        return loader()
+    if not owner:
+        return deepcopy(flight["future"].result(timeout=60))
+    try:
+        value = loader()
+        with _DETAIL_LOCK:
+            if not flight["invalidated"]:
+                _DETAIL_CACHE[key] = (time.monotonic() + _DETAIL_CACHE_TTL, deepcopy(value))
+                _DETAIL_CACHE.move_to_end(key)
+                while len(_DETAIL_CACHE) > _DETAIL_CACHE_LIMIT:
+                    _DETAIL_CACHE.popitem(last=False)
+            flight["future"].set_result(value)
+        return deepcopy(value)
+    except BaseException as exc:
+        flight["future"].set_exception(exc)
+        raise
+    finally:
+        with _DETAIL_LOCK:
+            _DETAIL_INFLIGHT.pop(key, None)
+
+
 def _retryable_status_error(exc: BaseException) -> bool:
     return isinstance(exc, (requests.ConnectionError, requests.Timeout)) or (
         isinstance(exc, MetaAPIError) and exc.retryable
@@ -113,7 +221,26 @@ def _retryable_status_error(exc: BaseException) -> bool:
 def _format_meta_error(r: requests.Response, url: str, verb: str) -> RuntimeError:
     """Create a user-friendly error while avoiding leaking sensitive data."""
     safe_url = _redact_url(url)
-    retryable = r.status_code == 429 or r.status_code >= 500
+    retryable = r.status_code >= 500
+    try:
+        payload = r.json()
+        err = (payload.get("error") or {}) if isinstance(payload, dict) else {}
+        if not isinstance(err, dict):
+            err = {}
+    except Exception:
+        err = {}
+    if r.status_code == 429 or err.get("code") in (4, 17, 32, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006) or err.get("error_subcode") == 2446079:
+        retry_after = 60
+        try:
+            header = (getattr(r, "headers", {}) or {}).get("Retry-After")
+            if header:
+                try:
+                    retry_after = max(60, int(float(header)))
+                except (ValueError, TypeError):
+                    retry_after = max(60, int(parsedate_to_datetime(header).timestamp() - time.time()))
+        except Exception:
+            pass
+        return MetaRateLimitError(retry_after)
     # Default fallback body
     body_text = None
     try:
@@ -163,9 +290,14 @@ def _post(path: str, payload: dict, files=None):
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        raise _format_meta_error(r, url, "POST") from e
+        error = _format_meta_error(r, url, "POST")
+        if isinstance(error, MetaRateLimitError):
+            _start_meta_cooldown(_connection_key(), error.retry_after)
+        raise error from e
 
 def _get(path: str, params: dict | None = None):
+    key = _connection_key()
+    _check_meta_cooldown(key)
     params = {**(params or {}), "access_token": _active_token()}
     url = f"{BASE}/{path}"
     try:
@@ -173,7 +305,10 @@ def _get(path: str, params: dict | None = None):
         r.raise_for_status()
         return r.json()
     except requests.HTTPError as e:
-        raise _format_meta_error(r, url, "GET") from e
+        error = _format_meta_error(r, url, "GET")
+        if isinstance(error, MetaRateLimitError):
+            _start_meta_cooldown(key, error.retry_after)
+        raise error from e
 
 
 def list_saved_audiences() -> list[dict]:
@@ -240,10 +375,11 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
             page_params["after"] = after
         res = _get(path, page_params)
         if not isinstance(res, dict):
-            break
+            raise MetaAPIError(f"Meta returned an invalid page for {path}")
         data = res.get("data")
-        if isinstance(data, list):
-            rows.extend(row for row in data if isinstance(row, dict))
+        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            raise MetaAPIError(f"Meta returned an invalid page for {path}")
+        rows.extend(data)
 
         paging = res.get("paging") if isinstance(res.get("paging"), dict) else {}
         next_url = str((paging or {}).get("next") or "")
@@ -257,7 +393,7 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
             except Exception:
                 next_after = ""
         if not next_after or next_after in seen_cursors:
-            break
+            raise MetaAPIError(f"Meta returned incomplete pagination for {path}")
         seen_cursors.add(next_after)
         after = next_after
     else:
@@ -266,7 +402,7 @@ def _list_graph_edge_all(path: str, params: dict | None = None, *, max_pages: in
     return rows
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def get_ad_account_info(ad_account_id: str | None = None) -> dict:
     """Fetch ad account basic info: id and name."""
     acct = str(ad_account_id or _default_account())
@@ -291,7 +427,7 @@ def get_ad_account_timezone(ad_account_id: str) -> dict:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def list_ad_accounts(access_token: str | None = None) -> list[dict]:
     """List all ad accounts visible directly or through the token's businesses."""
     if not (access_token or _active_token()):
@@ -382,6 +518,7 @@ def set_campaign_status(campaign_id: str, status: str) -> dict:
     res = _post(f"{campaign_id}", {"status": status})
     if not isinstance(res, dict) or res.get("success") is not True:
         raise RuntimeError("Meta did not confirm the status update. Refresh the campaign before retrying.")
+    invalidate_campaign_detail_cache(str(campaign_id))
     return res
 
 
@@ -389,48 +526,43 @@ def list_campaign_adsets(campaign_id: str) -> list[dict]:
     """Read every ad set without loading spend insights needed only by the UI."""
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
-    rows = _list_graph_edge_all(f"{campaign_id}/adsets", {
-        "fields": "id,name,effective_status,configured_status", "limit": 100,
-    })
-    return [{
-        "adset_id": str(row["id"]), "name": row.get("name"),
-        "status": str(row.get("effective_status") or row.get("configured_status") or "").upper(),
-    } for row in rows if row.get("id")]
+    def load():
+        rows = _list_graph_edge_all(f"{campaign_id}/adsets", {
+            "fields": "id,name,effective_status,configured_status", "limit": 100,
+        })
+        if any(not row.get("id") for row in rows):
+            raise MetaAPIError("Meta returned ad sets without their IDs.")
+        return [{
+            "adset_id": str(row["id"]), "name": row.get("name"),
+            "status": str(row.get("effective_status") or row.get("configured_status") or "").upper(),
+        } for row in rows if row.get("id")]
+    return _cached_campaign_detail("adsets", campaign_id, load)
 
 
 def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", since: str | None = None, until: str | None = None) -> list[dict]:
     """Return ad sets for a campaign with insights and current status.
 
-    Implementation note:
-    - We first list ad sets under the campaign to get IDs and statuses.
-    - Then we fetch insights per ad set ("{adset_id}/insights") using date_preset or time_range.
-      This avoids flaky behavior of calling "{campaign_id}/insights" with level=adset.
-    If "since" and "until" (YYYY-MM-DD) are provided, we use a custom time_range instead of date_preset.
+    One paginated campaign-level insight read replaces one request per ad set.
+    Metadata keeps zero-spend ad sets visible when Meta omits their insights.
+    Any failed page raises rather than returning incomplete or zeroed metrics.
     """
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
     adsets = list_campaign_adsets(campaign_id)
-
+    if not adsets:
+        return []
+    params = {"level": "adset", "fields": "adset_id,spend,actions,ctr,cpp", "limit": 250}
+    if since and until:
+        params["time_range"] = json.dumps({"since": since, "until": until})
+    else:
+        params["date_preset"] = date_preset or "last_7d"
+    insight_rows = _list_graph_edge_all(f"{campaign_id}/insights", params)
+    if any(not row.get("adset_id") for row in insight_rows):
+        raise MetaAPIError("Meta returned ad-set insights without their IDs.")
+    by_id = {str(row.get("adset_id")): row for row in insight_rows if row.get("adset_id")}
     def _with_insights(meta: dict) -> dict:
         aid = meta["adset_id"]
-        iparams: dict = {
-            "level": "adset",
-            "fields": "spend,actions,ctr,cpp",
-            "limit": 250,
-        }
-        if since and until:
-            iparams["time_range"] = json.dumps({"since": since, "until": until})
-        else:
-            iparams["date_preset"] = date_preset or "last_7d"
-        insight_error = None
-        try:
-            ires = _get(f"{aid}/insights", iparams)
-            irows = (ires or {}).get("data") or []
-            # Aggregate first row (Meta returns single row for range)
-            r = irows[0] if irows else {}
-        except Exception as exc:
-            insight_error = str(exc)
-            r = {}
+        r = by_id.get(aid, {})
         name = meta.get("name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
         ctr = _parse_float((r or {}).get("ctr"))
@@ -458,13 +590,26 @@ def list_adsets_with_insights(campaign_id: str, date_preset: str = "last_7d", si
             "ctr": round(ctr, 3) if ctr is not None else None,
             "add_to_cart": int(add_to_cart) if add_to_cart is not None else 0,
             "status": meta["status"],
-            **({"insights_error": insight_error} if insight_error else {}),
         }
+    return [_with_insights(row) for row in adsets]
 
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(adsets)))) as executor:
-        futures = [executor.submit(copy_context().run, _with_insights, row) for row in adsets]
-        return [future.result() for future in futures]
+
+def list_campaign_ads_by_adset(campaign_id: str) -> dict[str, list[str]]:
+    """Read every ad ID once per campaign for UTM attribution."""
+    if not _active_token():
+        raise RuntimeError("META_ACCESS_TOKEN is not set.")
+    def load():
+        rows = _list_graph_edge_all(f"{campaign_id}/ads", {"fields": "id,adset_id", "limit": 250})
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            aid = str(row.get("adset_id") or "")
+            ad_id = str(row.get("id") or "")
+            if not aid or not ad_id:
+                raise MetaAPIError("Meta returned ads without their ad or ad-set IDs.")
+            if ad_id not in result.setdefault(aid, []):
+                result[aid].append(ad_id)
+        return result
+    return _cached_campaign_detail("ads", campaign_id, load)
 
 
 def list_ads_for_adsets(adset_ids: list[str]) -> dict[str, list[str]]:
@@ -569,7 +714,7 @@ def meta_tracking_signature_matches(order_params: dict, signature: dict) -> bool
     return all(normalized_order.get(key) == value for key, value in normalized_signature.items())
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def list_ads_with_tracking_for_adsets(
     adset_ids: list[str],
     *,
@@ -628,10 +773,13 @@ def set_adset_status(adset_id: str, status: str) -> dict:
     res = _post(f"{adset_id}", {"status": status})
     if not isinstance(res, dict) or res.get("success") is not True:
         raise RuntimeError("Meta did not confirm the status update. Refresh the campaign before retrying.")
+    # This write has no campaign ID; invalidate the connection's bounded
+    # detail cache so both configured and effective statuses are refreshed.
+    invalidate_campaign_detail_cache()
     return res
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def campaign_daily_insights(campaign_id: str, days: int = 6, tz: str | None = None) -> list[dict]:
     """Return daily insights for a campaign over the last N days (inclusive of today) in the provided timezone."""
     if not _active_token():
@@ -689,7 +837,7 @@ def campaign_daily_insights(campaign_id: str, days: int = 6, tz: str | None = No
     return out
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def get_campaign_summary(campaign_id: str, *, since: str, until: str) -> dict:
     """Fetch a single campaign's summary for a date range.
 
@@ -744,7 +892,7 @@ def get_campaign_summary(campaign_id: str, *, since: str, until: str) -> dict:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account_id: str | None = None, since: str | None = None, until: str | None = None, profit_only: bool = False) -> list[dict]:
     """Return campaigns (ACTIVE and PAUSED) with key insights for a recent window.
 
@@ -898,7 +1046,7 @@ def _upload_image(url: str):
     first = next(iter(images.values()))
     return first["hash"]
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landing_url: str) -> dict:
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
@@ -1041,7 +1189,7 @@ def create_campaign_with_ads(payload: dict, angles: list, creatives: list, landi
     return results
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def create_draft_image_campaign(ad: dict) -> dict:
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
@@ -1159,7 +1307,7 @@ def create_draft_image_campaign(ad: dict) -> dict:
     return results
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def create_draft_carousel_campaign(ad: dict) -> dict:
     if not _active_token():
         raise RuntimeError("META_ACCESS_TOKEN is not set.")
@@ -1289,7 +1437,7 @@ def create_draft_carousel_campaign(ad: dict) -> dict:
     return results
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16))
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=16), retry=retry_if_exception(_retryable_status_error), reraise=True)
 def get_campaign_ad_creatives(campaign_id: str) -> list[dict]:
     """Fetch ad creatives (headlines, primary text, description, landing URL) for all ads in a campaign.
 

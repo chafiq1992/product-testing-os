@@ -35,7 +35,7 @@ OWNERS = ("chafiq", "nour", "adil")
 # Vendor codes compared without case, spaces or punctuation ("AD-IL" == "adil").
 VENDOR_OWNERS = {"nr": "nour", "chf": "chafiq", "adil": "adil"}
 MAX_PRODUCTS = 1000
-_VENDOR_TTL_S = 600
+_VENDOR_TTL_S = 60
 _vendor_cache: dict[tuple[str, str], tuple[float, Optional[str]]] = {}
 _cache_lock = threading.Lock()
 _write_lock = threading.Lock()
@@ -109,7 +109,7 @@ def load_records(product_ids: list[str]) -> dict[str, dict]:
     return {pid: stored[owner_key(pid)] for pid in product_ids if isinstance(stored.get(owner_key(pid)), dict)}
 
 
-def product_vendors(product_ids: list[str], stores: list[Optional[str]]) -> tuple[dict[str, str], list[str]]:
+def product_vendors(product_ids: list[str], stores: list[Optional[str]], *, refresh: bool = False) -> tuple[dict[str, str], list[str]]:
     """Live Shopify vendor per product, trying each store; cached briefly."""
     from app.integrations.shopify_client import _gql_store_once
 
@@ -124,7 +124,7 @@ def product_vendors(product_ids: list[str], stores: list[Optional[str]]) -> tupl
         with _cache_lock:
             for pid in remaining:
                 hit = _vendor_cache.get((store or "", pid))
-                if hit and hit[0] > now:
+                if not refresh and hit and hit[0] > now:
                     if hit[1] is not None:
                         found[pid] = hit[1]
                 else:
@@ -149,12 +149,12 @@ def product_vendors(product_ids: list[str], stores: list[Optional[str]]) -> tupl
     return found, errors
 
 
-def resolve_owners(product_ids: list[Any], stores: list[Any]) -> dict:
+def resolve_owners(product_ids: list[Any], stores: list[Any], refresh: bool = False) -> dict:
     pids = _clean_ids(product_ids)
     store_list = list(dict.fromkeys(canonical_store(s) for s in (stores or []) if canonical_store(s))) or [None]
     records = load_records(pids)
     legacy = _legacy_owners([pid for pid in pids if "owner" not in records.get(pid, {})])
-    vendors, errors = product_vendors(pids, store_list)
+    vendors, errors = product_vendors(pids, store_list, refresh=True) if refresh else product_vendors(pids, store_list)
     out: dict[str, dict] = {}
     updates: dict[str, dict] = {}
     for pid in pids:
@@ -200,6 +200,7 @@ def save_owner(product_id: str, owner: str) -> dict:
 class ResolveRequest(BaseModel):
     product_ids: list[str] = Field(default_factory=list, max_length=MAX_PRODUCTS)
     stores: list[str] = Field(default_factory=list, max_length=10)
+    refresh: bool = False
 
 
 class SaveRequest(BaseModel):
@@ -210,7 +211,7 @@ class SaveRequest(BaseModel):
 @router.post("/resolve")
 async def api_resolve_product_owners(req: ResolveRequest):
     try:
-        result = await run_in_threadpool(resolve_owners, req.product_ids, req.stores)
+        result = await run_in_threadpool(resolve_owners, req.product_ids, req.stores, req.refresh)
         return {"data": result["owners"], "errors": result["errors"]}
     except Exception as exc:
         logger.exception("product_owners.resolve_failed")

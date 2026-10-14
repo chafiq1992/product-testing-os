@@ -89,7 +89,8 @@ def api(monkeypatch):
         {"adset_id": "222", "name": "Blue audience AdSet"},
         {"adset_id": "333", "name": "Red audience AdSet"},
     ])
-    monkeypatch.setattr(main, "list_ads_for_adsets", lambda *_: {"222": ["444"], "333": ["555"]})
+    monkeypatch.setattr(main, "list_campaign_ads_by_adset", lambda *_: {"222": ["444"], "333": ["555"]})
+    monkeypatch.setattr(main, "reporting_token", lambda store, account=None: "collection-test-token")
     return main
 
 

@@ -743,16 +743,18 @@ export type MetaAdsetRow = {
   insights_error?: string,
 }
 
-export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string, range?: { start?: string, end?: string }, store?: string){
+export type MetaDetailFailure = { error?: string, error_code?: string, retry_after?: number }
+export async function fetchCampaignAdsets(campaign_id: string, datePreset?: string, range?: { start?: string, end?: string }, store?: string, adAccount?: string){
   const parts: string[] = []
   parts.push(`store=${encodeURIComponent(store ?? selectedStore() ?? '')}`)
+  if(adAccount) parts.push(`ad_account=${encodeURIComponent(adAccount)}`)
   if(datePreset) parts.push(`date_preset=${encodeURIComponent(datePreset)}`)
   if(range?.start && range?.end){ parts.push(`start=${encodeURIComponent(range.start)}`); parts.push(`end=${encodeURIComponent(range.end)}`) }
   const qp = parts.length? `?${parts.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets${qp}`
   return __dedupe(`GET ${url}`, async ()=>{
     const {data} = await axios.get(url)
-    return data as { data: MetaAdsetRow[], error?: string }
+    return data as { data: MetaAdsetRow[] } & MetaDetailFailure
   })
 }
 
@@ -784,7 +786,7 @@ export type AttributedOrder = {
   store?: string,
 }
 
-export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[], mappingKind?: 'product'|'collection', metaStore?: string){
+export async function fetchCampaignAdsetOrders(campaign_id: string, range: { start: string, end: string }, store?: string, stores?: string[], mappingKind?: 'product'|'collection', metaStore?: string, adAccount?: string){
   const params: string[] = []
   if(range?.start) params.push(`start=${encodeURIComponent(range.start)}`)
   if(range?.end) params.push(`end=${encodeURIComponent(range.end)}`)
@@ -796,12 +798,13 @@ export async function fetchCampaignAdsetOrders(campaign_id: string, range: { sta
     if(s) params.push(`store=${encodeURIComponent(s)}`)
   }
   if(mappingKind) params.push(`mapping_kind=${encodeURIComponent(mappingKind)}`)
+  if(adAccount) params.push(`ad_account=${encodeURIComponent(adAccount)}`)
   if(metaStore ?? store) params.push(`meta_store=${encodeURIComponent(metaStore ?? store ?? '')}`)
   const qp = params.length? `?${params.join('&')}` : ''
   const url = `${base}/api/meta/campaigns/${encodeURIComponent(campaign_id)}/adsets/orders${qp}`
   return __dedupe(`GET ${url}`, async ()=>{
     const {data} = await axios.get(url)
-    return data as { data: Record<string, { count:number, orders: AttributedOrder[] }>, error?: string }
+    return data as { data: Record<string, { count:number, orders: AttributedOrder[] }> } & MetaDetailFailure
   })
 }
 
@@ -1347,8 +1350,8 @@ export function analysisEvidenceUrl(path: string) { return path.startsWith('/upl
 
 // -------- Product owners (saved per product; Shopify vendor NR/CHF/AD-IL wins) --------
 export type ProductOwnerInfo = { owner: string, source: 'vendor' | 'saved' | null, vendor?: string | null, saved_owner?: string }
-export async function productOwnersResolve(productIds: string[], stores: string[]): Promise<{ data?: Record<string, ProductOwnerInfo>, errors?: string[], error?: string }>{
-  const { data } = await axios.post(`${base}/api/product-owners/resolve`, { product_ids: productIds, stores }, { timeout: 60000 })
+export async function productOwnersResolve(productIds: string[], stores: string[], refresh = false): Promise<{ data?: Record<string, ProductOwnerInfo>, errors?: string[], error?: string }>{
+  const { data } = await axios.post(`${base}/api/product-owners/resolve`, { product_ids: productIds, stores, refresh }, { timeout: 60000 })
   return data
 }
 export async function productOwnerSave(productId: string, owner: string): Promise<{ data?: ProductOwnerInfo & { product_id: string }, error?: string }>{

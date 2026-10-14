@@ -13,16 +13,16 @@ def api(monkeypatch):
     writes = []
     monkeypatch.setattr(main.db, "get_app_setting", lambda *_: None)
     monkeypatch.setattr(main.db, "set_app_setting", lambda *args: writes.append(args))
-    monkeypatch.setattr(main, "reporting_token", lambda store: f"token-{store}")
+    monkeypatch.setattr(main, "reporting_token", lambda store, account=None: f"token-{store}")
     monkeypatch.setattr(main, "list_campaign_adsets", lambda *_: [{"adset_id": "222", "name": "Audience"}])
-    monkeypatch.setattr(main, "list_ads_for_adsets", lambda *_: {"222": ["333"]})
+    monkeypatch.setattr(main, "list_campaign_ads_by_adset", lambda *_: {"222": ["333"]})
     monkeypatch.setattr(main, "list_orders_with_utms_processed", lambda *_, **__: [{"order_id": "1", "campaign_id": "111", "ad_id": "333"}])
     yield main, writes
     main._API_CACHE.clear()
     main._API_INFLIGHT.clear()
 
 
-@pytest.mark.parametrize("provider", ["list_campaign_adsets", "list_ads_for_adsets", "list_orders_with_utms_processed"])
+@pytest.mark.parametrize("provider", ["list_campaign_adsets", "list_campaign_ads_by_adset", "list_orders_with_utms_processed"])
 def test_failed_provider_read_is_not_saved_as_empty_orders_and_can_retry(api, monkeypatch, provider):
     main, writes = api
     original = getattr(main, provider)
@@ -54,7 +54,7 @@ def test_multistore_attribution_uses_campaign_connection_instead_of_first_store(
     main, _ = api
     tokens = []
     monkeypatch.setattr(main, "list_campaign_adsets", lambda *_: tokens.append(meta_client._active_token()) or [{"adset_id": "222", "name": "Audience"}])
-    monkeypatch.setattr(main, "list_ads_for_adsets", lambda *_: tokens.append(meta_client._active_token()) or {"222": ["333"]})
+    monkeypatch.setattr(main, "list_campaign_ads_by_adset", lambda *_: tokens.append(meta_client._active_token()) or {"222": ["333"]})
     monkeypatch.setattr(main, "list_orders_with_utms_processed_multi", lambda *_, **__: [{"order_id": "1", "ad_id": "333", "store": "irranova"}])
     result = asyncio.run(main.api_campaign_adset_orders("111", "2026-10-01", "2026-10-04", stores="irrakids,irranova", meta_store="irranova"))
     assert result["data"]["222"]["count"] == 1
@@ -71,7 +71,7 @@ def test_one_failed_shopify_store_does_not_return_partial_multistore_totals(monk
         shopify_client.list_orders_with_utms_processed_multi("2026-10-01", "2026-10-04", stores=["irrakids", "irranova"])
 
 
-def test_adsets_and_ads_paginate_and_parallel_insights_keep_oauth_token(monkeypatch):
+def test_adsets_and_ads_paginate_and_campaign_insights_keep_oauth_token(monkeypatch):
     seen = []
 
     def get(path, params=None):
@@ -81,7 +81,8 @@ def test_adsets_and_ads_paginate_and_parallel_insights_keep_oauth_token(monkeypa
                 return {"data": [{"id": "222", "name": "First", "effective_status": "ACTIVE"}], "paging": {"next": "https://graph.facebook.com/next", "cursors": {"after": "more"}}}
             return {"data": [{"id": "444", "name": "Second", "effective_status": "PAUSED"}]}
         if path.endswith("/insights"):
-            return {"data": [{"spend": "12", "actions": [{"action_type": "purchase", "value": "2"}]}]}
+            assert path == "111/insights" and params["level"] == "adset"
+            return {"data": [{"adset_id": aid, "spend": "12", "actions": [{"action_type": "purchase", "value": "2"}]} for aid in ["222", "444"]]}
         if path.endswith("/ads"):
             if not (params or {}).get("after"):
                 return {"data": [{"id": "333"}], "paging": {"next": "https://graph.facebook.com/next", "cursors": {"after": "more"}}}
@@ -98,7 +99,7 @@ def test_adsets_and_ads_paginate_and_parallel_insights_keep_oauth_token(monkeypa
     assert all(token == "connected-token" for _, token in seen)
 
 
-def test_insights_failure_is_marked_and_ads_failure_is_not_empty_success(monkeypatch):
+def test_insights_and_ads_failure_are_not_empty_success(monkeypatch):
     monkeypatch.setattr(meta_client, "list_campaign_adsets", lambda *_: [{"adset_id": "222", "name": "Audience", "status": "ACTIVE"}])
 
     def fail(*_, **__):
@@ -106,6 +107,80 @@ def test_insights_failure_is_marked_and_ads_failure_is_not_empty_success(monkeyp
 
     monkeypatch.setattr(meta_client, "_get", fail)
     with meta_client.meta_access_token_scope("connected-token"):
-        assert meta_client.list_adsets_with_insights("111")[0]["insights_error"] == "provider unavailable"
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            meta_client.list_adsets_with_insights("111")
         with pytest.raises(RuntimeError, match="provider unavailable"):
             meta_client.list_ads_for_adsets(["222"])
+
+
+def test_detail_endpoint_cache_changes_with_token_and_workspace(api, monkeypatch):
+    from app.tenant_context import workspace_scope
+    main, _ = api
+    token = ["first-token"]
+    seen = []
+    monkeypatch.setattr(main, "reporting_token", lambda *args: token[0])
+    def insights(*args, **kwargs):
+        seen.append(meta_client._active_token())
+        return [{"adset_id": meta_client._active_token()}]
+    monkeypatch.setattr(main, "list_adsets_with_insights", insights)
+    async def scenario():
+        assert (await main.api_get_campaign_adsets("111", store="irrakids"))["data"][0]["adset_id"] == "first-token"
+        token[0] = "rotated-token"
+        assert (await main.api_get_campaign_adsets("111", store="irrakids"))["data"][0]["adset_id"] == "rotated-token"
+        with workspace_scope("merchant-a"):
+            await main.api_get_campaign_adsets("111", store="irrakids")
+        with workspace_scope("merchant-b"):
+            await main.api_get_campaign_adsets("111", store="irrakids")
+    asyncio.run(scenario())
+    assert seen == ["first-token", "rotated-token", "rotated-token", "rotated-token"]
+
+
+def test_attribution_checks_connection_before_persisted_cache_read(api, monkeypatch):
+    main, _ = api
+    reads = []
+    monkeypatch.setattr(main.db, "get_app_setting", lambda *args: reads.append(args) or {"ts": 9999999999, "data": {"222": {"count": 99}}})
+    def disconnected(*args):
+        raise RuntimeError("Reconnect Meta")
+    monkeypatch.setattr(main, "reporting_token", disconnected)
+    result = asyncio.run(main.api_campaign_adset_orders("111", "2026-10-01", "2026-10-04", store="irrakids"))
+    assert result == {"error": "Reconnect Meta", "data": {}} and reads == []
+
+
+def test_detail_endpoints_expose_quota_cooldown_without_caching_empty_data(api, monkeypatch):
+    main, writes = api
+    error = meta_client.MetaRateLimitError(retry_after=120)
+    def limited(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(main, "list_adsets_with_insights", limited)
+    monkeypatch.setattr(main, "list_campaign_adsets", limited)
+    async def scenario():
+        for response in [await main.api_get_campaign_adsets("111", store="irrakids"),
+                         await main.api_campaign_adset_orders("111", "2026-10-01", "2026-10-04", store="irrakids")]:
+            assert response["error_code"] == "meta_rate_limited" and response["retry_after"] == 120
+            assert not response["data"]
+    asyncio.run(scenario())
+    assert not main._API_CACHE and not writes
+
+
+def test_coalesced_cache_failure_reaches_all_callers_without_unhandled_future(api):
+    main, _ = api
+    async def scenario():
+        unexpected = []
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda loop, context: unexpected.append(context))
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def compute():
+            entered.set()
+            await release.wait()
+            raise RuntimeError("provider failed")
+        first = asyncio.create_task(main._cached("failure-check", 60, compute))
+        await entered.wait()
+        second = asyncio.create_task(main._cached("failure-check", 60, compute))
+        await asyncio.sleep(0)
+        release.set()
+        result = await asyncio.gather(first, second, return_exceptions=True)
+        assert all(isinstance(error, RuntimeError) for error in result)
+        assert "failure-check" not in main._API_CACHE
+        assert not main._API_INFLIGHT and not unexpected
+    asyncio.run(scenario())

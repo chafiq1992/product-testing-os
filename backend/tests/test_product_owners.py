@@ -73,3 +73,40 @@ def test_vendor_lookup_tries_each_store_and_caches(monkeypatch):
     assert found == {"1": "NR", "2": "irrakids"} and not errors
     po.product_vendors(["1", "2"], ["irranova", "irrakids"])
     assert calls == ["irranova", "irrakids"]
+
+
+def test_shopify_vendor_change_updates_owner_on_refresh_and_after_cache_expiry(monkeypatch):
+    from app.integrations import shopify_client
+    now = [1000.0]
+    vendor = ["NR"]
+    calls = []
+    monkeypatch.setattr(po.time, "time", lambda: now[0])
+    def gql(store, query, variables, timeout=30):
+        calls.append(vendor[0])
+        return {"nodes": [{"id": "gid://shopify/Product/777", "vendor": vendor[0]}]}
+    monkeypatch.setattr(shopify_client, "_gql_store_once", gql)
+    po.save_owner("777", "adil")
+    assert po.resolve_owners(["777"], ["irranova"])["owners"]["777"]["owner"] == "nour"
+    vendor[0] = "CHF"
+    assert po.resolve_owners(["777"], ["irranova"])["owners"]["777"]["owner"] == "nour"
+    refreshed = po.resolve_owners(["777"], ["irranova"], refresh=True)["owners"]["777"]
+    assert refreshed == {"owner": "chafiq", "source": "vendor", "vendor": "CHF", "saved_owner": "adil"}
+    assert po.load_records(["777"])["777"]["vendor_owner"] == "chafiq"
+    vendor[0] = "irrakids"
+    now[0] += 61
+    removed = po.resolve_owners(["777"], ["irranova"])["owners"]["777"]
+    assert removed["owner"] == "adil" and removed["source"] == "saved" and removed["vendor"] == "irrakids"
+    assert calls == ["NR", "CHF", "irrakids"]
+
+
+def test_failed_forced_vendor_refresh_preserves_last_owner_and_can_retry(monkeypatch):
+    from app.integrations import shopify_client
+    monkeypatch.setattr(shopify_client, "_gql_store_once", lambda *_, **__: {"nodes": [{"id": "gid://shopify/Product/888", "vendor": "NR"}]})
+    assert po.resolve_owners(["888"], ["irranova"])["owners"]["888"]["owner"] == "nour"
+    def fail(*_, **__):
+        raise RuntimeError("Shopify unavailable")
+    monkeypatch.setattr(shopify_client, "_gql_store_once", fail)
+    failed = po.resolve_owners(["888"], ["irranova"], refresh=True)
+    assert failed["errors"] and failed["owners"]["888"]["owner"] == "nour"
+    monkeypatch.setattr(shopify_client, "_gql_store_once", lambda *_, **__: {"nodes": [{"id": "gid://shopify/Product/888", "vendor": "AD-IL"}]})
+    assert po.resolve_owners(["888"], ["irranova"], refresh=True)["owners"]["888"]["owner"] == "adil"

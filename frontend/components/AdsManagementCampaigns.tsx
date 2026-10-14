@@ -497,6 +497,18 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   const [adsetsError, setAdsetsError] = useState<Record<string, string>>({})
   const [adsetOrdersError, setAdsetOrdersError] = useState<Record<string, string>>({})
   const detailRequests = useRef(new Map<string, Promise<void>>())
+  const [detailCooldowns, setDetailCooldowns] = useState<Record<string, number>>({})
+  const detailCooldownsRef = useRef<Record<string, number>>({})
+  useEffect(() => {
+    const deadlines = Object.values(detailCooldowns).filter(until => until > Date.now())
+    if(!deadlines.length) return
+    const timer = window.setTimeout(() => {
+      const next = Object.fromEntries(Object.entries(detailCooldownsRef.current).filter(([,until]) => until > Date.now()))
+      detailCooldownsRef.current = next
+      setDetailCooldowns(next)
+    }, Math.min(...deadlines) - Date.now() + 50)
+    return () => window.clearTimeout(timer)
+  }, [detailCooldowns])
   const [adsetOrdersExpanded, setAdsetOrdersExpanded] = useState<Record<string, boolean>>({})
   const [togglingCampaign, setTogglingCampaign] = useState<Record<string, boolean>>({})
   const [togglingAdset, setTogglingAdset] = useState<Record<string, boolean>>({})
@@ -561,6 +573,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   const [productOwners, setProductOwners] = useState<Record<string, ProductOwnerInfo>>({})
   const productOwnersSeq = useRef(0)
   const ownerEditsRef = useRef<Record<string, number>>({})
+  const ownerWritesRef = useRef<Record<string, number>>({})
   const [timelineOpen, setTimelineOpen] = useState<{ open:boolean, campaign?: { id:string, name?:string } }>(()=>({ open:false }))
   const [timelineAdding, setTimelineAdding] = useState<boolean>(false)
   const [timelineMetaLoading, setTimelineMetaLoading] = useState<boolean>(false)
@@ -781,7 +794,8 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     const nextOwner = normalizeOwner(owner)
     const previous = productOwners[productId]
     setOwnerSaveError('')
-    ownerEditsRef.current[productId] = Date.now()
+    ownerEditsRef.current[productId] = (ownerEditsRef.current[productId] || 0) + 1
+    ownerWritesRef.current[productId] = (ownerWritesRef.current[productId] || 0) + 1
     setProductOwners(prev => ({ ...prev, [productId]: { vendor: prev[productId]?.vendor ?? null, owner: nextOwner, saved_owner: nextOwner, source: nextOwner ? 'saved' : null } }))
     try{
       const result = await productOwnerSave(productId, nextOwner)
@@ -796,6 +810,10 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
         return next
       })
       setOwnerSaveError('The product owner could not be saved. Refresh and try again.')
+    }finally{
+      ownerWritesRef.current[productId] -= 1
+      // A resolver that began during the save may have read the previous owner.
+      ownerEditsRef.current[productId] = (ownerEditsRef.current[productId] || 0) + 1
     }
   }
 
@@ -1842,10 +1860,18 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     const epoch = loadSeqToken.current
     const mapping = manualIds[rowKey]
     const metaStore = (row as any)._store || mapping?.store || store
+    const adAccount = String((row as any)._adAccount || '')
+    const cooldownKey = `${metaStore}:${adAccount}`
+    if((detailCooldownsRef.current[cooldownKey] || 0) > Date.now()){
+      const message = 'Meta has temporarily limited requests. Wait until the retry time below.'
+      setAdsetsError(prev => ({ ...prev, [cid]: message }))
+      setAdsetOrdersError(prev => ({ ...prev, [cid]: message }))
+      return
+    }
     const orderStore = mapping?.store || metaStore
     const range = datePreset === 'custom' && customStart && customEnd ? { start: customStart, end: customEnd } : computeRange(datePreset)
     const metaRange = metaRangeParams(datePreset)
-    async function run<T>(kind: string, request: () => Promise<{ data?: T, error?: string }>, save: (data: T) => void,
+    async function run<T>(kind: string, request: () => Promise<{ data?: T, error?: string, error_code?: string, retry_after?: number }>, save: (data: T) => void,
       setBusy: React.Dispatch<React.SetStateAction<Record<string, boolean>>>, setError: React.Dispatch<React.SetStateAction<Record<string, string>>>){
       const key = `${epoch}:${cid}:${kind}`
       const existing = detailRequests.current.get(key)
@@ -1855,20 +1881,16 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
         setBusy(prev => ({ ...prev, [cid]: true }))
         setError(prev => ({ ...prev, [cid]: '' }))
         try{
-          let data: T | undefined
-          for(let attempt = 0; attempt < 2; attempt++){
-            try{
-              const response = await request()
-              if(response.error) throw new Error(response.error)
-              if(response.data == null) throw new Error('The server returned no data. Please retry.')
-              data = response.data
-              break
-            }catch(error){
-              if(attempt === 1 || !current()) throw error
-              await new Promise(resolve => setTimeout(resolve, 600))
-            }
+          const response = await request()
+          if(response.error_code === 'meta_rate_limited'){
+            const seconds = Math.max(60, Math.min(3600, Number(response.retry_after) || 60))
+            const until = Math.max(detailCooldownsRef.current[cooldownKey] || 0, Date.now() + seconds * 1000)
+            detailCooldownsRef.current = { ...detailCooldownsRef.current, [cooldownKey]: until }
+            setDetailCooldowns(detailCooldownsRef.current)
           }
-          if(current() && data !== undefined) save(data)
+          if(response.error) throw new Error(response.error)
+          if(response.data == null) throw new Error('The server returned no data. Please retry.')
+          if(current()) save(response.data)
         }catch(error: any){
           if(current()) setError(prev => ({ ...prev, [cid]: String(error?.message || error) }))
         }finally{
@@ -1881,13 +1903,13 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
     }
     await Promise.all([
       force || !adsetsByCampaign[cid] || adsetsError[cid] ? run('adsets',
-        () => fetchCampaignAdsets(cid, metaRange.datePreset, metaRange.range, metaStore),
+        () => fetchCampaignAdsets(cid, metaRange.datePreset, metaRange.range, metaStore, adAccount),
         data => {
           setAdsetsByCampaign(prev => ({ ...prev, [cid]: data }))
           if(data.some(row => row.insights_error)) setAdsetsError(prev => ({ ...prev, [cid]: 'Some Meta spend insights could not be loaded.' }))
         }, setAdsetsLoading, setAdsetsError) : Promise.resolve(),
       force || !adsetOrdersByCampaign[cid] || adsetOrdersError[cid] ? run('orders',
-        () => fetchCampaignAdsetOrders(cid, range, orderStore, mapping?.kind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mapping?.kind, metaStore),
+        () => fetchCampaignAdsetOrders(cid, range, orderStore, mapping?.kind !== 'collection' && selectedStores.length > 1 ? selectedStores : undefined, mapping?.kind, metaStore, adAccount),
         data => setAdsetOrdersByCampaign(prev => ({ ...prev, [cid]: data })), setAdsetOrdersLoading, setAdsetOrdersError) : Promise.resolve(),
     ])
   }
@@ -2107,23 +2129,41 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
   // Resolve owners from the database and Shopify vendors (operator view only).
   const ownerStoresKey = normalizeStoreList(selectedStores, storeOptions).join(',')
   useEffect(()=>{
-    if(embedded || !ownerReportIdsKey) return
-    const seq = ++productOwnersSeq.current
-    const startedAt = Date.now()
-    productOwnersResolve(ownerReportIdsKey.split(','), ownerStoresKey ? ownerStoresKey.split(',') : [store]).then(res => {
-      if(seq !== productOwnersSeq.current || !res?.data) return
-      const resolved = res.data
-      setProductOwners(prev => {
-        const next = { ...prev }
-        for(const [pid, info] of Object.entries(resolved)){
-          // Keep a choice made while this request was in flight.
-          if((ownerEditsRef.current[pid] || 0) > startedAt) continue
-          next[pid] = info
-        }
-        return next
-      })
-    }).catch(()=>{})
-  }, [ownerReportIdsKey, ownerStoresKey, embedded])
+    if(embedded || !ownerReportIdsKey || loading) return
+    let cancelled = false
+    let pending = false
+    async function syncOwners(refresh = false){
+      if(pending || document.visibilityState === 'hidden') return
+      pending = true
+      const seq = ++productOwnersSeq.current
+      const editVersions = { ...ownerEditsRef.current }
+      try{
+        const res = await productOwnersResolve(ownerReportIdsKey.split(','), ownerStoresKey ? ownerStoresKey.split(',') : [store], refresh)
+        if(cancelled || seq !== productOwnersSeq.current || !res?.data) return
+        setProductOwners(prev => {
+          const next = { ...prev }
+          for(const [pid, info] of Object.entries(res.data || {})){
+            // Keep a choice made while this request was in flight.
+            if(ownerWritesRef.current[pid] || (ownerEditsRef.current[pid] || 0) !== (editVersions[pid] || 0)) continue
+            next[pid] = info
+          }
+          return next
+        })
+      }catch{}finally{ pending = false }
+    }
+    // Refresh the vendor even when the same products survive a dashboard reload.
+    void syncOwners(true)
+    const timer = window.setInterval(() => void syncOwners(), 60000)
+    const resume = () => { if(document.visibilityState === 'visible') void syncOwners(true) }
+    window.addEventListener('focus', resume)
+    document.addEventListener('visibilitychange', resume)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', resume)
+      document.removeEventListener('visibilitychange', resume)
+    }
+  }, [ownerReportIdsKey, ownerStoresKey, embedded, loading, store])
 
   function renderOwnerSignal(pid: string | null){
     const report = pid && !embedded ? ownerReports[pid] : undefined
@@ -4417,6 +4457,8 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                     const cid = String(c.campaign_id||'')
                     const showAdsets = !!adsetsExpanded[cid]
                     const loadingAdsets = !!adsetsLoading[cid]
+                    const retryAt = detailCooldowns[`${(c as any)._store || conf?.store || store}:${String((c as any)._adAccount || '')}`] || 0
+                    const coolingDown = retryAt > Date.now()
                     if(showAdsets){
                       const adsets = adsetsByCampaign[cid]||[]
                       return (
@@ -4424,7 +4466,7 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                           <td className="px-2 py-2 bg-slate-50" colSpan={colSpan}>
                             <div className="mb-2 flex items-center justify-between gap-3 text-xs">
                               <span className="font-semibold text-slate-700">Ad sets and UTM orders</span>
-                              <button disabled={loadingAdsets || !!adsetOrdersLoading[cid]} onClick={() => void loadCampaignDetails(c, String(rk), true)} className="rounded border bg-white px-2 py-1 font-semibold text-blue-700 disabled:opacity-50">{adsetsError[cid] || adsetOrdersError[cid] ? 'Retry' : 'Refresh details'}</button>
+                              <button disabled={coolingDown || loadingAdsets || !!adsetOrdersLoading[cid]} onClick={() => void loadCampaignDetails(c, String(rk), true)} className="rounded border bg-white px-2 py-1 font-semibold text-blue-700 disabled:opacity-50">{coolingDown ? `Retry after ${new Date(retryAt).toLocaleTimeString()}` : adsetsError[cid] || adsetOrdersError[cid] ? 'Retry' : 'Refresh details'}</button>
                             </div>
                             {adsetsError[cid] && <p role="alert" className="mb-2 text-xs text-amber-700">Could not load all ad-set data. {adsetsError[cid]}</p>}
                             {adsetOrdersError[cid] && <p role="alert" className="mb-2 text-xs text-amber-700">Could not load UTM orders. {adsetOrdersError[cid]}</p>}

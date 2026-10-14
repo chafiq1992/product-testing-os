@@ -58,7 +58,7 @@ def test_status_retries_transient_failure_then_exposes_original_error(monkeypatc
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("status,transient,expected", [(400, False, False), (400, True, True), (429, False, True), (503, False, True)])
+@pytest.mark.parametrize("status,transient,expected", [(400, False, False), (400, True, True), (503, False, True)])
 def test_meta_error_classification_preserves_message_and_redacts_url(status, transient, expected):
     response = requests.Response()
     response.status_code = status

@@ -52,6 +52,7 @@ from app.meta_connection import router as _meta_connection_router, reporting_tok
 from app.tenant_context import current_workspace
 from app.integrations.meta_client import list_ads_for_adsets, list_ads_with_tracking_for_adsets, meta_tracking_signature_matches
 from app.integrations.meta_client import list_campaign_adsets
+from app.integrations.meta_client import list_campaign_ads_by_adset, meta_cache_identity, MetaRateLimitError
 from app.integrations.meta_client import create_draft_image_campaign
 from app.integrations.meta_client import create_draft_carousel_campaign
 from app.integrations.meta_client import get_campaign_ad_creatives
@@ -332,6 +333,9 @@ async def _cached(key: str, ttl_s: int, compute):
     except BaseException as e:
         try:
             fut.set_exception(e)
+            # The owner raises directly; consume its copy when no waiter exists.
+            # Awaiting the future still raises the same exception for coalesced callers.
+            fut.exception()
         except Exception:
             pass
         raise
@@ -6024,6 +6028,13 @@ def _run_with_meta_connection(token, operation, *args, **kwargs):
         return operation(*args, **kwargs)
 
 
+def _meta_detail_error(exc: Exception, empty: object) -> dict:
+    result = {"error": str(exc), "data": empty}
+    if isinstance(exc, MetaRateLimitError):
+        result.update(error_code="meta_rate_limited", retry_after=exc.retry_after)
+    return result
+
+
 @app.post("/api/meta/campaigns/{campaign_id}/status")
 async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdateRequest):
     try:
@@ -6044,23 +6055,26 @@ async def api_update_campaign_status(campaign_id: str, req: CampaignStatusUpdate
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets")
-async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None, store: str | None = None):
+async def api_get_campaign_adsets(campaign_id: str, date_preset: str | None = None, start: str | None = None, end: str | None = None, store: str | None = None, ad_account: str | None = None):
     try:
-        key = _cache_key("meta_campaign_adsets", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store})
+        token = reporting_token(store, ad_account)
+        with meta_access_token_scope(token):
+            identity = meta_cache_identity()
+        key = _cache_key("meta_campaign_adsets_v2", {"campaign_id": campaign_id, "date_preset": date_preset or "last_7d", "start": start or None, "end": end or None, "store": store, "connection": identity, "ad_account": ad_account})
 
         async def _compute():
-            return await run_in_threadpool(_run_with_meta_connection, reporting_token(store), list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
+            return await run_in_threadpool(_run_with_meta_connection, token, list_adsets_with_insights, campaign_id, date_preset or "last_7d", since=start, until=end)
 
         items = await _cached(key, 30, _compute)
         if any(row.get("insights_error") for row in items):
             _API_CACHE.pop(key, None)
         return {"data": items}
     except Exception as e:
-        return {"error": str(e), "data": []}
+        return _meta_detail_error(e, [])
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/adsets/orders")
-async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, mapping_kind: str | None = None, meta_store: str | None = None):
+async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, store: str | None = None, stores: str | None = None, mapping_kind: str | None = None, meta_store: str | None = None, ad_account: str | None = None):
     """Attribute Shopify orders to ad sets by matching UTM parameters.
 
     Dual-strategy attribution:
@@ -6086,7 +6100,11 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         # Product and collection campaigns use exactly the same attribution.
         # Reuse the product cache, not the former strict collection-signature cache.
         connection_store = meta_store or store or (store_list or [None])[0]
-        key = _cache_key("meta_campaign_adset_orders_v12", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "meta_store": connection_store, "mapping_kind": "product"})
+        # Validate the connection before reading any RAM or persisted attribution.
+        token = reporting_token(connection_store, ad_account)
+        with meta_access_token_scope(token):
+            identity = meta_cache_identity()
+        key = _cache_key("meta_campaign_adset_orders_v13", {"campaign_id": campaign_id, "start": start, "end": end, "stores": store_list or None, "meta_store": connection_store, "mapping_kind": "product", "connection": identity, "ad_account": ad_account})
         db_cache_key = "cache:" + key
         try:
             cached = db.get_app_setting((store_list or [store or ""])[0], db_cache_key) or {}
@@ -6114,14 +6132,12 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
                 )
 
             async def _fetch_meta():
-                token = reporting_token(connection_store)
                 adsets = await asyncio.wait_for(run_in_threadpool(
                     _run_with_meta_connection, token, list_campaign_adsets, campaign_id,
                 ), timeout=90)
-                ids = [str(row["adset_id"]) for row in adsets if row.get("adset_id")]
                 ads = await asyncio.wait_for(run_in_threadpool(
-                    _run_with_meta_connection, token, list_ads_for_adsets, ids,
-                ), timeout=120) if ids else {}
+                    _run_with_meta_connection, token, list_campaign_ads_by_adset, campaign_id,
+                ), timeout=120) if adsets else {}
                 return adsets, ads
 
             # Attribution needs identities, not spend insights. Failed provider
@@ -6309,7 +6325,7 @@ async def api_campaign_adset_orders(campaign_id: str, start: str, end: str, stor
         )
         return {"error": "campaign_adset_orders_timeout", "data": {}}
     except Exception as e:
-        return {"error": str(e), "data": {}}
+        return _meta_detail_error(e, {})
 
 
 @app.get("/api/meta/campaigns/{campaign_id}/collection/orders")
@@ -6319,9 +6335,12 @@ async def api_campaign_collection_orders(campaign_id: str, collection_id: str, s
         if not campaign_id.isdigit() or not collection_id.isdigit():
             raise ValueError("A numeric campaign ID and collection ID are required")
         store = _canonical_store_label(store)
-        key = _cache_key("meta_campaign_collection_orders_v2", {
+        token = reporting_token(store)
+        with meta_access_token_scope(token):
+            identity = meta_cache_identity()
+        key = _cache_key("meta_campaign_collection_orders_v3", {
             "campaign_id": campaign_id, "collection_id": collection_id,
-            "start": start, "end": end, "store": store,
+            "start": start, "end": end, "store": store, "connection": identity,
         })
 
         async def _compute():
@@ -6330,6 +6349,8 @@ async def api_campaign_collection_orders(campaign_id: str, collection_id: str, s
                 api_campaign_adset_orders(campaign_id, start, end, store=store),
             )
             if attribution.get("error"):
+                if attribution.get("error_code") == "meta_rate_limited":
+                    raise MetaRateLimitError(int(attribution.get("retry_after") or 60))
                 raise RuntimeError(attribution["error"])
             # Include __campaign__: a valid campaign UTM need not identify an ad set.
             orders = [order for bucket in attribution.get("data", {}).values() for order in bucket.get("orders", [])]
@@ -6342,7 +6363,7 @@ async def api_campaign_collection_orders(campaign_id: str, collection_id: str, s
     except asyncio.TimeoutError:
         return {"error": "collection_utm_orders_timeout", "data": {}}
     except Exception as e:
-        return {"error": str(e), "data": {}}
+        return _meta_detail_error(e, {})
 
 
 class AdsetStatusUpdateRequest(BaseModel):
