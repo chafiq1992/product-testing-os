@@ -1,3 +1,5 @@
+import pytest
+
 from app import db
 from app.integrations import meta_client, shopify_client
 
@@ -291,6 +293,48 @@ def test_profit_campaigns_include_historical_statuses_and_every_insights_page(mo
     assert result[1]["status"] == "ARCHIVED"
     assert any(path == "act_123/insights" and params.get("after") == "insights-page-2" for path, params in calls)
     assert all("filtering" not in params for _path, params in calls)
+
+
+def test_active_zero_spend_campaign_on_later_metadata_page_remains_visible(monkeypatch):
+    calls = []
+    def get(path, params):
+        calls.append((path, params))
+        if path.endswith("/insights"):
+            return {"data": []}
+        if not params.get("after"):
+            return {"data": [{"id": "1", "name": "Other product", "effective_status": "PAUSED"}],
+                    "paging": {"next": "https://graph.facebook.com/next", "cursors": {"after": "next-page"}}}
+        return {"data": [{"id": "2", "name": "10587235320097", "effective_status": "ACTIVE", "created_time": "2026-10-14T00:00:00+0000"}]}
+    monkeypatch.setattr(meta_client, "ACCESS", "test-token")
+    monkeypatch.setattr(meta_client, "_get", get)
+    rows = meta_client.list_active_campaigns_with_insights(ad_account_id="123", date_preset="today")
+    target = next(row for row in rows if row["campaign_id"] == "2")
+    assert target["name"] == "10587235320097" and target["status"] == "ACTIVE"
+    assert target["spend"] == 0 and target["created_time"] == "2026-10-14T00:00:00+0000"
+    assert len(calls) == 3
+
+
+def test_campaign_search_uses_current_name_instead_of_stale_insight_name(monkeypatch):
+    def get(path, params):
+        if path.endswith("/insights"):
+            return {"data": [{"campaign_id": "2", "campaign_name": "Previous product name", "spend": "12"}]}
+        return {"data": [{"id": "2", "name": "10587235320097 – Copy", "effective_status": "ACTIVE"}]}
+    monkeypatch.setattr(meta_client, "ACCESS", "test-token")
+    monkeypatch.setattr(meta_client, "_get", get)
+    rows = meta_client.list_active_campaigns_with_insights(ad_account_id="123")
+    assert len(rows) == 1 and rows[0]["name"] == "10587235320097 – Copy"
+    assert rows[0]["spend"] == 12 and rows[0]["status"] == "ACTIVE"
+
+
+def test_failed_campaign_metadata_cannot_be_reported_as_successful_partial_inventory(monkeypatch):
+    def get(path, params):
+        if path.endswith("/insights"):
+            return {"data": [{"campaign_id": "1", "campaign_name": "Some spending campaign", "spend": "12"}]}
+        raise meta_client.MetaRateLimitError(retry_after=120)
+    monkeypatch.setattr(meta_client, "ACCESS", "test-token")
+    monkeypatch.setattr(meta_client, "_get", get)
+    with pytest.raises(meta_client.MetaRateLimitError, match="limited requests"):
+        meta_client.list_active_campaigns_with_insights(ad_account_id="123")
 
 
 def test_paid_product_order_count_uses_one_exact_server_side_count(monkeypatch):

@@ -947,19 +947,21 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
         insights_future = executor.submit(copy_context().run, _list_graph_edge_all, f"act_{acct}/insights", params)
         campaigns_future = executor.submit(copy_context().run, _list_graph_edge_all, f"act_{acct}/campaigns", cparams)
         rows = insights_future.result()
-        try:
-            crows = campaigns_future.result()
-        except Exception:
-            crows = []
+        # Current metadata supplies statuses, names and active zero-spend rows.
+        # A failed read must not become a cached, apparently complete inventory.
+        crows = campaigns_future.result()
 
     # Shape current statuses for these campaigns
     status_map: dict[str, str] = {}
+    name_map: dict[str, str] = {}
     try:
         for c in (crows or []):
             cid = str((c or {}).get("id") or "")
             eff = (c or {}).get("effective_status") or (c or {}).get("configured_status")
             if cid:
                 status_map[cid] = str(eff or "")
+                if c.get("name"):
+                    name_map[cid] = str(c["name"])
     except Exception:
         status_map = {}
     # Build created_time lookup from campaign metadata
@@ -975,7 +977,8 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
     out: list[dict] = []
     seen_ids: set[str] = set()
     for r in rows:
-        name = (r or {}).get("campaign_name")
+        cid = (r or {}).get("campaign_id")
+        name = name_map.get(str(cid)) or (r or {}).get("campaign_name")
         spend = _parse_float((r or {}).get("spend")) or 0.0
         if profit_only:
             ctr = None
@@ -999,7 +1002,6 @@ def list_active_campaigns_with_insights(date_preset: str = "last_7d", ad_account
                 "offsite_conversion.fb_pixel_add_to_cart",
             ])
             eff_cpp = cpp if (cpp is not None and cpp >= 0) else (spend / purchases if purchases > 0 else None)
-        cid = (r or {}).get("campaign_id")
         if cid:
             seen_ids.add(str(cid))
         out.append({
