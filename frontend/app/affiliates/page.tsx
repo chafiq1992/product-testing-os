@@ -13,6 +13,7 @@ import AffiliateOrderEditor from "@/components/AffiliateOrderEditor";
 import AffiliateOrderDetails from "@/components/AffiliateOrderDetails";
 import AffiliateOrderTracking from "@/components/AffiliateOrderTracking";
 import AffiliateCustomers from "@/components/AffiliateCustomers";
+import CustomerMerchantTools from "@/components/CustomerMerchantTools";
 import {
   BarChart3,
   Package,
@@ -652,6 +653,7 @@ function AffiliateWorkspace() {
             )}
           </p>
           {alerts}
+          {tab === "overview" && <CustomerMerchantTools key={seller.id} kind="seller" lang={language === "ar" ? "ar" : "en"} merchantName={seller.name} showChat />}
           <div className="flex flex-wrap justify-center gap-3">
             <button
               disabled={loading}

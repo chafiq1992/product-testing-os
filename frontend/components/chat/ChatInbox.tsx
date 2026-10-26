@@ -8,7 +8,7 @@ import {
 import {
   ChatAccount, ChatMessage, Conversation, Me,
   registerAccount, searchAccounts, fetchConversations, fetchMessages,
-  markRead, sendMessageHttp, uploadMedia, mediaUrl, wsUrl,
+  markRead, sendMessageHttp, uploadMedia, mediaUrl, wsUrl, setChatActor, clearChatActor,
 } from './chatApi'
 import { useAudioRecorder } from './useAudioRecorder'
 import { ProductCard, CatalogCard } from './catalog'
@@ -114,13 +114,15 @@ function MessageView({ m, mine }: { m: ChatMessage; mine: boolean }) {
   )
 }
 
-export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]', catalogVendorId, catalogVendorName, framed = true, onActiveConversationChange }: {
+export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(100vh-7rem)]', catalogVendorId, catalogVendorName, framed = true, onActiveConversationChange, initialPeer, hideProductTools = false }: {
   me: Me
   className?: string
   heightClass?: string
   catalogVendorId?: string
   catalogVendorName?: string
   framed?: boolean
+  initialPeer?: ChatAccount
+  hideProductTools?: boolean
   onActiveConversationChange?: (open: boolean) => void
 }) {
   const meId = (me.id || '').toLowerCase()
@@ -271,10 +273,12 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
     setOnlineIds(new Set())
     setCatalogTarget(null)
     setPanelProduct(null)
+    setChatActor(meId)
     registerAccount(me).catch(() => {})
     refreshConversations()
     connect(epoch)
     return () => {
+      clearChatActor(meId)
       ++connectionEpochRef.current
       if (pingRef.current) window.clearInterval(pingRef.current)
       if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
@@ -287,7 +291,9 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
 
   // ── Open a conversation ────────────────────────────────────
   const openPeer = useCallback(async (peer: ChatAccount) => {
+    activePeerRef.current = peer
     setActivePeer(peer)
+    setMessages([])
     setSearchTerm(''); setSearchResults([])
     setTypingPeer(null)
     setLoadingMsgs(true)
@@ -302,6 +308,12 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
     wsRef.current?.readyState === WebSocket.OPEN && wsRef.current.send(JSON.stringify({ type: 'read', data: { peer: peer.id } }))
     setConversations(prev => prev.map(c => c.peer.id === peer.id ? { ...c, unread: 0 } : c))
   }, [meId])
+
+  useEffect(() => {
+    if (initialPeer?.id && initialPeer.id !== meId) openPeer(initialPeer)
+    // A new object with the same peer id must not reset an open conversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meId, initialPeer?.id, openPeer])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, typingPeer])
 
@@ -552,7 +564,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
                   {typingPeer === activePeer.id ? <span className="text-green-600">typing…</span> : isOnline(activePeer.id) ? 'online' : `@${activePeer.handle}`}
                 </div>
               </div>
-              {activePeer.kind === 'vendor' && (
+              {!hideProductTools && activePeer.kind === 'vendor' && (
                 <button
                   onClick={() => setCatalogTarget({ vendorId: activePeer.catalog_vendor_id || activePeer.id, vendorName: activePeer.name })}
                   className="flex items-center gap-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-bold px-3 py-1.5 transition"
@@ -592,7 +604,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
                 </div>
               ) : (
                 <div className="flex items-end gap-2">
-                  {catalogVendorId && (
+                  {!hideProductTools && catalogVendorId && (
                     <button onClick={() => setCatalogTarget({ vendorId: catalogVendorId, vendorName: catalogVendorName })} className="p-2 text-slate-500 hover:text-blue-600" title="Send catalog"><Store size={22} /></button>
                   )}
                   <button onClick={() => imgInputRef.current?.click()} className="p-2 text-slate-500 hover:text-blue-600" title="Photo / video"><ImageIcon size={22} /></button>
@@ -620,7 +632,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
       <input ref={imgInputRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
       <input ref={fileInputRef} type="file" multiple hidden onChange={e => { sendFiles(e.target.files); e.target.value = '' }} />
 
-      {catalogTarget && (
+      {!hideProductTools && catalogTarget && (
         <CatalogPicker
           vendorId={catalogTarget.vendorId}
           vendorName={catalogTarget.vendorName}
@@ -630,13 +642,13 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
         />
       )}
 
-      <ProductPanel
+      {!hideProductTools && <ProductPanel
         vendorId={panelProduct?.vendor || ''}
         productId={panelProduct?.id || null}
         fallback={panelProduct?.fallback}
         onClose={() => setPanelProduct(null)}
         onSend={activePeer ? (card) => sendCard('product', card) : undefined}
-      />
+      />}
     </div>
   )
 }

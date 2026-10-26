@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import AffiliateAdmin from '@/components/AffiliateAdmin'
+import CustomerAccountsAdmin from '@/components/CustomerAccountsAdmin'
 import { UserPlus, Users, Trash2, Loader2, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Package, Pencil, X, Save } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
@@ -172,6 +173,7 @@ export default function WholesaleAdminPage() {
 
       <div className="max-w-5xl mx-auto p-6 md:p-10 space-y-8">
         <AffiliateAdmin />
+        <CustomerAccountsAdmin />
         {/* Create Vendor Form */}
         <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 md:p-8">
           <h2 className="text-lg font-bold mb-6 flex items-center gap-3">

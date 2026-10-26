@@ -1,6 +1,8 @@
 // Catalog data layer — the vendor's in-stock Shopify products, surfaced in chat.
 // Images are Shopify CDN links used directly (never uploaded/downloaded).
 
+import { chatHeaders } from './chatApi'
+
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 
 export type CatalogVariant = {
@@ -113,7 +115,7 @@ export function pcsLabel(pcs?: number[]) {
 }
 
 export async function fetchCatalog(vendor: string, refresh = false): Promise<Catalog> {
-  const res = await fetch(`${API}/api/chat/catalog?vendor=${encodeURIComponent(vendor)}${refresh ? '&refresh=1' : ''}`)
+  const res = await fetch(`${API}/api/chat/catalog?vendor=${encodeURIComponent(vendor)}${refresh ? '&refresh=1' : ''}`, { credentials: 'include', headers: chatHeaders() })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const { data, error } = await res.json()
   if (error) throw new Error(error)
@@ -122,7 +124,7 @@ export async function fetchCatalog(vendor: string, refresh = false): Promise<Cat
 
 export async function fetchCatalogProduct(vendor: string, id: string): Promise<CatalogProduct | null> {
   try {
-    const res = await fetch(`${API}/api/chat/catalog/product?vendor=${encodeURIComponent(vendor)}&id=${encodeURIComponent(id)}`)
+    const res = await fetch(`${API}/api/chat/catalog/product?vendor=${encodeURIComponent(vendor)}&id=${encodeURIComponent(id)}`, { credentials: 'include', headers: chatHeaders() })
     if (!res.ok) return null
     const { data, error } = await res.json()
     if (error) return null

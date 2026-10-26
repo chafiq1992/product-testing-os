@@ -1,8 +1,8 @@
 """Minimal internal chat / inbox.
 
 A self-contained, WhatsApp-inbox-style direct-messaging system for the app's own
-accounts (wholesale vendors today; a customer dashboard later). It does NOT use the
-WhatsApp API. Every account has a string id/handle; anyone can DM anyone else by id.
+accounts. Customer conversations are restricted to their linked merchants.
+It does NOT use the WhatsApp API.
 
 Features
 --------
@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import Column, DateTime, Index, String, Text, desc, or_
 
@@ -106,6 +106,50 @@ ALLOWED_TYPES = {"text"} | MEDIA_TYPES | CARD_TYPES
 
 def _norm_id(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _peer_allowed(actor: str, peer: str) -> bool:
+    actor, peer = _norm_id(actor), _norm_id(peer)
+    if not actor or not peer:
+        return False
+    if actor == peer:
+        return True
+    try:
+        from app.customer_accounts import chat_peer_allowed
+        return bool(chat_peer_allowed(actor, peer))
+    except ImportError:
+        return not actor.startswith("customer:") and not peer.startswith("customer:")
+    except Exception:
+        # New customer data stays closed if its relationship store is unavailable.
+        log.exception("chat relationship lookup failed")
+        return not actor.startswith("customer:") and not peer.startswith("customer:")
+
+
+def _actor(request: Request | None, fallback: str = "") -> str:
+    if request is None:
+        return _norm_id(fallback)  # Internal calls have no HTTP identity surface.
+    state = request.scope.get("state") or {}
+    if state.get("chat_operator"):
+        return _norm_id(fallback)
+    return _norm_id(state.get("chat_actor") or fallback)
+
+
+def _ensure_peer(request: Request | None, actor: str, peer: str) -> None:
+    if request is not None and (request.scope.get("state") or {}).get("chat_operator"):
+        return
+    if not _peer_allowed(actor, peer):
+        raise HTTPException(403, "Conversation is not available")
+
+
+def _linked_directory(actor: str, term: str = "") -> list[dict]:
+    try:
+        from app.customer_accounts import directory_for
+        return directory_for(actor, term)
+    except ImportError:
+        return []
+    except Exception:
+        log.exception("chat linked directory lookup failed")
+        return []
 
 
 def conversation_id(a: str, b: str) -> str:
@@ -220,6 +264,18 @@ class ConnectionManager:
     async def send_to(self, account_id: str, payload: dict) -> bool:
         """Send a JSON payload to all live sockets of an account. Returns True if delivered."""
         aid = _norm_id(account_id)
+        data = (payload or {}).get("data") or {}
+        event = (payload or {}).get("type")
+        if event == "presence" and not _peer_allowed(aid, data.get("id")):
+            return False
+        if event == "presence_snapshot":
+            payload = {**payload, "data": {**data, "online": [p for p in data.get("online", []) if _peer_allowed(aid, p)]}}
+        if event == "message":
+            peer = data.get("recipient_id") if data.get("sender_id") == aid else data.get("sender_id")
+            if not _peer_allowed(aid, peer):
+                return False
+        if event in {"typing", "read"} and not _peer_allowed(aid, data.get("peer")):
+            return False
         conns = list(self.connections.get(aid) or [])
         delivered = False
         for ws in conns:
@@ -516,7 +572,7 @@ def _media_blob_key(filename: str) -> str:
     return f"chat_media:{filename}"
 
 
-def _persist_media_blob(filename: str, data: bytes, content_type: str | None) -> None:
+def _persist_media_blob(filename: str, data: bytes, content_type: str | None, owner: str = "") -> None:
     try:
         db.set_app_setting(
             None,
@@ -525,6 +581,7 @@ def _persist_media_blob(filename: str, data: bytes, content_type: str | None) ->
                 "filename": filename,
                 "content_type": content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
                 "data_b64": base64.b64encode(data).decode("ascii"),
+                "owner": _norm_id(owner),
                 "created_at": datetime.utcnow().isoformat() + "Z",
             },
         )
@@ -544,6 +601,22 @@ def _load_media_blob(filename: str):
         return raw, ct
     except Exception:
         return None
+
+
+def _may_attach_media(actor: str, media_url: str | None) -> bool:
+    # A guessed private upload URL cannot be laundered into a new conversation.
+    if not media_url or not media_url.startswith("/chat-media/"):
+        return True
+    metadata = db.get_app_setting(None, _media_blob_key(media_url.rsplit("/", 1)[-1])) or {}
+    owner = _norm_id(metadata.get("owner"))
+    if actor == owner:
+        return True
+    if not actor.startswith("customer:") and not owner.startswith("customer:"):
+        return True  # Existing merchant attachment behavior.
+    with db.SessionLocal() as session:
+        rows = session.query(ChatMessage).filter(ChatMessage.media_url == media_url).all()
+    return any(actor in {m.sender_id, m.recipient_id} and _peer_allowed(actor,
+        m.recipient_id if actor == m.sender_id else m.sender_id) for m in rows)
 
 
 # ---------------------------------------------------------------------------
@@ -580,10 +653,12 @@ class ReadReq(BaseModel):
 
 
 @router.post("/api/chat/register")
-async def chat_register(req: RegisterReq):
+async def chat_register(req: RegisterReq, request: Request = None):
     try:
+        actor = _actor(request, req.id)
+        kind = "customer" if actor.startswith("customer:") else "seller" if actor.startswith("seller:") else req.kind
         acc = upsert_account(
-            req.id, handle=req.handle or req.id, name=req.name, avatar=req.avatar, kind=req.kind, touch=True
+            req.id, handle=req.handle or req.id, name=req.name, avatar=req.avatar, kind=kind, touch=True
         )
         return {"data": acc}
     except Exception as e:
@@ -591,13 +666,13 @@ async def chat_register(req: RegisterReq):
 
 
 @router.get("/api/chat/search")
-async def chat_search(q: str = "", me: str = "", limit: int = 20):
+async def chat_search(q: str = "", me: str = "", limit: int = 20, request: Request = None):
     term = _norm_id(q).lstrip("@")
-    me_id = _norm_id(me)
+    me_id = _actor(request, me)
     cap = max(1, min(limit, 50))
 
     merged: Dict[str, Dict[str, Any]] = {}
-    directory = _provider_accounts("")
+    directory = _provider_accounts("") + _linked_directory(me_id, term)
     vendor_ids_by_handle = {a["handle"]: a["id"] for a in directory if a.get("kind") == "vendor"}
     # 1) Registered chat accounts (authoritative — keep real avatar/presence).
     with db.SessionLocal() as session:
@@ -625,16 +700,20 @@ async def chat_search(q: str = "", me: str = "", limit: int = 20):
             elif acc.get("catalog_vendor_id"):
                 merged[acc["id"]]["catalog_vendor_id"] = acc["catalog_vendor_id"]
 
-    out = sorted(merged.values(), key=lambda a: a.get("handle") or "")
+    out = sorted((a for a in merged.values() if _peer_allowed(me_id, a["id"])), key=lambda a: a.get("handle") or "")
     return {"data": out[:cap]}
 
 
 @router.get("/api/chat/account/{account_id}")
-async def chat_account(account_id: str):
+async def chat_account(account_id: str, request: Request = None):
+    actor = _actor(request, account_id)
+    _ensure_peer(request, actor, account_id)
     acc = get_account(account_id)
     if not acc:
-        return {"error": "not_found"}
-    for known in _provider_accounts(""):
+        acc = next((a for a in _linked_directory(actor) if a["id"] == _norm_id(account_id)), None)
+        if not acc:
+            return {"error": "not_found"}
+    for known in _provider_accounts("") + _linked_directory(actor):
         if known["id"] == acc["id"] and known.get("catalog_vendor_id"):
             acc["catalog_vendor_id"] = known["catalog_vendor_id"]
             break
@@ -642,8 +721,8 @@ async def chat_account(account_id: str):
 
 
 @router.get("/api/chat/conversations")
-async def chat_conversations(me: str, limit: int = 100):
-    me_id = _norm_id(me)
+async def chat_conversations(me: str, limit: int = 100, request: Request = None):
+    me_id = _actor(request, me)
     if not me_id:
         return {"error": "me required"}
     with db.SessionLocal() as session:
@@ -657,6 +736,8 @@ async def chat_conversations(me: str, limit: int = 100):
         convos: Dict[str, Dict[str, Any]] = {}
         for m in rows:
             peer_id = m.recipient_id if m.sender_id == me_id else m.sender_id
+            if not _peer_allowed(me_id, peer_id):
+                continue
             entry = convos.get(peer_id)
             if entry is None:
                 entry = {"peer_id": peer_id, "last_message": _message_dict(m), "unread": 0}
@@ -668,22 +749,30 @@ async def chat_conversations(me: str, limit: int = 100):
         accounts = {a.id: a for a in session.query(ChatAccount).filter(ChatAccount.id.in_(peer_ids)).all()} if peer_ids else {}
 
     result = []
+    linked = {a["id"]: a for a in _linked_directory(me_id)}
     directory = {a["id"]: a for a in _provider_accounts("")}
+    directory.update(linked)
     for peer_id, entry in convos.items():
         acc = accounts.get(peer_id)
         peer = _account_dict(acc) if acc else {
             "id": peer_id, "handle": peer_id, "name": peer_id, "avatar": "", "kind": "",
             "online": manager.is_online(peer_id), "last_seen": None,
         }
-        if directory.get(peer_id, {}).get("catalog_vendor_id"):
-            peer["catalog_vendor_id"] = directory[peer_id]["catalog_vendor_id"]
+        known = directory.get(peer_id, {})
+        if peer_id in linked or not acc or (peer["name"] == peer_id and peer["handle"] == peer_id):
+            for field in ("name", "handle", "avatar", "kind"):
+                if field in known:
+                    peer[field] = known[field]
+        if known.get("catalog_vendor_id"):
+            peer["catalog_vendor_id"] = known["catalog_vendor_id"]
         result.append({"peer": peer, "last_message": entry["last_message"], "unread": entry["unread"]})
     result.sort(key=lambda r: (r["last_message"] or {}).get("created_at") or "", reverse=True)
     return {"data": result[: max(1, min(limit, 200))]}
 
 
 @router.get("/api/chat/messages")
-async def chat_messages(me: str, peer: str, before: str | None = None, after: str | None = None, limit: int = 40):
+async def chat_messages(me: str, peer: str, before: str | None = None, after: str | None = None, limit: int = 40, request: Request = None):
+    _ensure_peer(request, _actor(request, me), peer)
     cid = conversation_id(me, peer)
     with db.SessionLocal() as session:
         query = session.query(ChatMessage).filter(ChatMessage.conversation_id == cid)
@@ -712,7 +801,11 @@ async def chat_messages(me: str, peer: str, before: str | None = None, after: st
 
 
 @router.post("/api/chat/send")
-async def chat_send(req: SendReq):
+async def chat_send(req: SendReq, request: Request = None):
+    actor = _actor(request, req.sender)
+    _ensure_peer(request, actor, req.recipient)
+    if not _may_attach_media(actor, req.media_url):
+        raise HTTPException(403, "Attachment is not available")
     try:
         msg = await persist_and_deliver(
             sender=req.sender,
@@ -735,13 +828,14 @@ async def chat_send(req: SendReq):
 
 
 @router.post("/api/chat/read")
-async def chat_read(req: ReadReq):
+async def chat_read(req: ReadReq, request: Request = None):
+    _ensure_peer(request, _actor(request, req.me), req.peer)
     n = await mark_read(req.me, req.peer)
     return {"data": {"updated": n}}
 
 
 @router.post("/api/chat/upload")
-async def chat_upload(file: UploadFile = File(...), kind: str = Form("file")):
+async def chat_upload(request: Request, file: UploadFile = File(...), kind: str = Form("file")):
     try:
         data = await file.read()
         if not data:
@@ -749,7 +843,7 @@ async def chat_upload(file: UploadFile = File(...), kind: str = Form("file")):
         safe_name = (file.filename or "media").replace("/", "_").replace("\\", "_")
         filename = f"chat_{uuid4().hex}_{safe_name}"
         content_type = file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        _persist_media_blob(filename, data, content_type)
+        _persist_media_blob(filename, data, content_type, _actor(request))
         return {
             "data": {
                 "url": f"/chat-media/{filename}",
@@ -772,9 +866,21 @@ async def chat_media_file(filename: str, request: Request):
     blob = _load_media_blob(safe_name)
     if not blob:
         return Response(status_code=404)
+    state = request.scope.get("state") or {}
+    if not state.get("chat_operator"):
+        actors = state.get("chat_actors") or [_actor(request)]
+        metadata = db.get_app_setting(None, _media_blob_key(safe_name)) or {}
+        owner = _norm_id(metadata.get("owner"))
+        allowed = any(actor and actor == owner for actor in actors)
+        if not allowed:
+            with db.SessionLocal() as session:
+                rows = session.query(ChatMessage).filter(ChatMessage.media_url == "/chat-media/" + safe_name).all()
+            allowed = any(actor in {m.sender_id, m.recipient_id} and _peer_allowed(actor, m.recipient_id if actor == m.sender_id else m.sender_id) for actor in actors for m in rows)
+        if not allowed and (owner.startswith("customer:") or any(str(a).startswith("customer:") for a in actors)):
+            return Response(status_code=403)
     data, content_type = blob
     body = b"" if request.method == "HEAD" else data
-    return Response(content=body, media_type=content_type, headers={"Cache-Control": "public, max-age=31536000"})
+    return Response(content=body, media_type=content_type, headers={"Cache-Control": "private, no-store"})
 
 
 @router.websocket("/api/chat/ws/{account_id}")
@@ -791,7 +897,7 @@ async def chat_ws(websocket: WebSocket, account_id: str):
         await _broadcast_presence(aid, True)
     # Tell the freshly-connected client who is currently online.
     try:
-        await websocket.send_json({"type": "presence_snapshot", "data": {"online": manager.online_ids()}})
+        await websocket.send_json({"type": "presence_snapshot", "data": {"online": [peer for peer in manager.online_ids() if _peer_allowed(aid, peer)]}})
     except Exception:
         pass
 
@@ -808,6 +914,13 @@ async def chat_ws(websocket: WebSocket, account_id: str):
 
             mtype = data.get("type")
             payload = data.get("data") or {}
+            if aid.startswith(("customer:", "seller:")) and not (websocket.scope.get("state") or {}).get("chat_operator"):
+                from app.auth_gate import resolve_principals
+                principals = resolve_principals(dict(websocket.headers))
+                principal = principals.get("customer" if aid.startswith("customer:") else "seller_chat")
+                if not principal or principal.get("chat_id") != aid:
+                    await websocket.close(code=4401)
+                    break
 
             if mtype == "ping":
                 try:
@@ -816,6 +929,10 @@ async def chat_ws(websocket: WebSocket, account_id: str):
                     break
             elif mtype == "send_message":
                 try:
+                    if not _peer_allowed(aid, payload.get("recipient") or payload.get("peer")):
+                        raise ValueError("Conversation is not available")
+                    if not _may_attach_media(aid, payload.get("media_url")):
+                        raise ValueError("Attachment is not available")
                     await persist_and_deliver(
                         sender=aid,
                         recipient=payload.get("recipient") or payload.get("peer"),
@@ -834,10 +951,13 @@ async def chat_ws(websocket: WebSocket, account_id: str):
                     except Exception:
                         break
             elif mtype == "read":
-                await mark_read(aid, payload.get("peer") or "")
+                if _peer_allowed(aid, payload.get("peer")):
+                    await mark_read(aid, payload.get("peer") or "")
+                else:
+                    await websocket.send_json({"type": "error", "data": {"message": "Conversation is not available"}})
             elif mtype == "typing":
                 peer = _norm_id(payload.get("peer"))
-                if peer:
+                if peer and _peer_allowed(aid, peer):
                     await _fanout([peer], {"type": "typing", "data": {"peer": aid, "typing": bool(payload.get("typing", True))}})
     except WebSocketDisconnect:
         pass

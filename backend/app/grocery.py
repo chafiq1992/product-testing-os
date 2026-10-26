@@ -495,9 +495,22 @@ def _order_view(session, order):
 @router.post("/orders")
 def create_order(vendor_id: str, req: OrderInput, authorization: str | None = Header(default=None)):
     vid, vendor = authorize(vendor_id, authorization)
+    return place_order(vid, vendor, req)
+
+
+def place_order(vid, vendor, req: OrderInput, receipt_hook=None):
+    """Trusted internal checkout service; callers must verify the acting identity.
+
+    A portal receipt hook uses this same session, so customer ownership and
+    inventory changes commit together. It never needs an employee credential.
+    """
+    if not is_grocery(vendor):
+        fail("grocery_only", 403)
     with _transaction(vid, vendor) as (session, scope):
         fingerprint, prior = _replay(session, scope, "order:create", req)
         if prior is not None:
+            if receipt_hook:
+                receipt_hook(session, prior)
             return prior
         name, phone = req.customer_name.strip(), req.customer_phone.strip()
         if req.payment_status == "unpaid" and not (name and _phone(phone)):
@@ -565,6 +578,8 @@ def create_order(vendor_id: str, req: OrderInput, authorization: str | None = He
         changed_products = [_product_view(row) for row, _, _ in prepared]
         response = {"data": _order_view(session, order), "products": changed_products,
             "inventory_updates": [{"product_id": p["id"], "stock": p["stock"], "stock_grams": p["stock_grams"], "inventory_quantity": p["variants"][0]["inventory_quantity"]} for p in changed_products]}
+        if receipt_hook:
+            receipt_hook(session, response)
         return _receipt(session, scope, req, fingerprint, response)
 
 
@@ -585,6 +600,12 @@ def list_orders(vendor_id):
     _, vendor = _vendor(vendor_id)
     with db.SessionLocal() as session:
         return {"data": _orders_stats(_orders(session, _scope(vendor)))}
+
+
+def get_order(vendor_id, order_id):
+    _, vendor = _vendor(vendor_id)
+    with db.SessionLocal() as session:
+        return {"data": _order_view(session, _owned_order(session, _scope(vendor), order_id))}
 
 
 def _customer_ledger(orders):

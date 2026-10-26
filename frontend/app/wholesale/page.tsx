@@ -10,6 +10,7 @@ import {
   CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2, MessageCircle
 } from 'lucide-react'
 import ChatInbox from '../../components/chat/ChatInbox'
+import CustomerMerchantTools from '../../components/CustomerMerchantTools'
 import { BatchImagePicker, BatchProgress, type BatchImage } from './BatchProducts'
 import GroceryWorkspace, { GroceryHome } from './grocery/GroceryWorkspace'
 
@@ -1303,6 +1304,7 @@ function Dashboard({
               </button>
             </div>
           )}
+          {(activeTab === 'overview' || activeTab === 'customers') && <div className="mx-auto max-w-6xl"><CustomerMerchantTools key={vendor.account_id || vendor.id} kind="vendor" lang={lang} merchantName={vendor.name || vendor.username} /></div>}
           {renderContent()}
         </div>
         )}

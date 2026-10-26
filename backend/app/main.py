@@ -8846,7 +8846,12 @@ def _wholesale_tags_csv(vendor_name: str, vendor_id: str, *, include_customer: b
     ]
     if include_customer:
         tags.append(WHOLESALE_CUSTOMER_TAG)
-    return ", ".join([t for t in tags if t])
+    record = db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vendor_id))
+    if isinstance(record, dict):
+        record = _wholesale_ensure_account_identity(record)
+        # Shopify orders allow at most 40 characters in an individual tag.
+        tags.append("ma:" + record["account_id"].replace("-", ""))
+    return ", ".join([t for t in tags if t and len(t) <= 40])
 
 def _wholesale_tags_set(tags_raw: Any) -> set[str]:
     if isinstance(tags_raw, list):
@@ -8858,11 +8863,15 @@ def _wholesale_order_matches_vendor(order_obj: dict, vendor_name: str, vendor_id
     tags = _wholesale_tags_set((order_obj or {}).get("tags"))
     if not tags:
         return False
-    vendor_name_tag = _wholesale_vendor_name_tag(vendor_name).lower()
-    vendor_id_tag = _wholesale_vendor_id_tag(vendor_id).lower()
-    has_vendor_tag = vendor_id_tag in tags if "grocery" in tags else (vendor_name_tag in tags or vendor_id_tag in tags)
     has_wholesale_source_tag = WHOLESALE_DASHBOARD_TAG.lower() in tags or WHOLESALE_TAG.lower() in tags
-    return has_vendor_tag and has_wholesale_source_tag
+    record = db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vendor_id))
+    if not has_wholesale_source_tag or not isinstance(record, dict):
+        return False
+    record = _wholesale_ensure_account_identity(record)
+    from app.customer_merchants import _owns_wholesale
+    return _owns_wholesale({**order_obj, "vendor": vendor_name}, {
+        "vendor": record, "vendor_id": vendor_id, "account_id": record["account_id"],
+    })
 
 def _wholesale_safe_float(v: Any, default: float = 0.0) -> float:
     try:
@@ -10244,6 +10253,10 @@ async def api_wholesale_vendor_products(vendor_id: str):
             include_translations=False,
             request_timeout=int(os.getenv("PTOS_WHOLESALE_PRODUCTS_TIMEOUT_S", "12") or "12"),
         )
+        from app.customer_merchants import _owns_wholesale
+        vendor = _wholesale_ensure_account_identity(vendor)
+        owner = {"vendor": vendor, "vendor_id": vid, "account_id": vendor["account_id"]}
+        products = [p for p in products if _owns_wholesale(p, owner)]
         products = await run_in_threadpool(_wholesale_enrich_products_inventory, products)
         return {"data": products}
     except HTTPException:
@@ -10454,7 +10467,13 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         desc_html = _wholesale_build_description_html(req.description, segment, season)
 
         # Tags for filtering
-        tags_list = _wholesale_unique_labels([f"vendor:{vendor_name}", *organization.get("tags", [])])
+        vendor = _wholesale_ensure_account_identity(vendor)
+        public_tags = [tag for tag in organization.get("tags", [])
+                       if not str(tag).lower().startswith(("vendor:", "vendor_id:", "merchant_account:", "ma:"))]
+        tags_list = _wholesale_unique_labels([
+            f"vendor:{vendor_name}", _wholesale_vendor_id_tag(vid),
+            "merchant_account:" + vendor["account_id"], *public_tags,
+        ])
 
         # ── Derive sizes from size_groups ──
         # Each group {from, to, qty} becomes a size like "20-25" with its own qty
@@ -10682,6 +10701,8 @@ class WholesaleOrderLineItem(BaseModel):
     quantity: int = 1
 
 class WholesaleOrderCreate(BaseModel):
+    # Set only by the trusted customer adapter after a fresh owned-catalog read.
+    _portal_prices: dict[int, str] | None = PrivateAttr(default=None)
     customer_name: str  # "First Last"
     customer_phone: str
     customer_address1: Optional[str] = "NA"
@@ -10749,7 +10770,7 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         normalized_phone = _wholesale_normalize_phone(req.customer_phone)
         existing_customer: dict[str, Any] | None = None
 
-        if normalized_phone:
+        if normalized_phone and req._portal_prices is None:
             existing_customer = await run_in_threadpool(_wholesale_find_existing_customer_by_phone, req.customer_phone)
             if not existing_customer:
                 prior_orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
@@ -10774,7 +10795,8 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         order_payload = {
             "order": {
                 "line_items": [
-                    {"variant_id": li.variant_id, "quantity": li.quantity}
+                    {"variant_id": li.variant_id, "quantity": li.quantity,
+                     **({"price": req._portal_prices[li.variant_id]} if req._portal_prices is not None else {})}
                     for li in req.line_items
                 ],
                 "customer": customer_payload,
@@ -11657,6 +11679,8 @@ from app.grocery import router as grocery_router
 app.include_router(grocery_router)
 from app.affiliates import router as affiliates_router
 app.include_router(affiliates_router)
+from app.customer_accounts import router as customer_accounts_router
+app.include_router(customer_accounts_router)
 
 
 @app.on_event("startup")
