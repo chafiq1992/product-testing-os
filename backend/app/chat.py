@@ -404,6 +404,7 @@ def _provider_accounts(term: str) -> List[Dict[str, Any]]:
                     "name": acc.get("name") or acc.get("handle") or aid,
                     "avatar": acc.get("avatar") or "",
                     "kind": acc.get("kind") or "",
+                    "catalog_vendor_id": acc.get("catalog_vendor_id") or None,
                     "online": manager.is_online(aid),
                     "last_seen": None,
                 })
@@ -596,6 +597,8 @@ async def chat_search(q: str = "", me: str = "", limit: int = 20):
     cap = max(1, min(limit, 50))
 
     merged: Dict[str, Dict[str, Any]] = {}
+    directory = _provider_accounts("")
+    vendor_ids_by_handle = {a["handle"]: a["id"] for a in directory if a.get("kind") == "vendor"}
     # 1) Registered chat accounts (authoritative — keep real avatar/presence).
     with db.SessionLocal() as session:
         query = session.query(ChatAccount)
@@ -604,13 +607,23 @@ async def chat_search(q: str = "", me: str = "", limit: int = 20):
             query = query.filter(or_(ChatAccount.handle.like(like), ChatAccount.display_name.ilike(like)))
         rows = query.order_by(ChatAccount.handle).limit(cap * 2).all()
     for a in rows:
+        canonical_id = vendor_ids_by_handle.get(_norm_id(a.handle))
+        if canonical_id and canonical_id != a.id and (a.kind == "vendor" or a.id == a.handle):
+            # Keep old messages, but never advertise a retired username alias
+            # as the current account's inbox.
+            continue
         if a.id != me_id:
             merged[a.id] = _account_dict(a)
 
     # 2) Accounts known to other modules (vendors, customers...) not yet registered.
-    for acc in _provider_accounts(term):
-        if acc["id"] != me_id and acc["id"] not in merged:
-            merged[acc["id"]] = acc
+    for acc in directory:
+        if term and term not in _norm_id(acc.get("handle")) and term not in str(acc.get("name") or "").lower():
+            continue
+        if acc["id"] != me_id:
+            if acc["id"] not in merged:
+                merged[acc["id"]] = acc
+            elif acc.get("catalog_vendor_id"):
+                merged[acc["id"]]["catalog_vendor_id"] = acc["catalog_vendor_id"]
 
     out = sorted(merged.values(), key=lambda a: a.get("handle") or "")
     return {"data": out[:cap]}
@@ -621,6 +634,10 @@ async def chat_account(account_id: str):
     acc = get_account(account_id)
     if not acc:
         return {"error": "not_found"}
+    for known in _provider_accounts(""):
+        if known["id"] == acc["id"] and known.get("catalog_vendor_id"):
+            acc["catalog_vendor_id"] = known["catalog_vendor_id"]
+            break
     return {"data": acc}
 
 
@@ -651,12 +668,15 @@ async def chat_conversations(me: str, limit: int = 100):
         accounts = {a.id: a for a in session.query(ChatAccount).filter(ChatAccount.id.in_(peer_ids)).all()} if peer_ids else {}
 
     result = []
+    directory = {a["id"]: a for a in _provider_accounts("")}
     for peer_id, entry in convos.items():
         acc = accounts.get(peer_id)
         peer = _account_dict(acc) if acc else {
             "id": peer_id, "handle": peer_id, "name": peer_id, "avatar": "", "kind": "",
             "online": manager.is_online(peer_id), "last_seen": None,
         }
+        if directory.get(peer_id, {}).get("catalog_vendor_id"):
+            peer["catalog_vendor_id"] = directory[peer_id]["catalog_vendor_id"]
         result.append({"peer": peer, "last_message": entry["last_message"], "unread": entry["unread"]})
     result.sort(key=lambda r: (r["last_message"] or {}).get("created_at") or "", reverse=True)
     return {"data": result[: max(1, min(limit, 200))]}

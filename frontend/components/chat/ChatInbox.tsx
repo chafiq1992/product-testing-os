@@ -140,6 +140,9 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   const [panelProduct, setPanelProduct] = useState<{ vendor: string; id: string; fallback?: ProductCard } | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
+  const connectionEpochRef = useRef(0)
+  const identityRef = useRef(meId)
+  identityRef.current = meId
   const seenIds = useRef<Set<string>>(new Set())
   const activePeerRef = useRef<ChatAccount | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
@@ -155,7 +158,10 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   useEffect(() => { onActiveConversationChange?.(!!activePeer) }, [activePeer, onActiveConversationChange])
 
   const refreshConversations = useCallback(async () => {
-    try { setConversations(await fetchConversations(meId)) } catch {}
+    try {
+      const next = await fetchConversations(meId)
+      if (identityRef.current === meId) setConversations(next)
+    } catch {}
   }, [meId])
 
   const isOnline = useCallback((id: string) => onlineIds.has((id || '').toLowerCase()), [onlineIds])
@@ -220,40 +226,61 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   }, [meId, bumpConversation])
 
   // ── WebSocket lifecycle ────────────────────────────────────
-  const connect = useCallback(() => {
-    if (!meId) return
+  const connect = useCallback((epoch = connectionEpochRef.current) => {
+    if (!meId || epoch !== connectionEpochRef.current) return
     try {
       const ws = new WebSocket(wsUrl(meId))
       wsRef.current = ws
       ws.onopen = () => {
+        if (epoch !== connectionEpochRef.current) { ws.close(); return }
         setConnected(true)
         if (pingRef.current) window.clearInterval(pingRef.current)
         pingRef.current = window.setInterval(() => {
           ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: 'ping' }))
         }, 25000)
       }
-      ws.onmessage = (e) => { try { handleWsEvent(JSON.parse(e.data)) } catch {} }
+      ws.onmessage = (e) => {
+        if (epoch !== connectionEpochRef.current) return
+        try { handleWsEvent(JSON.parse(e.data)) } catch {}
+      }
       ws.onclose = () => {
+        if (epoch !== connectionEpochRef.current) return
         setConnected(false)
         if (pingRef.current) { window.clearInterval(pingRef.current); pingRef.current = null }
         if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
-        reconnectRef.current = window.setTimeout(connect, 2500)
+        reconnectRef.current = window.setTimeout(() => connect(epoch), 2500)
       }
       ws.onerror = () => { try { ws.close() } catch {} }
     } catch {
-      reconnectRef.current = window.setTimeout(connect, 3000)
+      if (epoch === connectionEpochRef.current) reconnectRef.current = window.setTimeout(() => connect(epoch), 3000)
     }
   }, [meId, handleWsEvent])
 
   useEffect(() => {
     if (!meId) return
+    const epoch = ++connectionEpochRef.current
+    setConversations([])
+    setActivePeer(null)
+    activePeerRef.current = null
+    setMessages([])
+    seenIds.current.clear()
+    setText('')
+    setSearchTerm('')
+    setSearchResults([])
+    setTypingPeer(null)
+    setOnlineIds(new Set())
+    setCatalogTarget(null)
+    setPanelProduct(null)
     registerAccount(me).catch(() => {})
     refreshConversations()
-    connect()
+    connect(epoch)
     return () => {
+      ++connectionEpochRef.current
       if (pingRef.current) window.clearInterval(pingRef.current)
       if (reconnectRef.current) window.clearTimeout(reconnectRef.current)
+      if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
       try { wsRef.current?.close() } catch {}
+      wsRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meId])
@@ -266,9 +293,10 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
     setLoadingMsgs(true)
     try {
       const msgs = await fetchMessages(meId, peer.id)
+      if (identityRef.current !== meId || activePeerRef.current?.id !== peer.id) return
       msgs.forEach(m => seenIds.current.add(m.id))
       setMessages(msgs)
-    } catch { setMessages([]) }
+    } catch { if (identityRef.current === meId) setMessages([]) }
     setLoadingMsgs(false)
     markRead(meId, peer.id)
     wsRef.current?.readyState === WebSocket.OPEN && wsRef.current.send(JSON.stringify({ type: 'read', data: { peer: peer.id } }))
@@ -288,13 +316,14 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
   useEffect(() => {
     const peer = activePeer
     if (!peer) return
+    let cancelled = false
     const tick = async () => {
       if (typeof document !== 'undefined' && document.hidden) return
       const list = messagesRef.current
       const last = [...list].reverse().find(m => m.status !== 'sending')?.created_at
       try {
         const news = await fetchMessages(meId, peer.id, undefined, last || undefined)
-        if (!news.length) return
+        if (cancelled || identityRef.current !== meId || !news.length) return
         let incoming = false
         setMessages(prev => {
           const have = new Set(prev.map(x => x.id))
@@ -307,7 +336,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
       } catch {}
     }
     const h = window.setInterval(tick, 5000)
-    return () => window.clearInterval(h)
+    return () => { cancelled = true; window.clearInterval(h) }
   }, [activePeer, meId])
 
   useEffect(() => {
@@ -323,11 +352,15 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
     const q = searchTerm.trim()
     if (!q) { setSearchResults([]); setSearching(false); return }
     setSearching(true)
+    let cancelled = false
     const t = window.setTimeout(async () => {
-      try { setSearchResults(await searchAccounts(q, meId)) } catch { setSearchResults([]) }
-      setSearching(false)
+      try {
+        const next = await searchAccounts(q, meId)
+        if (!cancelled && identityRef.current === meId) setSearchResults(next)
+      } catch { if (!cancelled) setSearchResults([]) }
+      if (!cancelled) setSearching(false)
     }, 250)
-    return () => window.clearTimeout(t)
+    return () => { cancelled = true; window.clearTimeout(t) }
   }, [searchTerm, meId])
 
   // ── Sending ────────────────────────────────────────────────
@@ -521,7 +554,7 @@ export default function ChatInbox({ me, className = '', heightClass = 'h-[calc(1
               </div>
               {activePeer.kind === 'vendor' && (
                 <button
-                  onClick={() => setCatalogTarget({ vendorId: activePeer.id, vendorName: activePeer.name })}
+                  onClick={() => setCatalogTarget({ vendorId: activePeer.catalog_vendor_id || activePeer.id, vendorName: activePeer.name })}
                   className="flex items-center gap-1.5 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm font-bold px-3 py-1.5 transition"
                   title={`Browse ${activePeer.name || activePeer.handle}'s catalog`}
                 >

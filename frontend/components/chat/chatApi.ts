@@ -12,6 +12,7 @@ export type ChatAccount = {
   kind?: string
   online?: boolean
   last_seen?: string | null
+  catalog_vendor_id?: string | null
 }
 
 export type ChatMessage = {

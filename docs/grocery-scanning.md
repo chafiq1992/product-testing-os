@@ -1,34 +1,30 @@
-# Grocery accounts in the wholesale portal
+# Grocery retail workspace
 
-The account administration page at `/wholesale/admin/` can create a **Grocery · barcode scanning** account. Grocery users sign in at the existing `/wholesale/` page. Existing accounts default to `vendor`; account type is independent of wholesale store category. Changing type requires signing out and back in.
+Grocery products, customers, orders, payments, request receipts and image ownership use `grocery_local_*` PostgreSQL tables, partitioned by immutable account UUID. Grocery operations do not read or write Shopify. Existing wholesale workflows retain Shopify. Earlier Shopify grocery records and old operation tables remain preserved and are not imported into fresh grocery workspaces.
 
-Grocery accounts use two simple workspaces:
+At `/wholesale/admin/`, create a Grocery retail account. Creation uses `operation: create` and rejects duplicate usernames; edits use `operation: update` and preserve account identity. New accounts get UUID chat identities. Earlier grocery accounts receive a fresh grocery inbox when initialized. Ordinary wholesale inboxes remain intact. Old messages are preserved but cannot be retrieved as another account through HTTP or WebSocket identity spoofing. Sign out and sign in after upgrading to load the current identity.
 
-- **Scan stock**: scan a barcode, enter name/unit price/total unit stock once, then save. A known barcode opens its editor. Scanning pauses during editing. Stock is an absolute total, not an increment. Grocery products are single-variant, tracked, and deny overselling.
-- **Scan order**: each deliberate scan adds one unit, with quantity/removal controls, current stock checks, cash/change, or unpaid credit. Credit requires customer name and phone. Orders and payments use the existing order history/customer ledger. Receipt must be dismissed explicitly before the next sale.
+## Merchant flow
 
-The existing inventory/catalog, chat, customers, order/payment/status screens remain available. Grocery catalog/chat/order ownership uses stable vendor ID tags. Ordinary vendor entry/order flows are preserved. Grocery accounts cannot bypass scanning through the old product, inventory, order, or batch entry APIs.
+- **Add product**: name, image, section initial, selling price and stock. Barcode optional. The server assigns a per-section ID such as `L-01`. Barcode aliases and short IDs cannot collide within an account. Images have durable local database-backed storage.
+- **By item**: stock and sale quantities are whole items.
+- **By weight**: price is DH/kg and stock is integer grams. Two bags of 25 kg create 50,000 g. Selecting/scanning opens a gram/kg dialog with 250 g, 500 g and 1 kg shortcuts. Selling 500 g leaves 49,500 g (49.5 kg). Subsequent scans pause until the dialog resolves.
+- **Create order**: find by name, short ID, barcode or QR, review the basket and record cash/change or credit. Credit requires customer name and phone. Orders, payments and customer history stay inside the grocery account.
 
-## Scanning
+Type `L` for its section or `l23` for `L-23`, followed by similar IDs such as `L-230` and `L-234`, with images. Enter selects only an exact, unambiguous identity. Duplicate names require choosing a suggestion. Barcode leading zeroes are preserved; UPC-A maps to EAN-13.
 
-EAN-13, EAN-8, UPC-A and Code 128; rear camera when available. Native BarcodeDetector is preferred, with bundled ZXing fallback. GTIN checksum checks, two agreeing frames, held-label suppression and explicit rescan protect against common misreads. USB/Bluetooth keyboard scanners and manual Enter input are available. Barcode strings preserve leading zeroes; UPC-A maps to its EAN-13 equivalent.
+## Performance and correctness
 
-A barcode identifies an item already in the account catalog; an unknown barcode needs its name and price entered once. No external product-information database is queried. A multi-variant or multi-location legacy item requires explicit catalog preparation.
+The UI keeps the catalog in memory, reuses the loaded parent catalog and immediately applies confirmed mutation responses. Camera decoding prefers native BarcodeDetector with bundled ZXing fallback, QR support, two-read confirmation, GTIN checksums, held-label suppression and camera cleanup. USB/Bluetooth keyboard scanners and manual input remain supported.
 
-## Safety and recovery
+Checkout locks the account row, verifies ownership/current price, conditionally decrements stock, and commits the order, lines, customer and UUID receipt in one transaction. Money uses Decimal with half-up rounding per line; weight uses whole grams. Repeating a UUID returns its original receipt; changed content with that UUID is rejected. Cancellation restores quantity once. No external store call occurs inside the transaction. Browser drafts/pending requests use immutable account keys.
 
-Grocery routes require the existing vendor login plus a signed, account-bound, seven-day grocery token. Password changes invalidate the grocery token. Server-side account type, ownership, quantities, current Shopify prices, inventory policy, available stock and payment are checked. The server calculates totals with Decimal. No client-supplied price is trusted at checkout.
+Catalog, chat cards, order status, payment and customer screens use local grocery adapters. Fractional kg stock stays visible; cards retain kg/unit price basis. Rejected payment edits display errors and never optimistically mark an order paid.
 
-The exact request UUID is durably claimed before writes and stored on the browser before submission. Confirmed results replay without creating another item/order. A network interruption retains the same request; the UI exposes **Check same request**. An ambiguous Shopify write returns `needs_review` and is never blindly replayed. Admins must reconcile the shown request ID against `grocery_operations` and Shopify before releasing a blocked browser draft. Grocery order note attributes retain the request ID and customer snapshot. The barcode reservation records a known created product ID even if later stock setup fails.
+Internet is required to save; offline checkout is not implemented. An isolated SQLite benchmark measured checkout median 7.42 ms and a 50-product catalog at 3.49 ms. These are database-layer test results, not production/network/phone benchmarks.
 
-Cash sales atomically update the existing wholesale payment tracker with the order total, excluding change. Grocery-tagged confirmed Shopify paid orders can recover their paid status in history if local payment persistence was interrupted.
+## Verification
 
-Internet is required for writes. Draft/basket/request recovery uses sessionStorage scoped to account and mode on this device/tab. This is not an offline checkout queue. Browser storage failure blocks submission rather than risking an untracked retry.
+Backend regressions cover no-Shopify local CRUD, concurrent checkout/retries, account recycling, weighted stock, alias collisions, barcode attachment, durable image fallback, cancellation, payment validation, HTTP/WebSocket isolation and existing wholesale/auth behavior. Frontend tests cover barcode/QR checks, repeated reads, short-ID suggestions, ambiguity and gram/currency arithmetic. Browser checks use a separate SQLite database, real handlers, external calls disabled and a 234-product image catalog.
 
-Legacy products lacking a stable `vendor_id:<id>` tag are intentionally excluded from grocery catalogs. Do not convert an established vendor without an explicit product-tag/barcode migration; same-name ownership is insufficient.
-
-## Validation and limits
-
-Automated backend coverage includes permissions, cross-account isolation, duplicate UUIDs, barcode canonicalization, no blind retries after ambiguity, cash/credit totals, stock/price checks, payment-ledger integration, existing vendor behavior, and batch entry rejection. Pure scanner tests cover checksums, UPC equivalence, agreeing reads and held-label suppression. Browser fixture checks cover scanning to basket, repeated quantities, reload recovery, cash/change, unpaid identity requirements and stock updates.
-
-Physical phone-camera speed/accuracy, lighting, autofocus and real USB/Bluetooth devices still need device acceptance testing. No physical scanning benchmark or live Shopify transaction is claimed. The existing configured Shopify REST API version remains unchanged; the bundled Shopify GraphQL validator cannot validate these Python REST payloads.
+Physical phone camera speed, autofocus, lighting and real handheld devices still need acceptance testing.

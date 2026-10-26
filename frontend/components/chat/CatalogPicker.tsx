@@ -140,7 +140,7 @@ export default function CatalogPicker({
                     </div>
                     {(unitPriceLabel(p.unit_price_min, p.unit_price_max) || pcsLabel(p.pcs_options)) && (
                       <div className="mt-0.5 flex items-center justify-between gap-1 text-[9px] text-slate-400">
-                        <span className="truncate">{unitPriceLabel(p.unit_price_min, p.unit_price_max) && `${unitPriceLabel(p.unit_price_min, p.unit_price_max)}/pc`}</span>
+                        <span className="truncate">{unitPriceLabel(p.unit_price_min, p.unit_price_max) && `${unitPriceLabel(p.unit_price_min, p.unit_price_max)}/${p.unit_type === 'weight' ? 'kg' : 'pc'}`}</span>
                         <span className="shrink-0">{pcsLabel(p.pcs_options)}</span>
                       </div>
                     )}

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, Form, File, Request, BackgroundTasks
+from fastapi import FastAPI, UploadFile, Form, File, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -9083,6 +9083,7 @@ class WholesaleVendorCreate(BaseModel):
     password: str
     store_type: Optional[str] = "shoes"
     account_type: Optional[str] = None
+    operation: str = "create"
 
 
 class WholesaleProductCreate(BaseModel):
@@ -9116,9 +9117,40 @@ class WholesaleLogin(BaseModel):
     password: str
 
 
+def _wholesale_ensure_account_identity(vendor: dict) -> dict:
+    """Backfill identity; grocery starts a fresh inbox, wholesale keeps its inbox."""
+    from uuid import uuid5, NAMESPACE_URL
+    vid = str(vendor.get("id") or vendor.get("username") or "").strip().lower()
+    if not vendor.get("account_id"):
+        seed = f"ptos:legacy-vendor:{WHOLESALE_STORE}:{vid}:{vendor.get('created_at') or ''}"
+        vendor["account_id"] = str(uuid5(NAMESPACE_URL, seed))
+    if not vendor.get("chat_id"):
+        grocery = vendor.get("account_type") == "grocery" or vendor.get("store_type") == "grocery"
+        vendor["chat_id"] = f"vendor:{vendor['account_id']}" if grocery else vid
+    return vendor
+
+
+def _wholesale_save_vendor_record(vendor: dict, *, create: bool) -> bool:
+    """Create is INSERT-only: two admin requests cannot reuse an account lifetime."""
+    key = _wholesale_vendor_key(vendor["id"])
+    if not create:
+        db.set_app_setting(WHOLESALE_STORE, key, vendor)
+        return True
+    from sqlalchemy.exc import IntegrityError
+    with db.SessionLocal() as session:
+        session.add(db.AppSetting(pk=db._mk_setting_pk(WHOLESALE_STORE, key), store=WHOLESALE_STORE,
+                                  key=key, value=json.dumps(vendor), updated_at=datetime.utcnow()))
+        try:
+            session.commit()
+            return True
+        except IntegrityError:
+            session.rollback()
+            return False
+
+
 @app.post("/api/wholesale/vendors")
 async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
-    """Admin endpoint: create or update a wholesale vendor."""
+    """Admin endpoint: create a fresh account or explicitly edit an existing one."""
     try:
         name = (req.name or "").strip()
         username = (req.username or "").strip().lower()
@@ -9131,6 +9163,14 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
         existing = db.get_app_setting(WHOLESALE_STORE, key) or {}
         if not isinstance(existing, dict):
             existing = {}
+        if req.operation not in {"create", "update"}:
+            return {"error": "invalid_operation"}
+        if req.operation == "create" and existing:
+            return {"error": "username_already_exists"}
+        if req.operation == "update" and not existing:
+            return {"error": "vendor_not_found"}
+        if req.operation == "create" and password == "UNCHANGED_PLACEHOLDER":
+            return {"error": "password_required"}
 
         raw_type = (req.store_type or "shoes").strip().lower()
         store_type = raw_type if raw_type in WHOLESALE_STORE_TYPES else "shoes"
@@ -9140,8 +9180,14 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
         if account_type == "grocery":
             store_type = "grocery"
 
+        if existing:
+            _wholesale_ensure_account_identity(existing)
+        account_id = str(existing.get("account_id") or uuid4())
         vendor_data = {
+            **existing,
             "id": vendor_id,
+            "account_id": account_id,
+            "chat_id": existing.get("chat_id") or f"vendor:{account_id}",
             "name": name,
             "username": username,
             "password_hash": existing.get("password_hash", _hash_password(password)) if password == "UNCHANGED_PLACEHOLDER" else _hash_password(password),
@@ -9150,7 +9196,9 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
             "created_at": existing.get("created_at") or datetime.utcnow().isoformat() + "Z",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
-        db.set_app_setting(WHOLESALE_STORE, key, vendor_data)
+        if not _wholesale_save_vendor_record(vendor_data, create=req.operation == "create"):
+            return {"error": "username_already_exists"}
+        _auth_gate.invalidate_vendor_cache(vendor_id)
         safe = {k: v for k, v in vendor_data.items() if k != "password_hash"}
         return {"data": safe}
     except Exception as e:
@@ -9206,11 +9254,12 @@ def _wholesale_chat_directory(term: str) -> list[dict]:
             if t and (t not in vid) and (t not in name.lower()):
                 continue
             out.append({
-                "id": vid,
+                "id": str(val.get("chat_id") or vid).strip().lower(),
                 "handle": str(val.get("username") or vid).strip().lower(),
                 "name": name,
                 "avatar": val.get("profile_image") or val.get("avatar") or "",
                 "kind": "vendor",
+                "catalog_vendor_id": vid,
             })
         return out
     except Exception:
@@ -9245,6 +9294,10 @@ async def api_wholesale_login(req: WholesaleLogin, request: Request, response: R
         if _hash_password(password) != stored_hash:
             return {"error": "invalid_credentials"}
 
+        if not vendor.get("account_id") or not vendor.get("chat_id"):
+            _wholesale_ensure_account_identity(vendor)
+            db.set_app_setting(WHOLESALE_STORE, key, vendor)
+
         safe = {k: v for k, v in vendor.items() if k != "password_hash"}
         safe["account_type"] = vendor.get("account_type") or "vendor"
         if safe["account_type"] == "grocery":
@@ -9253,7 +9306,8 @@ async def api_wholesale_login(req: WholesaleLogin, request: Request, response: R
         # The vendor API is gated on this cookie (auth_gate.py).
         _auth_gate.set_session_cookie(
             response, request, _auth_gate.VENDOR_COOKIE,
-            _auth_gate.issue_vendor_token(vendor_id, stored_hash), _auth_gate.COOKIE_MAX_AGE,
+            _auth_gate.issue_vendor_token(vendor_id, stored_hash, account_id=vendor["account_id"],
+                                          chat_id=vendor["chat_id"]), _auth_gate.COOKIE_MAX_AGE,
         )
         return {"data": safe}
     except Exception as e:
@@ -9325,7 +9379,7 @@ async def api_wholesale_set_title_description_prompts(req: WholesaleTitleDescrip
         incoming = req.prompts or {}
         for store_type in WHOLESALE_STORE_TYPES:
             val = str(incoming.get(store_type) or "").strip()
-            cleaned[store_type] = val or WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS[store_type]
+            cleaned[store_type] = val or WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS.get(store_type, WHOLESALE_DEFAULT_TITLE_DESC_PROMPTS["general"])
         db.set_app_setting(WHOLESALE_STORE, WHOLESALE_TITLE_DESC_PROMPTS_KEY, cleaned)
         return {"data": _wholesale_title_description_prompts(), "store_types": WHOLESALE_STORE_TYPES}
     except Exception as e:
@@ -10192,6 +10246,8 @@ async def api_wholesale_vendor_products(vendor_id: str):
         )
         products = await run_in_threadpool(_wholesale_enrich_products_inventory, products)
         return {"data": products}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -10201,7 +10257,9 @@ _chat_catalog_cache: dict[str, tuple[float, dict]] = {}
 _CHAT_CATALOG_TTL_S = int(os.getenv("PTOS_CHAT_CATALOG_TTL_S", "300") or "300")
 
 
-def _catalog_variant_available(variant: dict) -> int:
+def _catalog_variant_available(variant: dict) -> int | float:
+    if variant.get("unit_type") == "weight":
+        return max(0, int(variant.get("stock_grams") or 0) / 1000)
     try:
         return max(0, int(
             variant.get("inventory_available")
@@ -10264,6 +10322,9 @@ def _catalog_normalize_product(p: dict) -> dict:
             "image": img_by_id.get(v.get("image_id")) or featured,
             "pcs_per_crate": pcs,
             "unit_price": unit_price,
+            "unit_type": v.get("unit_type"),
+            "price_unit": "kg" if v.get("unit_type") == "weight" else p.get("price_unit"),
+            "short_code": p.get("short_code"),
         })
 
     prices = in_stock_prices or all_prices
@@ -10273,6 +10334,9 @@ def _catalog_normalize_product(p: dict) -> dict:
         "handle": p.get("handle") or "",
         "title": p.get("title") or "",
         "description_html": p.get("body_html") or "",
+        "unit_type": p.get("unit_type"),
+        "price_unit": p.get("price_unit"),
+        "short_code": p.get("short_code"),
         "image": featured,
         "images": [im.get("src") for im in images if im.get("src")],
         "price_min": (min(prices) if prices else 0),
@@ -10314,6 +10378,9 @@ def _build_vendor_catalog_sync(vid: str) -> dict:
 
 
 async def _get_vendor_catalog(vid: str, force: bool = False) -> dict:
+    vendor = db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vid))
+    if isinstance(vendor, dict) and vendor.get("account_type") == "grocery":
+        return await run_in_threadpool(_build_vendor_catalog_sync, vid)
     now = time.time()
     cached = _chat_catalog_cache.get(vid)
     if cached and not force and (now - cached[0]) < _CHAT_CATALOG_TTL_S:
@@ -10788,6 +10855,10 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
+        if vendor.get("account_type") == "grocery":
+            from app.grocery import list_orders as grocery_handler
+            return await run_in_threadpool(grocery_handler, vendor_id_norm)
+
         vendor_name = vendor.get("name", vendor_id_norm)
 
         orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
@@ -10882,6 +10953,8 @@ async def api_wholesale_vendor_orders(vendor_id: str):
                 "all_orders": all_orders,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -10895,6 +10968,10 @@ async def api_wholesale_cancel_order(vendor_id: str, order_id: str, req: Wholesa
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
+        if vendor.get("account_type") == "grocery":
+            from app.grocery import cancel_order as grocery_handler
+            return await run_in_threadpool(grocery_handler, vendor_id_norm, order_id, req.model_dump())
+
         vendor_name = vendor.get("name", vendor_id_norm)
 
         from app.integrations.shopify_client import _rest_get_store, _rest_post_store
@@ -10934,6 +11011,8 @@ async def api_wholesale_cancel_order(vendor_id: str, order_id: str, req: Wholesa
                 "cancel_reason": cancelled_order.get("cancel_reason") or reason,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -10979,6 +11058,10 @@ async def api_wholesale_update_order_status(vendor_id: str, order_id: str, req: 
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
+        if vendor.get("account_type") == "grocery":
+            from app.grocery import update_status as grocery_handler
+            return await run_in_threadpool(grocery_handler, vendor_id_norm, order_id, req.model_dump())
+
         vendor_name = vendor.get("name", vendor_id_norm)
 
         from app.integrations.shopify_client import _rest_get_store, _rest_put_store
@@ -11025,6 +11108,8 @@ async def api_wholesale_update_order_status(vendor_id: str, order_id: str, req: 
             pass
 
         return {"data": status_data}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -11032,6 +11117,10 @@ async def api_wholesale_update_order_status(vendor_id: str, order_id: str, req: 
 @app.get("/api/wholesale/vendors/{vendor_id}/customers")
 async def api_wholesale_vendor_customers(vendor_id: str):
     try:
+        vendor = db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vendor_id.strip().lower()))
+        if isinstance(vendor, dict) and vendor.get("account_type") == "grocery":
+            from app.grocery import list_customers
+            return await run_in_threadpool(list_customers, vendor_id)
         orders_res = await api_wholesale_vendor_orders(vendor_id)
         if isinstance(orders_res, dict) and orders_res.get("error"):
             return orders_res
@@ -11093,6 +11182,8 @@ async def api_wholesale_vendor_customers(vendor_id: str):
         customers.sort(key=lambda c: (-float(c.get("total_unpaid") or 0), -int(c.get("orders_count") or 0)))
         total_unpaid = round(sum(float(c.get("total_unpaid") or 0) for c in customers), 2)
         return {"data": {"total_customers": len(customers), "total_unpaid": total_unpaid, "customers": customers}}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 
@@ -11112,6 +11203,10 @@ async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req:
         if not vendor:
             return {"error": "Vendor not found"}
 
+        if vendor.get("account_type") == "grocery":
+            from app.grocery import update_payment
+            return await run_in_threadpool(update_payment, vendor_id_norm, order_id, req.model_dump())
+
         payment_key = f"wholesale_order_payment:{vendor_id_norm}:{order_id}"
         payment_data = {
             "payment_status": req.payment_status,
@@ -11121,6 +11216,8 @@ async def api_wholesale_update_order_payment(vendor_id: str, order_id: str, req:
         }
         db.set_app_setting(WHOLESALE_STORE, payment_key, payment_data)
         return {"data": payment_data}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}
 

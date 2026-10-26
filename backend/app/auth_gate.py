@@ -401,31 +401,36 @@ def set_vendor_resolver(fn: Callable[[str], Any]) -> None:
     _vendor_resolver = fn
 
 
-def _vendor_password_hash(vendor_id: str) -> Optional[str]:
-    now = time.time()
+def invalidate_vendor_cache(vendor_id: str) -> None:
     with _vendor_cache_lock:
-        hit = _vendor_cache.get(vendor_id)
-        if hit and hit[0] > now:
-            return hit[1]
-    value: Optional[str] = None
+        _vendor_cache.pop((vendor_id or "").strip().lower(), None)
+
+
+def _vendor_record(vendor_id: str) -> Optional[dict]:
+    # Account lifetimes must be checked against current storage on every request.
+    # A cached username could otherwise authenticate an earlier account after a
+    # replacement with the same username/password, including on another worker.
     try:
         rec = _vendor_resolver(vendor_id) if _vendor_resolver else None
-        if isinstance(rec, dict) and rec.get("password_hash"):
-            value = str(rec["password_hash"])
+        return rec if isinstance(rec, dict) and rec.get("password_hash") else None
     except Exception:
         log.exception("auth gate: vendor lookup failed")
-        return None  # do not cache a failure
-    with _vendor_cache_lock:
-        _vendor_cache[vendor_id] = (now + _VENDOR_CACHE_TTL, value)
-    return value
+        return None
 
 
-def issue_vendor_token(vendor_id: str, password_hash: str, ttl: int = COOKIE_MAX_AGE) -> str:
+def _vendor_password_hash(vendor_id: str) -> Optional[str]:
+    rec = _vendor_record(vendor_id)
+    return str(rec["password_hash"]) if rec else None
+
+
+def issue_vendor_token(vendor_id: str, password_hash: str, ttl: int = COOKIE_MAX_AGE,
+                       *, account_id: str = "", chat_id: str = "") -> str:
     now = int(time.time())
     vid = (vendor_id or "").strip().lower()
-    with _vendor_cache_lock:
-        _vendor_cache.pop(vid, None)
-    return _sign({"k": "vendor", "sub": vid, "fp": _fingerprint("vendor", vid, password_hash or ""),
+    invalidate_vendor_cache(vid)
+    secret = (password_hash or "") + ("\x1f" + account_id if account_id else "")
+    return _sign({"k": "vendor", "sub": vid, "aid": account_id, "cid": chat_id or vid,
+                  "fp": _fingerprint("vendor", vid, secret),
                   "iat": now, "exp": now + ttl})
 
 
@@ -434,9 +439,17 @@ def verify_vendor_token(token: str) -> Optional[dict]:
     if not payload or payload.get("k") != "vendor":
         return None
     vid = str(payload.get("sub") or "")
-    current = _vendor_password_hash(vid)
-    if not current or not hmac.compare_digest(str(payload.get("fp")), _fingerprint("vendor", vid, current)):
+    rec = _vendor_record(vid)
+    if not rec:
         return None
+    account_id = str(rec.get("account_id") or "")
+    chat_id = str(rec.get("chat_id") or vid).strip().lower()
+    if str(payload.get("aid") or "") != account_id or str(payload.get("cid") or vid) != chat_id:
+        return None
+    current = str(rec["password_hash"]) + ("\x1f" + account_id if account_id else "")
+    if not hmac.compare_digest(str(payload.get("fp")), _fingerprint("vendor", vid, current)):
+        return None
+    payload["chat_id"] = chat_id
     return payload
 
 
@@ -560,12 +573,14 @@ class AuthGateMiddleware:
                 return await self._deny(scope, receive, send, 403, "forbidden")
             return await self.app(scope, receive, send)
 
-        # kind == "chat": a vendor acts only as itself.
+        # Login usernames route vendor APIs; immutable chat IDs route messages.
+        # A newly created account can never claim its username's old inbox.
+        chat_id = str(vendor.get("chat_id") or vid).strip().lower()
         m = _CHAT_WS.match(path)
-        if m and m.group(1).strip().lower() != vid:
+        if m and m.group(1).strip().lower() != chat_id:
             return await self._deny(scope, receive, send, 403, "forbidden")
         me = [v.strip().lower() for v in _query(scope).get("me", [])]
-        if any(v != vid for v in me):
+        if any(v != chat_id for v in me):
             return await self._deny(scope, receive, send, 403, "forbidden")
         field = _CHAT_BODY_IDENTITY.get(path)
         if field and method == "POST":
@@ -574,7 +589,7 @@ class AuthGateMiddleware:
                 claimed = str((json.loads(body or b"{}") or {}).get(field) or "").strip().lower()
             except Exception:
                 claimed = ""
-            if claimed != vid:
+            if claimed != chat_id:
                 return await self._deny(scope, receive, send, 403, "forbidden")
         return await self.app(scope, receive, send)
 

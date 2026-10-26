@@ -4,6 +4,8 @@
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 
 export type CatalogVariant = {
+  unit_type?: 'unit' | 'weight'
+  price_unit?: string
   id: string
   title: string
   price?: string | null
@@ -16,6 +18,9 @@ export type CatalogVariant = {
 }
 
 export type CatalogProduct = {
+  unit_type?: 'unit' | 'weight'
+  price_unit?: string
+  short_code?: string
   id: string
   handle: string
   title: string
@@ -40,6 +45,9 @@ export type Catalog = { vendor: CatalogVendor; products: CatalogProduct[]; count
 
 // Compact card embedded in a chat message (keeps messages small).
 export type ProductCard = {
+  unit_type?: 'unit' | 'weight'
+  price_unit?: string
+  short_code?: string
   vendor: string
   id: string
   title: string
@@ -56,6 +64,9 @@ export type CatalogCard = { vendor: string; title: string; count: number; produc
 
 export function toProductCard(vendor: string, p: CatalogProduct): ProductCard {
   return {
+    unit_type: p.unit_type,
+    price_unit: p.price_unit,
+    short_code: p.short_code,
     vendor,
     id: p.id,
     title: p.title,

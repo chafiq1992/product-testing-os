@@ -76,7 +76,7 @@ export default function WholesaleAdminPage() {
     }
     setSaving(true)
     try {
-      const res = await apiPost('/api/wholesale/vendors', { name: name.trim(), username: username.trim(), password: password.trim(), store_type: accountType === 'grocery' ? 'grocery' : storeType, account_type: accountType })
+      const res = await apiPost('/api/wholesale/vendors', { name: name.trim(), username: username.trim(), password: password.trim(), operation: 'create', store_type: accountType === 'grocery' ? 'grocery' : storeType, account_type: accountType })
       if (res?.error) { showToast('error', res.error); return }
       showToast('success', `Vendor "${name.trim()}" created successfully!`)
       setName(''); setUsername(''); setPassword(''); setStoreType('shoes')
@@ -101,6 +101,7 @@ export default function WholesaleAdminPage() {
     setEditSaving(true)
     try {
       const body: any = {
+        operation: 'update',
         name: editName.trim(),
         username: editVendor.username,
         password: editPassword.trim() || 'UNCHANGED_PLACEHOLDER',
@@ -135,10 +136,10 @@ export default function WholesaleAdminPage() {
         <section role="dialog" aria-modal="true" aria-labelledby="edit-account-title" className="w-full max-w-lg space-y-4 rounded-3xl bg-white p-6 shadow-xl">
           <div className="flex items-center justify-between"><h2 id="edit-account-title" className="text-xl font-bold">Edit account · @{editVendor.username}</h2><button aria-label="Close" disabled={editSaving} onClick={() => setEditVendor(null)}><X size={20} /></button></div>
           <label className="block text-sm font-bold">Name<input value={editName} onChange={e => setEditName(e.target.value)} className="mt-1 w-full rounded-xl border px-4 py-3" /></label>
-          <label className="block text-sm font-bold">Account type<select value={editAccountType} onChange={e => setEditAccountType(e.target.value)} className="mt-1 w-full rounded-xl border px-4 py-3"><option value="vendor">Wholesale vendor</option><option value="grocery">Grocery · barcode scanning</option></select></label>
+          <label className="block text-sm font-bold">Account type<select value={editAccountType} onChange={e => setEditAccountType(e.target.value)} className="mt-1 w-full rounded-xl border px-4 py-3"><option value="vendor">Wholesale vendor</option><option value="grocery">Grocery · retail account</option></select></label>
           <label className="block text-sm font-bold">Store type<select value={editAccountType === 'grocery' ? 'grocery' : editStoreType} disabled={editAccountType === 'grocery'} onChange={e => setEditStoreType(e.target.value)} className="mt-1 w-full rounded-xl border px-4 py-3">{STORE_TYPES.map(type => <option key={type} value={type}>{STORE_TYPE_LABELS[type]}</option>)}{(editAccountType === 'grocery' || editStoreType === 'grocery') && <option value="grocery">Grocery</option>}</select></label>
           <label className="block text-sm font-bold">New password (optional)<input type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} className="mt-1 w-full rounded-xl border px-4 py-3" placeholder="Leave blank to keep current password" /></label>
-          <p className="text-xs text-slate-500">The account should sign out and sign in again after changing its type. Existing products may require barcode setup before they can be scanned.</p>
+          <p className="text-xs text-slate-500">Sign out and sign in again after changing account type. Grocery uses a separate local catalog and order history; existing Shopify products are not imported.</p>
           <button disabled={editSaving} onClick={handleEditSave} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 py-3 font-bold text-white disabled:opacity-50">{editSaving && <Loader2 size={18} className="animate-spin" />}Save account</button>
         </section>
       </div>}
@@ -181,9 +182,9 @@ export default function WholesaleAdminPage() {
             <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
               <label htmlFor="new-account-type" className="mb-2 block text-sm font-bold">Account type</label>
               <select id="new-account-type" value={accountType} onChange={e => setAccountType(e.target.value)} className="w-full rounded-xl border bg-white px-4 py-3 text-sm font-bold md:max-w-sm">
-                <option value="vendor">Wholesale vendor</option><option value="grocery">Grocery · barcode scanning</option>
+                <option value="vendor">Wholesale vendor</option><option value="grocery">Grocery · retail account</option>
               </select>
-              <p className="mt-2 text-xs text-slate-600">Grocery accounts use a simple barcode scanner for product entry and order creation, with the same catalog, chat, orders and customers.</p>
+              <p className="mt-2 text-xs text-slate-600">Grocery accounts use their own products, customers and orders, with item/weight sales, images, short product IDs and scanning.</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
               <div>

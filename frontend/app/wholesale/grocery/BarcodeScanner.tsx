@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Camera, CheckCircle2, Flashlight, Keyboard, Loader2, RefreshCw, ScanLine, X } from 'lucide-react'
 import { normalizeBarcode, ScanStabilityGate, validateBarcode } from './scanner'
 
-type Props = { onScan: (barcode: string) => void; lang: 'en' | 'ar'; disabled?: boolean }
+type Props = { onScan: (barcode: string) => void; lang: 'en' | 'ar'; disabled?: boolean; onInputChange?: (value: string) => void; clearInputKey?: number }
 type NativeDetection = { rawValue: string; format: string }
 type Detector = { detect: (source: HTMLVideoElement) => Promise<NativeDetection[]> }
 type DetectorConstructor = {
@@ -12,9 +12,9 @@ type DetectorConstructor = {
   getSupportedFormats: () => Promise<string[]>
 }
 
-const formats = ['ean_13', 'ean_8', 'upc_a', 'code_128']
+const formats = ['ean_13', 'ean_8', 'upc_a', 'code_128', 'qr_code']
 
-export default function BarcodeScanner({ onScan, lang, disabled = false }: Props) {
+export default function BarcodeScanner({ onScan, lang, disabled = false, onInputChange, clearInputKey = 0 }: Props) {
   const ar = lang === 'ar'
   const [requested, setRequested] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -36,6 +36,8 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
 
   const copyRef = useRef(ar)
   copyRef.current = ar
+
+  useEffect(() => { setInput(''); setError('') }, [clearInputKey])
 
   useEffect(() => {
     if (!disabled && window.matchMedia('(pointer: fine)').matches) inputRef.current?.focus()
@@ -103,11 +105,11 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
     }
 
     async function fallback() {
-      const { BrowserMultiFormatOneDReader, BarcodeFormat } = await import('@zxing/browser')
+      const { BrowserMultiFormatReader, BarcodeFormat } = await import('@zxing/browser')
       if (cancelled || !stream || !video) return
-      const reader = new BrowserMultiFormatOneDReader(undefined, {
-        delayBetweenScanAttempts: 100,
-        delayBetweenScanSuccess: 110,
+      const reader = new BrowserMultiFormatReader(undefined, {
+        delayBetweenScanAttempts: 65,
+        delayBetweenScanSuccess: 75,
         tryPlayVideoTimeout: 8000,
       })
       const started = await reader.decodeFromStream(stream, video, (result, _error, callbackControls) => {
@@ -169,7 +171,7 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
                 return
               }
             }
-            if (!cancelled) timer = setTimeout(tick, 100)
+            if (!cancelled) timer = setTimeout(tick, 65)
           }
           void tick()
         } else await fallback()
@@ -208,7 +210,7 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
   function submit(event: React.FormEvent) {
     event.preventDefault()
     if (disabled) return
-    if (!validateBarcode(input)) {
+    if (!onInputChange && !validateBarcode(input)) {
       setError(ar ? 'تحقق من أرقام الباركود ثم حاول مجدداً.' : 'Check the barcode digits and try again.')
       return
     }
@@ -228,7 +230,7 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
   return (
     <section aria-label={ar ? 'قارئ الباركود' : 'Barcode scanner'} className="rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm sm:p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-bold text-slate-900"><ScanLine size={21} className="text-emerald-600" />{ar ? 'امسح الباركود' : 'Scan a barcode'}</div>
+        <div className="flex items-center gap-2 font-bold text-slate-900"><ScanLine size={21} className="text-emerald-600" />{ar ? 'ابحث عن منتج أو امسح رمزه' : 'Find a product or scan its code'}</div>
         {!requested ? (
           <button type="button" disabled={disabled} onClick={() => { unlockAudio(); setRequested(true) }} className="flex min-h-11 items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"><Camera size={18} />{ar ? 'تشغيل الكاميرا' : 'Open camera'}</button>
         ) : (
@@ -247,7 +249,7 @@ export default function BarcodeScanner({ onScan, lang, disabled = false }: Props
       <form onSubmit={submit} className="flex gap-2">
         <div className="relative min-w-0 flex-1">
           <Keyboard size={18} className="pointer-events-none absolute left-3 top-3.5 text-slate-400" />
-          <input ref={inputRef} value={input} onChange={event => setInput(event.target.value)} disabled={disabled} dir="ltr" aria-label={ar ? 'الباركود أو رمز المنتج' : 'Barcode or product code'} placeholder={ar ? 'قارئ الباركود أو إدخال يدوي' : 'Handheld scanner or type barcode'} autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={64} className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-sm font-semibold outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:opacity-50" />
+          <input ref={inputRef} value={input} onChange={event => { setInput(event.target.value); onInputChange?.(event.target.value) }} disabled={disabled} aria-label={ar ? 'الاسم أو الرمز القصير أو الباركود' : 'Name, short ID or barcode'} placeholder={ar ? 'اكتب L أو l23 أو اسم المنتج' : 'Type L, l23, a name, or scan'} autoComplete="off" autoCapitalize="off" spellCheck={false} maxLength={64} className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 pl-10 pr-3 text-sm font-semibold outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:opacity-50" />
         </div>
         <button type="submit" disabled={disabled || !input.trim()} className="min-h-12 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white disabled:opacity-40">{ar ? 'إدخال' : 'Enter'}</button>
       </form>

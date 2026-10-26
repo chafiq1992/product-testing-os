@@ -22,6 +22,7 @@ export function validateBarcode(value: string, format?: string): boolean {
   if (kind === 'ean_8') return /^\d{8}$/.test(code) && validGtin(code)
   if (kind === 'upc_a') return /^\d{12}$/.test(code) && validGtin(code)
   if (kind === 'code_128') return true // The decoder verifies Code 128's internal checksum.
+  if (kind === 'qr_code') return true // QR error correction is checked by the decoder.
   if (kind) return false
   if (/^(?:\d{8}|\d{12}|\d{13}|\d{14})$/.test(code)) return validGtin(code)
   return true
