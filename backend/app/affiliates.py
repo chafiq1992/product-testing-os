@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint, update
 from sqlalchemy.exc import IntegrityError
 import requests
@@ -411,7 +411,15 @@ def order_view(row, delivery_fee_cents=None, cancellation=None, lookup_cancellat
         # Partial deliveries may collect less than the original Shopify total.
         non_product_total = max(0, cents(snap.get("total_price")) - subtotal)
         eligible_subtotal = min(eligible_subtotal, max(0, cents(delivery["cash_amount"]) - non_product_total))
-    expected = max(0, eligible_subtotal - row.cost_cents - delivery_fee_cents)
+    # Portal customers pay delivery separately. Only the actual matching Shopify
+    # shipping charge can offset its snapshotted expense; taxes/other shipping
+    # never inflate affiliate profit. Cash/refund product caps above still apply.
+    portal_shipping = sum(max(0, cents(line.get("discounted_price", line.get("price"))))
+        for line in snap.get("shipping_lines", [])
+        if line.get("code") == "customer_portal_delivery" and not line.get("is_removed"))
+    delivery_revenue = min(max(0, delivery_fee_cents), portal_shipping,
+        max(0, cents(snap.get("total_price")) - subtotal))
+    expected = max(0, eligible_subtotal + delivery_revenue - row.cost_cents - delivery_fee_cents)
     settled = status == "delivered" and (delivery.get("cash_collected") is True or financial in {"paid", "partially_refunded"} or "delivered" in tags)
     if delivery.get("settlement_pending"):
         settled = False
@@ -443,6 +451,7 @@ class OrderLine(BaseModel):
 
 
 class NewOrder(BaseModel):
+    _customer_portal: bool = PrivateAttr(default=False)
     request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,100}$")
     store: str = Field(min_length=1, max_length=63)
     customer_name: str = Field(min_length=2, max_length=120)
@@ -618,7 +627,7 @@ def order_details(order_id: str, refresh: bool = False, seller=Depends(active_se
         if 'delivery_fee' not in receipt:
             terms = session.get(OrderTerms, order_id)
             receipt['delivery_fee'] = (terms.delivery_fee_cents if terms else 0) / 100
-        receipt['delivery_included'] = True
+        receipt.setdefault('delivery_included', not any(line.get('code') == 'customer_portal_delivery' for line in snap.get('shipping_lines', [])))
         return {'data': {'order': order_view(row, cancellation=cancellation, lookup_cancellation=False), 'receipt': receipt, 'warnings': warnings}}
 
 
@@ -718,7 +727,10 @@ def create_customer(body: CustomerInput, seller=Depends(active_seller)):
 
 @router.post("/orders")
 def create_order(body: NewOrder, seller=Depends(active_seller)):
-    fingerprint = hashlib.sha256(json.dumps(body.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+    fingerprint_data = body.model_dump(mode="json")
+    if body._customer_portal:
+        fingerprint_data["_customer_portal"] = True
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_data, sort_keys=True).encode()).hexdigest()
     with db.SessionLocal() as session:
         prior = session.query(SellerOrder).filter_by(seller_id=seller["id"], request_id=body.request_id).first()
         if prior:
@@ -770,7 +782,9 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
     total_cost = sum(approved_costs[item.variant_id] * item.quantity for item in body.items)
     if any(cents(item.sale_price) <= approved_costs[item.variant_id] for item in body.items):
         raise HTTPException(422, "Sale price must be above the affiliate product cost")
-    if sum(cents(item.sale_price) * item.quantity for item in body.items) <= total_cost + fee:
+    item_total = sum(cents(item.sale_price) * item.quantity for item in body.items)
+    order_total = item_total + (fee if body._customer_portal else 0)
+    if order_total <= total_cost + fee:
         raise HTTPException(422, "Order total must cover product costs and the delivery fee to earn profit")
     customer = save_customer(body, seller["id"])
     cid = shopify_customer(body.store, customer, seller["id"])
@@ -802,8 +816,8 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
         session.add(OrderReceipt(order_id=oid, data=json.dumps({
             'customer_name': customer['customer_name'], 'customer_phone': customer['customer_phone'],
             'city': body.city, 'address': customer['address'], 'note': body.note, 'currency': currency,
-            'items': receipt_items, 'delivery_fee': fee / 100, 'delivery_included': True,
-            'total': sum(prices[vid] * qty for vid, qty in quantities.items()) / 100})))
+            'items': receipt_items, 'delivery_fee': fee / 100, 'delivery_included': not body._customer_portal,
+            'total': order_total / 100})))
         try:
             session.commit()
         except IntegrityError:
@@ -815,6 +829,7 @@ def create_order(body: NewOrder, seller=Depends(active_seller)):
     try:
         snapshot = shopify._rest_post_store(body.store, "/orders.json", {"order": {
             "line_items": [{"variant_id": int(vid), "quantity": qty, "price": str(Decimal(prices[vid]) / 100)} for vid, qty in quantities.items()],
+            **({"shipping_lines": [{"code": "customer_portal_delivery", "title": "Delivery", "price": format(Decimal(fee) / 100, ".2f")}]} if body._customer_portal else {}),
             "shipping_address": address, "billing_address": address,
             "customer": {"id": int(cid)},
             # Shopify order tags have a 40-character limit. Keep full UUIDs

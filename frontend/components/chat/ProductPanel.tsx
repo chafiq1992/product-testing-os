@@ -81,7 +81,7 @@ export default function ProductPanel({
               <h2 className="text-xl font-black text-slate-900 leading-tight">{title || (loading ? 'Loading…' : '')}</h2>
               <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                 <span className="text-lg font-extrabold text-blue-600">{priceLabel(priceMin, priceMax)}</span>
-                <span className="text-xs font-semibold text-slate-400">/crate</span>
+                <span className="text-xs font-semibold text-slate-400">{'/' + (product?.price_unit || fallback?.price_unit || 'crate')}</span>
                 {compareAt > 0 && compareAt > priceMin && (
                   <span className="text-sm text-slate-400 line-through">{compareAt.toFixed(2)} DH</span>
                 )}
@@ -92,7 +92,7 @@ export default function ProductPanel({
               {(unitPriceLabel(product?.unit_price_min, product?.unit_price_max) || pcsLabel(product?.pcs_options)) && (
                 <div className="mt-1 flex items-center gap-2 text-sm text-slate-500">
                   {unitPriceLabel(product?.unit_price_min, product?.unit_price_max) && (
-                    <span className="font-semibold text-slate-700">{unitPriceLabel(product?.unit_price_min, product?.unit_price_max)}<span className="text-xs text-slate-400"> /pc</span></span>
+                    <span className="font-semibold text-slate-700">{unitPriceLabel(product?.unit_price_min, product?.unit_price_max)}<span className="text-xs text-slate-400">{product?.unit_type === 'weight' ? ' /kg' : ' /pc'}</span></span>
                   )}
                   {pcsLabel(product?.pcs_options) && <span className="text-xs bg-slate-100 rounded-full px-2 py-0.5">{pcsLabel(product?.pcs_options)}</span>}
                 </div>
@@ -110,7 +110,7 @@ export default function ProductPanel({
                         <span className="text-sm font-medium text-slate-700">{v.title}</span>
                         {(v.unit_price || v.pcs_per_crate) ? (
                           <span className="block text-[11px] text-slate-400">
-                            {[v.unit_price ? `${v.unit_price.toFixed(2)} DH/pc` : '', v.pcs_per_crate ? `${v.pcs_per_crate} pcs/crate` : ''].filter(Boolean).join(' · ')}
+                            {[v.unit_price ? `${v.unit_price.toFixed(2)} DH/${v.unit_type === 'weight' ? 'kg' : 'pc'}` : '', v.pcs_per_crate ? `${v.pcs_per_crate} pcs/crate` : ''].filter(Boolean).join(' · ')}
                           </span>
                         ) : null}
                       </div>
@@ -148,6 +148,12 @@ export default function ProductPanel({
                 const card: ProductCard = {
                   vendor: vendorId, id: productId || '', title,
                   image: mainImg, price_min: priceMin, price_max: priceMax, available, handle: product?.handle,
+                  unit_type: product?.unit_type || fallback?.unit_type,
+                  price_unit: product?.price_unit || fallback?.price_unit,
+                  short_code: product?.short_code || fallback?.short_code,
+                  unit_price_min: product?.unit_price_min ?? fallback?.unit_price_min,
+                  unit_price_max: product?.unit_price_max ?? fallback?.unit_price_max,
+                  pcs_options: product?.pcs_options || fallback?.pcs_options,
                 }
                 onSend(card)
                 onClose()

@@ -10,7 +10,9 @@ import {
   CreditCard, AlertCircle, ChevronRight, Edit3, Users, BarChart3, Share2, MessageCircle
 } from 'lucide-react'
 import ChatInbox from '../../components/chat/ChatInbox'
+import CustomerMerchantTools from '../../components/CustomerMerchantTools'
 import { BatchImagePicker, BatchProgress, type BatchImage } from './BatchProducts'
+import GroceryWorkspace, { GroceryHome } from './grocery/GroceryWorkspace'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
@@ -59,11 +61,11 @@ function formatDh(value: number | string | null | undefined, locale = 'en-GB') {
 }
 
 function getVariantAvailable(variant: any) {
-  return Math.max(0, parseInt(String(variant?.inventory_available ?? variant?.available_quantity ?? variant?.inventory_quantity ?? 0), 10) || 0)
+  return Math.max(0, Number(variant?.unit_type === 'weight' ? Number(variant?.stock_grams || 0) / 1000 : variant?.inventory_available ?? variant?.available_quantity ?? variant?.inventory_quantity ?? 0) || 0)
 }
 
 function getVariantOnHand(variant: any) {
-  return Math.max(0, parseInt(String(variant?.inventory_on_hand ?? variant?.inventory_quantity ?? getVariantAvailable(variant)), 10) || 0)
+  return Math.max(0, Number(variant?.unit_type === 'weight' ? Number(variant?.stock_grams || 0) / 1000 : variant?.inventory_on_hand ?? variant?.inventory_quantity ?? getVariantAvailable(variant)) || 0)
 }
 
 function buildVariantTitle(group: Pick<StockVariantFormRow, 'from' | 'to' | 'pcsPerCrate'>) {
@@ -906,8 +908,13 @@ async function apiPatch(path: string, body: object) {
   const res = await fetch(`${API}${path}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const result = await res.json()
+  if (!res.ok) {
+    const detail = result.detail || result
+    const labels: Record<string, string> = { payment_status_mismatch: 'The amount does not match the selected payment status.', invalid_payment: 'Enter a valid payment amount within the order total.', order_cancelled: 'This order has been cancelled.' }
+    throw new Error(labels[detail.error] || detail.message || detail.error || `HTTP ${res.status}`)
+  }
+  return result
 }
 
 // ─── Session helpers ─────────────────────────────────────
@@ -944,7 +951,8 @@ export default function WholesalePage() {
   useEffect(() => {
     setLangState(getLang())
     const s = getSession()
-    if (s?.id) setVendor(s)
+    if (s?.id && s.account_id && s.chat_id) setVendor(s)
+    else if (s?.id) clearSession()
     setLoading(false)
   }, [])
 
@@ -959,7 +967,7 @@ export default function WholesalePage() {
 
   if (loading) return <LoadingScreen copy={copy} />
   if (!vendor) return <LoginScreen onLogin={onLogin} copy={copy} lang={lang} onLangChange={onLangChange} />
-  return <Dashboard vendor={vendor} onLogout={onLogout} lang={lang} onLangChange={onLangChange} copy={copy} />
+  return <Dashboard key={vendor.account_id || vendor.id} vendor={vendor} onLogout={onLogout} lang={lang} onLangChange={onLangChange} copy={copy} />
 }
 
 // ─── Loading ─────────────────────────────────────────────
@@ -1072,6 +1080,15 @@ function Dashboard({
   onLangChange: (next: Lang) => void
   copy: AppCopy
 }) {
+  const grocery = vendor.account_type === 'grocery'
+  if (grocery) copy = { ...copy,
+    addProduct: lang === 'ar' ? 'إضافة منتج' : 'Add product',
+    createOrder: lang === 'ar' ? 'إنشاء طلب' : 'Create order',
+    brandTag: lang === 'ar' ? 'إدارة البقالة' : 'Grocery workspace',
+    portal: lang === 'ar' ? 'حساب البقالة' : 'Grocery account',
+    role: lang === 'ar' ? 'بقالة' : 'Grocery',
+    chat: lang === 'ar' ? 'المحادثات' : 'Chat',
+  } as unknown as AppCopy
   const [activeTab, setActiveTab] = useState('overview')
   const [products, setProducts] = useState<any[]>([])
   const [loadingProducts, setLoadingProducts] = useState(true)
@@ -1128,10 +1145,10 @@ function Dashboard({
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
+      case 'overview': return grocery ? <GroceryHome products={products} lang={lang} /> : <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
       case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
-      case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
-      case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
+      case 'create-order': return grocery ? <GroceryWorkspace key="grocery-sale" vendor={vendor} lang={lang} mode="sale" initialProducts={products} productsReady={!loadingProducts} onDone={() => { refreshOrders(); setActiveTab('orders') }} onChanged={() => { void refreshProducts(); void refreshOrders() }} /> : <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
+      case 'add-new': return grocery ? <GroceryWorkspace key="grocery-stock" vendor={vendor} lang={lang} mode="inventory" initialProducts={products} productsReady={!loadingProducts} onDone={() => setActiveTab('inventory')} onChanged={refreshProducts} /> : <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
@@ -1250,11 +1267,12 @@ function Dashboard({
         {isChat ? (
           <div className="flex-1 min-h-0">
             <ChatInbox
+              key={vendor.chat_id || vendor.id}
               framed={false}
               heightClass="h-full"
               onActiveConversationChange={setChatConversationOpen}
               me={{
-                id: String(vendor.id || vendor.username || '').toLowerCase(),
+                id: String(vendor.chat_id || vendor.id || vendor.username || '').toLowerCase(),
                 handle: String(vendor.username || vendor.id || '').toLowerCase(),
                 name: vendor.name || vendor.username || 'Vendor',
                 avatar: profileImage || '',
@@ -1286,6 +1304,7 @@ function Dashboard({
               </button>
             </div>
           )}
+          {(activeTab === 'overview' || activeTab === 'customers') && <div className="mx-auto max-w-6xl"><CustomerMerchantTools key={vendor.account_id || vendor.id} kind="vendor" lang={lang} merchantName={vendor.name || vendor.username} /></div>}
           {renderContent()}
         </div>
         )}
@@ -1535,7 +1554,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
       const q = search.toLowerCase()
       const productTitle = getLocalizedProductTitle(p, lang, p.title || copy.untitled).toLowerCase()
       const matchSearch = !search || productTitle.includes(q) || (p.variants || []).some((v: any) =>
-        getDisplaySku(v.sku).toLowerCase().includes(q) || getLocalizedVariantTitle(v, lang).toLowerCase().includes(q)
+        getDisplaySku(v.short_code || v.sku).toLowerCase().includes(q) || getLocalizedVariantTitle(v, lang).toLowerCase().includes(q)
       )
       if (segFilter === 'All') return matchSearch
       const tags = typeof p.tags === 'string' ? p.tags : ''
@@ -1554,6 +1573,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
   }, [products, search, segFilter, inventorySort, lang, copy.untitled])
 
   function openStockModal(product: any, variant: any) {
+    if (vendor.account_type === 'grocery') { onAddProduct?.(); return }
     setStockModal({ product, variant })
     setStockQty(String(getVariantOnHand(variant)))
     setStockMessage(null)
@@ -1865,7 +1885,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                       <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1">
                         {variants.slice(0, 6).map((v: any) => (
                           <span key={v.id} className="text-[11px] font-black text-white/85">
-                            {getDisplaySku(v.sku)}={getVariantAvailable(v)}
+                            {getDisplaySku(v.short_code || v.sku)}={getVariantAvailable(v)}{v.unit_type === 'weight' ? ' kg' : ''}
                           </span>
                         ))}
                         {variantCount > 6 && (
@@ -1874,7 +1894,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                       </div>
                     </div>
                     <div className={`${isArabic ? 'text-left' : 'text-right'} rounded-2xl bg-white/95 px-3 py-2 text-slate-950 shadow-sm`}>
-                      <p className="text-3xl font-black leading-none">{qty}</p>
+                      <p className="text-3xl font-black leading-none">{qty}{p.unit_type === 'weight' ? ' kg' : ''}</p>
                       <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{inventoryLabels.available}</p>
                     </div>
                   </div>
@@ -1888,18 +1908,18 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
                     return (
                       <div key={v.id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                         <div className="min-w-0">
-                          <p className="truncate text-lg font-black text-slate-900">{getDisplaySku(v.sku)}</p>
+                          <p className="truncate text-lg font-black text-slate-900">{getDisplaySku(v.short_code || v.sku)}</p>
                           <p className="truncate text-sm font-bold text-slate-500">{getLocalizedVariantTitle(v, lang)}</p>
                         </div>
                         <div className="flex items-center gap-2">
                           <div className={`grid grid-cols-2 gap-2 ${isArabic ? 'text-left' : 'text-right'}`}>
                             <div>
                               <p className="text-[10px] font-black uppercase text-slate-400">{inventoryLabels.onHand}</p>
-                              <p className="text-xl font-black text-slate-900">{onHand}</p>
+                              <p className="text-xl font-black text-slate-900">{onHand}{v.unit_type === 'weight' ? ' kg' : ''}</p>
                             </div>
                             <div>
                               <p className="text-[10px] font-black uppercase text-emerald-600">{inventoryLabels.available}</p>
-                              <p className="text-xl font-black text-emerald-700">{available}</p>
+                              <p className="text-xl font-black text-emerald-700">{available}{v.unit_type === 'weight' ? ' kg' : ''}</p>
                             </div>
                           </div>
                           <button onClick={() => openStockModal(p, v)} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-700 hover:border-blue-300 hover:text-blue-600">
@@ -3079,7 +3099,7 @@ function CreateOrderTab({ vendor, products, onDone, copy, lang }: { vendor: any;
                       <div className="grid grid-cols-3 gap-2 text-center sm:min-w-[260px]">
                         <div className="rounded-2xl bg-slate-50 px-3 py-2">
                           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.qty}</p>
-                          <p className="mt-1 text-sm font-bold text-slate-900">{li.quantity}</p>
+                          <p className="mt-1 text-sm font-bold text-slate-900">{li.quantity}{(li as any).unit_type === 'weight' ? ' kg' : ''}</p>
                         </div>
                         <div className="rounded-2xl bg-slate-50 px-3 py-2">
                           <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">{copy.price}</p>
@@ -4094,23 +4114,27 @@ function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder,
     setPayStatus(order.payment_status || 'unpaid')
     setPayAmount(String(order.amount_paid || 0))
     setPayNote(order.payment_note || '')
+    setOrdersMessage(null)
   }
 
   async function savePayment() {
     if (!paymentModal) return
     setSaving(true)
     try {
-      await apiPatch(`/api/wholesale/vendors/${vendor.id}/orders/${paymentModal.id}/payment`, {
+      const response = await apiPatch(`/api/wholesale/vendors/${vendor.id}/orders/${paymentModal.id}/payment`, {
         payment_status: payStatus,
         amount_paid: parseFloat(payAmount) || 0,
         payment_note: payNote,
       })
-      // Update local state
+      if (response?.error || !response?.data) {
+        setOrdersMessage({ type: 'error', text: response?.error || copy.unexpectedResponse })
+        return
+      }
       setOrders(prev => prev.map(o =>
-        o.id === paymentModal.id ? { ...o, payment_status: payStatus, amount_paid: parseFloat(payAmount) || 0, payment_note: payNote } : o
+        o.id === paymentModal.id ? { ...o, ...response.data } : o
       ))
       setPaymentModal(null)
-    } catch { /* ignore */ }
+    } catch (error: any) { setOrdersMessage({ type: 'error', text: error.message || copy.networkError }) }
     finally { setSaving(false) }
   }
 
@@ -4370,12 +4394,12 @@ function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder,
                       {(order.line_items || []).map((li: any, i: number) => (
                         <div key={i} className="flex items-center justify-between bg-white rounded-xl p-3 border border-slate-100">
                           <div className="flex-1 min-w-0">
-                            <p className="truncate text-lg font-black text-slate-950">{getDisplaySku(li.sku)}</p>
+                            <p className="truncate text-lg font-black text-slate-950">{getDisplaySku(li.short_code || li.sku)}</p>
                             <p className="truncate text-sm font-bold text-slate-500">{getDisplaySize(li.variant_title)}</p>
                           </div>
                           <div className={`${isArabic ? 'text-left' : 'text-right'} ml-3`}>
                             <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{copy.qty}</p>
-                            <p className="text-3xl font-black text-blue-600">{li.quantity}</p>
+                            <p className="text-3xl font-black text-blue-600">{li.quantity}{(li as any).unit_type === 'weight' ? ' kg' : ''}</p>
                           </div>
                         </div>
                       ))}
@@ -4446,6 +4470,7 @@ function OrdersTab({ vendor, products, initialOrders, copy, lang, onCreateOrder,
               </div>
               <p className="text-sm text-slate-500 mt-1">{paymentModal.name} · {paymentModal.customer_name}</p>
               <p className="text-lg font-bold mt-2">{copy.total}: {formatDh(paymentModal.total_price || '0', locale)}</p>
+              {ordersMessage?.type === 'error' && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-800">{ordersMessage.text}</p>}
             </div>
             <div className="p-6 space-y-4">
               <div>

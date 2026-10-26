@@ -3,6 +3,15 @@
 // NEXT_PUBLIC_API_BASE_URL when the API lives on another host.
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+let activeChatActor = ''
+
+// One inbox is mounted per page. Explicitly select its verified cookie identity
+// when the browser is signed into both a merchant and a customer account.
+export function setChatActor(id: string) { activeChatActor = id.toLowerCase() }
+export function clearChatActor(id: string) { if (activeChatActor === id.toLowerCase()) activeChatActor = '' }
+export function chatHeaders(): Record<string, string> {
+  return activeChatActor ? { 'X-Chat-Actor': activeChatActor } : {}
+}
 
 export type ChatAccount = {
   id: string
@@ -12,6 +21,7 @@ export type ChatAccount = {
   kind?: string
   online?: boolean
   last_seen?: string | null
+  catalog_vendor_id?: string | null
 }
 
 export type ChatMessage = {
@@ -62,13 +72,13 @@ export function wsUrl(accountId: string): string {
 }
 
 async function jget(path: string) {
-  const res = await fetch(abs(path))
+  const res = await fetch(abs(path), { credentials: 'include', headers: chatHeaders() })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 async function jpost(path: string, body: object) {
   const res = await fetch(abs(path), {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', credentials: 'include', headers: { ...chatHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
@@ -125,7 +135,7 @@ export async function uploadMedia(file: Blob, kind: string, filename?: string): 
   const fd = new FormData()
   fd.append('file', file, filename || (file as File).name || 'media')
   fd.append('kind', kind)
-  const res = await fetch(abs('/api/chat/upload'), { method: 'POST', body: fd })
+  const res = await fetch(abs('/api/chat/upload'), { method: 'POST', credentials: 'include', headers: chatHeaders(), body: fd })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const { data, error } = await res.json()
   if (error) throw new Error(error)

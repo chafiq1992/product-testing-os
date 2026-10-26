@@ -29,6 +29,8 @@ Kill switch: ``PTO_AUTH_GATE=off`` disables enforcement without a rebuild.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import base64
 import hashlib
 import hmac
@@ -49,6 +51,8 @@ log = logging.getLogger("app.auth_gate")
 
 OPERATOR_COOKIE = "ptos_auth"
 VENDOR_COOKIE = "ptos_vendor"
+CUSTOMER_COOKIE = "ptos_customer"
+SELLER_CHAT_COOKIE = "ptos_seller_chat"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30
 SHORT_COOKIE_MAX_AGE = 60 * 60 * 8
 
@@ -107,7 +111,7 @@ SELF_VERIFIED_PATHS = frozenset({
 })
 # The confirmation team has its own agent/admin tokens, checked in every
 # handler under this prefix; its members are not operators.
-SELF_VERIFIED_PREFIXES = ("/api/confirmation/",)
+SELF_VERIFIED_PREFIXES = ("/api/confirmation/", "/api/customers/")
 
 _VENDOR_SCOPED = re.compile(r"^/api/wholesale/vendors/([^/]+)/")
 VENDOR_SHARED_PATHS = frozenset({
@@ -401,31 +405,36 @@ def set_vendor_resolver(fn: Callable[[str], Any]) -> None:
     _vendor_resolver = fn
 
 
-def _vendor_password_hash(vendor_id: str) -> Optional[str]:
-    now = time.time()
+def invalidate_vendor_cache(vendor_id: str) -> None:
     with _vendor_cache_lock:
-        hit = _vendor_cache.get(vendor_id)
-        if hit and hit[0] > now:
-            return hit[1]
-    value: Optional[str] = None
+        _vendor_cache.pop((vendor_id or "").strip().lower(), None)
+
+
+def _vendor_record(vendor_id: str) -> Optional[dict]:
+    # Account lifetimes must be checked against current storage on every request.
+    # A cached username could otherwise authenticate an earlier account after a
+    # replacement with the same username/password, including on another worker.
     try:
         rec = _vendor_resolver(vendor_id) if _vendor_resolver else None
-        if isinstance(rec, dict) and rec.get("password_hash"):
-            value = str(rec["password_hash"])
+        return rec if isinstance(rec, dict) and rec.get("password_hash") else None
     except Exception:
         log.exception("auth gate: vendor lookup failed")
-        return None  # do not cache a failure
-    with _vendor_cache_lock:
-        _vendor_cache[vendor_id] = (now + _VENDOR_CACHE_TTL, value)
-    return value
+        return None
 
 
-def issue_vendor_token(vendor_id: str, password_hash: str, ttl: int = COOKIE_MAX_AGE) -> str:
+def _vendor_password_hash(vendor_id: str) -> Optional[str]:
+    rec = _vendor_record(vendor_id)
+    return str(rec["password_hash"]) if rec else None
+
+
+def issue_vendor_token(vendor_id: str, password_hash: str, ttl: int = COOKIE_MAX_AGE,
+                       *, account_id: str = "", chat_id: str = "") -> str:
     now = int(time.time())
     vid = (vendor_id or "").strip().lower()
-    with _vendor_cache_lock:
-        _vendor_cache.pop(vid, None)
-    return _sign({"k": "vendor", "sub": vid, "fp": _fingerprint("vendor", vid, password_hash or ""),
+    invalidate_vendor_cache(vid)
+    secret = (password_hash or "") + ("\x1f" + account_id if account_id else "")
+    return _sign({"k": "vendor", "sub": vid, "aid": account_id, "cid": chat_id or vid,
+                  "fp": _fingerprint("vendor", vid, secret),
                   "iat": now, "exp": now + ttl})
 
 
@@ -434,10 +443,61 @@ def verify_vendor_token(token: str) -> Optional[dict]:
     if not payload or payload.get("k") != "vendor":
         return None
     vid = str(payload.get("sub") or "")
-    current = _vendor_password_hash(vid)
-    if not current or not hmac.compare_digest(str(payload.get("fp")), _fingerprint("vendor", vid, current)):
+    rec = _vendor_record(vid)
+    if not rec:
         return None
+    account_id = str(rec.get("account_id") or "")
+    chat_id = str(rec.get("chat_id") or vid).strip().lower()
+    if str(payload.get("aid") or "") != account_id or str(payload.get("cid") or vid) != chat_id:
+        return None
+    current = str(rec["password_hash"]) + ("\x1f" + account_id if account_id else "")
+    if not hmac.compare_digest(str(payload.get("fp")), _fingerprint("vendor", vid, current)):
+        return None
+    payload["chat_id"] = chat_id
     return payload
+
+
+def issue_seller_chat_cookie(response: Response, request: Request, seller: dict) -> dict:
+    """Exchange an already verified seller session for a chat-only cookie."""
+    from app import db
+    from app.affiliates import Seller, SellerSession
+    from fastapi import HTTPException
+    with db.SessionLocal() as session:
+        row = session.get(Seller, str(seller.get("id") or ""))
+        if row is None or row.status != "approved":
+            raise HTTPException(403, "Approved seller sign in required")
+        bearer = request.headers.get("authorization", "").removeprefix("Bearer ")
+        session_hash = hashlib.sha256(bearer.encode()).hexdigest()
+        source = session.get(SellerSession, session_hash)
+        if not source or source.seller_id != row.id or source.expires_at <= datetime.utcnow():
+            raise HTTPException(401, "Seller sign in required")
+        now, ttl = int(time.time()), 7 * 86400
+        chat_id = "seller:" + row.id
+        token = _sign({"k": "seller_chat", "sub": row.id, "chat_id": chat_id, "sid": session_hash,
+                       "fp": _fingerprint("seller_chat", row.id, row.password_hash),
+                       "iat": now, "exp": now + ttl})
+        set_session_cookie(response, request, SELLER_CHAT_COOKIE, token, ttl)
+        return {"id": chat_id, "chat_id": chat_id, "name": row.name,
+                "handle": row.username, "kind": "seller"}
+
+
+def verify_seller_chat_token(token: str) -> Optional[dict]:
+    payload = _unsign(token)
+    if not payload or payload.get("k") != "seller_chat":
+        return None
+    from app import db
+    from app.affiliates import Seller, SellerSession
+    with db.SessionLocal() as session:
+        row = session.get(Seller, str(payload.get("sub") or ""))
+        if row is None or row.status != "approved":
+            return None
+        source = session.get(SellerSession, str(payload.get("sid") or ""))
+        if not source or source.seller_id != row.id or source.expires_at <= datetime.utcnow():
+            return None
+        if not hmac.compare_digest(str(payload.get("fp") or ""), _fingerprint("seller_chat", row.id, row.password_hash)):
+            return None
+        payload["chat_id"] = "seller:" + row.id
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +524,7 @@ def _cookies(headers: dict[str, str]) -> dict[str, str]:
 
 def resolve_principals(headers: dict[str, str]) -> dict[str, Any]:
     """Every identity the request proves. Keys: operator, vendor, workspace, via_cookie."""
-    out: dict[str, Any] = {"operator": None, "vendor": None, "workspace": None, "via_cookie": False}
+    out: dict[str, Any] = {"operator": None, "vendor": None, "customer": None, "seller_chat": None, "workspace": None, "via_cookie": False}
     ws_token = (headers.get(WORKSPACE_HEADER) or "").strip()
     if ws_token:
         from app.sendo_workspace import verify_session_token  # local: avoid import cycles
@@ -490,6 +550,18 @@ def resolve_principals(headers: dict[str, str]) -> dict[str, Any]:
             out["vendor"] = vendor
             if jar.get(VENDOR_COOKIE):
                 out["via_cookie"] = True
+    if jar.get(CUSTOMER_COOKIE):
+        try:
+            from app.customer_accounts import verify_session_token
+            out["customer"] = verify_session_token(jar[CUSTOMER_COOKIE])
+            if out["customer"]:
+                out["via_cookie"] = True
+        except ImportError:
+            pass
+    if jar.get(SELLER_CHAT_COOKIE):
+        out["seller_chat"] = verify_seller_chat_token(jar[SELLER_CHAT_COOKIE])
+        if out["seller_chat"]:
+            out["via_cookie"] = True
     return out
 
 
@@ -531,6 +603,10 @@ class AuthGateMiddleware:
         method = scope.get("method", "GET").upper() if scope["type"] == "http" else "WEBSOCKET"
         path = scope.get("path") or "/"
         kind = classify(path)
+        # Customer routes validate their own role/session. Keep login and all
+        # cookie-authenticated writes same-origin even before that dispatch.
+        if path.startswith("/api/customers/") and method in _UNSAFE_METHODS and not _origin_ok(_headers(scope)):
+            return await self._deny(scope, receive, send, 403, "cross_origin_request_blocked")
         if method == "OPTIONS" or kind in ("public", "self"):
             return await self.app(scope, receive, send)
 
@@ -549,24 +625,34 @@ class AuthGateMiddleware:
             return await self._deny(scope, receive, send, 401, "unauthorized")
 
         if operator:  # operators may act on any vendor and any chat account
+            if kind == "chat":
+                scope.setdefault("state", {})["chat_operator"] = True
             return await self.app(scope, receive, send)
-        if not vendor:
-            return await self._deny(scope, receive, send, 401, "unauthorized")
-        vid = str(vendor.get("sub") or "")
 
         if kind == "vendor":
+            if not vendor:
+                return await self._deny(scope, receive, send, 401, "unauthorized")
+            vid = str(vendor.get("sub") or "")
             m = _VENDOR_SCOPED.match(path)
             if m and m.group(1).strip().lower() != vid:
                 return await self._deny(scope, receive, send, 403, "forbidden")
             return await self.app(scope, receive, send)
 
-        # kind == "chat": a vendor acts only as itself.
+        # Each page supplies an actor hint; it must match a proven session.
+        # This also handles a browser signed into merchant and customer roles.
+        actors = []
+        for principal in (who.get("customer"), who.get("seller_chat"), vendor):
+            if principal:
+                actors.append(str(principal.get("chat_id") or principal.get("sub") or "").strip().lower())
+        actors = [actor for actor in actors if actor]
+        if not actors:
+            return await self._deny(scope, receive, send, 401, "unauthorized")
+        claims = [v.strip().lower() for v in _query(scope).get("me", [])]
+        if headers.get("x-chat-actor"):
+            claims.append(headers["x-chat-actor"].strip().lower())
         m = _CHAT_WS.match(path)
-        if m and m.group(1).strip().lower() != vid:
-            return await self._deny(scope, receive, send, 403, "forbidden")
-        me = [v.strip().lower() for v in _query(scope).get("me", [])]
-        if any(v != vid for v in me):
-            return await self._deny(scope, receive, send, 403, "forbidden")
+        if m:
+            claims.append(m.group(1).strip().lower())
         field = _CHAT_BODY_IDENTITY.get(path)
         if field and method == "POST":
             body, receive = await _buffer_body(receive)
@@ -574,7 +660,15 @@ class AuthGateMiddleware:
                 claimed = str((json.loads(body or b"{}") or {}).get(field) or "").strip().lower()
             except Exception:
                 claimed = ""
-            if claimed != vid:
+            claims.append(claimed)
+        if len(set(claims)) > 1 or claims and claims[0] not in actors:
+            return await self._deny(scope, receive, send, 403, "forbidden")
+        chat_id = claims[0] if claims else actors[0]
+        scope.setdefault("state", {}).update(chat_actor=chat_id, chat_actors=actors)
+        if chat_id.startswith(("customer:", "seller:")):
+            permitted = {"/api/chat/register", "/api/chat/search", "/api/chat/conversations", "/api/chat/messages",
+                         "/api/chat/send", "/api/chat/read", "/api/chat/upload"}
+            if path not in permitted and not (_CHAT_WS.match(path) or _CHAT_ACCOUNT.match(path) or path.startswith("/chat-media/")):
                 return await self._deny(scope, receive, send, 403, "forbidden")
         return await self.app(scope, receive, send)
 

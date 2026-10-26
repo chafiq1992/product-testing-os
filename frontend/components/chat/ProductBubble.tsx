@@ -23,7 +23,7 @@ function ProductMini({ card, onOpen }: { card: ProductCard; onOpen: () => void }
         </div>
         {(unitPriceLabel(card.unit_price_min, card.unit_price_max) || pcsLabel(card.pcs_options)) && (
           <p className="text-[9px] text-slate-400 truncate mt-0.5">
-            {[unitPriceLabel(card.unit_price_min, card.unit_price_max) && `${unitPriceLabel(card.unit_price_min, card.unit_price_max)}/pc`, pcsLabel(card.pcs_options)].filter(Boolean).join(' · ')}
+            {[unitPriceLabel(card.unit_price_min, card.unit_price_max) && `${unitPriceLabel(card.unit_price_min, card.unit_price_max)}/${card.unit_type === 'weight' ? 'kg' : 'pc'}`, pcsLabel(card.pcs_options)].filter(Boolean).join(' · ')}
           </p>
         )}
       </div>
@@ -56,14 +56,14 @@ export default function ProductBubble({
           <div className="p-3">
             <p className="font-bold text-slate-900 leading-tight line-clamp-2">{c.title}</p>
             <div className="flex items-center justify-between mt-1.5">
-              <span className="text-blue-600 font-extrabold">{priceLabel(c.price_min, c.price_max)}<span className="text-[10px] font-semibold text-slate-400"> /crate</span></span>
+              <span className="text-blue-600 font-extrabold">{priceLabel(c.price_min, c.price_max)}<span className="text-[10px] font-semibold text-slate-400"> /{c.price_unit || 'crate'}</span></span>
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${c.available > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
                 {c.available > 0 ? `${c.available} in stock` : 'Out of stock'}
               </span>
             </div>
             {(unitPriceLabel(c.unit_price_min, c.unit_price_max) || pcsLabel(c.pcs_options)) && (
               <p className="text-[11px] text-slate-500 mt-0.5">
-                {[unitPriceLabel(c.unit_price_min, c.unit_price_max) && `${unitPriceLabel(c.unit_price_min, c.unit_price_max)}/pc`, pcsLabel(c.pcs_options)].filter(Boolean).join(' · ')}
+                {[unitPriceLabel(c.unit_price_min, c.unit_price_max) && `${unitPriceLabel(c.unit_price_min, c.unit_price_max)}/${c.unit_type === 'weight' ? 'kg' : 'pc'}`, pcsLabel(c.pcs_options)].filter(Boolean).join(' · ')}
               </p>
             )}
             <div className="mt-2 flex items-center gap-1 text-blue-600 text-xs font-bold">

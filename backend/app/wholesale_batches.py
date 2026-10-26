@@ -51,6 +51,8 @@ def _vendor(vendor_id):
     vendor = db.get_app_setting(WHOLESALE_STORE, _wholesale_vendor_key(vid))
     if not isinstance(vendor, dict):
         raise HTTPException(404, "Vendor not found")
+    if vendor.get("account_type") == "grocery":
+        raise HTTPException(403, {"error": "grocery_scanner_required"})
     return vid, vendor
 
 
