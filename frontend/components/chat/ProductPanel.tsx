@@ -148,6 +148,12 @@ export default function ProductPanel({
                 const card: ProductCard = {
                   vendor: vendorId, id: productId || '', title,
                   image: mainImg, price_min: priceMin, price_max: priceMax, available, handle: product?.handle,
+                  unit_type: product?.unit_type || fallback?.unit_type,
+                  price_unit: product?.price_unit || fallback?.price_unit,
+                  short_code: product?.short_code || fallback?.short_code,
+                  unit_price_min: product?.unit_price_min ?? fallback?.unit_price_min,
+                  unit_price_max: product?.unit_price_max ?? fallback?.unit_price_max,
+                  pcs_options: product?.pcs_options || fallback?.pcs_options,
                 }
                 onSend(card)
                 onClose()
