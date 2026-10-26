@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import ChatInbox from '../../components/chat/ChatInbox'
 import { BatchImagePicker, BatchProgress, type BatchImage } from './BatchProducts'
+import GroceryWorkspace, { GroceryHome } from './grocery/GroceryWorkspace'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
@@ -1072,6 +1073,15 @@ function Dashboard({
   onLangChange: (next: Lang) => void
   copy: AppCopy
 }) {
+  const grocery = vendor.account_type === 'grocery'
+  if (grocery) copy = { ...copy,
+    addProduct: lang === 'ar' ? 'مسح المخزون' : 'Scan stock',
+    createOrder: lang === 'ar' ? 'مسح طلب' : 'Scan order',
+    brandTag: lang === 'ar' ? 'إدارة البقالة' : 'Grocery workspace',
+    portal: lang === 'ar' ? 'حساب البقالة' : 'Grocery account',
+    role: lang === 'ar' ? 'بقالة' : 'Grocery',
+    chat: lang === 'ar' ? 'المحادثات' : 'Chat',
+  } as unknown as AppCopy
   const [activeTab, setActiveTab] = useState('overview')
   const [products, setProducts] = useState<any[]>([])
   const [loadingProducts, setLoadingProducts] = useState(true)
@@ -1128,10 +1138,10 @@ function Dashboard({
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'overview': return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
+      case 'overview': return grocery ? <GroceryHome products={products} lang={lang} /> : <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
       case 'inventory': return <InventoryTab vendor={vendor} products={products} loading={loadingProducts} copy={copy} lang={lang} onAddProduct={() => setActiveTab('add-new')} onCreateOrder={() => setActiveTab('create-order')} onInventoryChanged={refreshProducts} />
-      case 'create-order': return <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
-      case 'add-new': return <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
+      case 'create-order': return grocery ? <GroceryWorkspace key="grocery-sale" vendor={vendor} lang={lang} mode="sale" onDone={() => { refreshOrders(); setActiveTab('orders') }} onChanged={() => { void refreshProducts(); void refreshOrders() }} /> : <CreateOrderTabSimpleInvoice vendor={vendor} products={products} onDone={() => { refreshOrders(); setActiveTab('orders') }} copy={copy} lang={lang} />
+      case 'add-new': return grocery ? <GroceryWorkspace key="grocery-stock" vendor={vendor} lang={lang} mode="inventory" onDone={() => setActiveTab('inventory')} onChanged={refreshProducts} /> : <AddNewTab vendor={vendor} onDone={() => { setActiveTab('inventory'); window.setTimeout(refreshProducts, 2500) }} copy={copy} lang={lang} />
       case 'orders': return <OrdersTab vendor={vendor} products={products} initialOrders={orderStats?.all_orders || []} copy={copy} lang={lang} onCreateOrder={() => setActiveTab('create-order')} onAddProduct={() => setActiveTab('add-new')} />
       case 'customers': return <CustomersTab vendor={vendor} copy={copy} lang={lang} />
       default: return <OverviewTab products={products} loading={loadingProducts} orderStats={orderStats} copy={copy} lang={lang} />
@@ -1554,6 +1564,7 @@ function InventoryTab({ vendor, products, loading, copy, lang, onAddProduct, onC
   }, [products, search, segFilter, inventorySort, lang, copy.untitled])
 
   function openStockModal(product: any, variant: any) {
+    if (vendor.account_type === 'grocery') { onAddProduct?.(); return }
     setStockModal({ product, variant })
     setStockQty(String(getVariantOnHand(variant)))
     setStockMessage(null)

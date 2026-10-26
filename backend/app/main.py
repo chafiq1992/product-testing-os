@@ -8860,7 +8860,7 @@ def _wholesale_order_matches_vendor(order_obj: dict, vendor_name: str, vendor_id
         return False
     vendor_name_tag = _wholesale_vendor_name_tag(vendor_name).lower()
     vendor_id_tag = _wholesale_vendor_id_tag(vendor_id).lower()
-    has_vendor_tag = vendor_name_tag in tags or vendor_id_tag in tags
+    has_vendor_tag = vendor_id_tag in tags if "grocery" in tags else (vendor_name_tag in tags or vendor_id_tag in tags)
     has_wholesale_source_tag = WHOLESALE_DASHBOARD_TAG.lower() in tags or WHOLESALE_TAG.lower() in tags
     return has_vendor_tag and has_wholesale_source_tag
 
@@ -8889,17 +8889,23 @@ def _wholesale_extract_customer_snapshot(order_obj: dict) -> dict[str, Any]:
     customer = order.get("customer") or {}
     shipping = order.get("shipping_address") or {}
     billing = order.get("billing_address") or {}
+    grocery_notes = {
+        str(item.get("name")): item.get("value")
+        for item in (order.get("note_attributes") or []) if isinstance(item, dict)
+    } if "grocery" in _wholesale_tags_set(order.get("tags")) else {}
 
     customer_name = (
         shipping.get("name")
         or billing.get("name")
         or f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        or grocery_notes.get("grocery_customer_name")
         or "N/A"
     )
     customer_phone = (
         shipping.get("phone")
         or billing.get("phone")
         or customer.get("phone")
+        or grocery_notes.get("grocery_customer_phone")
         or ""
     ).strip()
     return {
@@ -9035,7 +9041,7 @@ def _hash_password(pw: str) -> str:
     return hashlib.sha256((pw or "").encode("utf-8")).hexdigest()
 
 
-WHOLESALE_STORE_TYPES = ["shoes", "clothes", "electronics", "general"]
+WHOLESALE_STORE_TYPES = ["shoes", "clothes", "electronics", "general", "grocery"]
 WHOLESALE_TITLE_DESC_PROMPTS_KEY = "wholesale_title_description_prompts"
 
 
@@ -9076,6 +9082,7 @@ class WholesaleVendorCreate(BaseModel):
     username: str
     password: str
     store_type: Optional[str] = "shoes"
+    account_type: Optional[str] = None
 
 
 class WholesaleProductCreate(BaseModel):
@@ -9127,6 +9134,11 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
 
         raw_type = (req.store_type or "shoes").strip().lower()
         store_type = raw_type if raw_type in WHOLESALE_STORE_TYPES else "shoes"
+        account_type = req.account_type or existing.get("account_type") or "vendor"
+        if account_type not in {"vendor", "grocery"}:
+            return {"error": "invalid_account_type"}
+        if account_type == "grocery":
+            store_type = "grocery"
 
         vendor_data = {
             "id": vendor_id,
@@ -9134,6 +9146,7 @@ async def api_wholesale_create_vendor(req: WholesaleVendorCreate):
             "username": username,
             "password_hash": existing.get("password_hash", _hash_password(password)) if password == "UNCHANGED_PLACEHOLDER" else _hash_password(password),
             "store_type": store_type,
+            "account_type": account_type,
             "created_at": existing.get("created_at") or datetime.utcnow().isoformat() + "Z",
             "updated_at": datetime.utcnow().isoformat() + "Z",
         }
@@ -9233,6 +9246,10 @@ async def api_wholesale_login(req: WholesaleLogin, request: Request, response: R
             return {"error": "invalid_credentials"}
 
         safe = {k: v for k, v in vendor.items() if k != "password_hash"}
+        safe["account_type"] = vendor.get("account_type") or "vendor"
+        if safe["account_type"] == "grocery":
+            from app.grocery import issue_token
+            safe["grocery_token"] = issue_token(vendor)
         # The vendor API is gated on this cookie (auth_gate.py).
         _auth_gate.set_session_cookie(
             response, request, _auth_gate.VENDOR_COOKIE,
@@ -10159,6 +10176,10 @@ async def api_wholesale_vendor_products(vendor_id: str):
         if not isinstance(vendor, dict):
             return {"error": "vendor_not_found"}
 
+        if vendor.get("account_type") == "grocery":
+            from app.grocery import _products as grocery_products
+            return {"data": await run_in_threadpool(grocery_products, vid, vendor)}
+
         vendor_name = vendor.get("name", vid)
         from app.integrations.shopify_client import list_products_by_vendor
         products = await run_in_threadpool(
@@ -10273,11 +10294,15 @@ def _build_vendor_catalog_sync(vid: str) -> dict:
         return {"error": "vendor_not_found"}
     vendor_name = vendor.get("name", vid)
     from app.integrations.shopify_client import list_products_by_vendor
-    products = list_products_by_vendor(
-        vendor_name, store=WHOLESALE_STORE, limit=250, include_translations=False,
-        request_timeout=int(os.getenv("PTOS_WHOLESALE_PRODUCTS_TIMEOUT_S", "12") or "12"),
-    )
-    products = _wholesale_enrich_products_inventory(products)
+    if vendor.get("account_type") == "grocery":
+        from app.grocery import _products as grocery_products
+        products = grocery_products(vid, vendor)
+    else:
+        products = list_products_by_vendor(
+            vendor_name, store=WHOLESALE_STORE, limit=250, include_translations=False,
+            request_timeout=int(os.getenv("PTOS_WHOLESALE_PRODUCTS_TIMEOUT_S", "12") or "12"),
+        )
+        products = _wholesale_enrich_products_inventory(products)
     normalized = [_catalog_normalize_product(p) for p in (products or [])]
     in_stock = [p for p in normalized if p["available"] > 0]
     in_stock.sort(key=lambda p: p["title"].lower())
@@ -10343,6 +10368,9 @@ async def api_wholesale_create_product(vendor_id: str, req: WholesaleProductCrea
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not isinstance(vendor, dict):
             return {"error": "vendor_not_found"}
+
+        if vendor.get("account_type") == "grocery":
+            return {"error": "grocery_scanner_required"}
 
         vendor_name = vendor.get("name", vid)
         store_type = str(req.store_type or vendor.get("store_type") or "general").strip().lower()
@@ -10526,6 +10554,8 @@ async def api_wholesale_update_variant_inventory(vendor_id: str, product_id: str
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not isinstance(vendor, dict):
             return {"error": "vendor_not_found"}
+        if vendor.get("account_type") == "grocery":
+            return {"error": "grocery_scanner_required"}
         vendor_name = vendor.get("name", vendor_id_norm)
 
         from app.integrations.shopify_client import (
@@ -10615,6 +10645,8 @@ async def api_wholesale_create_order(vendor_id: str, req: WholesaleOrderCreate):
         vendor = db.get_app_setting(WHOLESALE_STORE, key)
         if not vendor:
             return {"error": "Vendor not found"}
+        if vendor.get("account_type") == "grocery":
+            return {"error": "grocery_scanner_required"}
         vendor_name = vendor.get("name", vendor_id_norm)
 
         requested_by_variant: dict[int, int] = {}
@@ -10759,6 +10791,8 @@ async def api_wholesale_vendor_orders(vendor_id: str):
         vendor_name = vendor.get("name", vendor_id_norm)
 
         orders = await run_in_threadpool(_wholesale_fetch_shopify_vendor_orders, vendor_name, vendor_id_norm)
+        if vendor.get("account_type") == "grocery":
+            orders = [o for o in orders if _wholesale_vendor_id_tag(vendor_id_norm).lower() in _wholesale_tags_set(o.get("tags"))]
 
         total_orders = len(orders)
         total_units = 0
@@ -10793,7 +10827,10 @@ async def api_wholesale_vendor_orders(vendor_id: str):
             payment_key = f"wholesale_order_payment:{vendor_id_norm}:{order_id}"
             payment_data = db.get_app_setting(WHOLESALE_STORE, payment_key)
             if not isinstance(payment_data, dict):
-                payment_data = {}
+                # A confirmed grocery cash sale remains paid if its local
+                # receipt transaction was interrupted after Shopify accepted it.
+                grocery_paid = "grocery" in _wholesale_tags_set(o.get("tags")) and o.get("financial_status") == "paid"
+                payment_data = {"payment_status": "paid", "amount_paid": o.get("total_price", 0)} if grocery_paid else {}
             status_key = f"wholesale_order_status:{vendor_id_norm}:{order_id}"
             status_data = db.get_app_setting(WHOLESALE_STORE, status_key)
             if not isinstance(status_data, dict):
@@ -11519,6 +11556,8 @@ async def api_marketing_media_buyer(req: MarketingMediaBuyerRequest):
 
 from app.wholesale_batches import router as wholesale_batches_router, recover_batches
 app.include_router(wholesale_batches_router)
+from app.grocery import router as grocery_router
+app.include_router(grocery_router)
 from app.affiliates import router as affiliates_router
 app.include_router(affiliates_router)
 
