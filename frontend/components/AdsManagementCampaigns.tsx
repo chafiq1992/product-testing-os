@@ -2,11 +2,13 @@
 import { useEffect, useMemo, useRef, useState, Fragment, useCallback } from 'react'
 import Link from 'next/link'
 import ProductAdAnalysis from '@/components/ProductAdAnalysis'
+import ProductDeliveryIssues from '@/components/ProductDeliveryIssues'
 import axios from 'axios'
 import { fetchCampaignCollectionOrders, type CollectionCampaignOrders, purchaseOrdersRecent, type PurchaseOrder, type PurchaseOrdersData, ownerAnalysisStart, ownerAnalysisStatus, ownerAnalysisLatest, ownerAnalysisCancel, ownerAnalysisResults, type OwnerAnalysisJob, type OwnerProductReport, productOwnersResolve, productOwnerSave, type ProductOwnerInfo } from '@/lib/api'
 import { RefreshCw, ArrowUpDown, ArrowUp, ArrowDown, Calculator, Truck, ChevronDown, ChevronRight, Check, Search, X, Sparkles, BarChart3, Clock, ClipboardList, Zap, Home, Package, Megaphone, Store, CalendarDays, Layers, Brain } from 'lucide-react'
 import { fetchMetaCampaigns, type MetaCampaignRow, shopifyOrdersCountByTitle, shopifyOrdersCountPaidByTitle, shopifyOrdersDeliveryRateByTitle, shopifyProductsBrief, shopifyHydrateProducts, warmShopifyUtmOrders, shopifyProductVariantsInventory, shopifyOrdersCountByCollection, shopifyCollectionProducts, campaignMappingsList, campaignMappingUpsert, metaGetAdAccount, metaSetAdAccount, metaSetCampaignStatus, metaAdAccountTimezone, fetchCampaignAdsets, metaSetAdsetStatus, type MetaAdsetRow, fetchCampaignPerformance, shopifyOrdersCountTotal, metaListAdAccounts, fetchCampaignAdsetOrders, type AttributedOrder, campaignMetaList, campaignMetaGet, campaignMetaUpsert, campaignTimelineAdd, fetchAdsManagementBundle, campaignAnalyze, type CampaignAnalysisResult, campaignAnalysisChecksSave, campaignAnalysisChecksGet, generateActionTasks, getActionTasks, saveActionTasks, clearActionTasks, profitCostsList, profitCostsUpsert, type ActionTask, type ActionTasksResult, type CampaignMetaRecord } from '@/lib/api'
 import { FALLBACK_SHOPIFY_STORES, useShopifyStores } from '@/lib/shopifyStores'
+import { embeddedWorkspace } from '@/lib/sendoEmbed'
 import TrueManagerLogo from '@/components/brand/TrueManagerLogo'
 import StickyCampaignTable from '@/components/StickyCampaignTable'
 import CampaignLifeDays from '@/components/CampaignLifeDays'
@@ -3028,6 +3030,18 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
 
   const incompleteActionTasks = actionTasks.filter(t => !t.done).length
   const rangeLabel = datePreset==='custom' ? `${customStart||'—'} → ${customEnd||'—'}` : presetLabel(datePreset)
+  // All-time search widens the campaign lookup. Orders keep the operator's selected window.
+  const deliveryRange = effectiveYmdRange(datePreset === 'maximum' ? preSearchPresetRef.current || 'last_7d_incl_today' : datePreset)
+  const workspaceStore = embedded ? normalizeStoreValue(embeddedWorkspace()) : ''
+  function renderDeliveryIssues(productId: string, name: string, rows: MetaCampaignRow[]) {
+    const mappings = rows.map(row => manualIds[rowKeyOf(row)]).filter(mapping => mapping?.kind !== 'collection')
+    if (!mappings.length || !/^\d+$/.test(productId)) return null
+    const mappedStores = normalizeStoreList(mappings.map(mapping => mapping?.store || ''))
+    const stores = embedded ? [workspaceStore].filter(Boolean) : mappedStores.length ? mappedStores : selectedStores
+    if (!stores.length) return null
+    return <ProductDeliveryIssues key={JSON.stringify([productId, stores, selectedStores, deliveryRange.start, deliveryRange.end])}
+      productId={productId} productName={name} stores={stores} {...deliveryRange}/>
+  }
 
   const tableHeader = (
             <thead className="border-b border-slate-200 bg-slate-50/80">
@@ -3766,10 +3780,11 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                             ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${groupExpanded[pid] ? 'rotate-90' : ''}`}/></button>}
                             <div className="min-w-0 flex-1">
                               <span className="break-words text-sm font-semibold leading-snug text-slate-900">{d.primary.name || `Product ${pid}`}</span>
-                              <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                              <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-500">
                                 <span>#{pid}</span>
                                 {renderOwnerSignal(pid)}
                                 <span className="rounded-full bg-white/80 px-1.5 py-px font-semibold text-slate-700 ring-1 ring-slate-900/10">{d.rows.length} campaigns</span>
+                                {renderDeliveryIssues(pid, d.primary.name || 'Product', d.rows)}
                               </span>
                             </div>
                           </div>
@@ -4066,7 +4081,10 @@ export default function AdsManagementPage({ embedded = false }: { embedded?: boo
                         ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${adsetsExpanded[String(c.campaign_id||'')] ? 'rotate-90' : ''}`}/></button>}
                         <span className="min-w-0 flex-1">
                           <span className={`block break-words leading-snug ${isChild ? 'text-[13px] font-medium text-slate-700' : 'text-sm font-semibold text-slate-900'}`}>{c.name||'-'}</span>
-                          {!isChild && pidSelf && <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"><span>#{pidSelf}</span>{renderOwnerSignal(pidSelf)}</span>}
+                          {!isChild && pidSelf && <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-500">
+                            <span>#{pidSelf}</span>{renderOwnerSignal(pidSelf)}
+                            {renderDeliveryIssues(pidSelf, c.name || 'Product', [c])}
+                          </span>}
                         </span>
                       </div>
                       {!profitMode && (()=>{

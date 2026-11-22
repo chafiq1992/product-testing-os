@@ -190,6 +190,7 @@ WORKSPACE_ROUTES: tuple[tuple[str, re.Pattern, str, tuple[str, ...]], ...] = tup
         ("POST", r"^/api/shopify/orders_count_by_collection$", "body", _MANAGER),
         ("POST", r"^/api/ads-management/bundle$", "body", _MANAGER),
         ("POST", r"^/api/ads-management/shopify-hydrate$", "body", _MANAGER),
+        ("POST", r"^/api/ads-management/product-delivery-issues$", "body", _MANAGER),
         ("POST", r"^/api/ads-management/utm-orders/warm$", "body", _MANAGER),
     )
 )
