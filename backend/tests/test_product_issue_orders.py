@@ -17,14 +17,16 @@ def page(nodes, cursor=None):
     return {'nodes': nodes, 'pageInfo': {'hasNextPage': cursor is not None, 'endCursor': cursor}}
 
 
-def line(product=PRODUCT, variant='Silver / Pink / 38'):
-    return {'product': {'id': f'gid://shopify/Product/{product}'} if product else None, 'variantTitle': variant}
+def line(product=PRODUCT, variant='Silver / Pink / 38', *, item='1', quantity=1):
+    return {'id': f'gid://shopify/LineItem/{item}', 'quantity': quantity,
+            'product': {'id': f'gid://shopify/Product/{product}'} if product else None, 'variantTitle': variant}
 
 
 def order(number, lines, status='UNFULFILLED', **kwargs):
     return {
         'id': f'gid://shopify/Order/{number}', 'name': f'#{number}', 'createdAt': '2024-03-09T12:00:00Z',
-        'test': False, 'cancelledAt': None, 'displayFulfillmentStatus': status, 'lineItems': lines, **kwargs,
+        'test': False, 'cancelledAt': None, 'displayFulfillmentStatus': status, 'lineItems': lines,
+        'fulfillmentsCount': {'count': 0, 'precision': 'EXACT'}, **kwargs,
     }
 
 
@@ -64,9 +66,11 @@ def test_original_product_lines_calendar_days_and_pagination(monkeypatch, bound_
     assert len(calls) == 3
     assert records == [
         {'order_id': '11', 'order_name': '#11', 'created_at': cancelled['createdAt'], 'fulfilled': True,
-         'partially_fulfilled': False, 'cancelled': True, 'variants': ['Silver / Pink / 38', 'Beige / 39'], 'mixed_basket': False},
+         'partially_fulfilled': False, 'cancelled': True, 'variants': ['Silver / Pink / 38', 'Beige / 39'], 'mixed_basket': False,
+         'fulfilled_at': None, 'fulfilled_by': None, 'cancelled_at': cancelled['cancelledAt'], 'fulfillment_history_incomplete': True},
         {'order_id': '12', 'order_name': '#12', 'created_at': deep['createdAt'], 'fulfilled': False,
-         'partially_fulfilled': True, 'cancelled': False, 'variants': ['Gray / 40'], 'mixed_basket': True},
+         'partially_fulfilled': True, 'cancelled': False, 'variants': ['Gray / 40'], 'mixed_basket': True,
+         'fulfilled_at': None, 'fulfilled_by': None, 'cancelled_at': None, 'fulfillment_history_incomplete': False},
     ]
 
 
@@ -132,3 +136,169 @@ def test_valid_empty_cohort_and_store_alias(monkeypatch):
 
     monkeypatch.setattr(adapter, '_gql_store', empty)
     assert adapter.fetch_product_issue_orders('NOURALIBAS', PRODUCT, START, END) == (SHOP, [])
+
+
+def shipment_line(item, units):
+    return {'id': f'gid://shopify/FulfillmentLineItem/{item}', 'lineItem': {'id': f'gid://shopify/LineItem/{item}'},
+            'quantity': units}
+
+
+def shipment(number, quantities, status='SUCCESS'):
+    return {'id': f'gid://shopify/Fulfillment/{number}', 'status': status,
+            'fulfillmentLineItems': page([shipment_line(item, n) for item, n in quantities.items()])}
+
+
+def event(number, units, when, action='fulfillment_success'):
+    return {'action': action, 'arguments': [int(number), units, 'api_client_id', 123],
+            'createdAt': when}
+
+
+FIRST = '2024-03-10T09:00:00Z'
+SECOND = '2024-03-10T10:00:00Z'
+CANCELLED = '2024-03-10T11:00:00Z'
+
+
+def test_full_order_then_cancelled_uses_the_success_that_covered_the_last_units(monkeypatch, bound_shop):
+    basket = page([line(quantity=2), line(product='999', item='2')])
+    orders = [
+        order('1', basket, 'FULFILLMENT_NOT_REQUIRED', cancelledAt=CANCELLED),
+        order('2', basket, 'FULFILLMENT_NOT_REQUIRED', cancelledAt=CANCELLED),
+        order('3', basket, 'FULFILLMENT_NOT_REQUIRED', cancelledAt='2024-03-10T12:00:00+01:00'),
+        order('4', basket, 'FULFILLED', cancelledAt=FIRST),
+        order('5', page([line(product='999')]), 'FULFILLED'),
+    ]
+    records = {
+        '2': ([shipment('21', {'1': 2})], [event('21', 2, FIRST)]),
+        '3': ([shipment('31', {'1': 1}), shipment('32', {'2': 1, '1': 1}, 'CANCELLED')],
+              [event('32', 2, SECOND), event('31', 1, FIRST), event('32', 2, CANCELLED, 'fulfillment_cancelled')]),
+        '4': ([shipment('41', {'1': 2, '2': 1})], [event('41', 3, SECOND)]),
+    }
+    for number, (ships, _) in records.items():
+        orders[int(number) - 1]['fulfillmentsCount']['count'] = len(ships)
+    orders[-1]['fulfillmentsCount']['count'] = 1
+    calls = []
+
+    def gql(_, document, variables):
+        calls.append(document)
+        if document == adapter._ORDERS:
+            return response(orders=page(orders))
+        assert document == adapter._HISTORY
+        assert variables['ids'] == [o['id'] for o in orders[1:4]]
+        assert variables['filter'] == 'action:fulfillment_success OR action:fulfillment_cancelled'
+        return response(nodes=[{**orders[int(num) - 1], 'edited': False, 'fulfillments': ships, 'events': page(events)}
+                               for num, (ships, events) in records.items()])
+
+    monkeypatch.setattr(adapter, '_gql_store', gql)
+    _, rows = adapter.fetch_product_issue_orders('irranova', PRODUCT, START, END)
+    assert len(calls) == 2
+    assert [(r['fulfilled'], r['fulfilled_at'], r['cancelled_at'], r['fulfillment_history_incomplete']) for r in rows] == [
+        (False, None, CANCELLED, False),  # A cancellation without any shipment.
+        (False, None, CANCELLED, False),  # Only the selected product shipped, and the other item never did.
+        (True, SECOND, CANCELLED, False),  # Both units and both products were fulfilled, before cancellation.
+        (True, SECOND, FIRST, False),  # The report can explicitly exclude the reversed sequence.
+    ]
+    assert [r['fulfilled_by'] for r in rows] == [None, None, SECOND, SECOND]
+
+
+def test_expired_events_edits_and_voided_shipments_preserve_uncertainty():
+    ordered = {line()['id']: 1, line(item='2')['id']: 1}
+    one = shipment('1', {'1': 1}, 'CANCELLED')
+    two = shipment('2', {'2': 1})
+    first = event('1', 1, FIRST)
+    second = event('2', 1, SECOND)
+
+    def history(ships, events, status, *, edited=False, count=None):
+        info = {'id': 'gid://shopify/Order/1', 'edited': edited, 'displayFulfillmentStatus': status,
+                'fulfillments': ships, 'events': page(events),
+                'fulfillmentsCount': {'count': len(ships) if count is None else count, 'precision': 'EXACT'}}
+        return adapter._fulfillment_history(info, ordered, lambda *_: pytest.fail('Unexpected pagination'))
+
+    assert history([one, two], [first, event('1', 1, '2024-03-10T09:30:00Z', 'fulfillment_cancelled'), second],
+                   'PARTIALLY_FULFILLED') == (False, None, False, None)
+    assert history([one, two], [first, second], 'FULFILLMENT_NOT_REQUIRED') == (False, None, True, None)
+    assert history([shipment('3', {'1': 1, '2': 1})], [], 'FULFILLED') == (True, None, True, None)
+    assert history([shipment('3', {'1': 1, '2': 1}, 'CANCELLED')], [], 'FULFILLMENT_NOT_REQUIRED') == (False, None, True, None)
+    assert history([two], [second], 'FULFILLED', edited=True) == (True, None, True, None)
+    assert history([two], [second], 'FULFILLMENT_NOT_REQUIRED', edited=True) == (False, None, True, None)
+    assert history([two], [second], 'PARTIALLY_FULFILLED', count=2) == (False, None, True, None)
+    both = shipment('3', {'1': 1, '2': 1})
+    assert history([both], [event('3', 1, FIRST)], 'FULFILLED') == (True, None, True, None)  # Event quantities disagree.
+    replacement = shipment('3', {'1': 1})
+    assert history([one, two, replacement], [first, second, event('3', 1, CANCELLED)],
+                   'FULFILLED') == (True, None, True, CANCELLED)  # Separate coverage proves this upper bound.
+    missing_units = shipment('4', {'1': None})
+    assert history([missing_units], [], 'FULFILLMENT_NOT_REQUIRED') == (False, None, True, None)
+
+
+def test_shipment_line_and_timeline_pagination_keeps_ids_and_quantities(monkeypatch, bound_shop):
+    target = order('22', page([line(), line(item='2')]), 'FULFILLED', fulfillmentsCount={'count': 1, 'precision': 'EXACT'})
+    shipping = shipment('12', {'1': 1})
+    shipping['fulfillmentLineItems'] = page([shipment_line('1', 1)], 'next-lines')
+    seen = []
+
+    def gql(_, document, variables):
+        seen.append(document)
+        if document == adapter._ORDERS:
+            return response(orders=page([target]))
+        if document == adapter._HISTORY:
+            return response(nodes=[{**target, 'edited': False, 'fulfillments': [shipping],
+                                   'events': page([event('12', 2, CANCELLED, 'fulfillment_cancelled')], 'next-events')}])
+        if document == adapter._MORE_SHIPMENT_LINES:
+            assert variables == {'id': shipping['id'], 'after': 'next-lines'}
+            return response(fulfillment={'fulfillmentLineItems': page([shipment_line('1', 1), shipment_line('2', 1)])})
+        assert document == adapter._MORE_EVENTS
+        assert variables == {'id': target['id'], 'after': 'next-events', 'filter': adapter._EVENT_FILTER}
+        return response(order={'events': page([event('12', 2, FIRST), event('12', 2, FIRST)])})
+
+    monkeypatch.setattr(adapter, '_gql_store', gql)
+    _, rows = adapter.fetch_product_issue_orders('irranova', PRODUCT, START, END)
+    assert rows[0]['fulfilled_at'] == FIRST
+    assert len(seen) == 4
+
+
+def sale(num, item, quantity):
+    return {'id': f'sale-{num}', '__typename': 'ProductSale', 'actionType': 'ORDER' if quantity > 0 else 'RETURN',
+            'quantity': quantity, 'lineItem': {'id': line(item=item)['id']}}
+
+
+def agreement(num, reason, when, sales):
+    return {'id': f'gid://shopify/SalesAgreement/{num}', 'reason': reason, 'happenedAt': when, 'sales': page(sales)}
+
+
+@pytest.mark.parametrize(('initial', 'edit_sales', 'edit_at', 'sent', 'expected'), [
+    ([(1, 1)], [(1, -1), (2, 1)], FIRST, {2: 1}, SECOND),  # Pre-shipment replacement, like real order #107210.
+    ([(1, 1), (2, 1)], [(2, -1)], CANCELLED, {1: 1}, None),  # Removing outstanding units after a partial.
+    ([(1, 1), (2, 1)], [(2, -1)], SECOND, {1: 1}, None),  # Same timestamp cannot establish sequence.
+    ([(1, 1), (2, 1)], [], CANCELLED, {1: 1, 2: 1}, SECOND),  # Postfulfillment return changes the edited flag.
+])
+def test_edited_orders_use_the_basket_at_shipment_with_paged_sales(
+        monkeypatch, bound_shop, initial, edit_sales, edit_at, sent, expected):
+    target = order('17', page([line(item='1'), line(item='2')]), 'FULFILLED',
+                   fulfillmentsCount={'count': 1, 'precision': 'EXACT'})
+    placed = agreement('1', 'ORDER', '2024-03-09T12:00:00Z', [sale(i, item, n) for i, (item, n) in enumerate(initial)])
+    edit = agreement('2', 'ORDER_EDIT' if edit_sales else 'RETURN', edit_at,
+                     [sale(i + 10, item, n) for i, (item, n) in enumerate(edit_sales)])
+    duplicate_safe_page = page([*edit['sales']['nodes']], 'sales-next') if edit_sales else edit['sales']
+    edited_order = {'id': target['id'], 'agreements': page([placed], 'agreements-next')}
+
+    def gql(_, document, variables):
+        if document == adapter._ORDERS:
+            return response(orders=page([target]))
+        if document == adapter._HISTORY:
+            return response(nodes=[{**target, 'edited': True, 'fulfillments': [shipment('44', sent)],
+                                   'events': page([event('44', sum(sent.values()), SECOND)])}])
+        if document == adapter._AGREEMENTS:
+            assert variables == {'ids': [target['id']]}
+            return response(nodes=[edited_order])
+        if document == adapter._MORE_AGREEMENTS:
+            assert variables == {'id': target['id'], 'after': 'agreements-next'}
+            return response(order={'agreements': page([{**edit, 'sales': duplicate_safe_page}])})
+        assert document == adapter._MORE_SALES
+        assert variables == {'id': target['id'], 'filter': 'id:2', 'after': 'sales-next'}
+        return response(order={'agreements': {'nodes': [edit]}})
+
+    monkeypatch.setattr(adapter, '_gql_store', gql)
+    _, rows = adapter.fetch_product_issue_orders('irranova', PRODUCT, START, END)
+    assert (rows[0]['fulfilled'], rows[0]['fulfilled_at'], rows[0]['fulfillment_history_incomplete']) == (
+        True, expected, expected is None)
+    assert rows[0]['fulfilled_by'] == expected

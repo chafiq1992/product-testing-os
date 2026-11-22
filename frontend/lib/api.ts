@@ -649,6 +649,8 @@ export type ProductDeliveryIssue = {
   kind: 'product' | 'delivery' | 'queue' | 'unattributed' | 'unmatched'
   status: string
   reasons: string[]
+  reason_groups?: Partial<Record<ProductDeliveryIssue['kind'], string[]>>
+  cancelled_after_fulfillment_at?: string | null
   notes: string[]
   occurred_at: string | null
 }
@@ -660,9 +662,14 @@ export type ProductDeliveryReport = ProductDeliveryScope & {
   as_of: string
   delivery_available: boolean
   warning: string | null
+  cancellation_definition?: string
   summary: {
     received: number
     fulfilled: number
+    fulfilled_delivered?: number | null
+    fulfilled_cancelled?: number | null
+    fulfilled_cancellation_unverified?: number | null
+    fulfillment_history_unverified?: number | null
     cancelled: number
     unfulfilled: number
     partially_fulfilled: number

@@ -46,6 +46,16 @@ OPERATIONS_PHRASES = {
 NEGATED_FIT = re.compile(r"\b(?:not (?:too (?:small|large|tight|big)|a size issue)|"
                          r"(?:pas|jamais) trop (?:petit|grand|serre)\w*)\b")
 
+PRODUCT_REASONS = set(PRODUCT_PHRASES) | set(PRODUCT_LABELS.values())
+STATUS_REASONS = {
+    "refuse": "Delivery refused", "refused": "Delivery refused",
+    "annule": "Delivery cancelled", "annule par vendeur": "Cancelled by merchant",
+    "returned": "Parcel returned", "pending return": "Return pending",
+    "hors zone": "Outside delivery area", "numero errone": "Incorrect phone number",
+    "faux destination": "Incorrect destination", "endommage": "Parcel damaged",
+    "perdu": "Parcel lost", "deleted": "Marked deleted in Sendo",
+}
+
 
 def _plain(text):
     return "".join(c for c in unicodedata.normalize("NFKD", text.casefold())
@@ -86,11 +96,21 @@ def parcel_issue(record, mixed_basket):
         kind = "unattributed" if mixed_basket else "product"
         return kind, _unique(product + operations), notes, min(product_times, default=None)
     when = min(delivery_times, default=None)
-    if operations or record.adverse or any(e.reason for e in evidence):
-        return "delivery", _unique(operations) or ["Order issue recorded by Sendo"], notes, when
-    # Pending contact and postponement are worth surfacing even before refusal.
     status = _plain(record.status)
+    if operations:
+        return "delivery", _unique(operations), notes, when
+    # Pending contact and postponement can coexist with an earlier adverse scan.
     if not record.delivered and ("pas de reponse" in status or "reporte" in status):
         reason = "No answer" if "pas de reponse" in status else "Delivery postponed"
         return "delivery", [reason], notes, when
+    if record.adverse or any(e.reason for e in evidence):
+        return "delivery", [STATUS_REASONS.get(status, "Other recorded delivery issue")], notes, when
     return None
+
+
+def group_reasons(kind, reasons):
+    groups = {}
+    for reason in reasons:
+        category = "delivery" if kind in {"product", "unattributed"} and reason not in PRODUCT_REASONS else kind
+        groups.setdefault(category, []).append(reason)
+    return groups

@@ -11,6 +11,7 @@ GROUP = "10744794906913"
 SINGLE = "10744794906914"
 COLLECTION = "10744794906915"
 PERIOD = {"start": "2026-11-01", "end": "2026-11-21"}
+CANCELLATION_DEFINITION = "Explicitly cancelled in Shopify or Sendo after full fulfillment."
 
 
 def mock_workspace(route):
@@ -44,18 +45,29 @@ def mock_workspace(route):
 
 def report(scope):
     summary = {
-        "received": 12, "fulfilled": 8, "unfulfilled": 3, "partially_fulfilled": 1, "cancelled": 1,
-        "tracked": 6, "delivered": 3, "adverse": 1, "in_progress": 2, "queued": 1, "queue_errors": 0,
-        "unmatched": 5, "product_complaints": 1,
+        "received": 21, "fulfilled": 12, "unfulfilled": 3, "partially_fulfilled": 2, "cancelled": 5,
+        "fulfilled_delivered": 5, "fulfilled_cancelled": 1, "fulfilled_cancellation_unverified": 0,
+        "tracked": 10, "delivered": 6, "adverse": 3, "in_progress": 1, "queued": 1, "queue_errors": 1,
+        "unmatched": 10, "product_complaints": 2,
     }
     queue = {"order_id": "81", "order_name": "#1081", "variants": ["Blue / 30"], "kind": "queue",
-             "status": "Pending", "reasons": [], "notes": [], "occurred_at": "2026-11-18T11:55:28+00:00"}
+             "status": "ERROR (CITY)", "reasons": ["Missing or unrecognized delivery city"], "notes": [], "occurred_at": "2026-11-18T11:55:28+00:00"}
     complaint = {**queue, "order_id": "82", "order_name": "#1082", "kind": "product", "status": "Returned",
-                 "reasons": ["Sizing"], "notes": ["La taille est petite."], "occurred_at": "2026-05-18T09:12:38+01:00"}
+                 "reasons": ["Too small", "Larger size requested", "No answer"], "notes": ["La taille est petite."],
+                 "reason_groups": {"product": ["Too small", "Larger size requested"], "delivery": ["No answer", "Cancelled after fulfillment"]},
+                 "occurred_at": "2026-05-18T09:12:38+01:00", "cancelled_after_fulfillment_at": "2026-11-19T16:03:12+00:00"}
     mixed = {**complaint, "order_id": "83", "order_name": "#1083", "kind": "unattributed",
+             "reasons": ["Too small", "Late delivery"], "reason_groups": {"unattributed": ["Too small"], "delivery": ["Late delivery"]},
              "notes": ["Requested a larger size."], "occurred_at": None}
+    # A legacy row can repeat a reason. Multiple records can add notes for the same order.
+    other = {**queue, "order_id": "84", "order_name": "#1084", "kind": "product", "status": "Returned",
+             "reasons": ["Too small", "Too small"], "notes": ["Le 30 serre."]}
+    another_note = {**complaint, "reason_groups": {"product": ["Too small"]}, "notes": ["Follow-up confirmed the size."]}
+    unmatched = {**queue, "order_id": "85", "order_name": "#1085", "kind": "unmatched", "status": "Fulfilled in Shopify",
+                 "reasons": ["No matching Sendo parcel or queue entry"], "occurred_at": None}
     return {**scope, "as_of": "2026-11-21T14:00:00+00:00", "shop_domain": "example-shop.myshopify.com",
-            "delivery_available": True, "warning": None, "summary": summary, "issues": [queue, complaint, mixed]}
+            "delivery_available": True, "warning": None, "summary": summary, "cancellation_definition": CANCELLATION_DEFINITION,
+            "issues": [queue, complaint, mixed, other, another_note, unmatched]}
 
 
 def exercise(browser, url):
@@ -87,17 +99,49 @@ def exercise(browser, url):
     scope = {"store": "irranova", "product_id": GROUP, **PERIOD}
     assert [r.request.post_data_json for r in requests] == [{**scope, "store": "irrakids"}, scope]
     requests[-1].fulfill(json={"data": report(scope)})
-    expect(dialog.get_by_text("50% of 6 tracked")).to_be_visible()
+    delivered = dialog.get_by_role("region", name="Delivery rate", exact=True)
+    cancelled = dialog.get_by_role("region", name="Cancellation rate", exact=True)
+    expect(delivered.get_by_text("41.7%", exact=True)).to_be_visible()
+    expect(delivered.get_by_text("5 of 12 fully fulfilled orders")).to_be_visible()
+    expect(cancelled.get_by_text("8.3%", exact=True)).to_be_visible()
+    expect(cancelled.get_by_text("1 of 12 fully fulfilled orders")).to_be_visible()
+    expect(dialog.get_by_text(CANCELLATION_DEFINITION)).to_be_visible()
+    reasons = dialog.get_by_role("region", name="Issues by reason")
+    assert reasons.get_by_role("heading", level=4).all_text_contents() == [
+        "Product complaints", "Delivery issues", "Dispatch queue", "Mixed orders · item unclear", "Unmatched orders"]
+    expect(reasons.get_by_text("5 orders", exact=True)).to_be_visible()
+    expect(reasons.get_by_text("An order can appear under more than one reason.", exact=False)).to_be_visible()
+    product = reasons.get_by_role("region", name="Product complaints")
+    assert product.get_by_role("button").all_inner_texts()[0].startswith("Too small")
+    expect(product.get_by_role("button", name="No answer", exact=False)).to_have_count(0)
+    expect(dialog.get_by_role("link", name="#1082")).to_have_count(0)
+    product.get_by_role("button", name="Too small 2 orders").click()
+    expect(product.get_by_role("link", name="#1082")).to_have_count(1)
+    expect(product.get_by_role("link", name="#1084")).to_be_visible()
     expect(dialog.get_by_text("La taille est petite.")).to_be_visible()
+    expect(dialog.get_by_text("Follow-up confirmed the size.")).to_be_visible()
     expect(dialog.get_by_text("2026-05-18 09:12:38 Morocco time")).to_be_visible()
-    mixed_row = dialog.get_by_role("listitem").filter(has_text="#1083")
-    expect(mixed_row.get_by_text("Mixed order · item unclear")).to_be_visible()
-    expect(mixed_row.locator("time")).to_have_count(0)
+    product.get_by_role("button", name="Larger size requested 1 order").click()
+    expect(product.get_by_role("link", name="#1082")).to_be_visible()
+    expect(product.get_by_role("link", name="#1084")).to_have_count(0)
+    delivery = reasons.get_by_role("region", name="Delivery issues")
+    delivery.get_by_role("button", name="No answer 1 order").click()
+    expect(delivery.get_by_role("link", name="#1082")).to_be_visible()
+    expect(product.get_by_role("link")).to_have_count(0)
+    delivery.get_by_role("button", name="Cancelled after fulfillment 1 order").click()
+    expect(delivery.get_by_text("Cancelled 2026-11-19 16:03:12 Morocco time", exact=True)).to_be_visible()
+    expect(delivery.get_by_text("2026-05-18 09:12:38 Morocco time")).to_have_count(0)
+    mixed = reasons.get_by_role("region", name="Mixed orders · item unclear")
+    mixed.get_by_role("button", name="Too small 1 order").click()
+    expect(mixed.get_by_role("link", name="#1083")).to_be_visible()
+    expect(mixed.locator("time")).to_have_count(0)
     page.set_viewport_size({"width": 375, "height": 720})
     rect = dialog.bounding_box()
     assert rect["x"] >= 0 and rect["x"] + rect["width"] <= 375
-    dialog.get_by_role("combobox", name="Show", exact=True).select_option("queue")
+    assert dialog.evaluate("(node) => node.scrollWidth <= node.clientWidth")
+    reasons.get_by_role("region", name="Dispatch queue").get_by_role("button", name="Missing or unrecognized delivery city 1 order").click()
     expect(dialog.get_by_text("La taille est petite.")).to_have_count(0)
+    expect(dialog.get_by_text("Blue / 30")).to_be_visible()
     expect(dialog.get_by_text("Queued since")).to_have_text("Queued since 2026-11-18 11:55:28 Morocco time")
     expect(dialog.get_by_role("link", name="#1081")).to_have_attribute("href", "https://admin.shopify.com/store/example-shop/orders/81")
     requests[0].fulfill(json={"data": {**report(scope), "issues": []}})
@@ -119,8 +163,31 @@ def exercise(browser, url):
         partial["summary"][key] = None
     requests[-1].fulfill(json={"data": partial})
     expect(dialog.get_by_text("Sendo is unavailable.")).to_be_visible()
+    for card in (delivered, cancelled):
+        expect(card.get_by_text("Delivery data unavailable")).to_be_visible()
+        expect(card).not_to_contain_text("%")
+    dialog.get_by_text("Order funnel", exact=False).first.click()
     expect(dialog.get_by_text("Delivered", exact=True).locator("..").locator("dd")).to_have_text("Unavailable")
-    expect(dialog.get_by_text("Orders received", exact=True).locator("..").locator("dd")).to_have_text("12")
+    expect(dialog.get_by_text("Orders received", exact=True).locator("..").locator("dd")).to_have_text("21")
+    with page.expect_request("**/api/ads-management/product-delivery-issues"):
+        dialog.get_by_role("button", name="Refresh report").click()
+    incomplete = report(scope)
+    del incomplete["summary"]["fulfilled_cancelled"]
+    del incomplete["summary"]["fulfilled_delivered"]
+    requests[-1].fulfill(json={"data": incomplete})
+    for card in (delivered, cancelled):
+        expect(card.get_by_text("Outcome data unavailable")).to_be_visible()
+        expect(card).not_to_contain_text("%")
+    with page.expect_request("**/api/ads-management/product-delivery-issues"):
+        dialog.get_by_role("button", name="Refresh report").click()
+    bounded = report(scope)
+    bounded["summary"].update(fulfilled_delivered=0, fulfilled_cancellation_unverified=2, fulfillment_history_unverified=1)
+    requests[-1].fulfill(json={"data": bounded})
+    expect(delivered.get_by_text("0%", exact=True)).to_be_visible()
+    expect(cancelled).to_contain_text("≥")
+    expect(cancelled).to_contain_text("8.3%")
+    expect(cancelled.get_by_text("Cancellation timing unverified for 2 orders.")).to_be_visible()
+    expect(dialog.get_by_text("Both rates exclude 1 order with unverified fulfillment history.")).to_be_visible()
     with page.expect_request("**/api/ads-management/product-delivery-issues"):
         dialog.get_by_role("button", name="Refresh report").click()
     # Close a pending report, change dates, then resolve the old request last.
@@ -138,6 +205,9 @@ def exercise(browser, url):
     empty.update(issues=[], summary=dict.fromkeys(empty["summary"], 0))
     requests[-1].fulfill(json={"data": empty})
     expect(dialog.get_by_text("No Shopify orders contained this product", exact=False)).to_be_visible()
+    for card in (delivered, cancelled):
+        expect(card.get_by_text("No fully fulfilled orders")).to_be_visible()
+        expect(card).not_to_contain_text("%")
     requests[-2].fulfill(json={"data": report(scope)})
     expect(dialog.get_by_role("link")).to_have_count(0)
     page.close()

@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
 from app.ads_analyzer_data import analysis_range
 from app.integrations.product_issue_orders import ProductIssueOrdersError, fetch_product_issue_orders
-from app.product_issue_reasons import parcel_issue
+from app.product_issue_reasons import group_reasons, parcel_issue
 from app.sendo_workspace import delivery_url, is_workspace_label, launch_secret
 from app.tenant_context import current_workspace
 
@@ -43,6 +43,8 @@ class DeliveryRecord(BaseModel):
     status: str = Field(min_length=1)
     delivered: StrictBool
     adverse: StrictBool
+    cancellation_reported: StrictBool | None = None
+    cancellation_at: datetime | None = None
     occurred_at: datetime | None
     evidence: list[Evidence]
 
@@ -104,6 +106,40 @@ def _local_time(value):
     return value.astimezone(MOROCCO).isoformat(timespec="seconds")
 
 
+def _known_time(value):
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, datetime) and value.utcoffset() is not None else None
+
+
+def _cancellation_after_fulfillment(order, record):
+    """Return the qualifying time, an unresolved sequence, and unresolved cohort membership."""
+    candidates = []
+    if order["cancelled"]:
+        candidates.append(_known_time(order.get("cancelled_at")))
+    if record and record.source == "parcel" and not record.delivered:
+        if record.cancellation_reported:
+            candidates.append(_known_time(record.cancellation_at))
+        elif record.cancellation_reported is None and record.status in {"Annulé", "Annulé par vendeur"}:
+            # Older Sendo responses date the parcel's evidence, which can be a different event.
+            candidates.append(None)
+    if not candidates:
+        return None, False, False
+    if not order["fulfilled"]:
+        return None, False, bool(order.get("fulfillment_history_incomplete"))
+    fulfilled_at = _known_time(order.get("fulfilled_at"))
+    # An earlier shipment may be undated, yet a later, verified complete
+    # shipment still proves that a subsequent cancellation occurred after full fulfillment.
+    fulfilled_by = fulfilled_at or _known_time(order.get("fulfilled_by"))
+    qualifying = [stamp for stamp in candidates if stamp and fulfilled_by and stamp > fulfilled_by]
+    if qualifying:
+        return min(qualifying), False, False
+    return None, fulfilled_at is None or any(stamp is None or stamp == fulfilled_at for stamp in candidates), False
+
+
 def _build_report(body, shop, orders, records, warning=None):
     # Fulfillment refers to Shopify; delivery outcomes refer to all exactly matched Sendo parcels.
     summary = {
@@ -113,11 +149,17 @@ def _build_report(body, shop, orders, records, warning=None):
         "cancelled": sum(o["cancelled"] for o in orders),
         "unfulfilled": sum(not (o["fulfilled"] or o["partially_fulfilled"] or o["cancelled"]) for o in orders),
     }
-    for key in ("tracked", "delivered", "adverse", "in_progress", "queued", "queue_errors", "unmatched", "product_complaints"):
+    for key in ("tracked", "delivered", "adverse", "in_progress", "queued", "queue_errors", "unmatched",
+                "product_complaints", "fulfilled_delivered", "fulfilled_cancelled", "fulfilled_cancellation_unverified",
+                "fulfillment_history_unverified"):
         summary[key] = None if records is None else 0
     issues = []
     for order in orders if records is not None else ():
         record = records.get(order["order_id"])
+        cancelled_at, unverified, unknown_fulfillment = _cancellation_after_fulfillment(order, record)
+        summary["fulfilled_cancelled"] += int(cancelled_at is not None)
+        summary["fulfilled_cancellation_unverified"] += int(unverified)
+        summary["fulfillment_history_unverified"] += int(unknown_fulfillment)
         occurred = record.occurred_at if record else None
         if record is None:
             summary["unmatched"] += 1
@@ -135,27 +177,41 @@ def _build_report(body, shop, orders, records, warning=None):
             reasons, notes = [reason], []
         else:
             summary["tracked"] += 1
+            summary["fulfilled_delivered"] += int(order["fulfilled"] and record.delivered)
             outcome = "delivered" if record.delivered else "adverse" if record.adverse else "in_progress"
             summary[outcome] += 1
             issue = parcel_issue(record, order["mixed_basket"])
             if issue is None:
-                continue
+                if not cancelled_at:
+                    continue
+                issue = "delivery", [], [], cancelled_at
             kind, reasons, notes, evidence_time = issue
             status = record.status
             # A later delivery scan cannot date a complaint from an undated note.
             occurred = evidence_time if kind in {"product", "unattributed"} else evidence_time or occurred
             if kind == "product":
                 summary["product_complaints"] += 1
+        # Each reason has its own category. A product complaint may also have
+        # an independent delivery problem, even on a multi-product order.
+        if cancelled_at:
+            reasons = [reason for reason in reasons if reason != "Delivery cancelled"]
+        reason_groups = group_reasons(kind, reasons)
+        if cancelled_at:
+            reason_groups.setdefault("delivery", []).append("Cancelled after fulfillment")
+            reasons = [*reasons, "Cancelled after fulfillment"]
         issues.append({"order_id": order["order_id"], "order_name": order["order_name"],
                        "variants": order["variants"], "kind": kind, "status": status,
-                       "reasons": reasons, "notes": notes, "occurred_at": _local_time(occurred)})
+                       "reasons": reasons, "reason_groups": reason_groups, "notes": notes,
+                       "cancelled_after_fulfillment_at": _local_time(cancelled_at),
+                       "occurred_at": _local_time(occurred)})
     # Keep the most recent records first; without a verified event time a record sorts last.
     issues.sort(key=lambda item: datetime.fromisoformat(item["occurred_at"]).timestamp()
                 if item["occurred_at"] else float("-inf"), reverse=True)
     return {"store": body.store, "product_id": body.product_id, "shop_domain": shop,
             "start": body.start.isoformat(), "end": body.end.isoformat(),
             "as_of": _local_time(datetime.now(timezone.utc)), "delivery_available": records is not None,
-            "warning": warning, "summary": summary, "issues": issues}
+            "warning": warning, "summary": summary, "issues": issues,
+            "cancellation_definition": "Explicitly cancelled in Shopify or Sendo after full fulfillment."}
 
 
 @router.post("/product-delivery-issues")
