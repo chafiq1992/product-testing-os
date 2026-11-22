@@ -193,6 +193,8 @@ app.include_router(_purchase_orders_router)
 app.include_router(_owner_analyzer_router)
 from app.product_owners import router as _product_owners_router  # noqa: E402
 app.include_router(_product_owners_router)
+from app.product_delivery_issues import router as _product_delivery_issues_router  # noqa: E402
+app.include_router(_product_delivery_issues_router)
 # Background poller keeps the incident log up to date even when nobody is
 # watching the dashboard, so issues that occurred while the admin was away
 # are still visible (with first/last-seen timestamps) when they return.

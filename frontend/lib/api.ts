@@ -642,6 +642,57 @@ export async function setGlobalPrompts(payload:{ angles_prompt?:string, title_de
   return data as { [key:string]: string }
 }
 
+export type ProductDeliveryIssue = {
+  order_id: string
+  order_name: string
+  variants: string[]
+  kind: 'product' | 'delivery' | 'queue' | 'unattributed' | 'unmatched'
+  status: string
+  reasons: string[]
+  reason_groups?: Partial<Record<ProductDeliveryIssue['kind'], string[]>>
+  cancelled_after_fulfillment_at?: string | null
+  notes: string[]
+  occurred_at: string | null
+}
+
+type ProductDeliveryScope = { store: string, product_id: string, start: string, end: string }
+
+export type ProductDeliveryReport = ProductDeliveryScope & {
+  shop_domain: string
+  as_of: string
+  delivery_available: boolean
+  warning: string | null
+  cancellation_definition?: string
+  summary: {
+    received: number
+    fulfilled: number
+    fulfilled_delivered?: number | null
+    fulfilled_cancelled?: number | null
+    fulfilled_cancellation_unverified?: number | null
+    fulfillment_history_unverified?: number | null
+    cancelled: number
+    unfulfilled: number
+    partially_fulfilled: number
+    tracked: number | null
+    delivered: number | null
+    adverse: number | null
+    in_progress: number | null
+    queued: number | null
+    queue_errors: number | null
+    unmatched: number | null
+    product_complaints: number | null
+  }
+  issues: ProductDeliveryIssue[]
+}
+
+export async function fetchProductDeliveryIssues(scope: ProductDeliveryScope, signal: AbortSignal) {
+  const { data } = await axios.post<{ data?: ProductDeliveryReport, error?: string }>(
+    `${base}/api/ads-management/product-delivery-issues`, scope, { signal },
+  )
+  if (!data.data || data.error) throw new Error(data.error || 'The product delivery report was empty.')
+  return data.data
+}
+
 // Ads Management: aggregated bundle endpoint (single request for all data)
 export type AdsManagementBundle = {
   campaigns: MetaCampaignRow[],
