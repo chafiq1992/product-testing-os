@@ -92,6 +92,11 @@ SELF_VERIFIED_PATHS = frozenset({
     "/api/social-agent/scheduler/tick",
     # Server-to-server from the delivery app, HMAC-signed with the launch secret.
     "/api/sendo/admin/connections",
+    # The Sendo wholesale bridge delegates vendor credential checks to Sendo.
+    "/api/wholesale/sendo/session",
+    "/api/wholesale/sendo/products",
+    "/api/wholesale/sendo/customers",
+    "/api/wholesale/sendo/orders",
     # Seller login/application and handlers that verify seller bearer sessions.
     # Administrative affiliate routes remain behind the operator gate.
     "/api/affiliates/apply",
@@ -113,6 +118,9 @@ SELF_VERIFIED_PATHS = frozenset({
 # handler under this prefix; its members are not operators.
 SELF_VERIFIED_PREFIXES = ("/api/confirmation/", "/api/customers/")
 
+_SENDO_WHOLESALE_RECORD = re.compile(
+    r"/api/wholesale/sendo/(?:products/[1-9][0-9]*|customers/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})"
+)
 _VENDOR_SCOPED = re.compile(r"^/api/wholesale/vendors/([^/]+)/")
 VENDOR_SHARED_PATHS = frozenset({
     "/api/wholesale/upload-image",
@@ -233,6 +241,8 @@ def classify(path: str) -> str:
     if path in PUBLIC_PATHS:
         return "public"
     if path in SELF_VERIFIED_PATHS or path.startswith(SELF_VERIFIED_PREFIXES):
+        return "self"
+    if _SENDO_WHOLESALE_RECORD.fullmatch(path):
         return "self"
     if _VENDOR_SCOPED.match(path) or path in VENDOR_SHARED_PATHS:
         return "vendor"

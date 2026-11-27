@@ -13,6 +13,7 @@ import ChatInbox from '../../components/chat/ChatInbox'
 import CustomerMerchantTools from '../../components/CustomerMerchantTools'
 import { BatchImagePicker, BatchProgress, type BatchImage } from './BatchProducts'
 import GroceryWorkspace, { GroceryHome } from './grocery/GroceryWorkspace'
+import SendoWorkspace from './SendoWorkspace'
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || ''
 const SEGMENTS = ['Men', 'Women', 'Kids']
@@ -946,13 +947,18 @@ function setLang(lang: Lang) {
 export default function WholesalePage() {
   const [vendor, setVendor] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [sendo, setSendo] = useState(false)
   const [lang, setLangState] = useState<Lang>('en')
 
   useEffect(() => {
     setLangState(getLang())
-    const s = getSession()
-    if (s?.id && s.account_id && s.chat_id) setVendor(s)
-    else if (s?.id) clearSession()
+    if (new URLSearchParams(window.location.search).get('store') === 'sendo') {
+      setSendo(true)
+    } else {
+      const s = getSession()
+      if (s?.id && s.account_id && s.chat_id) setVendor(s)
+      else if (s?.id) clearSession()
+    }
     setLoading(false)
   }, [])
 
@@ -966,6 +972,7 @@ export default function WholesalePage() {
   const copy = getAppCopy(lang)
 
   if (loading) return <LoadingScreen copy={copy} />
+  if (sendo) return <SendoWorkspace lang={lang} onLangChange={onLangChange} />
   if (!vendor) return <LoginScreen onLogin={onLogin} copy={copy} lang={lang} onLangChange={onLangChange} />
   return <Dashboard key={vendor.account_id || vendor.id} vendor={vendor} onLogout={onLogout} lang={lang} onLangChange={onLangChange} copy={copy} />
 }
@@ -1060,6 +1067,9 @@ function LoginScreen({
             {busy ? <Loader2 className="animate-spin mx-auto" size={20} /> : copy.signIn}
           </button>
         </form>
+        <a href="/wholesale/?store=sendo" className="mt-4 flex justify-center text-sm font-semibold text-blue-200 hover:underline">
+          {isArabic ? 'تسجيل الدخول لمتجر Sendo' : 'Sign in to a Sendo store'}
+        </a>
         <p className="text-center text-white/20 text-xs mt-6">{copy.contactAdmin}</p>
       </div>
     </div>

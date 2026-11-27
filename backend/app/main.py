@@ -11677,6 +11677,8 @@ from app.wholesale_batches import router as wholesale_batches_router, recover_ba
 app.include_router(wholesale_batches_router)
 from app.grocery import router as grocery_router
 app.include_router(grocery_router)
+from app.sendo_wholesale import router as sendo_wholesale_router
+app.include_router(sendo_wholesale_router)
 from app.affiliates import router as affiliates_router
 app.include_router(affiliates_router)
 from app.customer_accounts import router as customer_accounts_router
